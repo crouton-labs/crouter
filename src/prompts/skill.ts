@@ -1,177 +1,176 @@
 export function skillPrompt(): string {
-  return `# Skills — capture and recall knowledge
+  return `# Skills — durable agent memory
 
-\`crtr\` skills are markdown documents the agent loads on demand. Use them for
-anything you want recalled later: architectural primers, runbooks, your
-personal preferences, domain glossaries, decision records — methodology *or*
-captured knowledge. The CLI is the index; \`crtr skill list/search/grep\`
-discovers what's available so you never need a hand-maintained router file.
+Skills are markdown the agent loads on demand. **Audience: future LLM agent
+sessions, not humans.** Write for the model: terse, decision-first, dense.
+The CLI is the index — \`crtr skill list/search/grep\` discovers what's saved.
 
-Skills live in three places, in resolution order:
-1. **Scope-direct** — \`<scope-root>/skills/<name>/SKILL.md\` (no plugin wrapper, shown as \`user:<name>\` or \`project:<name>\`)
-2. **Plugin skills** — \`<plugin>/skills/<name>/SKILL.md\` (shown as \`<scope>:<plugin>/<name>\`)
-3. Project scope beats user scope; non-marketplace plugins beat marketplace ones.
+Locations (resolution order):
+1. **Scope-direct** \`<scope-root>/skills/<name>/SKILL.md\` → \`user:<name>\` / \`project:<name>\`
+2. **Plugin skills** \`<plugin>/skills/<name>/SKILL.md\` → \`<scope>:<plugin>/<name>\`
+3. Project > user; non-marketplace plugins > marketplace.
 
-Ambiguous names exit \`4\` — disambiguate with \`<plugin>:<name>\` or \`_:<name>\`
-for scope-direct.
+Ambiguous names exit \`4\` — disambiguate with \`<plugin>:<name>\` or \`_:<name>\`.
 
 ## Discover
 
 \`\`\`
-crtr skill list                    # one per line: <qualifier> — <description>
-crtr skill search <query>          # rank by name, description, keywords
-crtr skill grep <pattern>          # regex search across SKILL.md bodies
+crtr skill list                    # <qualifier> — <description>
+crtr skill search <query>          # ranked by name/description/keywords
+crtr skill grep <pattern>          # regex across SKILL.md bodies
 \`\`\`
 
 ## Load
 
 \`\`\`
-crtr skill show <name>             # print SKILL.md body to stdout
-crtr skill show <plugin>:<name>    # disambiguate when names collide
+crtr skill show <name>             # body to stdout (default verb)
 crtr skill show _:<name>           # explicit scope-direct
-crtr skill path <name>             # absolute path to SKILL.md
-crtr skill where <name>            # {scope, plugin, path} as JSON
+crtr skill path <name>             # absolute path
+crtr skill where <name>            # {scope, plugin, path} JSON
 \`\`\`
 
-\`show\` is the default verb: \`crtr skill <name>\` (with no verb) also prints
-the body.
-
-## Author
+## Author (progressive disclosure)
 
 \`\`\`
-crtr skill create [topic...]       # walkthrough — pick a template, capture knowledge
-crtr skill new <name>              # bare scaffold, scope-direct (asks for --scope)
-crtr skill new <plugin>:<name>     # bare scaffold inside an existing plugin
-crtr skill show authoring-skills   # the SKILL.md authoring guide
+crtr skill create [topic...]       # pick a template type
+crtr skill template <type> [topic] # workflow + skeleton for that type
+crtr skill new <name>              # bare scaffold, scope-direct
 \`\`\`
 
-Reach for \`create\` when capturing something new — it walks you through choosing
-a template (architectural primer, preference, runbook, glossary, decision,
-freeform) and applies the right research workflow for that template.
+Don't load \`create\` and \`template\` in the same turn — \`create\` decides the
+type, then call \`template\`.
 
 ## Toggle
 
 \`\`\`
-crtr skill enable <name>           # clear any disable in the chosen scope
-crtr skill disable <name>          # hide from list and agent discovery
+crtr skill enable <name>
+crtr skill disable <name>
 \`\`\`
 
 ## Exit codes
 
-- \`0\` — success
-- \`3\` — skill not found
-- \`4\` — ambiguous name; use \`<plugin>:<name>\`
+\`0\` success · \`3\` not found · \`4\` ambiguous (qualify name)
 `;
 }
 
 export function skillCreatePrompt(topic: string): string {
   const topicLine = topic
-    ? `User-provided topic: **${topic}**`
-    : `No topic was provided — ask the user what they want to capture before continuing.`;
-  return `# Capture knowledge as a skill
+    ? `Topic: **${topic}**`
+    : `No topic provided — ask the user what to capture before proceeding.`;
+  return `# Author a skill — step 1: pick template type
 
-You are about to author a new \`crtr\` skill — a SKILL.md the agent will recall
-on demand. Skills can capture *any* kind of durable knowledge: architectural
-primers, runbooks, personal preferences, domain glossaries, decision records,
-freeform notes. Don't conflate this with "methodology only" — if the user wants
-the agent to remember something later, a skill is the right shape.
+You are about to write a skill (markdown read by future LLM agent sessions,
+not humans). Pick the template, then load its workflow.
 
 ${topicLine}
 
-## Step 1 — Decide the template
+## Templates
 
-Ask the user (use \`AskUserQuestion\` if available) which template fits, with
-your best guess pre-selected. Don't write anything until this is settled.
+- \`primer\` — codebase/architectural knowledge ("how does X work, why, what
+  are the gotchas"). Triggers parallel-explore research.
+- \`playbook\` — methodology/judgment ("how to think about X"). The
+  \`authoring:skills\`-style skill that teaches decisions, not facts.
+- \`freeform\` — anything else (glossary, decision record, runbook, prefs).
 
-| Template | When to use | Research workflow |
-|----------|-------------|-------------------|
-| \`primer\` | Architectural/codebase knowledge — "how does X work, why does it exist" | Parallel-explore (Step 3a) |
-| \`preference\` | User preferences, style guides, "remember I like X" | None — just ask 2-3 sharpening questions |
-| \`runbook\` | Operational procedure, incident response, "here's how to do X" | Light — confirm steps with the user |
-| \`glossary\` | Domain terms and invariants | None — list terms, get definitions from user |
-| \`decision\` | ADR-style record: context / decision / consequences | Confirm context and tradeoffs with user |
-| \`freeform\` | Anything else | Ask what shape they want |
+## Next
 
-If the user is asking for a codebase primer, **also** consider whether the
-subsystem is large enough to justify it. Small/self-evident systems do not
-need a primer — push back and offer to write a one-paragraph note instead.
+1. Pick a type. If unclear, use \`AskUserQuestion\` with your best guess first.
+2. Run:
 
-## Step 2 — Decide the scope and name
+   \`\`\`
+   crtr skill template <type>${topic ? ` ${topic}` : ' [topic]'}
+   \`\`\`
 
-Ask the user:
-- **Scope** — \`user\` (lives in \`~/.crouter/skills/\`, available everywhere) or
-  \`project\` (lives in \`<project>/.crouter/skills/\`, only here). Default
-  \`project\` if cwd is inside a project scope; otherwise \`user\`.
-- **Name** — kebab-case slug. Suggest one from the topic.
+   That output contains the research methodology, SKILL.md skeleton, and
+   scaffold command. Follow it directly — don't paraphrase.
 
-Check for collisions: \`crtr skill where <name>\`. If it exists, ask whether to
-update the existing one or pick a different name.
+## Push back when
 
-## Step 3 — Research (template-specific)
+- Subsystem is small/self-evident → suggest CLAUDE.md note instead of primer.
+- "Topic" is really a one-off task → don't capture; just do the work.
+`;
+}
 
-### 3a. \`primer\` — parallel codebase exploration
+export function skillTemplatePrompt(type: string, topic: string): string {
+  const t = type.toLowerCase();
+  if (t === 'primer') return primerTemplatePrompt(topic);
+  if (t === 'playbook') return playbookTemplatePrompt(topic);
+  if (t === 'freeform') return freeformTemplatePrompt(topic);
+  return `unknown template type: ${type}\nvalid: primer | playbook | freeform\nrun \`crtr skill create\` to pick.\n`;
+}
 
-Dispatch 4–8 \`Explore\` subagents in parallel. Partition by **slice, not by
-directory**:
+function topicLine(topic: string): string {
+  return topic
+    ? `Topic: **${topic}**`
+    : `No topic — confirm with the user before continuing.`;
+}
 
-- **Entry points** — HTTP routes, CLI commands, cron, event handlers, public exports
-- **Data model** — schemas, types, DB tables, key invariants
-- **Control flow** — how a typical request/job traverses the system end-to-end
-- **External integrations** — third-party APIs, queues, services, env vars
-- **Tests** — what's tested reveals what's load-bearing
-- **History** — recent \`git log\` for this area surfaces ongoing work and pain
-- **Cross-cutting** — auth, errors, logging, feature flags as they apply here
+function primerTemplatePrompt(topic: string): string {
+  return `# Primer — codebase knowledge skill
 
-Each subagent must return **concrete \`file:line\` references**, *non-obvious*
-facts (skip what's obvious from filenames), naming conventions, and gotchas.
-Reject vague summaries.
+**Audience: future LLM agent sessions.** Captures *why* a subsystem exists +
+non-obvious facts that code alone doesn't reveal. Lets a future session skip
+re-exploration.
 
-### 3b. \`preference\` / \`glossary\` / \`decision\` — interview
+${topicLine(topic)}
 
-Use \`AskUserQuestion\` to batch sharpening questions (≤4 at a time, multiple
-choice with your best guess first). Frame each as "here's my read; is this
-right?" Never write assumptions into the skill — if a fact isn't confirmed by
-code or the user, it doesn't go in.
+## 1. Inventory (parallel)
 
-### 3c. \`runbook\` — walk it
+- \`ls\` repo top level
+- check stack manifests
+- \`git log --oneline -15\` in this area
+- \`crtr skill search <topic>\` / \`crtr skill list\` — does a primer already exist?
 
-If the procedure exists, run/grep it and confirm. Otherwise, have the user
-narrate it once and read back the steps.
+If subsystem is small/self-evident, **stop**. Suggest a CLAUDE.md note. Primers
+are for large, complicated, or unintuitive systems only.
 
-## Step 4 — Verify intent
+## 2. Scope + name
 
-Before writing, summarize your working hypothesis back to the user in 2-3
-sentences: **what this skill is about and when it should be loaded.** This is
-what code and grep can't tell you. Get a yes or correction.
+- **Scope**: \`project\` by default. \`user\` only if cross-repo.
+- **Name**: kebab-case. Confirm no collision: \`crtr skill where <name>\`.
 
-## Step 5 — Scaffold and write
+## 3. Parallel exploration
 
-Run:
+Dispatch **4–8 \`Explore\` subagents in parallel**, partitioned by *slice* (not
+directory):
+
+- Entry points (routes, CLI, events, public exports)
+- Data model (schemas, types, invariants)
+- Control flow (typical request/job end-to-end)
+- External integrations (APIs, queues, env vars)
+- Tests (what's tested = what's load-bearing)
+- History (recent git log surfaces pain points)
+- Cross-cutting (auth, errors, logging, flags as they apply)
+
+Each subagent returns: concrete \`file:line\` refs, *non-obvious* facts (skip
+filename-obvious), naming conventions, gotchas. Reject vague summaries.
+
+## 4. Verify with user
+
+Code = *what*. User = *why*. Use \`AskUserQuestion\` (≤4 questions,
+multi-choice, best-guess first):
+
+- Business purpose / who depends on it
+- Surprising-looking architectural decisions
+- Ownership / deprecation status / expected scale
+- Canonical flow when multiple exist
+
+Skip if greppable or won't change the primer. **Never write unconfirmed
+assumptions.**
+
+## 5. Scaffold
 
 \`\`\`
-crtr skill new <name> --scope <user|project> --description "<one-line trigger>"
+crtr skill new <name> --scope project --description "<what+when, ≤250 chars, front-loaded triggers>"
 \`\`\`
 
-(For a plugin-scoped skill instead, use \`crtr skill new <plugin>:<name>\`.)
-
-This creates \`SKILL.md\` with frontmatter only. Open it and fill the body
-using the template skeleton below for the kind you chose. **Density rules:**
-\`file:line\` over prose; tables where structure fits; skip anything
-self-evident from a 30-second skim of the code; no "this section covers…"
-meta-commentary.
-
-The \`description:\` field drives auto-discovery — front-load the trigger
-keywords the user (or agent) would naturally say. Aim for ≤250 chars.
-
-### Skeletons
-
-**\`primer\`**
+## 6. Write the body
 
 \`\`\`markdown
 # <topic>
 
 ## Purpose
-Why this exists. The business problem it solves. Who depends on it.
+Why this exists. Problem solved. Who depends on it.
 (1–3 tight paragraphs — what code can't tell you.)
 
 ## Architecture
@@ -186,97 +185,254 @@ Components, responsibilities, data/control flow, boundaries.
 Domain terms, invariants, non-obvious constraints.
 
 ## Entry points
-Where work enters the system, with \`file:line\`.
+\`file:line\` where work enters.
 
 ## Gotchas
-Non-obvious coupling. Things that look broken but aren't. Past footguns.
+Non-obvious coupling. Looks-broken-but-isn't. Past footguns.
 
 ## Related
-- \`<other-skill>\` — how they interact
+- \`<other-skill>\` — interaction
 \`\`\`
 
-**\`preference\`**
+**Density rules:**
+- \`file:line\` over prose
+- Tables where structure fits
+- Skip 30-second-skim-obvious
+- No "this section covers…" meta
+- Budget ~150 lines; deeper reference → sibling files
+
+## 7. Verify
+
+\`\`\`
+crtr skill where <name>
+crtr skill show <name>
+crtr skill search <keyword>     # confirm description triggers discovery
+\`\`\`
+
+Sharpen description if discovery misses. Cut body if bloated.
+
+## Updates
+
+If updating existing primer: diff draft vs current, call out changes + why
+before writing. Update related skills' \`## Related\` sections.
+`;
+}
+
+function playbookTemplatePrompt(topic: string): string {
+  return `# Playbook — methodology skill
+
+**Audience: future LLM agent sessions.** Teaches *judgment*, not facts —
+decision frameworks, heuristics, when-to-use / when-not-to-use. Examples:
+skill-authoring, debugging methodology, multi-agent orchestration.
+
+${topicLine(topic)}
+
+## Litmus test
+
+> Does this teach judgment, or describe an API?
+
+If you'd write *"when X, do Y because Z"* → playbook. If you'd write tables
+of fields/flags/events → reference material (put in sibling \`reference.md\`,
+not SKILL.md). If neither fits → use \`crtr skill template freeform\` instead.
+
+**Playbook markers:** teaches a framework · has "when (not) to use" · prose
+over tables · reader makes better decisions after 30 seconds.
+
+## 1. Interview
+
+A playbook = user's accumulated judgment. Not greppable. Use
+\`AskUserQuestion\` (≤4, multi-choice, best-guess first):
+
+- The decision this skill teaches
+- 2–4 most common failure modes without it
+- Triggers (words/situations that should load it)
+- Non-obvious rules that surprise newcomers
+
+Push back on vagueness. *"Be thoughtful"* ≠ heuristic. *"Prefer one bundled
+PR over many small ones for refactors here, because review churn dominates"*
+= heuristic.
+
+## 2. Scope + name
+
+- **Scope**: \`user\` for cross-project methodology. \`project\` for repo-specific.
+- **Name**: kebab-case, verb-or-noun-phrase. Not "guide-to-X".
+- Check \`crtr skill where <name>\`.
+
+## 3. Scaffold
+
+\`\`\`
+crtr skill new <name> --scope <user|project> --description "<what it teaches + when to load, ≤250 chars, front-loaded triggers>"
+\`\`\`
+
+## 4. Density rules
+
+LLM reasoning degrades past ~3k tokens. **Budget ~150 lines for SKILL.md.**
+
+- Decision-first. *"When you need X"* before *"how X works"*.
+- One well-placed "don't" > three paragraphs of explanation.
+- Reasoning chains > example outputs. Show *how to think*, not *what to produce*.
+- Section >20 lines without teaching judgment → move to \`reference.md\`.
+
+**Test:** can someone reading 30 seconds make a better decision? If they need
+to read the whole thing for value, you've buried the judgment.
+
+## 5. Body skeleton
 
 \`\`\`markdown
-# <topic preferences>
+# <skill name>
 
-## Rule
-What the user wants.
+<1-paragraph: what + when to load>
 
-## Why
-Reason given — past incident, strong preference, constraint.
+## When to use
+- <trigger>
 
-## How to apply
-When/where this guidance kicks in.
+## When NOT to use
+- <anti-trigger>
+
+## The core decision
+<central judgment — usually a heuristic or framework>
+
+## <heuristic 1>
+<2–6 lines, brief (anti-)example>
+
+## <heuristic 2>
+…
+
+## Failure modes
+- **<name>**: what it looks like; how to avoid
+
+## Related
+- \`<other-skill>\` — interaction
 \`\`\`
 
-**\`runbook\`**
+## 6. Progressive disclosure
 
-\`\`\`markdown
-# <procedure>
-
-## When to run this
-Triggering condition.
-
-## Steps
-1. …
-2. …
-
-## Verification
-How to confirm success.
-
-## Rollback
-How to undo if something goes wrong.
-\`\`\`
-
-**\`glossary\`**
-
-\`\`\`markdown
-# <domain> glossary
-
-| Term | Definition | Notes |
-|------|------------|-------|
-| … | … | … |
-\`\`\`
-
-**\`decision\`**
-
-\`\`\`markdown
-# <decision title> — <date>
-
-## Context
-What forced the decision.
-
-## Decision
-What we chose.
-
-## Consequences
-What this costs us. What it buys us.
-
-## Alternatives considered
-- …
-\`\`\`
-
-## Step 6 — Verify the skill is discoverable
+If deep reference is needed:
 
 \`\`\`
-crtr skill where <name>            # confirm path/scope
-crtr skill list                    # confirm it shows up
-crtr skill show <name>             # confirm the body reads well
+<skill-dir>/
+  SKILL.md          # judgment layer — <150 lines
+  reference.md      # lookup layer
+  examples.md       # optional worked examples
 \`\`\`
 
-If \`description:\` doesn't trigger the right discoveries, sharpen it. If the
-body is bloated, cut it. Budget ~150 lines for SKILL.md; move deep reference
-into sibling files in the same directory.
+SKILL.md *links* to siblings (\`see [reference.md](reference.md)\`). Agent
+loads supporting files only when needed.
+
+## 7. Verify
+
+\`\`\`
+crtr skill where <name>
+crtr skill show <name>
+crtr skill search <keyword>
+\`\`\`
+
+## Deep-dive reference
+
+For canonical SKILL.md authoring (frontmatter fields, argument passing,
+dynamic context, subagent forking, hooks):
+
+\`\`\`
+crtr skill show authoring-skills
+\`\`\`
+
+The playbook above gives you structure + density rules. \`authoring-skills\`
+covers the SKILL.md surface itself.
 
 ## Constraints
 
-- Push back on trivial captures — if a one-line note in CLAUDE.md or a code
-  comment would do, suggest that instead.
-- Never write unconfirmed assumptions into the skill.
-- For updates to an existing skill, diff your draft against the current file
-  and call out what changed and why before writing.
-- Update related skills' \`## Related\` sections if you're adding something
-  that interacts with them.
+- Topic fails litmus? → \`crtr skill template freeform\` or \`primer\`.
+- No unconfirmed heuristics — if not from user experience or clear principle,
+  leave it out.
+- Update related skills' \`## Related\` if interactions exist.
+`;
+}
+
+function freeformTemplatePrompt(topic: string): string {
+  return `# Freeform — escape hatch skill
+
+**Audience: future LLM agent sessions.** Use when content doesn't fit
+\`primer\` (codebase knowledge) or \`playbook\` (methodology) — glossaries,
+decisions, runbooks, lists, preferences.
+
+${topicLine(topic)}
+
+## 1. Pick a shape
+
+What kind of thing is this?
+
+- Terms + definitions → glossary-shaped
+- "We decided X, here's why" → decision-shaped
+- Procedure with steps + rollback → runbook-shaped
+- User preferences → preference-shaped
+- None of the above → freeform
+
+No strict template; the shape just tells you what to ask for.
+
+## 2. Interview
+
+\`AskUserQuestion\` (≤4, multi-choice, best-guess first). Get only what you
+need to write the skill. **No unconfirmed assumptions** — if not from user
+or grep, omit it.
+
+## 3. Scope + name + scaffold
+
+\`\`\`
+crtr skill new <name> --scope <user|project> --description "<what+when, ≤250 chars, front-loaded triggers>"
+\`\`\`
+
+## 4. Body — pick the closest skeleton
+
+**Glossary:**
+\`\`\`markdown
+# <domain> glossary
+| Term | Definition | Notes |
+|------|------------|-------|
+\`\`\`
+
+**Decision:**
+\`\`\`markdown
+# <decision> — <date>
+## Context
+## Decision
+## Consequences
+## Alternatives considered
+\`\`\`
+
+**Runbook:**
+\`\`\`markdown
+# <procedure>
+## When to run
+## Steps
+## Verification
+## Rollback
+\`\`\`
+
+**Preference:**
+\`\`\`markdown
+# <preference>
+## Rule
+## Why
+## How to apply
+\`\`\`
+
+Or invent your own. Stay tight — no padding.
+
+## 5. Verify
+
+\`\`\`
+crtr skill where <name>
+crtr skill show <name>
+crtr skill search <keyword>
+\`\`\`
+
+## Switch templates if needed
+
+If the content is actually methodology or codebase knowledge:
+
+\`\`\`
+crtr skill template playbook ${topic ? topic : '<topic>'}
+crtr skill template primer ${topic ? topic : '<topic>'}
+\`\`\`
 `;
 }

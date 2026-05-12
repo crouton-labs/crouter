@@ -27,49 +27,43 @@ function shouldSkipForArgv(argv: string[]): boolean {
 }
 
 const BOOT_SKILL_NAME = 'crtr-skills';
-const BOOT_SKILL_MARKER = '<!-- crtr-boot-skill v1 -->';
+const BOOT_SKILL_MARKER = '<!-- crtr-boot-skill v2 -->';
+const BOOT_SKILL_MARKER_PREFIX = '<!-- crtr-boot-skill v';
 
 function bootSkillBody(): string {
   return `---
 name: crtr-skills
-description: Capture, list, search, and load skills via the crtr CLI. Use when the user wants to remember something, save knowledge, build a context primer, or recall a previously saved skill. Triggers: "save", "remember", "build context for", "what skills do we have", "skill for X".
+description: Capture, list, search, and load skills via the crtr CLI. Skills are durable agent memory — markdown future LLM sessions load on demand. Use when the user wants to remember/save knowledge, build a context primer, or recall a previously saved skill. Triggers: "save", "remember", "build context for", "what skills do we have", "skill for X".
 argument-hint: [topic or verb]
 ---
 
 ${BOOT_SKILL_MARKER}
 
-# /crtr:skills — the skill router
+# /crtr-skills — skill router
 
-\`crtr\` is the source of truth for skills on this machine. Every skill the
-agent should know about is discoverable via \`crtr skill\`. This file is a
-thin router; the CLI is the index.
+Skills = durable agent memory. Written for **future LLM sessions**, not the
+user. \`crtr skill\` is the index — discoverable via list/search/grep.
 
-## What the user is asking for
+## Route by intent
 
-- **Capture new knowledge** ("save this", "remember", "build context for X",
-  "make a skill that…"): run \`crtr skill create $ARGUMENTS\` and follow the
-  walkthrough it prints. It picks a template (primer/preference/runbook/
-  glossary/decision/freeform) and walks you through scoping, researching,
-  and scaffolding.
-- **Find a relevant skill** ("what do we have on X"): run
-  \`crtr skill search "$ARGUMENTS"\` and load the best hit with
-  \`crtr skill show <name>\`.
-- **Load a known skill by name**: run \`crtr skill show <name>\`.
-- **List everything**: run \`crtr skill list\`.
-- **Anything else skill-related**: run \`crtr skill\` (no args) — it prints
-  the full skill workflow guide. Follow it.
+- **Capture** ("save", "remember", "build context for", "make a skill"):
+  \`crtr skill create $ARGUMENTS\` → pick template (primer/playbook/freeform)
+  → \`crtr skill template <type> $ARGUMENTS\` for the full workflow. Follow it
+  directly.
+- **Find** ("what do we have on X"): \`crtr skill search "$ARGUMENTS"\` →
+  \`crtr skill show <name>\` on the best hit.
+- **Load by name**: \`crtr skill show <name>\`.
+- **List all**: \`crtr skill list\`.
+- **Anything else**: \`crtr skill\` (no args) prints the full workflow guide.
 
-\`$ARGUMENTS\` is the user's request as a string. Use it to seed the topic for
-\`create\` or the query for \`search\`. If it's empty, ask the user what they
-want before running anything.
+If \`$ARGUMENTS\` is empty, ask the user what they want before running.
 
-## Output rules
+## Rules
 
-The CLI's stdout is the prompt. Read it, then act on it. Don't paraphrase the
-guidance back at the user — just do the work it describes.
-
-If \`crtr\` isn't on PATH, tell the user and stop. This skill assumes
-\`@crouton-kit/crouter\` is installed globally.
+- CLI stdout is the prompt — act on it, don't paraphrase to the user.
+- Don't load \`create\` and \`template\` outputs in the same turn (progressive
+  disclosure). \`create\` decides type; \`template\` returns the workflow.
+- If \`crtr\` is not on PATH, tell the user and stop.
 `;
 }
 
@@ -87,10 +81,10 @@ export function ensureBootSkill(argv: string[]): void {
     const skillFile = join(skillDir, 'SKILL.md');
 
     if (pathExists(skillFile)) {
-      // Idempotent: only rewrite if it's still our marker version.
       const existing = readText(skillFile);
-      if (!existing.includes(BOOT_SKILL_MARKER)) return;
-      // Same marker — check if body needs update, otherwise skip.
+      // If the user customized (no boot-skill marker at all), don't clobber.
+      if (!existing.includes(BOOT_SKILL_MARKER_PREFIX)) return;
+      // Any marker version present → roll forward to current. Skip if identical.
       if (existing === bootSkillBody()) return;
     }
 

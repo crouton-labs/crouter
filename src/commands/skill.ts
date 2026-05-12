@@ -34,7 +34,7 @@ import {
 import { updateConfig, ensureScopeInitialized } from '../core/config.js';
 import { parseFrontmatter, serializeFrontmatter } from '../core/frontmatter.js';
 import { ensureDir, pathExists, readText, walkFiles } from '../core/fs-utils.js';
-import { skillPrompt, skillCreatePrompt } from '../prompts/skill.js';
+import { skillPrompt, skillCreatePrompt, skillTemplatePrompt } from '../prompts/skill.js';
 
 const KNOWN_VERBS = new Set([
   'list',
@@ -43,6 +43,7 @@ const KNOWN_VERBS = new Set([
   'grep',
   'new',
   'create',
+  'template',
   'where',
   'enable',
   'disable',
@@ -355,13 +356,22 @@ export function registerSkillCommands(program: Command): void {
       }
     });
 
-  // create — walkthrough for capturing knowledge as a skill
+  // create — pick a template type
   skill
     .command('create [topic...]')
-    .description('walkthrough for capturing knowledge as a new skill')
+    .description('pick a template type for a new skill (primer | playbook | freeform)')
     .action(async (topic: string[]) => {
       const arg = topic && topic.length > 0 ? topic.join(' ') : '';
       out(skillCreatePrompt(arg));
+    });
+
+  // template — full workflow + skeleton for one template type
+  skill
+    .command('template <type> [topic...]')
+    .description('full workflow + skeleton for a template type (primer | playbook | freeform)')
+    .action(async (type: string, topic: string[]) => {
+      const arg = topic && topic.length > 0 ? topic.join(' ') : '';
+      out(skillTemplatePrompt(type, arg));
     });
 
   // where
