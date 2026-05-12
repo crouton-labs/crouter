@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { writeFileSync } from 'node:fs';
 import {
   SCHEMA_VERSION,
+  SCOPE_SKILL_PLUGIN,
   SKILL_ENTRY_FILE,
   SKILLS_DIR,
 } from '../types.js';
@@ -21,6 +22,7 @@ import {
   requireScopeRoot,
   resolveScopeArg,
   projectScopeRoot,
+  scopeSkillsDir,
 } from '../core/scope.js';
 import {
   resolveSkill,
@@ -32,7 +34,7 @@ import {
 import { updateConfig, ensureScopeInitialized } from '../core/config.js';
 import { parseFrontmatter, serializeFrontmatter } from '../core/frontmatter.js';
 import { ensureDir, pathExists, readText, walkFiles } from '../core/fs-utils.js';
-import { skillPrompt } from '../prompts/skill.js';
+import { skillPrompt, skillCreatePrompt } from '../prompts/skill.js';
 
 const KNOWN_VERBS = new Set([
   'list',
@@ -40,6 +42,7 @@ const KNOWN_VERBS = new Set([
   'path',
   'grep',
   'new',
+  'create',
   'where',
   'enable',
   'disable',
@@ -131,8 +134,11 @@ export function registerSkillCommands(program: Command): void {
           for (const sk of skills) {
             const desc = sk.frontmatter.description !== undefined ? sk.frontmatter.description : '';
             const marker = sk.enabled ? '' : ` [disabled${sk.disabledIn ? `@${sk.disabledIn}` : ''}]`;
-            const line = `${sk.scope}:${sk.plugin}/${sk.name}${marker}${desc ? `  — ${desc}` : ''}`;
-            out(line);
+            const qualified =
+              sk.plugin === SCOPE_SKILL_PLUGIN
+                ? `${sk.scope}:${sk.name}`
+                : `${sk.scope}:${sk.plugin}/${sk.name}`;
+            out(`${qualified}${marker}${desc ? `  — ${desc}` : ''}`);
           }
         } catch (e) {
           handleError(e, { json: opts.json });
@@ -221,18 +227,22 @@ export function registerSkillCommands(program: Command): void {
 
         const scopes = listScopes(opts.scope);
 
-        const pluginSkillsDirs: string[] = [];
+        const skillsDirs: string[] = [];
         for (const s of scopes) {
+          if (opts.plugin === undefined || opts.plugin === SCOPE_SKILL_PLUGIN) {
+            const root = scopeSkillsDir(s);
+            if (root) skillsDirs.push(root);
+          }
           for (const plugin of listInstalledPlugins(s)) {
             if (!plugin.enabled) continue;
             if (opts.plugin !== undefined && plugin.name !== opts.plugin) continue;
-            pluginSkillsDirs.push(join(plugin.root, SKILLS_DIR));
+            skillsDirs.push(join(plugin.root, SKILLS_DIR));
           }
         }
 
         const matchLines: Array<{ path: string; line: number; text: string }> = [];
 
-        for (const skillsDir of pluginSkillsDirs) {
+        for (const skillsDir of skillsDirs) {
           const files = walkFiles(skillsDir);
           for (const file of files) {
             const content = readText(file);
@@ -261,20 +271,53 @@ export function registerSkillCommands(program: Command): void {
   // new
   skill
     .command('new <qualifier>')
-    .description('scaffold a new skill as <plugin>:<name>')
+    .description('scaffold a new skill — <name> (scope-direct) or <plugin>:<name>')
     .option('--scope <scope>', 'user|project (default: project then user)')
     .option('--description <text>', 'skill description for frontmatter')
     .action(async (qualifier: string, opts: { scope?: string; description?: string }) => {
       try {
-        if (!qualifier.includes(':')) {
-          throw usage('qualifier must be in the form <plugin>:<name> (e.g. authoring:my-skill)');
-        }
         const { plugin: pluginName, name: skillName } = parseSkillQualifier(qualifier);
-        if (!pluginName) {
-          throw usage('qualifier must be in the form <plugin>:<name>');
+        if (!skillName) {
+          throw usage('skill name required');
         }
 
         const scopeArg = opts.scope !== undefined ? resolveScopeArg(opts.scope) : undefined;
+
+        // Scope-direct: no plugin qualifier, or explicit `_:` sentinel
+        if (pluginName === undefined || pluginName === SCOPE_SKILL_PLUGIN) {
+          let scope: Scope;
+          if (scopeArg !== undefined && scopeArg !== 'all') {
+            scope = scopeArg as Scope;
+          } else {
+            scope = projectScopeRoot() !== null ? 'project' : 'user';
+          }
+          const scopeRootPath = requireScopeRoot(scope);
+          ensureScopeInitialized(scope, scopeRootPath);
+
+          const skillsRoot = scopeSkillsDir(scope);
+          if (!skillsRoot) {
+            throw general(`no skills dir for scope ${scope}`);
+          }
+          const skillDir = join(skillsRoot, ...skillName.split('/'));
+          const skillFile = join(skillDir, SKILL_ENTRY_FILE);
+          if (pathExists(skillFile)) {
+            throw general(`skill already exists: ${skillFile}`);
+          }
+          ensureDir(skillDir);
+          const fm = serializeFrontmatter({
+            name: skillName,
+            description: opts.description,
+          });
+          writeFileSync(skillFile, fm, 'utf8');
+
+          out(skillFile);
+          hint(
+            `crtr: scaffolded ${scope}-scope skill ${skillName} — edit directly, then ` +
+              `\`crtr skill ${AUTHORING_GUIDE_SKILL}\` for SKILL.md authoring guidance`,
+          );
+          return;
+        }
+
         let plugin;
         if (scopeArg !== undefined && scopeArg !== 'all') {
           plugin = findPluginByName(pluginName, scopeArg as Scope);
@@ -310,6 +353,15 @@ export function registerSkillCommands(program: Command): void {
       } catch (e) {
         handleError(e);
       }
+    });
+
+  // create — walkthrough for capturing knowledge as a skill
+  skill
+    .command('create [topic...]')
+    .description('walkthrough for capturing knowledge as a new skill')
+    .action(async (topic: string[]) => {
+      const arg = topic && topic.length > 0 ? topic.join(' ') : '';
+      out(skillCreatePrompt(arg));
     });
 
   // where
@@ -452,8 +504,11 @@ export function registerSkillCommands(program: Command): void {
                 ? h.skill.frontmatter.description
                 : '';
             const marker = h.skill.enabled ? '' : ' [disabled]';
-            const line = `${h.skill.scope}:${h.skill.plugin}/${h.skill.name}${marker}\t${h.matched.join(',')}\t${desc}`;
-            out(line);
+            const qualified =
+              h.skill.plugin === SCOPE_SKILL_PLUGIN
+                ? `${h.skill.scope}:${h.skill.name}`
+                : `${h.skill.scope}:${h.skill.plugin}/${h.skill.name}`;
+            out(`${qualified}${marker}\t${h.matched.join(',')}\t${desc}`);
           }
         } catch (e) {
           handleError(e, { json: opts.json });

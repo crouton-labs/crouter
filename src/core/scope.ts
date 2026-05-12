@@ -73,6 +73,11 @@ export function marketplacesDir(scope: Scope): string | null {
   return root ? join(root, 'marketplaces') : null;
 }
 
+export function scopeSkillsDir(scope: Scope): string | null {
+  const root = scopeRoot(scope);
+  return root ? join(root, 'skills') : null;
+}
+
 export function resolveScopeArg(scopeArg: string | undefined): Scope | 'all' {
   if (scopeArg === undefined) return 'all';
   const value = scopeArg.toLowerCase();

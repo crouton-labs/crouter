@@ -71,6 +71,7 @@ export interface ScopeConfig {
   plugins: Record<string, ConfigPluginEntry>;
   skills: Record<string, ConfigSkillEntry>;
   auto_update: AutoUpdateConfig;
+  max_panes_per_window: number;
 }
 
 export interface ScopeState {
@@ -125,6 +126,12 @@ export const CONFIG_FILE = 'config.json';
 export const STATE_FILE = 'state.json';
 export const SKILL_ENTRY_FILE = 'SKILL.md';
 export const SKILLS_DIR = 'skills';
+// Sentinel plugin name for skills that live at a scope root (no plugin wrapper).
+// Stored as `<scope-root>/skills/<name>/SKILL.md`. Shown in listings without the
+// `_/` prefix.
+export const SCOPE_SKILL_PLUGIN = '_';
+
+export const DEFAULT_MAX_PANES_PER_WINDOW = 3;
 
 export function defaultScopeConfig(): ScopeConfig {
   return {
@@ -133,6 +140,7 @@ export function defaultScopeConfig(): ScopeConfig {
     plugins: {},
     skills: {},
     auto_update: { crtr: 'notify', content: 'notify', interval_hours: 24 },
+    max_panes_per_window: DEFAULT_MAX_PANES_PER_WINDOW,
   };
 }
 

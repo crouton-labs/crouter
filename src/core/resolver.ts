@@ -1,5 +1,6 @@
 import { join, relative, sep, dirname } from 'node:path';
 import {
+  SCOPE_SKILL_PLUGIN,
   SKILL_ENTRY_FILE,
   SKILLS_DIR,
   skillConfigKey,
@@ -21,7 +22,13 @@ import {
 import { readMarketplaceManifest, readPluginManifest } from './manifest.js';
 import { parseFrontmatter } from './frontmatter.js';
 import { ambiguous, notFound } from './errors.js';
-import { marketplacesDir, pluginsDir, projectScopeRoot, userScopeRoot } from './scope.js';
+import {
+  marketplacesDir,
+  pluginsDir,
+  projectScopeRoot,
+  scopeSkillsDir,
+  userScopeRoot,
+} from './scope.js';
 
 export function listInstalledPlugins(scope: Scope): InstalledPlugin[] {
   const dir = pluginsDir(scope);
@@ -127,12 +134,50 @@ export function listSkillsInPlugin(
   return skills.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+export function listScopeRootSkills(
+  scope: Scope,
+  cfgs?: ScopeConfigs,
+): Skill[] {
+  const skillsRoot = scopeSkillsDir(scope);
+  if (!skillsRoot || !pathExists(skillsRoot)) return [];
+  const configs = cfgs === undefined ? loadScopeConfigs() : cfgs;
+  const skills: Skill[] = [];
+  const skillFiles = walkFiles(skillsRoot, (n) => n === SKILL_ENTRY_FILE);
+  for (const file of skillFiles) {
+    const rel = relative(skillsRoot, dirname(file));
+    const name = rel.split(sep).join('/');
+    if (!name) continue;
+    const source = readText(file);
+    const { data } = parseFrontmatter(source);
+    const { enabled, disabledIn } = effectiveSkillEnabled(
+      SCOPE_SKILL_PLUGIN,
+      name,
+      configs,
+    );
+    skills.push({
+      name,
+      plugin: SCOPE_SKILL_PLUGIN,
+      scope,
+      path: file,
+      pluginRoot: skillsRoot,
+      frontmatter: data === null ? { name } : data,
+      enabled,
+      disabledIn,
+    });
+  }
+  return skills.sort((a, b) => a.name.localeCompare(b.name));
+}
+
 export function listAllSkills(scopeFilter?: Scope): Skill[] {
   const plugins = scopeFilter ? listInstalledPlugins(scopeFilter) : listAllPlugins();
   const cfgs = loadScopeConfigs();
-  return plugins
-    .filter((p) => p.enabled)
-    .flatMap((p) => listSkillsInPlugin(p, cfgs));
+  const scopes: Scope[] = scopeFilter
+    ? [scopeFilter]
+    : ([projectScopeRoot() ? 'project' : null, 'user'].filter(Boolean) as Scope[]);
+  return [
+    ...scopes.flatMap((s) => listScopeRootSkills(s, cfgs)),
+    ...plugins.filter((p) => p.enabled).flatMap((p) => listSkillsInPlugin(p, cfgs)),
+  ];
 }
 
 export interface SkillResolutionOpts {
@@ -149,8 +194,42 @@ export function resolveSkill(
   const enabledPlugins = plugins.filter((p) => p.enabled);
   const cfgs = loadScopeConfigs();
 
-  const ordered = orderPluginsByResolution(enabledPlugins);
   const matches: Skill[] = [];
+
+  // Scope-root skills first — they're the user's own captured knowledge.
+  if (
+    !opts.pluginFilter &&
+    (pluginQualifier === undefined || pluginQualifier === SCOPE_SKILL_PLUGIN)
+  ) {
+    const scopes: Scope[] = opts.scope
+      ? [opts.scope]
+      : ([projectScopeRoot() ? 'project' : null, 'user'].filter(Boolean) as Scope[]);
+    for (const s of scopes) {
+      const skillsRoot = scopeSkillsDir(s);
+      if (!skillsRoot) continue;
+      const skillPath = join(skillsRoot, ...name.split('/'), SKILL_ENTRY_FILE);
+      if (!pathExists(skillPath)) continue;
+      const source = readText(skillPath);
+      const { data } = parseFrontmatter(source);
+      const { enabled, disabledIn } = effectiveSkillEnabled(
+        SCOPE_SKILL_PLUGIN,
+        name,
+        cfgs,
+      );
+      matches.push({
+        name,
+        plugin: SCOPE_SKILL_PLUGIN,
+        scope: s,
+        path: skillPath,
+        pluginRoot: skillsRoot,
+        frontmatter: data === null ? { name } : data,
+        enabled,
+        disabledIn,
+      });
+    }
+  }
+
+  const ordered = orderPluginsByResolution(enabledPlugins);
   for (const plugin of ordered) {
     if (pluginQualifier && plugin.name !== pluginQualifier) continue;
     if (opts.pluginFilter && plugin.name !== opts.pluginFilter) continue;
