@@ -40,6 +40,15 @@ function setNestedValue(cfg: ScopeConfig, key: string, value: unknown): void {
     return;
   }
 
+  if (key === 'auto_update.crtr') {
+    const coerced = value === true ? 'notify' : value;
+    if (coerced !== 'notify' && coerced !== 'apply' && coerced !== false) {
+      throw usage(`auto_update.crtr must be 'notify', 'apply', or false`);
+    }
+    cfg.auto_update.crtr = coerced as AutoUpdateConfig['crtr'];
+    return;
+  }
+
   if (parts.length === 1) {
     (cfg as unknown as Record<string, unknown>)[topKey] = value;
     return;

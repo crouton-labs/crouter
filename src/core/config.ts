@@ -62,6 +62,13 @@ export function ensureScopeInitialized(scope: Scope, root: string): void {
   }
 }
 
+function normalizeMode(value: unknown, fallback: ScopeConfig['auto_update']['crtr']): ScopeConfig['auto_update']['crtr'] {
+  if (value === true) return 'notify';
+  if (value === false) return false;
+  if (value === 'notify' || value === 'apply') return value;
+  return fallback;
+}
+
 function mergeConfig(partial: Partial<ScopeConfig>): ScopeConfig {
   const defaults = defaultScopeConfig();
   const schema_version =
@@ -69,12 +76,16 @@ function mergeConfig(partial: Partial<ScopeConfig>): ScopeConfig {
   const marketplaces = partial.marketplaces === undefined ? {} : partial.marketplaces;
   const plugins = partial.plugins === undefined ? {} : partial.plugins;
   const skills = partial.skills === undefined ? {} : partial.skills;
-  const au = partial.auto_update;
+  const au = partial.auto_update as Partial<Record<keyof ScopeConfig['auto_update'], unknown>> | undefined;
+  const rawInterval = au && typeof au.interval_hours === 'number' ? au.interval_hours : undefined;
+  const interval_hours =
+    rawInterval !== undefined && Number.isFinite(rawInterval) && rawInterval >= 0
+      ? rawInterval
+      : defaults.auto_update.interval_hours;
   const auto_update = {
-    crtr: au && au.crtr !== undefined ? au.crtr : defaults.auto_update.crtr,
-    content: au && au.content !== undefined ? au.content : defaults.auto_update.content,
-    interval_hours:
-      au && au.interval_hours !== undefined ? au.interval_hours : defaults.auto_update.interval_hours,
+    crtr: normalizeMode(au?.crtr, defaults.auto_update.crtr),
+    content: normalizeMode(au?.content, defaults.auto_update.content),
+    interval_hours,
   };
   return { schema_version, marketplaces, plugins, skills, auto_update };
 }

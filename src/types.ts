@@ -57,9 +57,11 @@ export interface ConfigSkillEntry {
   enabled: boolean;
 }
 
+export type AutoUpdateMode = 'notify' | 'apply' | false;
+
 export interface AutoUpdateConfig {
-  crtr: boolean;
-  content: 'notify' | 'apply' | false;
+  crtr: AutoUpdateMode;
+  content: AutoUpdateMode;
   interval_hours: number;
 }
 
@@ -129,7 +131,7 @@ export function defaultScopeConfig(): ScopeConfig {
     marketplaces: {},
     plugins: {},
     skills: {},
-    auto_update: { crtr: true, content: 'notify', interval_hours: 24 },
+    auto_update: { crtr: 'notify', content: 'notify', interval_hours: 24 },
   };
 }
 

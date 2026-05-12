@@ -30,7 +30,7 @@ function selfUpdate(): void {
   }
 }
 
-function selfCheck(): void {
+export function selfCheck(): void {
   const res = spawnSync('npm', ['view', '@crouton-kit/crtr', 'version'], { encoding: 'utf8' });
   if (res.status !== 0) {
     warn('could not check for crtr updates (network unavailable)');
@@ -71,7 +71,7 @@ function contentUpdate(): void {
   }
 }
 
-function contentCheck(): void {
+export function contentCheck(): void {
   const marketplaces = listAllMarketplaces();
   for (const mkt of marketplaces) {
     const fetchRes = fetch(mkt.root, mkt.ref);

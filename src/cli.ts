@@ -12,6 +12,7 @@ import { registerUpdateCommand } from './commands/update.js';
 import { registerDoctorCommand } from './commands/doctor.js';
 import { registerPlanCommand } from './commands/plan.js';
 import { registerSpecCommand } from './commands/spec.js';
+import { maybeAutoUpdate } from './core/auto-update.js';
 
 function readPackageVersion(): string {
   const here = dirname(fileURLToPath(import.meta.url));
@@ -36,6 +37,8 @@ registerUpdateCommand(program);
 registerDoctorCommand(program);
 registerPlanCommand(program);
 registerSpecCommand(program);
+
+maybeAutoUpdate(process.argv);
 
 program.parseAsync().catch((err) => {
   process.stderr.write(`crtr: ${err instanceof Error ? err.message : String(err)}\n`);
