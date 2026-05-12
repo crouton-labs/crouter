@@ -5,7 +5,12 @@ import { out, jsonOut, handleError } from '../core/output.js';
 import { scopeRoot, listScopes } from '../core/scope.js';
 import type { Scope, ScopeConfig, AutoUpdateConfig } from '../types.js';
 
-const TOP_LEVEL_KEYS: ReadonlySet<string> = new Set(['auto_update', 'marketplaces', 'plugins']);
+const TOP_LEVEL_KEYS: ReadonlySet<string> = new Set([
+  'auto_update',
+  'marketplaces',
+  'plugins',
+  'max_panes_per_window',
+]);
 
 function getNestedValue(obj: ScopeConfig, key: string): unknown {
   const parts = key.split('.');
@@ -46,6 +51,14 @@ function setNestedValue(cfg: ScopeConfig, key: string, value: unknown): void {
       throw usage(`auto_update.crtr must be 'notify', 'apply', or false`);
     }
     cfg.auto_update.crtr = coerced as AutoUpdateConfig['crtr'];
+    return;
+  }
+
+  if (key === 'max_panes_per_window') {
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 1) {
+      throw usage(`max_panes_per_window must be an integer >= 1`);
+    }
+    cfg.max_panes_per_window = Math.floor(value);
     return;
   }
 

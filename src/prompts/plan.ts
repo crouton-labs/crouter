@@ -87,14 +87,50 @@ EOF
 
 - Pick a short, descriptive kebab-case name. Names may be nested
   (\`crtr plan --name auth/jwt-refresh\`) — they become subdirectories.
+- If this plan implements a saved spec, pass \`--spec <spec-name>\` so the
+  reviewer can check alignment:
+  \`crtr plan --name <name> --spec <spec-name> <<'EOF' ... EOF\`
 - The file lands at \`${plansDir}/<name>.md\`.
 - If you are running inside tmux, the saved plan auto-opens in a side pane
   via termrender. No extra step needed.
 
-## Phase 5: Done
+## Phase 5: Review
 
-Your turn ends after the save command succeeds. No need to summarize the plan
-in chat — the user can read the file.
+By default the save command **blocks** while a reviewer agent reads the plan
+(and the spec, if \`--spec\` was passed) in a side pane (10-min budget) and
+returns its findings on stdout under a \`--- review ---\` marker. **Read the
+review** when the command returns:
+
+- If \`Status: Approved\`, you are done.
+- If \`Status: Issues Found\`, address the listed issues by editing the plan
+  (\`crtr plan edit <name>\` or rewriting via the save command), then save
+  again to re-trigger review.
+
+Pass \`--no-review\` only when the plan is genuinely trivial (one-line fix,
+typo, single-file rename). For anything substantive, take the review.
+
+## Phase 6: Oversize check
+
+If the save command emits a \`--- advisory ---\` warning that the plan is
+too long, do not ignore it. Split the plan into a short index plan plus
+one or more nested part plans, each under the threshold, and re-save. The
+implementer will execute parts one at a time; very long plans tend to be
+under-decomposed.
+
+## Phase 7: Done
+
+After the review returns Approved (or you have addressed its issues), your
+turn ends. No need to summarize the plan in chat — the user can read the file.
+
+If the user is ready to start building, ask once whether they want to hand
+off now. If yes, run:
+
+\`\`\`bash
+crtr agent implement --plan <name>
+\`\`\`
+
+This fires up an implementer in a new tmux pane and closes the current
+pane a few seconds later. Do NOT run this without the user's go-ahead.
 
 ## See also
 

@@ -98,10 +98,35 @@ EOF
 - If you are running inside tmux, the saved spec auto-opens in a side pane
   via termrender. No extra step needed.
 
-## Phase 5: Done
+## Phase 5: Review
 
-Your turn ends after the save command succeeds. No need to summarize the spec
-in chat — the user can read the file.
+By default the save command **blocks** while a reviewer agent reads the spec
+in a side pane (10-min budget) and returns its findings on stdout under a
+\`--- review ---\` marker. **Read the review** when the command returns:
+
+- If \`Status: Approved\`, you are done.
+- If \`Status: Issues Found\`, address the listed issues by editing the spec
+  (\`crtr spec edit <name>\` or rewriting via the save command), then save
+  again to re-trigger review.
+
+Pass \`--no-review\` only when the spec is genuinely trivial (a paragraph, one
+behavior, no design decisions). For anything substantive, take the review.
+
+## Phase 6: Done
+
+After the review returns Approved (or you have addressed its issues), your
+turn ends. No need to summarize the spec in chat — the user can read the file.
+
+If the user is ready to move into planning, ask once whether they want to
+hand off now. If yes, run:
+
+\`\`\`bash
+crtr agent plan --spec <name>
+\`\`\`
+
+This fires up a planner in a new tmux pane and closes the current pane a
+few seconds later. Do NOT run this without the user's go-ahead — the kill
+is irreversible for this session.
 
 ## See also
 

@@ -88,7 +88,12 @@ function mergeConfig(partial: Partial<ScopeConfig>): ScopeConfig {
     content: normalizeMode(au?.content, defaults.auto_update.content),
     interval_hours,
   };
-  return { schema_version, marketplaces, plugins, skills, auto_update };
+  const rawMaxPanes = partial.max_panes_per_window;
+  const max_panes_per_window =
+    typeof rawMaxPanes === 'number' && Number.isFinite(rawMaxPanes) && rawMaxPanes >= 1
+      ? Math.floor(rawMaxPanes)
+      : defaults.max_panes_per_window;
+  return { schema_version, marketplaces, plugins, skills, auto_update, max_panes_per_window };
 }
 
 export function updateConfig(scope: Scope, mutate: (cfg: ScopeConfig) => void): ScopeConfig {
