@@ -1,11 +1,12 @@
 import { writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { userScopeRoot } from './scope.js';
+import { findProjectScopeRoot, resetScopeCache, userScopeRoot } from './scope.js';
 import { ensureDir, pathExists, readText, removePath, nowIso } from './fs-utils.js';
 import { readConfig, readState, updateConfig, updateState, ensureScopeInitialized } from './config.js';
 import { clone } from './git.js';
 import { readMarketplaceManifest } from './manifest.js';
+import { CRTR_DIR_NAME } from '../types.js';
 
 export const OFFICIAL_MARKETPLACE_NAME = 'crouter-official-marketplace';
 export const OFFICIAL_MARKETPLACE_URL =
@@ -148,6 +149,32 @@ export function ensureOfficialMarketplace(argv: string[]): void {
     if (process.env.CRTR_DEBUG === '1') {
       const msg = e instanceof Error ? e.message : String(e);
       process.stderr.write(`crtr: bootstrap error: ${msg}\n`);
+    }
+  }
+}
+
+export function ensureProjectScope(argv: string[]): void {
+  try {
+    if (process.env.CRTR_NO_AUTO_INIT === '1') return;
+    if (shouldSkipForArgv(argv)) return;
+
+    // Already inside a project scope (here or in an ancestor) — nothing to do.
+    if (findProjectScopeRoot() !== null) return;
+
+    const cwd = process.cwd();
+
+    // Never auto-init at $HOME — that path is reserved for the user scope.
+    if (cwd === homedir()) return;
+
+    const projectRoot = join(cwd, CRTR_DIR_NAME);
+    if (projectRoot === userScopeRoot()) return;
+
+    ensureScopeInitialized('project', projectRoot);
+    resetScopeCache();
+  } catch (e) {
+    if (process.env.CRTR_DEBUG === '1') {
+      const msg = e instanceof Error ? e.message : String(e);
+      process.stderr.write(`crtr: project-init error: ${msg}\n`);
     }
   }
 }

@@ -14,7 +14,7 @@ import { registerPlanCommand } from './commands/plan.js';
 import { registerSpecCommand } from './commands/spec.js';
 import { registerAgentCommand } from './commands/agent.js';
 import { maybeAutoUpdate } from './core/auto-update.js';
-import { ensureBootSkill, ensureOfficialMarketplace } from './core/bootstrap.js';
+import { ensureBootSkill, ensureOfficialMarketplace, ensureProjectScope } from './core/bootstrap.js';
 
 function readPackageVersion(): string {
   const here = dirname(fileURLToPath(import.meta.url));
@@ -43,6 +43,7 @@ registerAgentCommand(program);
 
 ensureOfficialMarketplace(process.argv);
 ensureBootSkill(process.argv);
+ensureProjectScope(process.argv);
 maybeAutoUpdate(process.argv);
 
 program.parseAsync().catch((err) => {
