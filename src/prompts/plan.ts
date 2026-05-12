@@ -95,5 +95,12 @@ EOF
 
 Your turn ends after the save command succeeds. No need to summarize the plan
 in chat — the user can read the file.
+
+## See also
+
+- \`crtr plan list\` — list saved plans for the current directory
+- \`crtr plan show <name>\` — print the body of a saved plan
+- \`crtr plan edit <name>\` — open a saved plan in \$EDITOR
+- \`crtr plan path [name]\` — absolute path of a plan or the plans directory
 `;
 }

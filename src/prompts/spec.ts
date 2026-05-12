@@ -102,5 +102,12 @@ EOF
 
 Your turn ends after the save command succeeds. No need to summarize the spec
 in chat — the user can read the file.
+
+## See also
+
+- \`crtr spec list\` — list saved specs for the current directory
+- \`crtr spec show <name>\` — print the body of a saved spec
+- \`crtr spec edit <name>\` — open a saved spec in \$EDITOR
+- \`crtr spec path [name]\` — absolute path of a spec or the specs directory
 `;
 }
