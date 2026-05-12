@@ -21,41 +21,114 @@ export function parseFrontmatter(source: string): ParsedFrontmatter {
 function parseSimpleYaml(yaml: string): SkillFrontmatter {
   const lines = yaml.split(/\r?\n/);
   const out: Record<string, unknown> = {};
-  let currentKey: string | null = null;
-  let listBuffer: string[] | null = null;
-  for (const raw of lines) {
-    if (!raw.trim()) continue;
-    if (raw.startsWith('  - ') || raw.startsWith('- ')) {
-      const value = raw.replace(/^\s*-\s+/, '').trim();
-      if (currentKey && listBuffer) listBuffer.push(stripQuotes(value));
+  let i = 0;
+  while (i < lines.length) {
+    const raw = lines[i];
+    if (!raw.trim()) {
+      i++;
       continue;
     }
     const idx = raw.indexOf(':');
-    if (idx === -1) continue;
-    if (currentKey && listBuffer) {
-      out[currentKey] = listBuffer;
-      listBuffer = null;
+    if (idx === -1) {
+      i++;
+      continue;
     }
     const key = raw.slice(0, idx).trim();
     const rest = raw.slice(idx + 1).trim();
-    currentKey = key;
-    if (rest === '') {
-      listBuffer = [];
+
+    // Block scalar: `key: |` or `key: >` with optional chomp indicator (-/+)
+    const blockMatch = rest.match(/^([|>])([-+]?)\s*$/);
+    if (blockMatch) {
+      const style = blockMatch[1];
+      const chomp = blockMatch[2];
+      const collected: string[] = [];
+      let blockIndent: number | null = null;
+      let j = i + 1;
+      while (j < lines.length) {
+        const r = lines[j];
+        if (r.trim() === '') {
+          collected.push('');
+          j++;
+          continue;
+        }
+        const ind = r.match(/^(\s*)/)?.[1].length ?? 0;
+        if (blockIndent === null) {
+          if (ind === 0) break;
+          blockIndent = ind;
+        }
+        if (ind < blockIndent) break;
+        collected.push(r.slice(blockIndent));
+        j++;
+      }
+      while (collected.length > 0 && collected[collected.length - 1] === '') collected.pop();
+
+      let value: string;
+      if (style === '|') {
+        value = collected.join('\n');
+      } else {
+        const parts: string[] = [];
+        let para: string[] = [];
+        for (const ln of collected) {
+          if (ln === '') {
+            if (para.length > 0) {
+              parts.push(para.join(' '));
+              para = [];
+            }
+            parts.push('');
+          } else {
+            para.push(ln);
+          }
+        }
+        if (para.length > 0) parts.push(para.join(' '));
+        const folded: string[] = [];
+        for (let k = 0; k < parts.length; k++) {
+          if (parts[k] === '' && (k === 0 || parts[k - 1] === '')) continue;
+          folded.push(parts[k]);
+        }
+        value = folded.join('\n').replace(/\n+$/, '');
+      }
+
+      if (chomp !== '+') value = value.replace(/\n+$/, '');
+      out[key] = value;
+      i = j;
       continue;
     }
+
+    // Empty value: could be a list on subsequent lines
+    if (rest === '') {
+      const buf: string[] = [];
+      let j = i + 1;
+      while (j < lines.length) {
+        const r = lines[j];
+        if (r.trim() === '') {
+          j++;
+          continue;
+        }
+        if (/^\s*-\s+/.test(r)) {
+          buf.push(stripQuotes(r.replace(/^\s*-\s+/, '').trim()));
+          j++;
+          continue;
+        }
+        break;
+      }
+      if (buf.length > 0) out[key] = buf;
+      i = j;
+      continue;
+    }
+
     if (rest.startsWith('[') && rest.endsWith(']')) {
       out[key] = rest
         .slice(1, -1)
         .split(',')
         .map((s) => stripQuotes(s.trim()))
         .filter(Boolean);
-      currentKey = null;
+      i++;
       continue;
     }
+
     out[key] = stripQuotes(rest);
-    currentKey = null;
+    i++;
   }
-  if (currentKey && listBuffer) out[currentKey] = listBuffer;
   const fm: SkillFrontmatter = {
     name: typeof out.name === 'string' ? out.name : '',
     description: typeof out.description === 'string' ? out.description : undefined,
