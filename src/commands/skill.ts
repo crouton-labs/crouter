@@ -32,6 +32,7 @@ import {
 import { updateConfig, ensureScopeInitialized } from '../core/config.js';
 import { parseFrontmatter, serializeFrontmatter } from '../core/frontmatter.js';
 import { ensureDir, pathExists, readText, walkFiles } from '../core/fs-utils.js';
+import { skillPrompt } from '../prompts/skill.js';
 
 const KNOWN_VERBS = new Set([
   'list',
@@ -70,7 +71,7 @@ export function registerSkillCommands(program: Command): void {
         opts: { frontmatter?: boolean },
       ) => {
         if (nameOrVerb === undefined) {
-          skill.help();
+          out(skillPrompt());
           return;
         }
         if (!KNOWN_VERBS.has(nameOrVerb)) {
