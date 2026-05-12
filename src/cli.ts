@@ -12,8 +12,10 @@ import { registerUpdateCommand } from './commands/update.js';
 import { registerDoctorCommand } from './commands/doctor.js';
 import { registerPlanCommand } from './commands/plan.js';
 import { registerSpecCommand } from './commands/spec.js';
+import { registerSubmitCommand } from './commands/submit.js';
+import { registerHandoffCommand } from './commands/handoff.js';
 import { maybeAutoUpdate } from './core/auto-update.js';
-import { ensureOfficialMarketplace } from './core/bootstrap.js';
+import { ensureBootSkill, ensureOfficialMarketplace } from './core/bootstrap.js';
 
 function readPackageVersion(): string {
   const here = dirname(fileURLToPath(import.meta.url));
@@ -38,8 +40,11 @@ registerUpdateCommand(program);
 registerDoctorCommand(program);
 registerPlanCommand(program);
 registerSpecCommand(program);
+registerSubmitCommand(program);
+registerHandoffCommand(program);
 
 ensureOfficialMarketplace(process.argv);
+ensureBootSkill(process.argv);
 maybeAutoUpdate(process.argv);
 
 program.parseAsync().catch((err) => {
