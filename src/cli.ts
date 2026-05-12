@@ -13,6 +13,7 @@ import { registerDoctorCommand } from './commands/doctor.js';
 import { registerPlanCommand } from './commands/plan.js';
 import { registerSpecCommand } from './commands/spec.js';
 import { maybeAutoUpdate } from './core/auto-update.js';
+import { ensureOfficialMarketplace } from './core/bootstrap.js';
 
 function readPackageVersion(): string {
   const here = dirname(fileURLToPath(import.meta.url));
@@ -38,6 +39,7 @@ registerDoctorCommand(program);
 registerPlanCommand(program);
 registerSpecCommand(program);
 
+ensureOfficialMarketplace(process.argv);
 maybeAutoUpdate(process.argv);
 
 program.parseAsync().catch((err) => {

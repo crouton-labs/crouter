@@ -39,6 +39,7 @@ export function readState(scope: Scope): ScopeState {
     marketplaces: existing.marketplaces ?? {},
     plugins: existing.plugins ?? {},
     last_self_check: existing.last_self_check,
+    bootstrap_done: existing.bootstrap_done,
   };
 }
 

@@ -77,6 +77,7 @@ export interface ScopeState {
   marketplaces: Record<string, { last_updated?: string }>;
   plugins: Record<string, { last_updated?: string }>;
   last_self_check?: string;
+  bootstrap_done?: boolean;
 }
 
 export interface SkillFrontmatter {
