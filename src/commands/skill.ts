@@ -63,11 +63,20 @@ function wrapSkill(name: string, path: string, content: string): string {
   return `<skill name="${name}" path="${path}">\n${content.endsWith('\n') ? content : content + '\n'}</skill>`;
 }
 
+const SKILL_IDENTIFIER_HELP =
+  'Skill identifier forms (accepted by show, path, where, enable, disable):\n' +
+  '  <name>                       bare name — resolves scope-root first, then plugins\n' +
+  '  <plugin>:<name>              explicit plugin (canonical)\n' +
+  '  <scope>:<name>               scope-root skill in a specific scope (user|project)\n' +
+  '  <scope>:<plugin>/<name>      fully qualified — matches `skill list` / `skill search` output\n' +
+  '  <plugin>/<name>              shorthand for <plugin>:<name> when unambiguous';
+
 export function registerSkillCommands(program: Command): void {
   const skill = program
     .command('skill [nameOrVerb] [rest...]')
     .description('manage and inspect skills')
     .option('--frontmatter', 'include YAML frontmatter in the printed body')
+    .addHelpText('after', '\n' + SKILL_IDENTIFIER_HELP)
     .action(
       async (
         nameOrVerb: string | undefined,
@@ -100,6 +109,11 @@ export function registerSkillCommands(program: Command): void {
     .option('--plugin <name>', 'filter by plugin name')
     .option('-a, --all', 'include disabled skills')
     .option('--json', 'emit JSON')
+    .addHelpText(
+      'after',
+      '\nOutput format: <scope>:<plugin>/<name> — paste this identifier into ' +
+        '`crtr skill show` to read the skill.',
+    )
     .action(
       async (opts: {
         scope?: string;
@@ -155,6 +169,15 @@ export function registerSkillCommands(program: Command): void {
     .option('--plugin <name>', 'filter by plugin name')
     .option('--frontmatter', 'include YAML frontmatter in the printed body')
     .option('--json', 'emit JSON')
+    .addHelpText(
+      'after',
+      '\nExamples:\n' +
+        '  crtr skill show rules                              # bare name\n' +
+        '  crtr skill show claude-authoring:rules             # plugin:name (canonical)\n' +
+        '  crtr skill show user:claude-authoring/rules        # scope:plugin/name (matches search/list output)\n' +
+        '  crtr skill show claude-authoring/rules             # plugin/name shorthand\n\n' +
+        SKILL_IDENTIFIER_HELP,
+    )
     .action(
       async (
         name: string,
@@ -434,6 +457,11 @@ export function registerSkillCommands(program: Command): void {
     .option('-a, --all', 'include disabled skills')
     .option('--body', 'also search SKILL.md body')
     .option('--json', 'emit JSON')
+    .addHelpText(
+      'after',
+      '\nOutput columns (tab-separated): <scope>:<plugin>/<name>  <matched-fields>  <description>\n' +
+        'The identifier is pasteable into `crtr skill show`.',
+    )
     .action(
       async (
         query: string,

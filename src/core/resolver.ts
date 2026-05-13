@@ -21,7 +21,7 @@ import {
 } from './fs-utils.js';
 import { readMarketplaceManifest, readPluginManifest } from './manifest.js';
 import { parseFrontmatter } from './frontmatter.js';
-import { ambiguous, notFound } from './errors.js';
+import { ambiguous, notFound, usage } from './errors.js';
 import {
   marketplacesDir,
   pluginsDir,
@@ -189,20 +189,63 @@ export function resolveSkill(
   rawName: string,
   opts: SkillResolutionOpts = {},
 ): Skill {
-  const { plugin: pluginQualifier, name } = parseSkillQualifier(rawName);
-  const plugins = opts.scope ? listInstalledPlugins(opts.scope) : listAllPlugins();
+  const parsed = parseSkillQualifier(rawName);
+
+  if (parsed.scope && opts.scope && parsed.scope !== opts.scope) {
+    throw usage(
+      `scope conflict: identifier "${rawName}" uses scope "${parsed.scope}" but --scope is "${opts.scope}"`,
+    );
+  }
+  if (parsed.plugin && opts.pluginFilter && parsed.plugin !== opts.pluginFilter) {
+    throw usage(
+      `plugin conflict: identifier "${rawName}" uses plugin "${parsed.plugin}" but --plugin is "${opts.pluginFilter}"`,
+    );
+  }
+
+  const effectiveScope: Scope | undefined = opts.scope ?? parsed.scope;
+  const effectivePluginFilter: string | undefined = opts.pluginFilter ?? parsed.plugin;
+
+  const direct = findSkillMatches(parsed.name, parsed.plugin, effectiveScope, effectivePluginFilter);
+  if (direct.length > 0) return pickMatch(direct, parsed.name, parsed.plugin);
+
+  // Fallback: bare `plugin/name` (no colon) — try splitting on first `/`.
+  // Disambiguates "claude-authoring/rules" (which the search/list display also emits as
+  // "user:claude-authoring/rules") from a nested scope-root skill of the same shape.
+  if (!parsed.plugin && parsed.name.includes('/')) {
+    const slashIdx = parsed.name.indexOf('/');
+    const maybePlugin = parsed.name.slice(0, slashIdx);
+    const rest = parsed.name.slice(slashIdx + 1);
+    if (effectivePluginFilter === undefined || effectivePluginFilter === maybePlugin) {
+      const fallback = findSkillMatches(rest, maybePlugin, effectiveScope, maybePlugin);
+      if (fallback.length > 0) return pickMatch(fallback, rest, maybePlugin);
+    }
+  }
+
+  throw notFound(formatNotFoundMessage(rawName, parsed), {
+    skill: parsed.name,
+    plugin: parsed.plugin,
+    scope: parsed.scope,
+  });
+}
+
+function findSkillMatches(
+  name: string,
+  pluginQualifier: string | undefined,
+  scope: Scope | undefined,
+  pluginFilter: string | undefined,
+): Skill[] {
+  const plugins = scope ? listInstalledPlugins(scope) : listAllPlugins();
   const enabledPlugins = plugins.filter((p) => p.enabled);
   const cfgs = loadScopeConfigs();
-
   const matches: Skill[] = [];
 
   // Scope-root skills first — they're the user's own captured knowledge.
   if (
-    !opts.pluginFilter &&
+    !pluginFilter &&
     (pluginQualifier === undefined || pluginQualifier === SCOPE_SKILL_PLUGIN)
   ) {
-    const scopes: Scope[] = opts.scope
-      ? [opts.scope]
+    const scopes: Scope[] = scope
+      ? [scope]
       : ([projectScopeRoot() ? 'project' : null, 'user'].filter(Boolean) as Scope[]);
     for (const s of scopes) {
       const skillsRoot = scopeSkillsDir(s);
@@ -232,7 +275,7 @@ export function resolveSkill(
   const ordered = orderPluginsByResolution(enabledPlugins);
   for (const plugin of ordered) {
     if (pluginQualifier && plugin.name !== pluginQualifier) continue;
-    if (opts.pluginFilter && plugin.name !== opts.pluginFilter) continue;
+    if (pluginFilter && plugin.name !== pluginFilter) continue;
     const skillPath = join(plugin.root, SKILLS_DIR, ...name.split('/'), SKILL_ENTRY_FILE);
     if (!pathExists(skillPath)) continue;
     const source = readText(skillPath);
@@ -250,14 +293,10 @@ export function resolveSkill(
     });
   }
 
-  if (matches.length === 0) {
-    throw notFound(
-      pluginQualifier
-        ? `skill not found: ${pluginQualifier}:${name}`
-        : `skill not found: ${name}`,
-      { skill: name, plugin: pluginQualifier },
-    );
-  }
+  return matches;
+}
+
+function pickMatch(matches: Skill[], name: string, pluginQualifier: string | undefined): Skill {
   if (matches.length === 1) return matches[0];
 
   const sameScopeAndPlugin = matches.every(
@@ -265,27 +304,124 @@ export function resolveSkill(
   );
   if (sameScopeAndPlugin) return matches[0];
 
-  // Resolution order picks the first; flag ambiguity only if user didn't qualify.
-  if (!pluginQualifier) {
-    return matches[0];
-  }
-  throw ambiguous(
-    `ambiguous skill: ${name}`,
-    {
-      skill: name,
-      candidates: matches.map((m) => ({
-        plugin: m.plugin,
-        scope: m.scope,
-        path: m.path,
-      })),
-    },
-  );
+  if (!pluginQualifier) return matches[0];
+
+  throw ambiguous(`ambiguous skill: ${name}`, {
+    skill: name,
+    candidates: matches.map((m) => ({
+      plugin: m.plugin,
+      scope: m.scope,
+      path: m.path,
+    })),
+  });
 }
 
-export function parseSkillQualifier(raw: string): { plugin?: string; name: string } {
-  const idx = raw.indexOf(':');
-  if (idx === -1) return { name: raw };
-  return { plugin: raw.slice(0, idx), name: raw.slice(idx + 1) };
+function formatNotFoundMessage(rawName: string, parsed: ParsedSkillQualifier): string {
+  const suggestions = suggestSkills(parsed.name, parsed.plugin);
+  const lines: string[] = [`skill not found: ${rawName}`];
+  lines.push('       expected forms: <name>, <plugin>:<name>, <scope>:<plugin>/<name>');
+  if (suggestions.length > 0) {
+    const formatted = suggestions
+      .map((s) =>
+        s.plugin === SCOPE_SKILL_PLUGIN ? s.name : `${s.plugin}:${s.name}`,
+      )
+      .slice(0, 3);
+    lines.push(`       did you mean: ${formatted.join(', ')}`);
+  } else {
+    lines.push('       run `crtr skill list` or `crtr skill search <query>` to discover skills');
+  }
+  return lines.join('\n');
+}
+
+function suggestSkills(name: string, plugin: string | undefined): Skill[] {
+  let all: Skill[];
+  try {
+    all = listAllSkills();
+  } catch {
+    return [];
+  }
+  const target = name.toLowerCase();
+  const targetBase = target.split('/').pop() ?? target;
+  const targetPluginGuess = target.includes('/') ? target.split('/')[0] : undefined;
+
+  const exactName = all.filter((s) => s.name.toLowerCase() === target);
+  if (exactName.length > 0) return exactName;
+
+  const exactBase = all.filter((s) => {
+    const sBase = s.name.toLowerCase().split('/').pop() ?? s.name.toLowerCase();
+    return sBase === targetBase;
+  });
+  if (exactBase.length > 0) return exactBase;
+
+  const scored = all
+    .map((s) => {
+      const sName = s.name.toLowerCase();
+      const sBase = sName.split('/').pop() ?? sName;
+      const sPlugin = s.plugin.toLowerCase();
+      let score = 0;
+      if (plugin !== undefined && sPlugin === plugin.toLowerCase()) score += 5;
+      if (targetPluginGuess !== undefined && sPlugin === targetPluginGuess) score += 5;
+      if (sName.includes(target) || target.includes(sName)) score += 4;
+      if (sBase.includes(targetBase) || targetBase.includes(sBase)) score += 3;
+      if (editDistance(sBase, targetBase) <= 2) score += 4;
+      return { skill: s, score };
+    })
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score);
+
+  return scored.slice(0, 3).map((x) => x.skill);
+}
+
+function editDistance(a: string, b: string): number {
+  if (a === b) return 0;
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+  const prev: number[] = new Array(b.length + 1);
+  const curr: number[] = new Array(b.length + 1);
+  for (let j = 0; j <= b.length; j++) prev[j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(curr[j - 1] + 1, prev[j] + 1, prev[j - 1] + cost);
+    }
+    for (let j = 0; j <= b.length; j++) prev[j] = curr[j];
+  }
+  return prev[b.length];
+}
+
+export interface ParsedSkillQualifier {
+  scope?: Scope;
+  plugin?: string;
+  name: string;
+}
+
+const SCOPE_QUALIFIERS: ReadonlySet<string> = new Set<Scope>(['user', 'project']);
+
+// Accepted identifier forms:
+//   <name>                         — bare name; scope-root first, then plugins
+//   <plugin>:<name>                — explicit plugin
+//   <scope>:<name>                 — scope-root in a specific scope
+//   <scope>:<plugin>/<name>        — fully qualified (matches `skill list` / `skill search` display)
+// Bare `<plugin>/<name>` (no colon) is handled as a fallback inside resolveSkill.
+export function parseSkillQualifier(raw: string): ParsedSkillQualifier {
+  const colonIdx = raw.indexOf(':');
+  if (colonIdx === -1) return { name: raw };
+  const before = raw.slice(0, colonIdx);
+  const after = raw.slice(colonIdx + 1);
+  if (SCOPE_QUALIFIERS.has(before)) {
+    const scope = before as Scope;
+    const slashIdx = after.indexOf('/');
+    if (slashIdx !== -1) {
+      return {
+        scope,
+        plugin: after.slice(0, slashIdx),
+        name: after.slice(slashIdx + 1),
+      };
+    }
+    return { scope, name: after };
+  }
+  return { plugin: before, name: after };
 }
 
 function orderPluginsByResolution(plugins: InstalledPlugin[]): InstalledPlugin[] {
