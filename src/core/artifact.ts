@@ -9,9 +9,11 @@ import { usage, notFound, general } from './errors.js';
 import { out, hint, jsonOut, handleError, info } from './output.js';
 import {
   spawnSidePaneReview,
+  countPanesInCurrentWindow,
   DEFAULT_PANE_OPTS,
   type SidePaneResult,
 } from './spawn.js';
+import { readConfig } from './config.js';
 
 export type ArtifactKind = 'plans' | 'specs';
 
@@ -44,7 +46,19 @@ export function inTmux(): boolean {
 }
 
 export function openInTmuxPane(path: string): void {
-  const result = spawnSync('termrender', ['--tmux', path], {
+  // Always pass --watch so the pane live-updates when the agent edits the
+  // file. The watcher re-detects width on resize and survives parse errors.
+  const args = ['--tmux', '--watch'];
+
+  // If the current tmux window is already at the configured pane budget,
+  // open in a new window instead of cramping the existing split further.
+  const maxPanes = readConfig('user').max_panes_per_window;
+  if (countPanesInCurrentWindow() >= maxPanes) {
+    args.push('--tmux-new-window');
+  }
+  args.push(path);
+
+  const result = spawnSync('termrender', args, {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   if (result.error) {
@@ -62,7 +76,7 @@ export function openInTmuxPane(path: string): void {
     return;
   }
   const paneId = result.stdout.toString().trim();
-  if (paneId) hint(`opened in tmux pane ${paneId}`);
+  if (paneId) hint(`opened in tmux pane ${paneId} (live — edits to the file refresh the view)`);
 }
 
 async function readStdin(): Promise<string> {
