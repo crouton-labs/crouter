@@ -64,6 +64,25 @@ Five types — pick by what the agent does after reading:
 Don't load \`create\` and \`template\` in the same turn — \`create\` decides the
 type, then call \`template\`.
 
+## Format
+
+A skill is a directory; \`SKILL.md\` is its entry file. The dir IS the skill —
+siblings are assets, nested dirs are themselves skills.
+
+Frontmatter (required: \`name\`, \`type\`, \`description\`):
+- \`name\` — must equal the dir path under \`skills/\`. Slashes for nested
+  (\`skills/web/frontend/design/SKILL.md\` → \`name: web/frontend/design\`).
+- \`type\` — one of the five above.
+- \`description\` — one sentence, front-load with "Use when…" — drives discovery.
+- \`keywords\` (optional) — array of strings, improves \`crtr skill search\`.
+
+Intermediate dirs (\`web/\`, \`web/frontend/\`) don't need their own SKILL.md —
+nesting is purely path-based. Budget ~150 lines per SKILL.md body; spill
+deeper material into sibling files (\`reference.md\`, \`examples.md\`).
+
+Validate with \`crtr doctor\` — checks frontmatter, name-vs-path match, type
+enum, sibling-link reachability.
+
 ## Neighbors auto-append
 
 \`crtr skill show <name>\` appends a \`## Neighbors\` section listing siblings
@@ -374,18 +393,6 @@ crtr skill where <name>
 crtr skill show <name>
 crtr skill search <keyword>
 \`\`\`
-
-## Deep-dive reference
-
-For canonical SKILL.md authoring (frontmatter fields, argument passing,
-dynamic context, subagent forking, hooks):
-
-\`\`\`
-crtr skill show crouter-development/skills
-\`\`\`
-
-The playbook above gives you structure + density rules.
-\`crouter-development/skills\` covers the SKILL.md surface itself.
 
 ## Constraints
 

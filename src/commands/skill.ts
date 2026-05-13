@@ -55,12 +55,10 @@ const KNOWN_VERBS = new Set([
   'search',
 ]);
 
-const AUTHORING_GUIDE_SKILL = 'crouter-development/skills';
-
 function buildShowFooter(skillPath: string): string {
   return (
     `crtr: edit this skill directly at ${skillPath} — ` +
-    `for SKILL.md authoring guidance run \`crtr skill ${AUTHORING_GUIDE_SKILL}\``
+    `for SKILL.md format + authoring workflow run \`crtr skill\` (no args)`
   );
 }
 
@@ -255,7 +253,7 @@ export function registerSkillCommands(program: Command): void {
             scope: skillObj.scope,
             path: skillObj.path,
             content,
-            authoring_guide_command: `crtr skill ${AUTHORING_GUIDE_SKILL}`,
+            authoring_guide_command: `crtr skill`,
           });
           return;
         }
@@ -409,9 +407,10 @@ export function registerSkillCommands(program: Command): void {
           writeFileSync(skillFile, fm, 'utf8');
 
           out(skillFile);
+          const templateHint = skillType !== undefined ? skillType : '<type>';
           hint(
-            `crtr: scaffolded ${scope}-scope skill ${skillName} — edit directly, then ` +
-              `\`crtr skill ${AUTHORING_GUIDE_SKILL}\` for SKILL.md authoring guidance`,
+            `crtr: scaffolded ${scope}-scope skill ${skillName} — edit directly; ` +
+              `\`crtr skill template ${templateHint}\` for body skeleton`,
           );
           return;
         }
@@ -445,9 +444,10 @@ export function registerSkillCommands(program: Command): void {
         writeFileSync(skillFile, fm, 'utf8');
 
         out(skillFile);
+        const templateHint = skillType !== undefined ? skillType : '<type>';
         hint(
-          `crtr: scaffolded ${skillFile} — edit directly, then ` +
-            `\`crtr skill ${AUTHORING_GUIDE_SKILL}\` for SKILL.md authoring guidance`,
+          `crtr: scaffolded ${skillFile} — edit directly; ` +
+            `\`crtr skill template ${templateHint}\` for body skeleton`,
         );
       } catch (e) {
         handleError(e);

@@ -141,14 +141,14 @@ Bad plugin scope:
 
 ## Cross-plugin etiquette
 
-If your skill conceptually depends on another plugin's skill, link via `## Related` with `` `<plugin>/<skill>` `` (e.g., `crtr/crouter-development/skills` for the builtin format guide). Don't fork content; link it.
+If your skill conceptually depends on another plugin's skill, link via `## Related` with `` `<plugin>/<skill>` ``. Don't fork content; link it.
 
 ## Validation
 
 `crtr doctor` checks every plugin:
 - Manifest exists and is valid JSON.
 - Manifest `name` matches the directory name.
-- Every skill under `skills/` passes the skill-validation contract (see [[crouter-development/skills]]).
+- Every skill under `skills/` passes the skill-validation contract (frontmatter parses, `name` matches dir path, `type` in enum). Run `crtr skill` (no args) for the full format reference.
 - Sibling artifact dirs (`commands/`, `hooks/`, etc.) — validated by their respective specs as those land.
 
 ## Cross-publishing with Claude Code
