@@ -5,6 +5,22 @@ Skills are markdown the agent loads on demand. **Audience: future LLM agent
 sessions, not humans.** Write for the model: terse, decision-first, dense.
 The CLI is the index — \`crtr skill list/search/grep\` discovers what's saved.
 
+## Route by intent
+
+If a query follows this prompt, route based on it. Run the suggested command
+first, then act on its output.
+
+- **Capture** ("save", "remember", "build context for", "make a skill"):
+  \`crtr skill create [topic]\` — picks template, hints next command.
+- **Find** ("what do we have on X", "skill for Y"):
+  \`crtr skill search <query>\` → \`crtr skill show <name>\` on best hit.
+- **Load by name** ("show me X"): \`crtr skill show <name>\`.
+- **List all**: \`crtr skill list\`.
+- **No intent given / query empty**: ask the user what they want before running.
+
+Don't load \`create\` and \`template\` outputs in the same turn — \`create\` decides
+the type, then call \`template\`.
+
 Locations (resolution order):
 1. **Scope-direct** \`<scope-root>/skills/<name>/SKILL.md\` → \`user:<name>\` / \`project:<name>\`
 2. **Plugin skills** \`<plugin>/skills/<name>/SKILL.md\` → \`<scope>:<plugin>/<name>\`
