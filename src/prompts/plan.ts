@@ -58,6 +58,19 @@ between approaches. Never use it to ask the user "is this plan okay?" or
 
 ## Phase 4: Final Plan
 
+### Quality bar
+
+Hold the draft to these — they're cheap to satisfy and they save the
+implementer from re-deciding things:
+
+- Every decision pinned. No "if X then Y" branches, no "investigate
+  whether…", no deferred choices. If you don't know, find out or ask now.
+- No timelines, no fallbacks, no magic values, no "for now" shortcuts.
+- Where the plan creates a new interface, schema, or contract, write the
+  actual shape rather than "design a Foo type."
+
+### Save
+
 Save the plan with \`crtr plan --name <kebab-case-name>\`. Pipe the markdown
 body in via stdin (heredoc):
 
@@ -85,6 +98,22 @@ Be concise enough to scan, detailed enough to execute.>
 EOF
 \`\`\`
 
+For plans touching 4+ files across distinct concerns, the implementer can
+dispatch parallel subagents — but only if you structure tasks for it. In
+that case, replace "Files to modify / create" with task blocks like:
+
+\`\`\`
+## Tasks
+- **Task 1**: <name>
+  - Files: \`a.ts\`, \`b.ts\` (disjoint from other tasks)
+  - Depends on: (none) | Task N
+  - Integration: <shared types/APIs with exact shape>
+  - Changes: <bullets>
+\`\`\`
+
+Skip this structure for small plans; it's noise when there's no
+parallelism to unlock.
+
 - Pick a short, descriptive kebab-case name. Names may be nested
   (\`crtr plan --name auth/jwt-refresh\`) — they become subdirectories.
 - If this plan implements a saved spec, pass \`--spec <spec-name>\` so the
@@ -92,7 +121,11 @@ EOF
   \`crtr plan --name <name> --spec <spec-name> <<'EOF' ... EOF\`
 - The file lands at \`${plansDir}/<name>.md\`.
 - If you are running inside tmux, the saved plan auto-opens in a side pane
-  via termrender. No extra step needed.
+  (or a new window when the current one is full) via termrender. The pane
+  is **live** — it re-renders whenever the file changes on disk. For small
+  tweaks, **edit the file path directly with the Edit tool** instead of
+  re-running the heredoc save; the pane updates in place. Re-save via
+  heredoc only when you want to re-trigger the reviewer.
 
 ## Phase 5: Review
 

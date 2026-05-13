@@ -12,6 +12,10 @@ Specs for this directory live at:
 If a relevant prior spec already exists there, read it first. Treat an
 existing spec as the starting point — extend or revise rather than restart.
 
+**Anti-pattern: do not fish for clarifications upfront.** Draft a concrete
+spec first based on your investigation, *then* iterate. A specific draft the
+user can react to converges faster than a list of questions in a vacuum.
+
 ## Phase 1: Shape
 
 Build a comprehensive picture of the problem and the relevant code. Surface
@@ -36,18 +40,25 @@ should be:
 - **Behavior-focused** — describes what the system does, not how.
 - **Scoped** — covers one observable behavior.
 
-Prefer EARS-style phrasing where it fits (\`When <trigger>, the system shall
-<behavior>\`), but do not force it. Group requirements by capability.
+Group requirements by capability. Plain English is fine for most things. If
+a requirement is conditional or stateful enough that phrasing gets fuzzy,
+EARS templates can sharpen it (\`When <trigger>, the system shall <behavior>\`
+or \`If <condition>, then the system shall <response>\`) — reach for them
+when they earn their keep, not by default.
 
-You may launch a Plan agent to draft requirements for a specific capability
-in parallel, but for small specs writing them yourself is usually faster.
+For larger / multi-component designs, before moving on it's worth walking
+the design end-to-end as a sanity check: at each step from trigger to
+final state, ask whether preconditions, state, failure handling, and
+handoffs between components are actually specified. Skip this for small
+self-contained specs — it's the kind of thing that catches bugs in the
+seams, so apply it where there are seams.
 
 ## Phase 3: Deepen
 
 - Read the critical files identified during Phase 1 to deepen your
   understanding before locking decisions.
-- Reconcile the requirements against the shape — if a requirement reveals a
-  gap in the design, refine the design before saving.
+- Reconcile requirements against the shape — if a requirement reveals a gap
+  in the design, refine the design before saving.
 - Use **AskUserQuestion** for any remaining ambiguities. Bias toward asking
   when a decision is non-obvious or when the user's intent is genuinely
   unclear.
@@ -74,10 +85,10 @@ outcome. Include relevant constraints — user goals, stakeholders, deadlines.>
 they were chosen. Reference existing code with \`file_path:line_number\`.>
 
 ## Requirements
-<grouped behavioral requirements. Each one testable.>
+<grouped behavioral requirements. Each one testable. Plain English is fine.>
 
 ### <Capability A>
-- When <trigger>, the system shall <behavior>.
+- <one observable behavior>
 - ...
 
 ### <Capability B>
@@ -96,7 +107,11 @@ EOF
   (\`crtr spec --name auth/refresh-tokens\`).
 - The file lands at \`${specsDir}/<name>.md\`.
 - If you are running inside tmux, the saved spec auto-opens in a side pane
-  via termrender. No extra step needed.
+  (or a new window when the current one is full) via termrender. The pane
+  is **live** — it re-renders whenever the file changes on disk. For small
+  tweaks, **edit the file path directly with the Edit tool** instead of
+  re-running the heredoc save; the pane updates in place. Re-save via
+  heredoc only when you want to re-trigger the reviewer.
 
 ## Phase 5: Review
 
