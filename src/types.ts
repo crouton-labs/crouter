@@ -1,4 +1,4 @@
-export type Scope = 'user' | 'project';
+export type Scope = 'user' | 'project' | 'builtin';
 
 export const ExitCode = {
   SUCCESS: 0,
@@ -112,6 +112,7 @@ export interface InstalledPlugin {
   root: string;
   manifest: PluginManifest;
   enabled: boolean;
+  builtin?: boolean;
   sourceMarketplace?: string;
   version?: string;
 }

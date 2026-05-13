@@ -23,7 +23,7 @@
     "bin"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && rm -rf dist/builtin-skills && cp -R src/builtin-skills dist/builtin-skills",
     "dev": "tsx src/cli.ts",
     "link": "npm link",
     "prepublishOnly": "npm run build"

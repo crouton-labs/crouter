@@ -381,11 +381,11 @@ For canonical SKILL.md authoring (frontmatter fields, argument passing,
 dynamic context, subagent forking, hooks):
 
 \`\`\`
-crtr skill show authoring-skills
+crtr skill show crouter-development/skills
 \`\`\`
 
-The playbook above gives you structure + density rules. \`authoring-skills\`
-covers the SKILL.md surface itself.
+The playbook above gives you structure + density rules.
+\`crouter-development/skills\` covers the SKILL.md surface itself.
 
 ## Constraints
 

@@ -55,7 +55,7 @@ const KNOWN_VERBS = new Set([
   'search',
 ]);
 
-const AUTHORING_GUIDE_SKILL = 'authoring-skills';
+const AUTHORING_GUIDE_SKILL = 'crouter-development/skills';
 
 function buildShowFooter(skillPath: string): string {
   return (

@@ -222,13 +222,17 @@ export function registerPluginCommands(program: Command): void {
     .option('--yes', 'skip confirmation in non-TTY mode')
     .action(async (name: string, opts: { scope?: string; yes?: boolean }) => {
       try {
+        if (name === 'crtr') {
+          throw usage(`cannot uninstall builtin plugin "crtr" — it ships with the binary`);
+        }
+
         if (!isTTY() && !opts.yes) {
           throw usage(
             `uninstall requires --yes in non-TTY mode: crtr plugin uninstall ${name} --yes`,
           );
         }
 
-        const scopes = listScopes(opts.scope);
+        const scopes = listScopes(opts.scope).filter((s) => s !== 'builtin');
         let removed = false;
 
         for (const scope of scopes) {

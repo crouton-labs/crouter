@@ -23,6 +23,7 @@ import { readMarketplaceManifest, readPluginManifest } from './manifest.js';
 import { parseFrontmatter } from './frontmatter.js';
 import { ambiguous, notFound, usage } from './errors.js';
 import {
+  builtinSkillsRoot,
   marketplacesDir,
   pluginsDir,
   projectScopeRoot,
@@ -30,7 +31,27 @@ import {
   userScopeRoot,
 } from './scope.js';
 
+function getBuiltinPlugin(): InstalledPlugin | null {
+  const root = builtinSkillsRoot();
+  if (!pathExists(root)) return null;
+  const manifest = readPluginManifest(root);
+  if (!manifest) return null;
+  return {
+    name: manifest.name,
+    scope: 'builtin',
+    root,
+    manifest,
+    enabled: true,
+    builtin: true,
+    version: manifest.version,
+  };
+}
+
 export function listInstalledPlugins(scope: Scope): InstalledPlugin[] {
+  if (scope === 'builtin') {
+    const builtin = getBuiltinPlugin();
+    return builtin ? [builtin] : [];
+  }
   const dir = pluginsDir(scope);
   if (!dir || !pathExists(dir)) return [];
   const cfg = readConfig(scope);
@@ -60,6 +81,7 @@ export function listAllPlugins(): InstalledPlugin[] {
   const scopes: Scope[] = [];
   if (projectScopeRoot()) scopes.push('project');
   scopes.push('user');
+  scopes.push('builtin');
   return scopes.flatMap(listInstalledPlugins);
 }
 
@@ -67,7 +89,7 @@ export function findPluginByName(name: string, scope?: Scope): InstalledPlugin |
   if (scope) {
     return listInstalledPlugins(scope).find((p) => p.name === name) ?? null;
   }
-  for (const s of (['project', 'user'] as const).filter((sc) =>
+  for (const s of (['project', 'user', 'builtin'] as const).filter((sc) =>
     sc === 'project' ? projectScopeRoot() !== null : true,
   )) {
     const match = listInstalledPlugins(s).find((p) => p.name === name);
@@ -138,6 +160,7 @@ export function listScopeRootSkills(
   scope: Scope,
   cfgs?: ScopeConfigs,
 ): Skill[] {
+  if (scope === 'builtin') return [];
   const skillsRoot = scopeSkillsDir(scope);
   if (!skillsRoot || !pathExists(skillsRoot)) return [];
   const configs = cfgs === undefined ? loadScopeConfigs() : cfgs;
@@ -179,6 +202,7 @@ export function listAllSkills(scopeFilter?: Scope): Skill[] {
     ...plugins.filter((p) => p.enabled).flatMap((p) => listSkillsInPlugin(p, cfgs)),
   ];
 }
+
 
 function enumerateNeighborPool(skill: Skill): Skill[] {
   if (skill.plugin === SCOPE_SKILL_PLUGIN) {
@@ -459,6 +483,7 @@ export function parseSkillQualifier(raw: string): ParsedSkillQualifier {
 
 function orderPluginsByResolution(plugins: InstalledPlugin[]): InstalledPlugin[] {
   const score = (p: InstalledPlugin) => {
+    if (p.scope === 'builtin') return 4;
     const fromMarketplace = Boolean(p.sourceMarketplace);
     if (p.scope === 'project' && !fromMarketplace) return 0;
     if (p.scope === 'user' && !fromMarketplace) return 1;

@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import type { Scope } from '../types.js';
 import { SKILL_ENTRY_FILE, SKILLS_DIR, SKILL_TYPES, isSkillType } from '../types.js';
 import { out, err, jsonOut, handleError, stdoutColor } from '../core/output.js';
-import { projectScopeRoot, userScopeRoot, scopeRoot, pluginsDir, marketplacesDir, listScopes } from '../core/scope.js';
+import { projectScopeRoot, userScopeRoot, scopeRoot, pluginsDir, marketplacesDir, listScopes, builtinSkillsRoot } from '../core/scope.js';
 import { readConfig, writeConfig, updateConfig } from '../core/config.js';
 import { listInstalledPlugins, listInstalledMarketplaces, listSkillsInPlugin } from '../core/resolver.js';
 import { pathExists, listDirs, listEntries, removePath, walkFiles, readText } from '../core/fs-utils.js';
@@ -47,7 +47,31 @@ function readRawTypeField(skillPath: string): string | undefined {
   return v;
 }
 
+function runChecksForBuiltin(): CheckResult[] {
+  const root = builtinSkillsRoot();
+  const plugins = listInstalledPlugins('builtin');
+  if (plugins.length === 0) {
+    return [fail('builtin', 'builtin:crtr:root', `builtin-skills root missing or has no valid plugin.json: ${root}`)];
+  }
+  const results: CheckResult[] = [
+    pass('builtin', 'builtin:crtr:root', `builtin-skills root present: ${root}`),
+  ];
+  for (const plugin of plugins) {
+    results.push(pass('builtin', `builtin:${plugin.name}:manifest`, `manifest valid`));
+    const skills = listSkillsInPlugin(plugin);
+    for (const skill of skills) {
+      if (!skill.frontmatter.name) {
+        results.push(fail('builtin', `builtin:${plugin.name}:skill:${skill.name}:frontmatter`, `frontmatter missing or name field empty`));
+      } else {
+        results.push(pass('builtin', `builtin:${plugin.name}:skill:${skill.name}:frontmatter`, `frontmatter valid`));
+      }
+    }
+  }
+  return results;
+}
+
 function runChecksForScope(scope: Scope, opts: { fix: boolean; remote: boolean }): CheckResult[] {
+  if (scope === 'builtin') return runChecksForBuiltin();
   const results: CheckResult[] = [];
   const root = scopeRoot(scope);
   if (!root) return results;
