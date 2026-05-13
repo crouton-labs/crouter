@@ -81,10 +81,18 @@ export interface ScopeState {
   bootstrap_done?: boolean;
 }
 
+export const SKILL_TYPES = ['playbook', 'primer', 'reference', 'runbook', 'freeform'] as const;
+export type SkillType = (typeof SKILL_TYPES)[number];
+
+export function isSkillType(v: unknown): v is SkillType {
+  return typeof v === 'string' && (SKILL_TYPES as readonly string[]).includes(v);
+}
+
 export interface SkillFrontmatter {
   name: string;
   description?: string;
   keywords?: string[];
+  type?: SkillType;
 }
 
 export interface Skill {

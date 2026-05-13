@@ -6,8 +6,10 @@ import {
   SCOPE_SKILL_PLUGIN,
   SKILL_ENTRY_FILE,
   SKILLS_DIR,
+  SKILL_TYPES,
+  isSkillType,
 } from '../types.js';
-import type { Scope } from '../types.js';
+import type { Scope, SkillType } from '../types.js';
 import { skillConfigKey } from '../types.js';
 import { CrtrError, notFound, usage, general } from '../core/errors.js';
 import {
@@ -30,7 +32,10 @@ import {
   listInstalledPlugins,
   findPluginByName,
   parseSkillQualifier,
+  listSkillSiblings,
+  listSkillChildren,
 } from '../core/resolver.js';
+import type { Skill } from '../types.js';
 import { updateConfig, ensureScopeInitialized } from '../core/config.js';
 import { parseFrontmatter, serializeFrontmatter } from '../core/frontmatter.js';
 import { ensureDir, pathExists, readText, walkFiles } from '../core/fs-utils.js';
@@ -63,6 +68,46 @@ function wrapSkill(name: string, path: string, content: string): string {
   return `<skill name="${name}" path="${path}">\n${content.endsWith('\n') ? content : content + '\n'}</skill>`;
 }
 
+function formatNeighborQualifier(s: Skill): string {
+  return s.plugin === SCOPE_SKILL_PLUGIN ? `${s.scope}:${s.name}` : `${s.plugin}/${s.name}`;
+}
+
+function buildNeighborsSection(skill: Skill): string | null {
+  const siblings = listSkillSiblings(skill);
+  const children = listSkillChildren(skill);
+  if (siblings.length === 0 && children.length === 0) return null;
+
+  const lines: string[] = [
+    '## Neighbors',
+    '*Auto-discovered from filesystem. Use `--no-neighbors` to suppress.*',
+    '',
+  ];
+  if (siblings.length > 0) {
+    lines.push('**Siblings:**');
+    for (const s of siblings) {
+      const desc = s.frontmatter.description !== undefined ? s.frontmatter.description : '';
+      lines.push(`- \`${formatNeighborQualifier(s)}\`${desc ? ` — ${desc}` : ''}`);
+    }
+    if (children.length > 0) lines.push('');
+  }
+  if (children.length > 0) {
+    lines.push('**Nested:**');
+    for (const s of children) {
+      const desc = s.frontmatter.description !== undefined ? s.frontmatter.description : '';
+      lines.push(`- \`${formatNeighborQualifier(s)}\`${desc ? ` — ${desc}` : ''}`);
+    }
+  }
+  return lines.join('\n');
+}
+
+function appendNeighbors(skill: Skill, body: string, suppress: boolean): string {
+  if (suppress) return body;
+  const section = buildNeighborsSection(skill);
+  if (section === null) return body;
+  const sep = body.endsWith('\n') ? '\n' : '\n\n';
+  return body + sep + `<neighbors>\n${section}\n</neighbors>\n`;
+}
+
 const SKILL_IDENTIFIER_HELP =
   'Skill identifier forms (accepted by show, path, where, enable, disable):\n' +
   '  <name>                       bare name — resolves scope-root first, then plugins\n' +
@@ -91,7 +136,8 @@ export function registerSkillCommands(program: Command): void {
           try {
             const skillObj = resolveSkill(nameOrVerb);
             const content = readText(skillObj.path);
-            const body = opts.frontmatter ? content : parseFrontmatter(content).body;
+            const rawBody = opts.frontmatter ? content : parseFrontmatter(content).body;
+            const body = appendNeighbors(skillObj, rawBody, false);
             out(wrapSkill(skillObj.name, skillObj.path, body));
             hint(buildShowFooter(skillObj.path));
           } catch (e) {
@@ -168,6 +214,7 @@ export function registerSkillCommands(program: Command): void {
     .option('--scope <scope>', 'user|project')
     .option('--plugin <name>', 'filter by plugin name')
     .option('--frontmatter', 'include YAML frontmatter in the printed body')
+    .option('--no-neighbors', 'suppress the auto-appended ## Neighbors section')
     .option('--json', 'emit JSON')
     .addHelpText(
       'after',
@@ -181,7 +228,13 @@ export function registerSkillCommands(program: Command): void {
     .action(
       async (
         name: string,
-        opts: { scope?: string; plugin?: string; frontmatter?: boolean; json?: boolean },
+        opts: {
+          scope?: string;
+          plugin?: string;
+          frontmatter?: boolean;
+          neighbors?: boolean;
+          json?: boolean;
+        },
       ) => {
       try {
         const scopeArg = resolveScopeArg(opts.scope);
@@ -191,7 +244,9 @@ export function registerSkillCommands(program: Command): void {
         }
         const skillObj = resolveSkill(name, resolveOpts);
         const content = readText(skillObj.path);
-        const body = opts.frontmatter ? content : parseFrontmatter(content).body;
+        const rawBody = opts.frontmatter ? content : parseFrontmatter(content).body;
+        const suppressNeighbors = opts.neighbors === false;
+        const body = appendNeighbors(skillObj, rawBody, suppressNeighbors);
 
         if (opts.json) {
           jsonOut({
@@ -298,11 +353,29 @@ export function registerSkillCommands(program: Command): void {
     .description('scaffold a new skill — <name> (scope-direct) or <plugin>:<name>')
     .option('--scope <scope>', 'user|project (default: project then user)')
     .option('--description <text>', 'skill description for frontmatter')
-    .action(async (qualifier: string, opts: { scope?: string; description?: string }) => {
+    .option(
+      '--type <type>',
+      `skill type for frontmatter — one of: ${SKILL_TYPES.join(' | ')}`,
+    )
+    .action(
+      async (
+        qualifier: string,
+        opts: { scope?: string; description?: string; type?: string },
+      ) => {
       try {
         const { plugin: pluginName, name: skillName } = parseSkillQualifier(qualifier);
         if (!skillName) {
           throw usage('skill name required');
+        }
+
+        let skillType: SkillType | undefined;
+        if (opts.type !== undefined) {
+          if (!isSkillType(opts.type)) {
+            throw usage(
+              `unknown skill type: ${opts.type} / valid: ${SKILL_TYPES.join(' | ')}`,
+            );
+          }
+          skillType = opts.type;
         }
 
         const scopeArg = opts.scope !== undefined ? resolveScopeArg(opts.scope) : undefined;
@@ -331,6 +404,7 @@ export function registerSkillCommands(program: Command): void {
           const fm = serializeFrontmatter({
             name: skillName,
             description: opts.description,
+            type: skillType,
           });
           writeFileSync(skillFile, fm, 'utf8');
 
@@ -365,6 +439,7 @@ export function registerSkillCommands(program: Command): void {
         const fm = serializeFrontmatter({
           name: skillName,
           description: opts.description,
+          type: skillType,
         });
 
         writeFileSync(skillFile, fm, 'utf8');
@@ -382,7 +457,7 @@ export function registerSkillCommands(program: Command): void {
   // create — pick a template type
   skill
     .command('create [topic...]')
-    .description('pick a template type for a new skill (primer | playbook | freeform)')
+    .description(`pick a template type for a new skill (${SKILL_TYPES.join(' | ')})`)
     .action(async (topic: string[]) => {
       const arg = topic && topic.length > 0 ? topic.join(' ') : '';
       out(skillCreatePrompt(arg));
@@ -391,7 +466,7 @@ export function registerSkillCommands(program: Command): void {
   // template — full workflow + skeleton for one template type
   skill
     .command('template <type> [topic...]')
-    .description('full workflow + skeleton for a template type (primer | playbook | freeform)')
+    .description(`full workflow + skeleton for a template type (${SKILL_TYPES.join(' | ')})`)
     .action(async (type: string, topic: string[]) => {
       const arg = topic && topic.length > 0 ? topic.join(' ') : '';
       out(skillTemplatePrompt(type, arg));

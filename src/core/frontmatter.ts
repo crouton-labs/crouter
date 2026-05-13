@@ -1,4 +1,4 @@
-import type { SkillFrontmatter } from '../types.js';
+import { isSkillType, type SkillFrontmatter } from '../types.js';
 
 const FRONTMATTER_RE = /^---\s*\r?\n([\s\S]*?)\r?\n---\s*\r?\n?/;
 
@@ -133,6 +133,7 @@ function parseSimpleYaml(yaml: string): SkillFrontmatter {
     name: typeof out.name === 'string' ? out.name : '',
     description: typeof out.description === 'string' ? out.description : undefined,
     keywords: Array.isArray(out.keywords) ? (out.keywords as string[]) : undefined,
+    type: isSkillType(out.type) ? out.type : undefined,
   };
   return fm;
 }
@@ -149,6 +150,9 @@ export function serializeFrontmatter(data: SkillFrontmatter): string {
   lines.push(`name: ${quoteIfNeeded(data.name)}`);
   if (data.description !== undefined) {
     lines.push(`description: ${quoteIfNeeded(data.description)}`);
+  }
+  if (data.type !== undefined) {
+    lines.push(`type: ${data.type}`);
   }
   if (data.keywords && data.keywords.length) {
     const inline = `[${data.keywords.map(quoteIfNeeded).join(', ')}]`;

@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import { join } from 'node:path';
 import type { Scope } from '../types.js';
-import { SKILL_ENTRY_FILE, SKILLS_DIR } from '../types.js';
+import { SKILL_ENTRY_FILE, SKILLS_DIR, SKILL_TYPES, isSkillType } from '../types.js';
 import { out, err, jsonOut, handleError, stdoutColor } from '../core/output.js';
 import { projectScopeRoot, userScopeRoot, scopeRoot, pluginsDir, marketplacesDir, listScopes } from '../core/scope.js';
 import { readConfig, writeConfig, updateConfig } from '../core/config.js';
@@ -32,6 +32,19 @@ function fail(scope: Scope, name: string, message: string): CheckResult {
 
 function warn(scope: Scope, name: string, message: string): CheckResult {
   return { scope, name, status: 'warn', message };
+}
+
+function readRawTypeField(skillPath: string): string | undefined {
+  const content = readText(skillPath);
+  const { raw } = parseFrontmatter(content);
+  if (!raw) return undefined;
+  const m = raw.match(/^type:\s*(.+?)\s*$/m);
+  if (!m) return undefined;
+  let v = m[1].trim();
+  if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
+    v = v.slice(1, -1);
+  }
+  return v;
 }
 
 function runChecksForScope(scope: Scope, opts: { fix: boolean; remote: boolean }): CheckResult[] {
@@ -151,6 +164,28 @@ function runChecksForScope(scope: Scope, opts: { fix: boolean; remote: boolean }
             results.push(warn(scope, `plugin:${name}:skill:${skill.name}:frontmatter`, `name mismatch: frontmatter says "${skill.frontmatter.name}", directory is "${skill.name}"`));
           } else {
             results.push(pass(scope, `plugin:${name}:skill:${skill.name}:frontmatter`, `frontmatter valid`));
+          }
+
+          const typeCheckName = `plugin:${name}:skill:${skill.name}:type`;
+          const rawType = readRawTypeField(skill.path);
+          if (rawType === undefined) {
+            results.push(
+              warn(
+                scope,
+                typeCheckName,
+                `missing type field — add one of: ${SKILL_TYPES.join(' | ')}`,
+              ),
+            );
+          } else if (!isSkillType(rawType)) {
+            results.push(
+              fail(
+                scope,
+                typeCheckName,
+                `invalid type "${rawType}" — valid: ${SKILL_TYPES.join(' | ')}`,
+              ),
+            );
+          } else {
+            results.push(pass(scope, typeCheckName, `type: ${rawType}`));
           }
         }
       }

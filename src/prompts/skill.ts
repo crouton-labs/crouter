@@ -48,13 +48,29 @@ crtr skill where <name>            # {scope, plugin, path} JSON
 ## Author (progressive disclosure)
 
 \`\`\`
-crtr skill create [topic...]       # pick a template type
-crtr skill template <type> [topic] # workflow + skeleton for that type
-crtr skill new <name>              # bare scaffold, scope-direct
+crtr skill create [topic...]            # pick a template type
+crtr skill template <type> [topic]      # workflow + skeleton for that type
+crtr skill new <name> --type <type>     # bare scaffold with typed frontmatter
 \`\`\`
+
+Five types — pick by what the agent does after reading:
+
+- \`playbook\` — decide (judgment, heuristics, when-to-use)
+- \`primer\` — navigate (codebase facts, architecture)
+- \`reference\` — look up (stable facts, tables)
+- \`runbook\` — execute (numbered procedure)
+- \`freeform\` — none of the above (catchall)
 
 Don't load \`create\` and \`template\` in the same turn — \`create\` decides the
 type, then call \`template\`.
+
+## Neighbors auto-append
+
+\`crtr skill show <name>\` appends a \`## Neighbors\` section listing siblings
+(same parent dir) and nested skills. Skill bodies should write \`## Related\`
+**only** for cross-plugin or distant refs — within-plugin links are redundant.
+
+Suppress with \`crtr skill show <name> --no-neighbors\`.
 
 ## Toggle
 
@@ -82,11 +98,22 @@ ${topicLine}
 
 ## Templates
 
-- \`primer\` — codebase/architectural knowledge ("how does X work, why, what
-  are the gotchas"). Triggers parallel-explore research.
-- \`playbook\` — methodology/judgment ("how to think about X"). The
-  \`authoring:skills\`-style skill that teaches decisions, not facts.
-- \`freeform\` — anything else (glossary, decision record, runbook, prefs).
+Pick by what the agent does after reading the skill:
+
+- \`playbook\` — **decide**. Judgment, heuristics, when-to-use / when-not-to-use.
+  Examples: skill-authoring, debugging methodology. Most skills are this.
+- \`primer\` — **navigate**. Codebase/architectural facts. *"How does this
+  subsystem work, why, what are the gotchas."* Triggers parallel-explore.
+- \`reference\` — **look up**. Stable facts: protocol fields, API surface,
+  glossaries, lookup tables. Source of truth is external (spec, docs).
+- \`runbook\` — **execute**. Numbered procedure with decision points and
+  rollback. Examples: deploy, incident response, review workflow.
+- \`freeform\` — **none of the above**. Catchall for decision records, prefs,
+  miscellany.
+
+Litmus: *"when X, do Y"* → playbook. *"these are the fields of Y"* →
+reference. *"step 1, step 2, step 3"* → runbook. *"how X is built inside
+this repo"* → primer.
 
 ## Next
 
@@ -104,6 +131,7 @@ ${topicLine}
 
 - Subsystem is small/self-evident → suggest CLAUDE.md note instead of primer.
 - "Topic" is really a one-off task → don't capture; just do the work.
+- Content is one-off lookup that lives elsewhere → link to it, don't mirror.
 `;
 }
 
@@ -111,8 +139,10 @@ export function skillTemplatePrompt(type: string, topic: string): string {
   const t = type.toLowerCase();
   if (t === 'primer') return primerTemplatePrompt(topic);
   if (t === 'playbook') return playbookTemplatePrompt(topic);
+  if (t === 'reference') return referenceTemplatePrompt(topic);
+  if (t === 'runbook') return runbookTemplatePrompt(topic);
   if (t === 'freeform') return freeformTemplatePrompt(topic);
-  return `unknown template type: ${type}\nvalid: primer | playbook | freeform\nrun \`crtr skill create\` to pick.\n`;
+  return `unknown template type: ${type}\nvalid: playbook | primer | reference | runbook | freeform\nrun \`crtr skill create\` to pick.\n`;
 }
 
 function topicLine(topic: string): string {
@@ -177,7 +207,7 @@ assumptions.**
 ## 5. Scaffold
 
 \`\`\`
-crtr skill new <name> --scope project --description "<what+when, ≤250 chars, front-loaded triggers>"
+crtr skill new <name> --type primer --scope project --description "<what+when, ≤250 chars, front-loaded triggers>"
 \`\`\`
 
 ## 6. Write the body
@@ -205,10 +235,11 @@ Domain terms, invariants, non-obvious constraints.
 
 ## Gotchas
 Non-obvious coupling. Looks-broken-but-isn't. Past footguns.
-
-## Related
-- \`<other-skill>\` — interaction
 \`\`\`
+
+**No \`## Related\` for within-plugin siblings** — the CLI auto-appends a
+\`## Neighbors\` section on \`crtr skill show\`. Add a manual \`## Related\`
+only for cross-plugin or distant refs.
 
 **Density rules:**
 - \`file:line\` over prose
@@ -230,7 +261,7 @@ Sharpen description if discovery misses. Cut body if bloated.
 ## Updates
 
 If updating existing primer: diff draft vs current, call out changes + why
-before writing. Update related skills' \`## Related\` sections.
+before writing.
 `;
 }
 
@@ -277,7 +308,7 @@ PR over many small ones for refactors here, because review churn dominates"*
 ## 3. Scaffold
 
 \`\`\`
-crtr skill new <name> --scope <user|project> --description "<what it teaches + when to load, ≤250 chars, front-loaded triggers>"
+crtr skill new <name> --type playbook --scope <user|project> --description "<what it teaches + when to load, ≤250 chars, front-loaded triggers>"
 \`\`\`
 
 ## 4. Density rules
@@ -316,10 +347,11 @@ to read the whole thing for value, you've buried the judgment.
 
 ## Failure modes
 - **<name>**: what it looks like; how to avoid
-
-## Related
-- \`<other-skill>\` — interaction
 \`\`\`
+
+**No \`## Related\` for within-plugin siblings** — the CLI auto-appends a
+\`## Neighbors\` section on \`crtr skill show\`. Add a manual \`## Related\`
+only for cross-plugin or distant refs.
 
 ## 6. Progressive disclosure
 
@@ -357,10 +389,9 @@ covers the SKILL.md surface itself.
 
 ## Constraints
 
-- Topic fails litmus? → \`crtr skill template freeform\` or \`primer\`.
+- Topic fails litmus? → \`crtr skill template freeform\`, \`reference\`, or \`runbook\`.
 - No unconfirmed heuristics — if not from user experience or clear principle,
   leave it out.
-- Update related skills' \`## Related\` if interactions exist.
 `;
 }
 
@@ -394,7 +425,7 @@ or grep, omit it.
 ## 3. Scope + name + scaffold
 
 \`\`\`
-crtr skill new <name> --scope <user|project> --description "<what+when, ≤250 chars, front-loaded triggers>"
+crtr skill new <name> --type freeform --scope <user|project> --description "<what+when, ≤250 chars, front-loaded triggers>"
 \`\`\`
 
 ## 4. Body — pick the closest skeleton
@@ -444,11 +475,228 @@ crtr skill search <keyword>
 
 ## Switch templates if needed
 
-If the content is actually methodology or codebase knowledge:
+Content actually fits a typed template?
 
 \`\`\`
-crtr skill template playbook ${topic ? topic : '<topic>'}
-crtr skill template primer ${topic ? topic : '<topic>'}
+crtr skill template playbook ${topic ? topic : '<topic>'}     # decide
+crtr skill template primer ${topic ? topic : '<topic>'}       # navigate codebase
+crtr skill template reference ${topic ? topic : '<topic>'}    # look up stable facts
+crtr skill template runbook ${topic ? topic : '<topic>'}      # execute a procedure
 \`\`\`
+`;
+}
+
+function referenceTemplatePrompt(topic: string): string {
+  return `# Reference — lookup-fact skill
+
+**Audience: future LLM agent sessions.** Captures *stable lookup facts* an
+agent will grep or scan: protocol fields, API surfaces, glossaries, enum
+tables, status-code maps. Source of truth lives *outside* the skill (RFC,
+spec, vendor docs); the skill is a fast in-repo cache.
+
+${topicLine(topic)}
+
+## Litmus test
+
+> Would you *grep* this rather than *read* it?
+
+If you'd skim end-to-end → it's not reference. If you'd jump straight to
+the row you need → reference. If you'd make a decision after reading →
+\`crtr skill template playbook\`. If you'd execute steps → \`runbook\`.
+
+**Reference markers:** mostly tables · stable across releases · authoritative
+source elsewhere · agent loads to *answer*, not to *think*.
+
+## 1. Confirm reference, not playbook
+
+Use \`AskUserQuestion\` (≤4, multi-choice, best-guess first):
+
+- The lookup the agent will perform (e.g., "what does HTTP 423 mean")
+- Stability: does this change every release? If yes, push back — link the
+  upstream source instead of mirroring it.
+- Authoritative source URL (cite in the body)
+
+Skip if the topic is clearly facts (RFCs, public API). **Never invent
+field/flag/code values** — pull verbatim from source.
+
+## 2. Scope + name
+
+- **Scope**: \`user\` for cross-project facts. \`project\` for repo-specific.
+- **Name**: noun-phrase. \`http-status-codes\` not \`learn-http-status\`.
+- Check \`crtr skill where <name>\`.
+
+## 3. Scaffold
+
+\`\`\`
+crtr skill new <name> --type reference --scope <user|project> --description "<what to look up + when to load, ≤250 chars>"
+\`\`\`
+
+## 4. Density rules
+
+Reference skills are *load and scan*, not *load and read*. Optimize for jump-to-row.
+
+- Tables for anything multi-row. Columns: most-queried field first.
+- One topic per file. Split if it doesn't fit one screen.
+- Source URL at the top — agent verifies before trusting cached facts.
+- No prose paragraphs longer than 2 lines.
+- Skip *why* — playbooks teach why. Reference teaches what.
+
+## 5. Body skeleton
+
+\`\`\`markdown
+# <topic> reference
+
+**Source of truth:** <URL or spec name>
+**Last verified:** <date — when an agent should re-check>
+
+## <table 1 title>
+| <field> | <value> | <notes> |
+|---------|---------|---------|
+| …       | …       | …       |
+
+## <table 2 title>
+…
+
+## Edge cases / gotchas
+- Brief bullets. *What* is misleading, not *why*.
+\`\`\`
+
+**No \`## Related\` for within-plugin siblings** — auto-appended by the CLI.
+
+## 6. Progressive disclosure
+
+If reference is large, split:
+
+\`\`\`
+<skill-dir>/
+  SKILL.md           # top-level index + most-queried table
+  full-table.md      # the full set
+  examples.md        # rarely-needed worked examples
+\`\`\`
+
+SKILL.md links to siblings (\`see [full-table.md](full-table.md)\`).
+
+## 7. Verify
+
+\`\`\`
+crtr skill where <name>
+crtr skill show <name>
+crtr skill search <keyword>
+\`\`\`
+
+Search must surface the skill on a typical lookup query. Sharpen the
+description if it doesn't.
+
+## Constraints
+
+- No invented values. If you can't cite the source, leave the row out.
+- Topic teaches *judgment*, not facts? → \`crtr skill template playbook\`.
+- Topic is a *procedure*? → \`crtr skill template runbook\`.
+- Source updates faster than you'll update the skill? → don't capture; link.
+`;
+}
+
+function runbookTemplatePrompt(topic: string): string {
+  return `# Runbook — procedure skill
+
+**Audience: future LLM agent sessions.** Captures a *procedure* the agent
+executes: numbered steps, decision points, verification, rollback. Examples:
+deploy, incident response, review workflow, release cut.
+
+${topicLine(topic)}
+
+## Litmus test
+
+> After loading this, does the agent *do steps in order*?
+
+If yes → runbook. If the agent makes a decision and stops → \`playbook\`. If
+the agent looks up a value → \`reference\`. If neither fits → \`freeform\`.
+
+**Runbook markers:** numbered steps · ordering matters · has rollback or
+verification · maps an outcome to a known sequence.
+
+## 1. Capture the procedure
+
+Use \`AskUserQuestion\` (≤4, multi-choice, best-guess first):
+
+- The trigger (when does the agent run this?)
+- Steps in order — explicit, atomic. *"Update X"* is not atomic; *"run
+  \\\`pnpm db:migrate\\\` and confirm exit 0"* is.
+- Decision points within the sequence (when does the agent branch?)
+- Rollback / verification (how to confirm success; how to undo on failure)
+
+Push back on vagueness. *"Deploy to prod"* is a label; *"run \\\`pnpm build\\\`,
+push to \\\`main\\\`, wait for green CI, click promote"* is a runbook step.
+
+## 2. Scope + name
+
+- **Scope**: \`project\` for repo-specific procedures. \`user\` for cross-project.
+- **Name**: verb-phrase. \`deploy-to-prod\` not \`production-deployment-guide\`.
+- Check \`crtr skill where <name>\`.
+
+## 3. Scaffold
+
+\`\`\`
+crtr skill new <name> --type runbook --scope <user|project> --description "<when to run + outcome, ≤250 chars, front-loaded trigger>"
+\`\`\`
+
+## 4. Density rules
+
+- Steps are commands, not advice. Each step is something the agent can verify.
+- Decision points get explicit branches, not "use judgment."
+- Verification belongs in-line, after the step that produces the change.
+- Rollback is mandatory if the procedure changes prod state.
+
+## 5. Body skeleton
+
+\`\`\`markdown
+# <procedure>
+
+## When to run
+- <trigger>
+
+## Pre-flight
+- [ ] <thing that must be true before starting>
+
+## Steps
+
+1. **<atomic action>** — \\\`<command>\\\`
+   Verify: <observation that confirms success>
+   If <error condition>: <what to do>
+
+2. **<atomic action>** — …
+
+## Decision points
+
+- After step N, if X then go to step M; else continue.
+
+## Verification (post-flight)
+- [ ] <how to confirm the procedure succeeded end-to-end>
+
+## Rollback
+1. <reverse-order undo steps with their own verification>
+\`\`\`
+
+**No \`## Related\` for within-plugin siblings** — auto-appended by the CLI.
+
+## 6. Verify
+
+\`\`\`
+crtr skill where <name>
+crtr skill show <name>
+crtr skill search <keyword>
+\`\`\`
+
+Walk through the runbook mentally. Each step verifiable? Each decision
+explicit? Rollback covers the state changes? If any answer is no, fix
+before shipping.
+
+## Constraints
+
+- Steps without verification are wishes. Add the verify line or cut the step.
+- "Use your judgment at step 4" → either turn step 4 into a playbook
+  reference, or write the decision criteria explicitly.
+- A procedure that's actually one command isn't a runbook — make it a
+  CLAUDE.md note.
 `;
 }

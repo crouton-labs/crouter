@@ -180,6 +180,39 @@ export function listAllSkills(scopeFilter?: Scope): Skill[] {
   ];
 }
 
+function enumerateNeighborPool(skill: Skill): Skill[] {
+  if (skill.plugin === SCOPE_SKILL_PLUGIN) {
+    return listScopeRootSkills(skill.scope);
+  }
+  const plugin = listInstalledPlugins(skill.scope).find((p) => p.name === skill.plugin);
+  if (!plugin) return [];
+  return listSkillsInPlugin(plugin);
+}
+
+export function listSkillSiblings(skill: Skill): Skill[] {
+  const pool = enumerateNeighborPool(skill);
+  const segs = skill.name.split('/');
+  const depth = segs.length;
+  const parentPrefix = segs.slice(0, -1).join('/');
+  return pool.filter((s) => {
+    if (s.name === skill.name) return false;
+    const sSegs = s.name.split('/');
+    if (sSegs.length !== depth) return false;
+    if (parentPrefix === '') return !s.name.includes('/');
+    return s.name.startsWith(parentPrefix + '/');
+  });
+}
+
+export function listSkillChildren(skill: Skill): Skill[] {
+  const pool = enumerateNeighborPool(skill);
+  const prefix = skill.name + '/';
+  return pool.filter((s) => {
+    if (!s.name.startsWith(prefix)) return false;
+    const rest = s.name.slice(prefix.length);
+    return rest.length > 0 && !rest.includes('/');
+  });
+}
+
 export interface SkillResolutionOpts {
   scope?: Scope;
   pluginFilter?: string;
