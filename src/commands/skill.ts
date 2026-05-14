@@ -119,7 +119,11 @@ export function registerSkillCommands(program: Command): void {
     .command('skill [nameOrVerb] [rest...]')
     .description('manage and inspect skills')
     .option('--frontmatter', 'include YAML frontmatter in the printed body')
-    .addHelpText('after', '\n' + SKILL_IDENTIFIER_HELP)
+    .addHelpText(
+      'after',
+      '\nRun `crtr skill` (no args) for intent-based routing and SKILL.md format reference.\n\n' +
+        SKILL_IDENTIFIER_HELP,
+    )
     .action(
       async (
         nameOrVerb: string | undefined,
