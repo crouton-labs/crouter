@@ -70,6 +70,12 @@ function formatNeighborQualifier(s: Skill): string {
   return s.plugin === SCOPE_SKILL_PLUGIN ? `${s.scope}:${s.name}` : `${s.plugin}/${s.name}`;
 }
 
+function formatNeighborKeywords(s: Skill): string {
+  const kw = s.frontmatter.keywords;
+  if (!kw || kw.length === 0) return '';
+  return ` — [${kw.join(', ')}]`;
+}
+
 function buildNeighborsSection(skill: Skill): string | null {
   const siblings = listSkillSiblings(skill);
   const children = listSkillChildren(skill);
@@ -77,22 +83,21 @@ function buildNeighborsSection(skill: Skill): string | null {
 
   const lines: string[] = [
     '## Neighbors',
-    '*Auto-discovered from filesystem. Use `--no-neighbors` to suppress.*',
+    '*Auto-discovered from filesystem. Use `--no-neighbors` to suppress. ' +
+      'Run `crtr skill show <name>` for full description + body.*',
     '',
   ];
   if (siblings.length > 0) {
     lines.push('**Siblings:**');
     for (const s of siblings) {
-      const desc = s.frontmatter.description !== undefined ? s.frontmatter.description : '';
-      lines.push(`- \`${formatNeighborQualifier(s)}\`${desc ? ` — ${desc}` : ''}`);
+      lines.push(`- \`${formatNeighborQualifier(s)}\`${formatNeighborKeywords(s)}`);
     }
     if (children.length > 0) lines.push('');
   }
   if (children.length > 0) {
     lines.push('**Nested:**');
     for (const s of children) {
-      const desc = s.frontmatter.description !== undefined ? s.frontmatter.description : '';
-      lines.push(`- \`${formatNeighborQualifier(s)}\`${desc ? ` — ${desc}` : ''}`);
+      lines.push(`- \`${formatNeighborQualifier(s)}\`${formatNeighborKeywords(s)}`);
     }
   }
   return lines.join('\n');

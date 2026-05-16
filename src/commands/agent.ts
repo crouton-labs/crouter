@@ -21,7 +21,7 @@ import {
 
 // Seconds before the originating pane is closed in fire-and-forget workflow
 // handoffs (plan/implement/review). Override with --kill-after.
-const DEFAULT_KILL_SECS = 10;
+const DEFAULT_KILL_SECS = 2;
 
 async function readStdin(): Promise<string> {
   const chunks: Buffer[] = [];
