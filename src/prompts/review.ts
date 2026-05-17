@@ -1,20 +1,13 @@
 const SUBMIT_INSTRUCTIONS = `## Delivering your review
 
-When your review is complete, run a single Bash command to submit it back to
-the parent agent:
-
-\`\`\`bash
-crtr agent submit "$(cat <<'EOF'
-<your full review markdown here, using the Output Format below>
-EOF
-)"
-\`\`\`
+When your review is complete, deliver your verdict as instructed by
+__CRTR_SUBMIT_INSTRUCTION__
 
 The pane will close automatically once your review is delivered. Do NOT
-summarize or chat after submission — \`crtr agent submit\` IS the response.
+summarize or chat after submission — the submit call IS the response.
 
 If you cannot complete the review (file missing, totally malformed, etc.),
-still call \`crtr agent submit\` with a brief explanation of why.`;
+still submit with a brief explanation of why.`;
 
 export function specReviewPrompt(specPath: string): string {
   return `You are reviewing a spec document. Verify it is complete and ready for

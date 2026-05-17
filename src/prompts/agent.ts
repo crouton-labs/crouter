@@ -1,32 +1,36 @@
-import { planPrompt } from './plan.js';
+import { planReviewPrompt, specReviewPrompt } from './review.js';
 
 /**
  * First user message for a spec → plan handoff.
- * Bundles the full planning workflow with the spec to plan.
+ *
+ * Thin prompt: the worker discovers the full planning workflow by running
+ * `crtr plan new -h`, then saves the plan via `crtr plan new`. This avoids
+ * embedding the planPrompt() blob here and keeps the prompt in sync with the
+ * live CLI without any coupling.
  */
-export function planHandoffPrompt(specPath: string, plansDir: string): string {
-  return `${planPrompt(plansDir)}
+export function planHandoffPrompt(specPath: string, jobId: string): string {
+  return `You were launched in a new tmux pane to turn an approved spec into a plan.
 
----
+**Spec:** ${specPath}
 
-## Your task
+1. Run \`crtr plan new -h\` to load the planning workflow and output schema.
+2. Read the spec end-to-end.
+3. Follow the workflow from step 1 and save the plan by piping JSON to \`crtr plan new\`.
+4. When done, submit your result:
 
-You were just launched in a new tmux pane via \`crtr agent plan\`. A spec
-has been approved upstream and you are responsible for turning it into a plan.
+\`\`\`bash
+echo '{"job_id":"${jobId}","result":{"status":"done","plan_saved":true}}' | crtr job submit
+\`\`\`
 
-**Spec to plan:** ${specPath}
+If you cannot complete the plan, still call \`crtr job submit\` with \`{"job_id":"${jobId}","result":{"status":"failed","reason":"<why>"}}\`.
 
-Read the spec end-to-end before anything else. Then proceed through the
-workflow above. When you save the plan, pass \`--spec <spec-name>\` so the
-plan reviewer can check alignment.
-
-The originating pane has closed; the user is watching you here. Begin now.`;
+Begin now.`;
 }
 
 /**
  * First user message for a plan → implementation handoff.
  */
-export function implementHandoffPrompt(planPath: string): string {
+export function implementHandoffPrompt(planPath: string, jobId: string): string {
   return `You are executing an approved plan. For small plans, implement directly.
 For plans with parallelizable scale, orchestrate parallel subagents and
 coordinate them — don't write all the code yourself when the plan is
@@ -36,11 +40,9 @@ structured to fan out.
 
 ## Phase 1: Read
 
-1. Read the plan end-to-end. If it references a spec (\`--spec\` was passed
-   at save time), read that too — it's the contract you are realizing.
-2. Read the files the plan names under "Files to modify / create" (or the
-   per-task \`Files:\` lines) and "Existing utilities to reuse" to ground
-   yourself in current code.
+1. Read the plan end-to-end. If it references a spec, read that too.
+2. Read the files the plan names under "Files to modify / create" and
+   "Existing utilities to reuse" to ground yourself in current code.
 3. If the plan has task blocks with dependencies, extract the task list,
    dependency graph, and integration contracts.
 
@@ -103,11 +105,18 @@ Wait for all subagents in the current layer. Then:
 subagent returns blocked work and the fix is small enough that re-dispatch
 would be slower.
 
-## Phase 6: Report
+## Phase 6: Report and submit
 
-When all tasks complete and verification passes, write one short message:
-files touched per group, tests run, what works. The user may then ask for
-a code review via \`crtr agent review\`.
+When all tasks complete and verification passes, submit your result:
+
+\`\`\`bash
+echo '{"job_id":"${jobId}","result":{"status":"done","summary":"<one-line summary of files touched>"}}' | crtr job submit
+\`\`\`
+
+If implementation fails, still submit:
+\`\`\`bash
+echo '{"job_id":"${jobId}","result":{"status":"failed","reason":"<why>"}}' | crtr job submit
+\`\`\`
 
 ## Guardrails (apply to you AND your subagents)
 
@@ -119,59 +128,30 @@ a code review via \`crtr agent review\`.
   patterns. Use the utilities the plan named.
 - **Commit only if the user asks.**
 
-You were launched in a new tmux pane via \`crtr agent implement\`. The
-originating pane has closed; the user is watching you here. Begin by reading
-the plan.`;
+Begin by reading the plan.`;
 }
 
 /**
- * First user message for a handoff to code review of the working tree.
+ * First user message for a reviewer agent.
+ * The reviewer submits via `crtr job submit` rather than `crtr agent submit`.
  */
-export function reviewHandoffPrompt(): string {
-  return `You are a code reviewer. A change has just been implemented and your job is
-to review it before it lands.
+export function reviewerHandoffPrompt(
+  artifactPath: string,
+  artifactKind: 'plan' | 'spec',
+  specPath: string | null,
+  jobId: string,
+): string {
+  const reviewBody =
+    artifactKind === 'spec'
+      ? specReviewPrompt(artifactPath)
+      : planReviewPrompt(artifactPath, specPath);
 
-## Scope
+  const patched = reviewBody.replace(
+    '__CRTR_SUBMIT_INSTRUCTION__',
+    `the submit command injected below:\n\n\`\`\`bash\necho '{"job_id":"${jobId}","result":{"status":"done","review":"<your full review markdown>"}}' | crtr job submit\n\`\`\``,
+  );
 
-Review the **uncommitted** changes in the working tree of the current
-directory. Use \`git status\` and \`git diff\` (including staged changes via
-\`git diff --cached\`) to enumerate what changed. If there are zero changes,
-say so and stop.
+  return `${patched}
 
-## What to check
-
-| Category | What to look for |
-|----------|------------------|
-| Correctness | Does the code do what it claims? Off-by-ones, wrong branches, missed cases. |
-| Security | Injection, auth bypass, leaking secrets, unsafe defaults. |
-| Style fit | Matches the file's existing conventions, naming, error-handling style. |
-| Tests | Are there tests for new behavior? Do they actually exercise the change? |
-| Scope | Did the change stay within its mandate, or sneak in unrelated edits? |
-| Reuse | Are there existing utilities that should have been used? |
-
-## Calibration
-
-Only flag issues that would matter to the next reader, on-call, or future
-maintainer. Nits are fine in a "Recommendations" section, but **do not block
-on style preferences**. Approve unless something is wrong, missing, or risky.
-
-## Output
-
-\`\`\`
-## Code Review
-
-**Status:** Approved | Issues Found
-
-**Issues (if any):**
-- [file:line]: [specific issue] — [why it matters]
-
-**Recommendations (advisory):**
-- [suggestions]
-\`\`\`
-
-After printing the review, your turn ends.
-
-You were launched in a new tmux pane via \`crtr agent review\`. The
-originating pane has closed; the user is watching you here. Begin by checking
-the working tree.`;
+After calling \`crtr job submit\`, your turn ends. Do NOT chat or summarize after submission.`;
 }

@@ -38,3 +38,14 @@ export function network(message: string, details?: Record<string, unknown>): Crt
 export function general(message: string, details?: Record<string, unknown>): CrtrError {
   return new CrtrError('error', message, ExitCode.GENERAL, details);
 }
+
+/** Thrown by stub handlers for leaves not yet wired in P3+.
+ *  code='not_implemented', exitCode=GENERAL, next names the node. */
+export function notImplemented(node: string): CrtrError {
+  return new CrtrError(
+    'not_implemented',
+    `${node} is not yet implemented.`,
+    ExitCode.GENERAL,
+    { next: 'This leaf is not yet wired.' },
+  );
+}

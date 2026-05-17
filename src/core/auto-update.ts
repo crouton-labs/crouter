@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { readConfig, readState, updateState } from './config.js';
 import { nowIso } from './fs-utils.js';
 import { info } from './output.js';
-import { selfCheck, contentCheck } from '../commands/update.js';
+import { selfCheck, contentCheck } from './self-update.js';
 
 const HOUR_MS = 60 * 60 * 1000;
 
@@ -69,14 +69,22 @@ export function maybeAutoUpdate(argv: string[]): void {
     });
 
     if (crtr === 'notify') {
-      selfCheck();
+      const r = selfCheck();
+      if (r !== null && r.latest !== r.current) {
+        process.stderr.write(`crtr: v${r.latest} available (current ${r.current}) — run \`crtr sys update\`\n`);
+      }
     } else if (crtr === 'apply') {
       info('applying self-update in background');
       spawnDetachedSelfUpdate();
     }
 
     if (content === 'notify') {
-      contentCheck();
+      const entries = contentCheck();
+      for (const e of entries) {
+        if (!e.up_to_date && !e.unreachable) {
+          process.stderr.write(`crtr: ${e.kind} ${e.name} has updates available — run \`crtr sys update\`\n`);
+        }
+      }
     } else if (content === 'apply') {
       info('applying content updates in background');
       spawnDetachedContentUpdate();

@@ -34,6 +34,7 @@
   },
   "license": "MIT",
   "dependencies": {
+    "@crouton-kit/humanloop": "file:.yalc/@crouton-kit/humanloop",
     "commander": "^13.0.0"
   },
   "devDependencies": {

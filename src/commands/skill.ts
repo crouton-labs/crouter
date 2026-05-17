@@ -1,31 +1,21 @@
-import { Command } from 'commander';
+// `crtr skill` subtree handlers — P3 implementation.
+// Sub-branches: find {list, search, grep}, read {show, where}, author {guide, scaffold}, state {enable, disable}.
+
 import { join } from 'node:path';
 import { writeFileSync } from 'node:fs';
+import { defineBranch, defineLeaf } from '../core/command.js';
+import type { BranchDef } from '../core/command.js';
+import { reqStr, str, bool, int } from '../core/io.js';
+import { usage, general, notFound } from '../core/errors.js';
 import {
-  SCHEMA_VERSION,
   SCOPE_SKILL_PLUGIN,
   SKILL_ENTRY_FILE,
   SKILLS_DIR,
   SKILL_TYPES,
   isSkillType,
+  skillConfigKey,
 } from '../types.js';
-import type { Scope, SkillType } from '../types.js';
-import { skillConfigKey } from '../types.js';
-import { CrtrError, notFound, usage, general } from '../core/errors.js';
-import {
-  out,
-  hint,
-  info,
-  jsonOut,
-  handleError,
-} from '../core/output.js';
-import {
-  listScopes,
-  requireScopeRoot,
-  resolveScopeArg,
-  projectScopeRoot,
-  scopeSkillsDir,
-} from '../core/scope.js';
+import type { Scope } from '../types.js';
 import {
   resolveSkill,
   listAllSkills,
@@ -35,39 +25,28 @@ import {
   listSkillSiblings,
   listSkillChildren,
 } from '../core/resolver.js';
-import type { Skill } from '../types.js';
-import { updateConfig, ensureScopeInitialized } from '../core/config.js';
+import {
+  listScopes,
+  resolveScopeArg,
+  requireScopeRoot,
+  scopeSkillsDir,
+  projectScopeRoot,
+} from '../core/scope.js';
 import { parseFrontmatter, serializeFrontmatter } from '../core/frontmatter.js';
+import { updateConfig, ensureScopeInitialized } from '../core/config.js';
+import { paginate } from '../core/pagination.js';
 import { ensureDir, pathExists, readText, walkFiles } from '../core/fs-utils.js';
-import { skillPrompt, skillCreatePrompt, skillTemplatePrompt } from '../prompts/skill.js';
+import { skillCreatePrompt, skillTemplatePrompt } from '../prompts/skill.js';
+import type { Skill } from '../types.js';
 
-const KNOWN_VERBS = new Set([
-  'list',
-  'show',
-  'path',
-  'grep',
-  'new',
-  'create',
-  'template',
-  'where',
-  'enable',
-  'disable',
-  'search',
-]);
-
-function buildShowFooter(skillPath: string): string {
-  return (
-    `crtr: edit this skill directly at ${skillPath} — ` +
-    `for SKILL.md format + authoring workflow run \`crtr skill\` (no args)`
-  );
-}
-
-function wrapSkill(name: string, path: string, content: string): string {
-  return `<skill name="${name}" path="${path}">\n${content.endsWith('\n') ? content : content + '\n'}</skill>`;
-}
+// ---------------------------------------------------------------------------
+// Neighbors section (ported from old impl)
+// ---------------------------------------------------------------------------
 
 function formatNeighborQualifier(s: Skill): string {
-  return s.plugin === SCOPE_SKILL_PLUGIN ? `${s.scope}:${s.name}` : `${s.plugin}/${s.name}`;
+  return s.plugin === SCOPE_SKILL_PLUGIN
+    ? `${s.scope}:${s.name}`
+    : `${s.plugin}/${s.name}`;
 }
 
 function formatNeighborKeywords(s: Skill): string {
@@ -83,8 +62,7 @@ function buildNeighborsSection(skill: Skill): string | null {
 
   const lines: string[] = [
     '## Neighbors',
-    '*Auto-discovered from filesystem. Use `--no-neighbors` to suppress. ' +
-      'Run `crtr skill show <name>` for full description + body.*',
+    '*Auto-discovered from filesystem. Run `crtr skill read show <name>` for full description + body.*',
     '',
   ];
   if (siblings.length > 0) {
@@ -103,554 +81,547 @@ function buildNeighborsSection(skill: Skill): string | null {
   return lines.join('\n');
 }
 
-function appendNeighbors(skill: Skill, body: string, suppress: boolean): string {
-  if (suppress) return body;
+function appendNeighbors(skill: Skill, body: string): string {
   const section = buildNeighborsSection(skill);
   if (section === null) return body;
   const sep = body.endsWith('\n') ? '\n' : '\n\n';
   return body + sep + `<neighbors>\n${section}\n</neighbors>\n`;
 }
 
-const SKILL_IDENTIFIER_HELP =
-  'Skill identifier forms (accepted by show, path, where, enable, disable):\n' +
-  '  <name>                       bare name — resolves scope-root first, then plugins\n' +
-  '  <plugin>:<name>              explicit plugin (canonical)\n' +
-  '  <scope>:<name>               scope-root skill in a specific scope (user|project)\n' +
-  '  <scope>:<plugin>/<name>      fully qualified — matches `skill list` / `skill search` output\n' +
-  '  <plugin>/<name>              shorthand for <plugin>:<name> when unambiguous';
+// ---------------------------------------------------------------------------
+// Resolve scope for enable/disable/scaffold
+// ---------------------------------------------------------------------------
 
-export function registerSkillCommands(program: Command): void {
-  const skill = program
-    .command('skill [nameOrVerb] [rest...]')
-    .description('manage and inspect skills')
-    .option('--frontmatter', 'include YAML frontmatter in the printed body')
-    .addHelpText('before', '\n' + skillPrompt() + '\n')
-    .addHelpText('after', '\n' + SKILL_IDENTIFIER_HELP)
-    .action(
-      async (
-        nameOrVerb: string | undefined,
-        _rest: string[],
-        opts: { frontmatter?: boolean },
-      ) => {
-        if (nameOrVerb === undefined) {
-          skill.help();
-          return;
-        }
-        if (!KNOWN_VERBS.has(nameOrVerb)) {
-          try {
-            const skillObj = resolveSkill(nameOrVerb);
-            const content = readText(skillObj.path);
-            const rawBody = opts.frontmatter ? content : parseFrontmatter(content).body;
-            const body = appendNeighbors(skillObj, rawBody, false);
-            out(wrapSkill(skillObj.name, skillObj.path, body));
-            hint(buildShowFooter(skillObj.path));
-          } catch (e) {
-            handleError(e);
-          }
-        }
-      },
-    );
-
-  // list
-  skill
-    .command('list')
-    .description('list installed skills (disabled hidden unless -a)')
-    .option('--scope <scope>', 'user|project|all (default: all)')
-    .option('--plugin <name>', 'filter by plugin name')
-    .option('-a, --all', 'include disabled skills')
-    .option('--json', 'emit JSON')
-    .addHelpText(
-      'after',
-      '\nOutput format: <scope>:<plugin>/<name> — paste this identifier into ' +
-        '`crtr skill show` to read the skill.',
-    )
-    .action(
-      async (opts: {
-        scope?: string;
-        plugin?: string;
-        all?: boolean;
-        json?: boolean;
-      }) => {
-        try {
-          const scopes = listScopes(opts.scope);
-          const skills = scopes
-            .flatMap((s: Scope) => listAllSkills(s))
-            .filter((sk) => {
-              if (opts.plugin !== undefined && sk.plugin !== opts.plugin) return false;
-              if (!opts.all && !sk.enabled) return false;
-              return true;
-            });
-
-          if (opts.json) {
-            jsonOut({
-              skills: skills.map((sk) => ({
-                name: sk.name,
-                plugin: sk.plugin,
-                scope: sk.scope,
-                path: sk.path,
-                description: sk.frontmatter.description,
-                enabled: sk.enabled,
-                disabled_in: sk.disabledIn,
-              })),
-            });
-            return;
-          }
-
-          for (const sk of skills) {
-            const desc = sk.frontmatter.description !== undefined ? sk.frontmatter.description : '';
-            const marker = sk.enabled ? '' : ` [disabled${sk.disabledIn ? `@${sk.disabledIn}` : ''}]`;
-            const qualified =
-              sk.plugin === SCOPE_SKILL_PLUGIN
-                ? `${sk.scope}:${sk.name}`
-                : `${sk.scope}:${sk.plugin}/${sk.name}`;
-            out(`${qualified}${marker}${desc ? `  — ${desc}` : ''}`);
-          }
-        } catch (e) {
-          handleError(e, { json: opts.json });
-        }
-      },
-    );
-
-  // show
-  skill
-    .command('show <name>')
-    .description('print SKILL.md body to stdout (default verb)')
-    .option('--scope <scope>', 'user|project')
-    .option('--plugin <name>', 'filter by plugin name')
-    .option('--frontmatter', 'include YAML frontmatter in the printed body')
-    .option('--no-neighbors', 'suppress the auto-appended ## Neighbors section')
-    .option('--json', 'emit JSON')
-    .addHelpText(
-      'after',
-      '\nExamples:\n' +
-        '  crtr skill show rules                              # bare name\n' +
-        '  crtr skill show claude-authoring:rules             # plugin:name (canonical)\n' +
-        '  crtr skill show user:claude-authoring/rules        # scope:plugin/name (matches search/list output)\n' +
-        '  crtr skill show claude-authoring/rules             # plugin/name shorthand\n\n' +
-        SKILL_IDENTIFIER_HELP,
-    )
-    .action(
-      async (
-        name: string,
-        opts: {
-          scope?: string;
-          plugin?: string;
-          frontmatter?: boolean;
-          neighbors?: boolean;
-          json?: boolean;
-        },
-      ) => {
-      try {
-        const scopeArg = resolveScopeArg(opts.scope);
-        const resolveOpts = scopeArg !== 'all' ? { scope: scopeArg as Scope } : {};
-        if (opts.plugin !== undefined) {
-          Object.assign(resolveOpts, { pluginFilter: opts.plugin });
-        }
-        const skillObj = resolveSkill(name, resolveOpts);
-        const content = readText(skillObj.path);
-        const rawBody = opts.frontmatter ? content : parseFrontmatter(content).body;
-        const suppressNeighbors = opts.neighbors === false;
-        const body = appendNeighbors(skillObj, rawBody, suppressNeighbors);
-
-        if (opts.json) {
-          jsonOut({
-            name: skillObj.name,
-            plugin: skillObj.plugin,
-            scope: skillObj.scope,
-            path: skillObj.path,
-            content,
-            authoring_guide_command: `crtr skill`,
-          });
-          return;
-        }
-
-        out(wrapSkill(skillObj.name, skillObj.path, body));
-        hint(buildShowFooter(skillObj.path));
-      } catch (e) {
-        handleError(e, { json: opts.json });
-      }
-    },
-  );
-
-  // path
-  skill
-    .command('path <name>')
-    .description('print absolute path to SKILL.md')
-    .option('--scope <scope>', 'user|project')
-    .option('--plugin <name>', 'filter by plugin name')
-    .action(async (name: string, opts: { scope?: string; plugin?: string }) => {
-      try {
-        const scopeArg = resolveScopeArg(opts.scope);
-        const resolveOpts = scopeArg !== 'all' ? { scope: scopeArg as Scope } : {};
-        if (opts.plugin !== undefined) {
-          Object.assign(resolveOpts, { pluginFilter: opts.plugin });
-        }
-        const skillObj = resolveSkill(name, resolveOpts);
-        out(skillObj.path);
-      } catch (e) {
-        handleError(e);
-      }
-    });
-
-  // grep
-  skill
-    .command('grep <pattern>')
-    .description('search skill file contents for a regex pattern')
-    .option('--scope <scope>', 'user|project|all')
-    .option('--plugin <name>', 'filter by plugin name')
-    .option('--json', 'emit JSON')
-    .action(async (pattern: string, opts: { scope?: string; plugin?: string; json?: boolean }) => {
-      try {
-        let regex: RegExp;
-        try {
-          regex = new RegExp(pattern);
-        } catch {
-          throw usage(`invalid regex pattern: ${pattern}`);
-        }
-
-        const scopes = listScopes(opts.scope);
-
-        const skillsDirs: string[] = [];
-        for (const s of scopes) {
-          if (opts.plugin === undefined || opts.plugin === SCOPE_SKILL_PLUGIN) {
-            const root = scopeSkillsDir(s);
-            if (root) skillsDirs.push(root);
-          }
-          for (const plugin of listInstalledPlugins(s)) {
-            if (!plugin.enabled) continue;
-            if (opts.plugin !== undefined && plugin.name !== opts.plugin) continue;
-            skillsDirs.push(join(plugin.root, SKILLS_DIR));
-          }
-        }
-
-        const matchLines: Array<{ path: string; line: number; text: string }> = [];
-
-        for (const skillsDir of skillsDirs) {
-          const files = walkFiles(skillsDir);
-          for (const file of files) {
-            const content = readText(file);
-            const lines = content.split('\n');
-            lines.forEach((lineText, idx) => {
-              if (regex.test(lineText)) {
-                matchLines.push({ path: file, line: idx + 1, text: lineText });
-              }
-            });
-          }
-        }
-
-        if (opts.json) {
-          jsonOut({ matches: matchLines });
-          return;
-        }
-
-        for (const m of matchLines) {
-          out(`${m.path}:${m.line}: ${m.text}`);
-        }
-      } catch (e) {
-        handleError(e, { json: opts.json });
-      }
-    });
-
-  // new
-  skill
-    .command('new <qualifier>')
-    .description('scaffold a new skill — <name> (scope-direct) or <plugin>:<name>')
-    .option('--scope <scope>', 'user|project (default: project then user)')
-    .option('--description <text>', 'skill description for frontmatter')
-    .option(
-      '--type <type>',
-      `skill type for frontmatter — one of: ${SKILL_TYPES.join(' | ')}`,
-    )
-    .action(
-      async (
-        qualifier: string,
-        opts: { scope?: string; description?: string; type?: string },
-      ) => {
-      try {
-        const { plugin: pluginName, name: skillName } = parseSkillQualifier(qualifier);
-        if (!skillName) {
-          throw usage('skill name required');
-        }
-
-        let skillType: SkillType | undefined;
-        if (opts.type !== undefined) {
-          if (!isSkillType(opts.type)) {
-            throw usage(
-              `unknown skill type: ${opts.type} / valid: ${SKILL_TYPES.join(' | ')}`,
-            );
-          }
-          skillType = opts.type;
-        }
-
-        const scopeArg = opts.scope !== undefined ? resolveScopeArg(opts.scope) : undefined;
-
-        // Scope-direct: no plugin qualifier, or explicit `_:` sentinel
-        if (pluginName === undefined || pluginName === SCOPE_SKILL_PLUGIN) {
-          let scope: Scope;
-          if (scopeArg !== undefined && scopeArg !== 'all') {
-            scope = scopeArg as Scope;
-          } else {
-            scope = projectScopeRoot() !== null ? 'project' : 'user';
-          }
-          const scopeRootPath = requireScopeRoot(scope);
-          ensureScopeInitialized(scope, scopeRootPath);
-
-          const skillsRoot = scopeSkillsDir(scope);
-          if (!skillsRoot) {
-            throw general(`no skills dir for scope ${scope}`);
-          }
-          const skillDir = join(skillsRoot, ...skillName.split('/'));
-          const skillFile = join(skillDir, SKILL_ENTRY_FILE);
-          if (pathExists(skillFile)) {
-            throw general(`skill already exists: ${skillFile}`);
-          }
-          ensureDir(skillDir);
-          const fm = serializeFrontmatter({
-            name: skillName,
-            description: opts.description,
-            type: skillType,
-          });
-          writeFileSync(skillFile, fm, 'utf8');
-
-          out(skillFile);
-          const templateHint = skillType !== undefined ? skillType : '<type>';
-          hint(
-            `crtr: scaffolded ${scope}-scope skill ${skillName} — edit directly; ` +
-              `\`crtr skill template ${templateHint}\` for body skeleton`,
-          );
-          return;
-        }
-
-        let plugin;
-        if (scopeArg !== undefined && scopeArg !== 'all') {
-          plugin = findPluginByName(pluginName, scopeArg as Scope);
-        } else {
-          plugin = findPluginByName(pluginName);
-        }
-
-        if (!plugin) {
-          throw notFound(`plugin not found: ${pluginName}`);
-        }
-
-        const skillDir = join(plugin.root, SKILLS_DIR, ...skillName.split('/'));
-        const skillFile = join(skillDir, SKILL_ENTRY_FILE);
-
-        if (pathExists(skillFile)) {
-          throw general(`skill already exists: ${skillFile}`);
-        }
-
-        ensureDir(skillDir);
-
-        const fm = serializeFrontmatter({
-          name: skillName,
-          description: opts.description,
-          type: skillType,
-        });
-
-        writeFileSync(skillFile, fm, 'utf8');
-
-        out(skillFile);
-        const templateHint = skillType !== undefined ? skillType : '<type>';
-        hint(
-          `crtr: scaffolded ${skillFile} — edit directly; ` +
-            `\`crtr skill template ${templateHint}\` for body skeleton`,
-        );
-      } catch (e) {
-        handleError(e);
-      }
-    });
-
-  // create — pick a template type
-  skill
-    .command('create [topic...]')
-    .description(`pick a template type for a new skill (${SKILL_TYPES.join(' | ')})`)
-    .action(async (topic: string[]) => {
-      const arg = topic && topic.length > 0 ? topic.join(' ') : '';
-      out(skillCreatePrompt(arg));
-    });
-
-  // template — full workflow + skeleton for one template type
-  skill
-    .command('template <type> [topic...]')
-    .description(`full workflow + skeleton for a template type (${SKILL_TYPES.join(' | ')})`)
-    .action(async (type: string, topic: string[]) => {
-      const arg = topic && topic.length > 0 ? topic.join(' ') : '';
-      out(skillTemplatePrompt(type, arg));
-    });
-
-  // where
-  skill
-    .command('where <name>')
-    .description('show resolution info as JSON')
-    .option('--scope <scope>', 'user|project')
-    .option('--plugin <name>', 'filter by plugin name')
-    .action(async (name: string, opts: { scope?: string; plugin?: string }) => {
-      try {
-        const scopeArg = resolveScopeArg(opts.scope);
-        const resolveOpts = scopeArg !== 'all' ? { scope: scopeArg as Scope } : {};
-        if (opts.plugin !== undefined) {
-          Object.assign(resolveOpts, { pluginFilter: opts.plugin });
-        }
-        const skillObj = resolveSkill(name, resolveOpts);
-        jsonOut({
-          name: skillObj.name,
-          plugin: skillObj.plugin,
-          scope: skillObj.scope,
-          path: skillObj.path,
-        });
-      } catch (e) {
-        handleError(e);
-      }
-    });
-
-  // enable
-  skill
-    .command('enable <name>')
-    .description('enable a skill (clears any disable in the chosen scope)')
-    .option('--scope <scope>', 'user|project (default: project if available, else user)')
-    .action(async (name: string, opts: { scope?: string }) => {
-      try {
-        await toggleSkill(name, true, opts.scope);
-      } catch (e) {
-        handleError(e);
-      }
-    });
-
-  // disable
-  skill
-    .command('disable <name>')
-    .description('disable a skill (hides from list and agent discovery)')
-    .option('--scope <scope>', 'user|project (default: project if available, else user)')
-    .action(async (name: string, opts: { scope?: string }) => {
-      try {
-        await toggleSkill(name, false, opts.scope);
-      } catch (e) {
-        handleError(e);
-      }
-    });
-
-  // search
-  skill
-    .command('search <query>')
-    .description('search skills by name, description, and keywords')
-    .option('--scope <scope>', 'user|project|all (default: all)')
-    .option('--plugin <name>', 'filter by plugin name')
-    .option('-a, --all', 'include disabled skills')
-    .option('--body', 'also search SKILL.md body')
-    .option('--json', 'emit JSON')
-    .addHelpText(
-      'after',
-      '\nOutput columns (tab-separated): <scope>:<plugin>/<name>  <matched-fields>  <description>\n' +
-        'The identifier is pasteable into `crtr skill show`.',
-    )
-    .action(
-      async (
-        query: string,
-        opts: {
-          scope?: string;
-          plugin?: string;
-          all?: boolean;
-          body?: boolean;
-          json?: boolean;
-        },
-      ) => {
-        try {
-          const needle = query.toLowerCase();
-          const scopes = listScopes(opts.scope);
-          const candidates = scopes
-            .flatMap((s: Scope) => listAllSkills(s))
-            .filter((sk) => {
-              if (opts.plugin !== undefined && sk.plugin !== opts.plugin) return false;
-              if (!opts.all && !sk.enabled) return false;
-              return true;
-            });
-
-          interface Hit {
-            skill: typeof candidates[number];
-            score: number;
-            matched: string[];
-          }
-          const hits: Hit[] = [];
-          for (const sk of candidates) {
-            const matched: string[] = [];
-            let score = 0;
-            if (sk.name.toLowerCase().includes(needle)) {
-              score += 10;
-              matched.push('name');
-            }
-            const desc = sk.frontmatter.description;
-            if (desc !== undefined && desc.toLowerCase().includes(needle)) {
-              score += 4;
-              matched.push('description');
-            }
-            const kws = sk.frontmatter.keywords;
-            if (kws && kws.some((k) => k.toLowerCase().includes(needle))) {
-              score += 6;
-              matched.push('keywords');
-            }
-            if (opts.body) {
-              const text = readText(sk.path).toLowerCase();
-              if (text.includes(needle)) {
-                score += 1;
-                matched.push('body');
-              }
-            }
-            if (score > 0) hits.push({ skill: sk, score, matched });
-          }
-          hits.sort((a, b) => b.score - a.score || a.skill.name.localeCompare(b.skill.name));
-
-          if (opts.json) {
-            jsonOut({
-              query,
-              hits: hits.map((h) => ({
-                name: h.skill.name,
-                plugin: h.skill.plugin,
-                scope: h.skill.scope,
-                path: h.skill.path,
-                description: h.skill.frontmatter.description,
-                keywords: h.skill.frontmatter.keywords,
-                enabled: h.skill.enabled,
-                score: h.score,
-                matched: h.matched,
-              })),
-            });
-            return;
-          }
-
-          for (const h of hits) {
-            const desc =
-              h.skill.frontmatter.description !== undefined
-                ? h.skill.frontmatter.description
-                : '';
-            const marker = h.skill.enabled ? '' : ' [disabled]';
-            const qualified =
-              h.skill.plugin === SCOPE_SKILL_PLUGIN
-                ? `${h.skill.scope}:${h.skill.name}`
-                : `${h.skill.scope}:${h.skill.plugin}/${h.skill.name}`;
-            out(`${qualified}${marker}\t${h.matched.join(',')}\t${desc}`);
-          }
-        } catch (e) {
-          handleError(e, { json: opts.json });
-        }
-      },
-    );
+function resolveWriteScope(scopeStr: string | undefined): Scope {
+  if (scopeStr !== undefined) {
+    const resolved = resolveScopeArg(scopeStr);
+    if (resolved === 'all') {
+      throw usage('scope must be user or project, not all');
+    }
+    return resolved;
+  }
+  return projectScopeRoot() !== null ? 'project' : 'user';
 }
 
-async function toggleSkill(
-  name: string,
-  enabled: boolean,
-  scopeArgRaw: string | undefined,
-): Promise<void> {
-  let scope: Scope;
-  if (scopeArgRaw !== undefined) {
-    const resolved = resolveScopeArg(scopeArgRaw);
-    if (resolved === 'all') throw usage('--scope must be user or project for enable/disable');
-    scope = resolved;
-  } else {
-    scope = projectScopeRoot() !== null ? 'project' : 'user';
-  }
+// ---------------------------------------------------------------------------
+// find sub-branch
+// ---------------------------------------------------------------------------
 
-  const skillObj = resolveSkill(name);
+const findList = defineLeaf({
+  name: 'list',
+  help: {
+    name: 'skill find list',
+    summary: 'paginated list of installed skills',
+    input: [
+      { name: 'scope', type: 'string', required: false, constraint: 'One of: user, project, all. Default: all.' },
+      { name: 'plugin', type: 'string', required: false, constraint: 'Filter to a single plugin name.' },
+      { name: 'include_disabled', type: 'boolean', required: false, constraint: 'Default false. When true, includes disabled skills.' },
+      { name: 'limit', type: 'integer', required: false, constraint: 'Default 50, max 200.' },
+      { name: 'cursor', type: 'string', required: false, constraint: 'Opaque token from next_cursor. Omit on first call.' },
+    ],
+    output: [
+      { name: 'items', type: 'object[]', required: true, constraint: 'Each: {name, plugin, scope, path, description?, enabled, disabled_in?}. Sorted by scope then plugin then name ascending.' },
+      { name: 'next_cursor', type: 'string | null', required: true, constraint: 'null means no more items.' },
+      { name: 'total', type: 'integer | null', required: true, constraint: 'Exact when cheap; null otherwise.' },
+    ],
+    outputKind: 'object',
+    effects: ['None. Read-only.'],
+  },
+  run: async (input) => {
+    const scopeStr = str(input, 'scope');
+    const pluginFilter = str(input, 'plugin');
+    const includeDisabled = bool(input, 'include_disabled', false);
+    const limit = int(input, 'limit', { default: 50, min: 1, max: 200 });
+    const cursor = str(input, 'cursor');
+
+    const scopes = listScopes(scopeStr);
+    const skills = scopes
+      .flatMap((s) => listAllSkills(s))
+      .filter((sk) => {
+        if (pluginFilter !== undefined && sk.plugin !== pluginFilter) return false;
+        if (!includeDisabled && !sk.enabled) return false;
+        return true;
+      });
+
+    // Sort by scope then plugin then name ascending
+    const scopeOrder: Record<string, number> = { project: 0, user: 1, builtin: 2 };
+    skills.sort((a, b) => {
+      const so = (scopeOrder[a.scope] !== undefined ? scopeOrder[a.scope] : 3) -
+                 (scopeOrder[b.scope] !== undefined ? scopeOrder[b.scope] : 3);
+      if (so !== 0) return so;
+      const po = a.plugin.localeCompare(b.plugin);
+      if (po !== 0) return po;
+      return a.name.localeCompare(b.name);
+    });
+
+    const keyOf = (sk: Skill) => `${sk.scope}:${sk.plugin}/${sk.name}`;
+    const params: { limit?: number; cursor?: string } = {};
+    if (limit !== undefined) params.limit = limit;
+    if (cursor !== undefined) params.cursor = cursor;
+
+    const result = paginate(skills, params, {
+      defaultLimit: 50,
+      maxLimit: 200,
+      keyOf,
+      total: 'count',
+    });
+
+    return {
+      items: result.items.map((sk) => ({
+        name: sk.name,
+        plugin: sk.plugin,
+        scope: sk.scope,
+        path: sk.path,
+        description: sk.frontmatter.description !== undefined ? sk.frontmatter.description : null,
+        enabled: sk.enabled,
+        disabled_in: sk.disabledIn !== undefined ? sk.disabledIn : null,
+      })),
+      next_cursor: result.next_cursor,
+      total: result.total,
+    };
+  },
+});
+
+const findSearch = defineLeaf({
+  name: 'search',
+  help: {
+    name: 'skill find search',
+    summary: 'search skills by name, description, and keywords',
+    input: [
+      { name: 'query', type: 'string', required: true, constraint: 'Search terms matched against name, description, and keywords fields.' },
+      { name: 'scope', type: 'string', required: false, constraint: 'One of: user, project, all. Default: all.' },
+      { name: 'plugin', type: 'string', required: false, constraint: 'Filter to a single plugin name.' },
+      { name: 'include_disabled', type: 'boolean', required: false, constraint: 'Default false.' },
+      { name: 'body', type: 'boolean', required: false, constraint: 'Default false. When true, also searches SKILL.md body text.' },
+    ],
+    output: [
+      { name: 'query', type: 'string', required: true, constraint: 'Echo of the input query.' },
+      { name: 'hits', type: 'object[]', required: true, constraint: 'Each: {name, plugin, scope, path, description?, keywords?, enabled, score, matched}. Sorted by score descending.' },
+    ],
+    outputKind: 'object',
+    effects: ['None. Read-only.'],
+  },
+  run: async (input) => {
+    const query = reqStr(input, 'query');
+    const scopeStr = str(input, 'scope');
+    const pluginFilter = str(input, 'plugin');
+    const includeDisabled = bool(input, 'include_disabled', false);
+    const searchBody = bool(input, 'body', false);
+
+    const needle = query.toLowerCase();
+    const scopes = listScopes(scopeStr);
+    const candidates = scopes
+      .flatMap((s) => listAllSkills(s))
+      .filter((sk) => {
+        if (pluginFilter !== undefined && sk.plugin !== pluginFilter) return false;
+        if (!includeDisabled && !sk.enabled) return false;
+        return true;
+      });
+
+    interface Hit {
+      skill: Skill;
+      score: number;
+      matched: string[];
+    }
+
+    const hits: Hit[] = [];
+    for (const sk of candidates) {
+      const matched: string[] = [];
+      let score = 0;
+      if (sk.name.toLowerCase().includes(needle)) {
+        score += 10;
+        matched.push('name');
+      }
+      const desc = sk.frontmatter.description;
+      if (desc !== undefined && desc.toLowerCase().includes(needle)) {
+        score += 4;
+        matched.push('description');
+      }
+      const kws = sk.frontmatter.keywords;
+      if (kws && kws.some((k) => k.toLowerCase().includes(needle))) {
+        score += 6;
+        matched.push('keywords');
+      }
+      if (searchBody) {
+        const text = readText(sk.path).toLowerCase();
+        if (text.includes(needle)) {
+          score += 1;
+          matched.push('body');
+        }
+      }
+      if (score > 0) hits.push({ skill: sk, score, matched });
+    }
+
+    hits.sort((a, b) => b.score - a.score || a.skill.name.localeCompare(b.skill.name));
+
+    return {
+      query,
+      hits: hits.map((h) => ({
+        name: h.skill.name,
+        plugin: h.skill.plugin,
+        scope: h.skill.scope,
+        path: h.skill.path,
+        description: h.skill.frontmatter.description !== undefined ? h.skill.frontmatter.description : null,
+        keywords: h.skill.frontmatter.keywords !== undefined ? h.skill.frontmatter.keywords : null,
+        enabled: h.skill.enabled,
+        score: h.score,
+        matched: h.matched,
+      })),
+    };
+  },
+});
+
+const findGrep = defineLeaf({
+  name: 'grep',
+  help: {
+    name: 'skill find grep',
+    summary: 'search skill file contents for a regex pattern',
+    input: [
+      { name: 'pattern', type: 'string', required: true, constraint: 'ECMAScript regex. Applied to each line of every SKILL.md file.' },
+      { name: 'scope', type: 'string', required: false, constraint: 'One of: user, project, all. Default: all.' },
+      { name: 'plugin', type: 'string', required: false, constraint: 'Filter to a single plugin name.' },
+    ],
+    output: [
+      { name: 'matches', type: 'object[]', required: true, constraint: 'Each: {path, line, text}. path is absolute. Sorted by path then line ascending.' },
+    ],
+    outputKind: 'object',
+    effects: ['None. Read-only.'],
+  },
+  run: async (input) => {
+    const pattern = reqStr(input, 'pattern');
+    const scopeStr = str(input, 'scope');
+    const pluginFilter = str(input, 'plugin');
+
+    let regex: RegExp;
+    try {
+      regex = new RegExp(pattern);
+    } catch {
+      throw usage(`invalid regex pattern: ${pattern}`);
+    }
+
+    const scopes = listScopes(scopeStr);
+    const skillsDirs: string[] = [];
+    for (const s of scopes) {
+      if (pluginFilter === undefined || pluginFilter === SCOPE_SKILL_PLUGIN) {
+        const root = scopeSkillsDir(s);
+        if (root) skillsDirs.push(root);
+      }
+      for (const plugin of listInstalledPlugins(s)) {
+        if (!plugin.enabled) continue;
+        if (pluginFilter !== undefined && plugin.name !== pluginFilter) continue;
+        skillsDirs.push(join(plugin.root, SKILLS_DIR));
+      }
+    }
+
+    const matchLines: Array<{ path: string; line: number; text: string }> = [];
+    for (const skillsDir of skillsDirs) {
+      const files = walkFiles(skillsDir);
+      for (const file of files) {
+        const content = readText(file);
+        const lines = content.split('\n');
+        lines.forEach((lineText, idx) => {
+          if (regex.test(lineText)) {
+            matchLines.push({ path: file, line: idx + 1, text: lineText });
+          }
+        });
+      }
+    }
+
+    // Sort by path then line ascending
+    matchLines.sort((a, b) => {
+      const pc = a.path.localeCompare(b.path);
+      return pc !== 0 ? pc : a.line - b.line;
+    });
+
+    return { matches: matchLines };
+  },
+});
+
+const findBranch = defineBranch({
+  name: 'find',
+  help: {
+    name: 'skill find',
+    summary: 'discover skills by listing, keyword search, or body grep',
+    children: [
+      { name: 'list', desc: 'paginated list of installed skills', useWhen: 'enumerating all available skills' },
+      { name: 'search', desc: 'keyword search across name/description/keywords', useWhen: 'looking for skills matching a topic' },
+      { name: 'grep', desc: 'regex search across SKILL.md bodies', useWhen: 'finding skills containing specific text or patterns' },
+    ],
+  },
+  children: [findList, findSearch, findGrep],
+});
+
+// ---------------------------------------------------------------------------
+// read sub-branch
+// ---------------------------------------------------------------------------
+
+const readShow = defineLeaf({
+  name: 'show',
+  help: {
+    name: 'skill read show',
+    summary: 'print SKILL.md body for a named skill',
+    input: [
+      { name: 'name', type: 'string', required: true, constraint: 'Skill identifier. Forms: <name>, <plugin>:<name>, <scope>:<name>, <scope>:<plugin>/<name>.' },
+      { name: 'scope', type: 'string', required: false, constraint: 'One of: user, project. Narrows resolution when name is ambiguous.' },
+      { name: 'plugin', type: 'string', required: false, constraint: 'Narrows resolution to a specific plugin.' },
+      { name: 'frontmatter', type: 'boolean', required: false, constraint: 'Default false. When true, includes YAML frontmatter in the body.' },
+    ],
+    output: [
+      { name: 'name', type: 'string', required: true, constraint: 'Resolved skill name.' },
+      { name: 'plugin', type: 'string', required: true, constraint: 'Plugin the skill belongs to.' },
+      { name: 'scope', type: 'string', required: true, constraint: 'Scope the skill was resolved from.' },
+      { name: 'path', type: 'string', required: true, constraint: 'Absolute path to SKILL.md.' },
+      { name: 'content', type: 'string', required: true, constraint: 'SKILL.md body (with or without frontmatter per the `frontmatter` input field).' },
+    ],
+    outputKind: 'object',
+    effects: ['None. Read-only.'],
+  },
+  run: async (input) => {
+    const nameRaw = reqStr(input, 'name');
+    const scopeStr = str(input, 'scope');
+    const pluginFilter = str(input, 'plugin');
+    const includeFrontmatter = bool(input, 'frontmatter', false);
+
+    const resolveOpts: { scope?: Scope; pluginFilter?: string } = {};
+    if (scopeStr !== undefined) {
+      const resolved = resolveScopeArg(scopeStr);
+      if (resolved !== 'all') resolveOpts.scope = resolved;
+    }
+    if (pluginFilter !== undefined) resolveOpts.pluginFilter = pluginFilter;
+
+    const skillObj = resolveSkill(nameRaw, resolveOpts);
+    const rawContent = readText(skillObj.path);
+    const rawBody = includeFrontmatter ? rawContent : parseFrontmatter(rawContent).body;
+    const content = appendNeighbors(skillObj, rawBody);
+
+    return {
+      name: skillObj.name,
+      plugin: skillObj.plugin,
+      scope: skillObj.scope,
+      path: skillObj.path,
+      content,
+    };
+  },
+});
+
+const readWhere = defineLeaf({
+  name: 'where',
+  help: {
+    name: 'skill read where',
+    summary: 'show resolution metadata for a named skill without reading its body',
+    input: [
+      { name: 'name', type: 'string', required: true, constraint: 'Skill identifier. Same forms as skill read show.' },
+      { name: 'scope', type: 'string', required: false, constraint: 'One of: user, project.' },
+      { name: 'plugin', type: 'string', required: false, constraint: 'Narrows resolution to a specific plugin.' },
+    ],
+    output: [
+      { name: 'name', type: 'string', required: true, constraint: 'Resolved skill name.' },
+      { name: 'plugin', type: 'string', required: true, constraint: 'Plugin the skill belongs to.' },
+      { name: 'scope', type: 'string', required: true, constraint: 'Scope the skill was resolved from.' },
+      { name: 'path', type: 'string', required: true, constraint: 'Absolute path to SKILL.md.' },
+    ],
+    outputKind: 'object',
+    effects: ['None. Read-only.'],
+  },
+  run: async (input) => {
+    const nameRaw = reqStr(input, 'name');
+    const scopeStr = str(input, 'scope');
+    const pluginFilter = str(input, 'plugin');
+
+    const resolveOpts: { scope?: Scope; pluginFilter?: string } = {};
+    if (scopeStr !== undefined) {
+      const resolved = resolveScopeArg(scopeStr);
+      if (resolved !== 'all') resolveOpts.scope = resolved;
+    }
+    if (pluginFilter !== undefined) resolveOpts.pluginFilter = pluginFilter;
+
+    const skillObj = resolveSkill(nameRaw, resolveOpts);
+
+    return {
+      name: skillObj.name,
+      plugin: skillObj.plugin,
+      scope: skillObj.scope,
+      path: skillObj.path,
+    };
+  },
+});
+
+const readBranch = defineBranch({
+  name: 'read',
+  help: {
+    name: 'skill read',
+    summary: 'read skill content or resolve its location',
+    children: [
+      { name: 'show', desc: 'print SKILL.md body', useWhen: 'loading skill content to act on it' },
+      { name: 'where', desc: 'show resolution metadata only', useWhen: 'verifying which skill resolves and from where, without loading its body' },
+    ],
+  },
+  children: [readShow, readWhere],
+});
+
+// ---------------------------------------------------------------------------
+// author sub-branch
+// ---------------------------------------------------------------------------
+
+const VALID_TYPES = ['playbook', 'primer', 'reference', 'runbook', 'freeform'] as const;
+
+const authorGuide = defineLeaf({
+  name: 'guide',
+  help: {
+    name: 'skill author guide',
+    summary: 'load the skill authoring workflow — two stages: omit type to pick one, pass type for its full skeleton',
+    input: [
+      { name: 'type', type: 'string', required: false, constraint: 'One of: playbook, primer, reference, runbook, freeform. OMIT to receive the template-picker guide first; pass it on the second call for that type\'s full workflow + skeleton.' },
+      { name: 'topic', type: 'string', required: false, constraint: 'Optional topic context injected into the guide.' },
+    ],
+    output: [
+      { name: 'guide', type: 'string', required: true, constraint: 'Stage 1 (no type): the template-picker workflow. Stage 2 (type given): that type\'s authoring workflow + skeleton.' },
+      { name: 'type', type: 'string | null', required: true, constraint: 'Echo of the requested type, or null on the picker stage.' },
+    ],
+    outputKind: 'object',
+    effects: ['None. Read-only.'],
+  },
+  run: async (input) => {
+    const type = str(input, 'type', { enum: VALID_TYPES });
+    const topic = str(input, 'topic');
+    const topicArg = topic !== undefined ? topic : '';
+
+    // Progressive disclosure: no type → template picker (stage 1);
+    // type given → that type's full workflow + skeleton (stage 2).
+    if (type === undefined) {
+      return { guide: skillCreatePrompt(topicArg), type: null };
+    }
+    return { guide: skillTemplatePrompt(type, topicArg), type };
+  },
+});
+
+const authorScaffold = defineLeaf({
+  name: 'scaffold',
+  help: {
+    name: 'skill author scaffold',
+    summary: 'create an empty SKILL.md stub at the given qualifier',
+    input: [
+      { name: 'qualifier', type: 'string', required: true, constraint: 'Skill identifier in <name> or <plugin>:<name> form.' },
+      { name: 'type', type: 'string', required: false, constraint: 'One of: playbook, primer, reference, runbook, freeform.' },
+      { name: 'description', type: 'string', required: false, constraint: 'Short description written to frontmatter.' },
+      { name: 'scope', type: 'string', required: false, constraint: 'One of: user, project. Default: project if available, else user.' },
+    ],
+    output: [
+      { name: 'path', type: 'string', required: true, constraint: 'Absolute path to the scaffolded SKILL.md.' },
+      { name: 'follow_up', type: 'string', required: true, constraint: 'Recommended next call to load the authoring guide.' },
+    ],
+    outputKind: 'object',
+    effects: [
+      'Creates the skill directory and SKILL.md stub at the resolved location.',
+      'Writes frontmatter with name, description (if provided), and type (if provided).',
+    ],
+  },
+  run: async (input) => {
+    const qualifier = reqStr(input, 'qualifier');
+    const typeStr = str(input, 'type', { enum: VALID_TYPES });
+    const description = str(input, 'description');
+    const scopeStr = str(input, 'scope');
+
+    const { plugin: pluginName, name: skillName } = parseSkillQualifier(qualifier);
+    if (!skillName) {
+      throw usage('skill name required in qualifier');
+    }
+
+    if (typeStr !== undefined && !isSkillType(typeStr)) {
+      throw usage(`unknown skill type: ${typeStr} / valid: ${SKILL_TYPES.join(' | ')}`);
+    }
+    const skillType = typeStr !== undefined && isSkillType(typeStr) ? typeStr : undefined;
+
+    let skillFile: string;
+
+    // Scope-direct: no plugin qualifier, or explicit `_:` sentinel
+    if (pluginName === undefined || pluginName === SCOPE_SKILL_PLUGIN) {
+      const scope = resolveWriteScope(scopeStr);
+      const scopeRootPath = requireScopeRoot(scope);
+      ensureScopeInitialized(scope, scopeRootPath);
+
+      const skillsRoot = scopeSkillsDir(scope);
+      if (!skillsRoot) {
+        throw general(`no skills dir for scope ${scope}`);
+      }
+      const skillDir = join(skillsRoot, ...skillName.split('/'));
+      skillFile = join(skillDir, SKILL_ENTRY_FILE);
+      if (pathExists(skillFile)) {
+        throw general(`skill already exists: ${skillFile}`);
+      }
+      ensureDir(skillDir);
+      const fm = serializeFrontmatter({
+        name: skillName,
+        description,
+        type: skillType,
+      });
+      writeFileSync(skillFile, fm, 'utf8');
+    } else {
+      // Plugin-scoped scaffold
+      const scopeForLookup = scopeStr !== undefined
+        ? (() => {
+            const r = resolveScopeArg(scopeStr);
+            return r !== 'all' ? (r as Scope) : undefined;
+          })()
+        : undefined;
+
+      const plugin = scopeForLookup !== undefined
+        ? findPluginByName(pluginName, scopeForLookup)
+        : findPluginByName(pluginName);
+
+      if (!plugin) {
+        throw notFound(`plugin not found: ${pluginName}`);
+      }
+
+      const skillDir = join(plugin.root, SKILLS_DIR, ...skillName.split('/'));
+      skillFile = join(skillDir, SKILL_ENTRY_FILE);
+
+      if (pathExists(skillFile)) {
+        throw general(`skill already exists: ${skillFile}`);
+      }
+
+      ensureDir(skillDir);
+      const fm = serializeFrontmatter({
+        name: skillName,
+        description,
+        type: skillType,
+      });
+      writeFileSync(skillFile, fm, 'utf8');
+    }
+
+    const typeHint = skillType !== undefined ? skillType : '<type>';
+    const follow_up = `{"type":"${typeHint}","topic":"${skillName}"} | crtr skill author guide`;
+
+    return { path: skillFile, follow_up };
+  },
+});
+
+const authorBranch = defineBranch({
+  name: 'author',
+  help: {
+    name: 'skill author',
+    summary: 'create and scaffold new skills',
+    children: [
+      { name: 'guide', desc: 'load authoring workflow + skeleton for a type', useWhen: 'writing a new skill and need the template and instructions' },
+      { name: 'scaffold', desc: 'create an empty SKILL.md stub', useWhen: 'initializing the file before writing content' },
+    ],
+  },
+  children: [authorGuide, authorScaffold],
+});
+
+// ---------------------------------------------------------------------------
+// state sub-branch
+// ---------------------------------------------------------------------------
+
+async function toggleSkill(
+  input: Record<string, unknown>,
+  enabled: boolean,
+): Promise<Record<string, unknown>> {
+  const nameRaw = reqStr(input, 'name');
+  const scopeStr = str(input, 'scope');
+  const scope = resolveWriteScope(scopeStr);
+
+  const skillObj = resolveSkill(nameRaw);
   const key = skillConfigKey(skillObj.plugin, skillObj.name);
 
   const scopeRootPath = requireScopeRoot(scope);
@@ -660,7 +631,79 @@ async function toggleSkill(
     cfg.skills[key] = { enabled };
   });
 
-  info(
-    `${enabled ? 'enabled' : 'disabled'} ${skillObj.plugin}:${skillObj.name} in ${scope} scope`,
-  );
+  return { name: skillObj.name, scope, enabled };
+}
+
+const stateEnable = defineLeaf({
+  name: 'enable',
+  help: {
+    name: 'skill state enable',
+    summary: 'enable a skill in the given scope',
+    input: [
+      { name: 'name', type: 'string', required: true, constraint: 'Skill identifier. Same forms as skill read show.' },
+      { name: 'scope', type: 'string', required: false, constraint: 'One of: user, project. Default: project if available, else user.' },
+    ],
+    output: [
+      { name: 'name', type: 'string', required: true, constraint: 'Resolved skill name.' },
+      { name: 'scope', type: 'string', required: true, constraint: 'Scope where the enable was applied.' },
+      { name: 'enabled', type: 'boolean', required: true, constraint: 'Always true.' },
+    ],
+    outputKind: 'object',
+    effects: ['Writes the skill enable flag to config.json in the target scope.'],
+  },
+  run: async (input) => toggleSkill(input, true),
+});
+
+const stateDisable = defineLeaf({
+  name: 'disable',
+  help: {
+    name: 'skill state disable',
+    summary: 'disable a skill in the given scope, hiding it from list and agent discovery',
+    input: [
+      { name: 'name', type: 'string', required: true, constraint: 'Skill identifier. Same forms as skill read show.' },
+      { name: 'scope', type: 'string', required: false, constraint: 'One of: user, project. Default: project if available, else user.' },
+    ],
+    output: [
+      { name: 'name', type: 'string', required: true, constraint: 'Resolved skill name.' },
+      { name: 'scope', type: 'string', required: true, constraint: 'Scope where the disable was applied.' },
+      { name: 'enabled', type: 'boolean', required: true, constraint: 'Always false.' },
+    ],
+    outputKind: 'object',
+    effects: ['Writes the skill disable flag to config.json in the target scope.'],
+  },
+  run: async (input) => toggleSkill(input, false),
+});
+
+const stateBranch = defineBranch({
+  name: 'state',
+  help: {
+    name: 'skill state',
+    summary: 'enable or disable skills',
+    children: [
+      { name: 'enable', desc: 'enable a skill', useWhen: 'making a previously disabled skill available again' },
+      { name: 'disable', desc: 'disable a skill', useWhen: 'hiding a skill from list and agent discovery without removing it' },
+    ],
+  },
+  children: [stateEnable, stateDisable],
+});
+
+// ---------------------------------------------------------------------------
+// Root export
+// ---------------------------------------------------------------------------
+
+export function registerSkill(): BranchDef {
+  return defineBranch({
+    name: 'skill',
+    help: {
+      name: 'skill',
+      summary: 'discover, read, author, and manage skill state',
+      children: [
+        { name: 'find', desc: 'list, search, or grep skills', useWhen: 'discovering what skills are available' },
+        { name: 'read', desc: 'read skill content or resolve location', useWhen: 'loading a skill to act on it' },
+        { name: 'author', desc: 'create and scaffold skills', useWhen: 'writing a new skill' },
+        { name: 'state', desc: 'enable or disable skills', useWhen: 'toggling skill visibility' },
+      ],
+    },
+    children: [findBranch, readBranch, authorBranch, stateBranch],
+  });
 }

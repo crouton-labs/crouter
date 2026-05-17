@@ -17,7 +17,7 @@ Scope-owned skills live at `~/.crouter/skills/` (user) or `<project>/.crouter/sk
 
 Reach for a **plugin** when:
 - You want to share skills across multiple projects or with other people.
-- You want versioning + update mechanics (`crtr plugin update`).
+- You want versioning + update mechanics (`echo '{"name":"<name>"}' | crtr pkg plugin manage update`).
 - You want a marketplace to index the work — see [[crouter-development/marketplaces]].
 
 If it's a one-off note for yourself, scope-owned skills are simpler. Promote to a plugin later.
@@ -43,7 +43,7 @@ The `<plugin-name>` directory IS the plugin. The manifest's `name` field must ma
 {
   "name": "my-plugin",
   "version": "0.1.0",
-  "description": "One sentence — shown in `crtr plugin list`.",
+  "description": "One sentence — shown in `echo '{}' | crtr pkg plugin inspect list`.",
   "source": "https://github.com/<owner>/<repo>",
   "owner": {
     "name": "Your Name",
@@ -57,7 +57,7 @@ The `<plugin-name>` directory IS the plugin. The manifest's `name` field must ma
 | `name` | yes | Must match the directory name. Lowercase kebab. |
 | `version` | yes | Semver. Marketplace CI may bump automatically — see marketplaces skill. |
 | `description` | yes | One sentence. |
-| `source` | recommended | Git URL where the plugin lives. Used by `crtr plugin update`. |
+| `source` | recommended | Git URL where the plugin lives. Used by `echo '{"name":"<name>"}' | crtr pkg plugin manage update`. |
 | `owner` | optional | Author info. |
 
 ## Scopes
@@ -75,19 +75,19 @@ Project-scope plugins outrank user-scope on resolution. Both outrank marketplace
 
 Three ways a plugin lands in a scope:
 
-1. **From a git URL** (`crtr plugin install <url> --scope user`):
+1. **From a git URL** (`echo '{"source":"<url>","scope":"user"}' | crtr pkg plugin manage install`):
    - Clones into `<scope>/plugins/<name>/` using the manifest's name.
-   - `crtr plugin update <name>` does `git pull`.
+   - `echo '{"name":"<name>"}' | crtr pkg plugin manage update` does `git pull`.
    - Independent of any marketplace.
 
-2. **From a marketplace** (`crtr marketplace install <mkt>:<name> --scope user`):
+2. **From a marketplace** (`echo '{"marketplace":"<mkt>","plugin":"<name>"}' | crtr pkg market manage install`):
    - **Symlinks** the marketplace's `plugins/<name>/` into `<scope>/plugins/<name>/`.
-   - One `crtr marketplace update <mkt>` pulls updates for every installed plugin from that marketplace.
+   - `echo '{"marketplace":"<mkt>"}' | crtr pkg market manage update` pulls updates for every installed plugin from that marketplace.
    - See [[crouter-development/marketplaces]].
 
 3. **Authored in place** (you're writing the plugin in a working repo):
    - Symlink for tight dev loop: `ln -s $(pwd) ~/.crouter/plugins/<name>`.
-   - Or `crtr plugin install file://$(pwd) --scope project` to clone-install.
+   - Or `echo '{"source":"file://$(pwd)","scope":"project"}' | crtr pkg plugin manage install` to clone-install.
 
 ## Local development loop
 
@@ -96,19 +96,19 @@ Three ways a plugin lands in a scope:
 mkdir -p my-plugin/.crouter-plugin my-plugin/skills
 $EDITOR my-plugin/.crouter-plugin/plugin.json      # write the manifest
 cd my-plugin
-crtr skill new my-plugin:my-first-skill --type playbook --description "Use when …"
+echo '{"qualifier":"my-plugin:my-first-skill","type":"playbook","description":"Use when …"}' | crtr skill author scaffold
 
 # Symlink for fast iteration — no clone, edits land immediately
 ln -s $(pwd) ~/.crouter/plugins/my-plugin
 
 # Verify
-crtr plugin list                      # my-plugin appears
-crtr plugin show my-plugin            # lists its skills
-crtr skill list --plugin my-plugin
-crtr doctor                           # validates manifest + every skill
+echo '{}' | crtr pkg plugin inspect list           # my-plugin appears
+echo '{"name":"my-plugin"}' | crtr pkg plugin inspect show   # lists its skills
+echo '{"plugin":"my-plugin"}' | crtr skill find list  # just my-plugin's skills
+echo '{}' | crtr sys doctor                        # validates manifest + every skill
 ```
 
-When ready to share: push to a git remote; anyone can `crtr plugin install <url>`.
+When ready to share: push to a git remote; anyone can `echo '{"source":"<url>","scope":"user"}' | crtr pkg plugin manage install`.
 
 ## Versioning
 
@@ -120,13 +120,13 @@ Standard semver:
 | New skill, new section, new example | minor (0.1.0 → 0.2.0) |
 | Removed skill, renamed skill, changed manifest schema | major (0.1.0 → 1.0.0) |
 
-`crtr plugin update <name>` reads the new version after pulling and updates the local config. Plugins published through a marketplace may have their `version` field bumped automatically by CI — see [[crouter-development/marketplaces]].
+`echo '{"name":"<name>"}' | crtr pkg plugin manage update` reads the new version after pulling and updates the local config. Plugins published through a marketplace may have their `version` field bumped automatically by CI — see [[crouter-development/marketplaces]].
 
 ## Enable/disable
 
-`crtr plugin disable <name>` flips the per-scope config without removing files. Disabled plugins are hidden from `crtr skill list` and don't resolve via `crtr skill show <name>`. Re-enable with `crtr plugin enable <name>`.
+`echo '{"name":"<name>"}' | crtr pkg plugin manage disable` flips the per-scope config without removing files. Disabled plugins are hidden from `echo '{}' | crtr skill find list` and don't resolve via `echo '{"name":"<name>"}' | crtr skill read show`. Re-enable with `echo '{"name":"<name>"}' | crtr pkg plugin manage enable`.
 
-Individual skills inside an enabled plugin can also be disabled: `crtr skill disable <plugin>:<skill>`.
+Individual skills inside an enabled plugin can also be disabled: `echo '{"name":"<plugin>:<skill>"}' | crtr skill state disable`.
 
 ## What goes in a plugin
 
@@ -145,10 +145,10 @@ If your skill conceptually depends on another plugin's skill, link via `## Relat
 
 ## Validation
 
-`crtr doctor` checks every plugin:
+`echo '{}' | crtr sys doctor` checks every plugin:
 - Manifest exists and is valid JSON.
 - Manifest `name` matches the directory name.
-- Every skill under `skills/` passes the skill-validation contract (frontmatter parses, `name` matches dir path, `type` in enum). Run `crtr skill` (no args) for the full format reference.
+- Every skill under `skills/` passes the skill-validation contract (frontmatter parses, `name` matches dir path, `type` in enum). Run `echo '{}' | crtr skill author guide` for the authoring workflow + SKILL.md format reference.
 - Sibling artifact dirs (`commands/`, `hooks/`, etc.) — validated by their respective specs as those land.
 
 ## Cross-publishing with Claude Code

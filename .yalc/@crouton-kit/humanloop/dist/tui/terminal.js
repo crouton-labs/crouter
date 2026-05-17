@@ -1,0 +1,73 @@
+function emptyKey() {
+    return {
+        upArrow: false,
+        downArrow: false,
+        return: false,
+        escape: false,
+        ctrl: false,
+        tab: false,
+        backspace: false,
+    };
+}
+export function parseKeypress(data) {
+    const str = data.toString('utf8');
+    const key = emptyKey();
+    if (str === '\x1b[A') {
+        key.upArrow = true;
+        return { input: '', key };
+    }
+    if (str === '\x1b[B') {
+        key.downArrow = true;
+        return { input: '', key };
+    }
+    if (str === '\r' || str === '\n') {
+        key.return = true;
+        return { input: '', key };
+    }
+    if (str === '\x1b') {
+        key.escape = true;
+        return { input: '', key };
+    }
+    if (str === '\t') {
+        key.tab = true;
+        return { input: '', key };
+    }
+    if (str === '\x7f' || str === '\b') {
+        key.backspace = true;
+        return { input: '', key };
+    }
+    if (str.length === 1 && str.charCodeAt(0) < 32) {
+        key.ctrl = true;
+        const ch = String.fromCharCode(str.charCodeAt(0) + 64).toLowerCase();
+        return { input: ch, key };
+    }
+    // Multi-byte chunks (paste, multi-byte UTF-8, unknown escape sequences)
+    // are returned as-is in `input`; the input-mode handler is responsible for
+    // sanitising them before appending to its buffer. Top-level handlers
+    // ignore strings of length > 1, which is the desired behaviour for
+    // accidentally pasted text in overview/item-review.
+    return { input: str, key };
+}
+export function setupTerminal() {
+    if (!process.stdin.isTTY) {
+        throw new Error('hl requires an interactive terminal (TTY)');
+    }
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+    process.stdin.setEncoding('utf8');
+    process.stdout.write('\x1b[?25l'); // hide cursor
+    process.stdout.write('\x1b[?1049h'); // alt screen
+    process.stdout.write('\x1b[2J\x1b[H'); // clear
+}
+export function restoreTerminal() {
+    process.stdout.write('\x1b[?25h'); // show cursor
+    process.stdout.write('\x1b[?1049l'); // restore screen
+    process.stdin.setRawMode(false);
+    process.stdin.pause();
+}
+export function getTerminalSize() {
+    return {
+        cols: process.stdout.columns || 80,
+        rows: process.stdout.rows || 24,
+    };
+}

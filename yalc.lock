@@ -1,0 +1,10 @@
+{
+  "version": "v1",
+  "packages": {
+    "@crouton-kit/humanloop": {
+      "signature": "0cc33e1abb780ee9edf54e10aacc0a61",
+      "file": true,
+      "replaced": "^0.3.0"
+    }
+  }
+}

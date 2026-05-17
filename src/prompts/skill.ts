@@ -1,109 +1,3 @@
-export function skillPrompt(): string {
-  return `# Skills — durable agent memory
-
-Skills are markdown the agent loads on demand. **Audience: future LLM agent
-sessions, not humans.** Write for the model: terse, decision-first, dense.
-The CLI is the index — \`crtr skill list/search/grep\` discovers what's saved.
-
-## Route by intent
-
-If a query follows this prompt, route based on it. Run the suggested command
-first, then act on its output.
-
-- **Capture** ("save", "remember", "build context for", "make a skill"):
-  \`crtr skill create [topic]\` — picks template, hints next command.
-- **Find** ("what do we have on X", "skill for Y"):
-  \`crtr skill search <query>\` → \`crtr skill show <name>\` on best hit.
-- **Load by name** ("show me X"): \`crtr skill show <name>\`.
-- **List all**: \`crtr skill list\`.
-- **No intent given / query empty**: ask the user what they want before running.
-
-Don't load \`create\` and \`template\` outputs in the same turn — \`create\` decides
-the type, then call \`template\`.
-
-Locations (resolution order):
-1. **Scope-direct** \`<scope-root>/skills/<name>/SKILL.md\` → \`user:<name>\` / \`project:<name>\`
-2. **Plugin skills** \`<plugin>/skills/<name>/SKILL.md\` → \`<scope>:<plugin>/<name>\`
-3. Project > user; non-marketplace plugins > marketplace.
-
-Ambiguous names exit \`4\` — disambiguate with \`<plugin>:<name>\` or \`_:<name>\`.
-
-## Discover
-
-\`\`\`
-crtr skill list                    # <qualifier> — <description>
-crtr skill search <query>          # ranked by name/description/keywords
-crtr skill grep <pattern>          # regex across SKILL.md bodies
-\`\`\`
-
-## Load
-
-\`\`\`
-crtr skill show <name>             # body to stdout (default verb)
-crtr skill show _:<name>           # explicit scope-direct
-crtr skill path <name>             # absolute path
-crtr skill where <name>            # {scope, plugin, path} JSON
-\`\`\`
-
-## Author (progressive disclosure)
-
-\`\`\`
-crtr skill create [topic...]            # pick a template type
-crtr skill template <type> [topic]      # workflow + skeleton for that type
-crtr skill new <name> --type <type>     # bare scaffold with typed frontmatter
-\`\`\`
-
-Five types — pick by what the agent does after reading:
-
-- \`playbook\` — decide (judgment, heuristics, when-to-use)
-- \`primer\` — navigate (codebase facts, architecture)
-- \`reference\` — look up (stable facts, tables)
-- \`runbook\` — execute (numbered procedure)
-- \`freeform\` — none of the above (catchall)
-
-Don't load \`create\` and \`template\` in the same turn — \`create\` decides the
-type, then call \`template\`.
-
-## Format
-
-A skill is a directory; \`SKILL.md\` is its entry file. The dir IS the skill —
-siblings are assets, nested dirs are themselves skills.
-
-Frontmatter (required: \`name\`, \`type\`, \`description\`):
-- \`name\` — must equal the dir path under \`skills/\`. Slashes for nested
-  (\`skills/web/frontend/design/SKILL.md\` → \`name: web/frontend/design\`).
-- \`type\` — one of the five above.
-- \`description\` — one sentence, front-load with "Use when…" — drives discovery.
-- \`keywords\` (optional) — array of strings, improves \`crtr skill search\`.
-
-Intermediate dirs (\`web/\`, \`web/frontend/\`) don't need their own SKILL.md —
-nesting is purely path-based. Budget ~150 lines per SKILL.md body; spill
-deeper material into sibling files (\`reference.md\`, \`examples.md\`).
-
-Validate with \`crtr doctor\` — checks frontmatter, name-vs-path match, type
-enum, sibling-link reachability.
-
-## Neighbors auto-append
-
-\`crtr skill show <name>\` appends a \`## Neighbors\` section listing siblings
-(same parent dir) and nested skills. Skill bodies should write \`## Related\`
-**only** for cross-plugin or distant refs — within-plugin links are redundant.
-
-Suppress with \`crtr skill show <name> --no-neighbors\`.
-
-## Toggle
-
-\`\`\`
-crtr skill enable <name>
-crtr skill disable <name>
-\`\`\`
-
-## Exit codes
-
-\`0\` success · \`3\` not found · \`4\` ambiguous (qualify name)
-`;
-}
-
 export function skillCreatePrompt(topic: string): string {
   const topicLine = topic
     ? `Topic: **${topic}**`
@@ -134,13 +28,36 @@ Litmus: *"when X, do Y"* → playbook. *"these are the fields of Y"* →
 reference. *"step 1, step 2, step 3"* → runbook. *"how X is built inside
 this repo"* → primer.
 
+A skill that *does* a thing is a \`runbook\` (ordered steps). A skill that
+ships a helper script bundles it as a sibling file (see Format) — the type
+is still chosen by what the agent does after reading, not by the script.
+
+## Format (every type)
+
+- A skill is a **directory**; \`SKILL.md\` is its entry file. Siblings are
+  assets; nested dirs are their own skills.
+- Required frontmatter: \`name\`, \`type\`, \`description\`. \`name\` must equal the
+  dir path under \`skills/\` — slashes nest (\`web/frontend/design\`).
+- \`description\`: one sentence, front-load "Use when…" — it drives discovery.
+- Budget ~150 lines per \`SKILL.md\`; spill deeper material into sibling files.
+- \`echo '{"qualifier":"<name>","type":"<t>","scope":"<s>","description":"<d>"}' | crtr skill author scaffold\` writes correct frontmatter for you; \`echo '{}' | crtr sys doctor\` validates.
+
+## Voice (every type) — prescriptive or descriptive, never speculative
+
+A skill states **what to do** or **what is true**. It never lists open
+questions, debates, "things to consider", or unresolved tradeoffs. If a line
+isn't prescriptive or descriptive, it isn't important — cut it. If you can't
+state the answer, you're not ready to write that line: omit it or go ask.
+Hedging is the tell — \`may\`, \`might\`, \`consider whether\`, \`it depends\`,
+\`there's debate\`, \`one option is\`. Resolve it to a rule or delete it.
+
 ## Next
 
 1. Pick a type. If unclear, use \`AskUserQuestion\` with your best guess first.
-2. Run:
+2. Run (output is JSON; read the \`guide\` field):
 
    \`\`\`
-   crtr skill template <type>${topic ? ` ${topic}` : ' [topic]'}
+   echo '{"type":"<type>"${topic ? `,"topic":"${topic}"` : ''}}' | crtr skill author guide
    \`\`\`
 
    That output contains the research methodology, SKILL.md skeleton, and
@@ -161,7 +78,7 @@ export function skillTemplatePrompt(type: string, topic: string): string {
   if (t === 'reference') return referenceTemplatePrompt(topic);
   if (t === 'runbook') return runbookTemplatePrompt(topic);
   if (t === 'freeform') return freeformTemplatePrompt(topic);
-  return `unknown template type: ${type}\nvalid: playbook | primer | reference | runbook | freeform\nrun \`crtr skill create\` to pick.\n`;
+  return `unknown template type: ${type}\nvalid: playbook | primer | reference | runbook | freeform\nrun \`echo '{}' | crtr skill author guide\` to pick.\n`;
 }
 
 function topicLine(topic: string): string {
@@ -184,7 +101,7 @@ ${topicLine(topic)}
 - \`ls\` repo top level
 - check stack manifests
 - \`git log --oneline -15\` in this area
-- \`crtr skill search <topic>\` / \`crtr skill list\` — does a primer already exist?
+- \`echo '{"query":"<topic>"}' | crtr skill find search\` / \`echo '{}' | crtr skill find list\` — does a primer already exist?
 
 If subsystem is small/self-evident, **stop**. Suggest a CLAUDE.md note. Primers
 are for large, complicated, or unintuitive systems only.
@@ -192,7 +109,7 @@ are for large, complicated, or unintuitive systems only.
 ## 2. Scope + name
 
 - **Scope**: \`project\` by default. \`user\` only if cross-repo.
-- **Name**: kebab-case. Confirm no collision: \`crtr skill where <name>\`.
+- **Name**: kebab-case. Confirm no collision: \`echo '{"name":"<name>"}' | crtr skill read where\` (returns \`.path\`, \`.scope\`, \`.plugin\`).
 
 ## 3. Parallel exploration
 
@@ -225,8 +142,10 @@ assumptions.**
 
 ## 5. Scaffold
 
+Output is JSON; read the \`path\` field:
+
 \`\`\`
-crtr skill new <name> --type primer --scope project --description "<what+when, ≤250 chars, front-loaded triggers>"
+echo '{"qualifier":"<name>","type":"primer","scope":"project","description":"<what+when, ≤250 chars, front-loaded triggers>"}' | crtr skill author scaffold
 \`\`\`
 
 ## 6. Write the body
@@ -257,7 +176,7 @@ Non-obvious coupling. Looks-broken-but-isn't. Past footguns.
 \`\`\`
 
 **No \`## Related\` for within-plugin siblings** — the CLI auto-appends a
-\`## Neighbors\` section on \`crtr skill show\`. Add a manual \`## Related\`
+\`## Neighbors\` section on \`echo '{"name":"<name>"}' | crtr skill read show\`. Add a manual \`## Related\`
 only for cross-plugin or distant refs.
 
 **Density rules:**
@@ -265,14 +184,18 @@ only for cross-plugin or distant refs.
 - Tables where structure fits
 - Skip 30-second-skim-obvious
 - No "this section covers…" meta
+- Descriptive only — state what *is*. No "open questions", "we should probably", "unclear whether". Can't state it? Go find out or cut the line.
+- No citations/source attributions — \`(Author 2025)\`, arXiv IDs, Sources tables are bloat
 - Budget ~150 lines; deeper reference → sibling files
 
 ## 7. Verify
 
+Output is JSON; \`.content\` has the body, \`.path\` has the location:
+
 \`\`\`
-crtr skill where <name>
-crtr skill show <name>
-crtr skill search <keyword>     # confirm description triggers discovery
+echo '{"name":"<name>"}' | crtr skill read where
+echo '{"name":"<name>"}' | crtr skill read show
+echo '{"query":"<keyword>"}' | crtr skill find search    # confirm description triggers discovery
 \`\`\`
 
 Sharpen description if discovery misses. Cut body if bloated.
@@ -299,7 +222,7 @@ ${topicLine(topic)}
 
 If you'd write *"when X, do Y because Z"* → playbook. If you'd write tables
 of fields/flags/events → reference material (put in sibling \`reference.md\`,
-not SKILL.md). If neither fits → use \`crtr skill template freeform\` instead.
+not SKILL.md). If neither fits → use \`echo '{"type":"freeform"${topic ? `,"topic":"${topic}"` : ''}}' | crtr skill author guide\` instead.
 
 **Playbook markers:** teaches a framework · has "when (not) to use" · prose
 over tables · reader makes better decisions after 30 seconds.
@@ -322,12 +245,14 @@ PR over many small ones for refactors here, because review churn dominates"*
 
 - **Scope**: \`user\` for cross-project methodology. \`project\` for repo-specific.
 - **Name**: kebab-case, verb-or-noun-phrase. Not "guide-to-X".
-- Check \`crtr skill where <name>\`.
+- Check \`echo '{"name":"<name>"}' | crtr skill read where\` (returns \`.path\`, \`.scope\`, \`.plugin\`).
 
 ## 3. Scaffold
 
+Output is JSON; read the \`path\` field:
+
 \`\`\`
-crtr skill new <name> --type playbook --scope <user|project> --description "<what it teaches + when to load, ≤250 chars, front-loaded triggers>"
+echo '{"qualifier":"<name>","type":"playbook","scope":"<user|project>","description":"<what it teaches + when to load, ≤250 chars, front-loaded triggers>"}' | crtr skill author scaffold
 \`\`\`
 
 ## 4. Density rules
@@ -336,7 +261,9 @@ LLM reasoning degrades past ~3k tokens. **Budget ~150 lines for SKILL.md.**
 
 - Decision-first. *"When you need X"* before *"how X works"*.
 - One well-placed "don't" > three paragraphs of explanation.
+- Prescriptive only — every line is a rule or the reason behind one. No "open debates", "considerations", "it depends" without the deciding factor. An unresolved tradeoff isn't judgment; resolve it to *"when A, X; when B, Y"* or cut it.
 - Reasoning chains > example outputs. Show *how to think*, not *what to produce*.
+- No citations or source attributions. State the heuristic directly — \`(Author 2025)\`, arXiv IDs, "research shows", and Sources tables are bloat that competes for the agent's context. (Only a \`reference\` skill cites: it links one source-of-truth so facts can be verified.)
 - Section >20 lines without teaching judgment → move to \`reference.md\`.
 
 **Test:** can someone reading 30 seconds make a better decision? If they need
@@ -369,7 +296,7 @@ to read the whole thing for value, you've buried the judgment.
 \`\`\`
 
 **No \`## Related\` for within-plugin siblings** — the CLI auto-appends a
-\`## Neighbors\` section on \`crtr skill show\`. Add a manual \`## Related\`
+\`## Neighbors\` section on \`echo '{"name":"<name>"}' | crtr skill read show\`. Add a manual \`## Related\`
 only for cross-plugin or distant refs.
 
 ## 6. Progressive disclosure
@@ -388,15 +315,17 @@ loads supporting files only when needed.
 
 ## 7. Verify
 
+Output is JSON; \`.content\` has the body, \`.path\` has the location:
+
 \`\`\`
-crtr skill where <name>
-crtr skill show <name>
-crtr skill search <keyword>
+echo '{"name":"<name>"}' | crtr skill read where
+echo '{"name":"<name>"}' | crtr skill read show
+echo '{"query":"<keyword>"}' | crtr skill find search
 \`\`\`
 
 ## Constraints
 
-- Topic fails litmus? → \`crtr skill template freeform\`, \`reference\`, or \`runbook\`.
+- Topic fails litmus? → \`echo '{"type":"freeform"}' | crtr skill author guide\`, \`echo '{"type":"reference"}' | crtr skill author guide\`, or \`echo '{"type":"runbook"}' | crtr skill author guide\`.
 - No unconfirmed heuristics — if not from user experience or clear principle,
   leave it out.
 `;
@@ -427,12 +356,16 @@ No strict template; the shape just tells you what to ask for.
 
 \`AskUserQuestion\` (≤4, multi-choice, best-guess first). Get only what you
 need to write the skill. **No unconfirmed assumptions** — if not from user
-or grep, omit it.
+or grep, omit it. **Prescriptive or descriptive only** — the skill states
+what to do or what is true. No "open questions", debates, or unresolved
+tradeoffs; if you can't state the answer, cut the line.
 
 ## 3. Scope + name + scaffold
 
+Output is JSON; read the \`path\` field:
+
 \`\`\`
-crtr skill new <name> --type freeform --scope <user|project> --description "<what+when, ≤250 chars, front-loaded triggers>"
+echo '{"qualifier":"<name>","type":"freeform","scope":"<user|project>","description":"<what+when, ≤250 chars, front-loaded triggers>"}' | crtr skill author scaffold
 \`\`\`
 
 ## 4. Body — pick the closest skeleton
@@ -447,10 +380,10 @@ crtr skill new <name> --type freeform --scope <user|project> --description "<wha
 **Decision:**
 \`\`\`markdown
 # <decision> — <date>
-## Context
-## Decision
-## Consequences
-## Alternatives considered
+## Context        — the constraint that forced a choice (facts, not musing)
+## Decision       — what we do now, stated as a rule
+## Consequences   — what this commits us to (descriptive, not "we'll see")
+## Alternatives rejected — each with the one reason it lost (not a pros/cons dump)
 \`\`\`
 
 **Runbook:**
@@ -474,10 +407,12 @@ Or invent your own. Stay tight — no padding.
 
 ## 5. Verify
 
+Output is JSON; \`.content\` has the body, \`.path\` has the location:
+
 \`\`\`
-crtr skill where <name>
-crtr skill show <name>
-crtr skill search <keyword>
+echo '{"name":"<name>"}' | crtr skill read where
+echo '{"name":"<name>"}' | crtr skill read show
+echo '{"query":"<keyword>"}' | crtr skill find search
 \`\`\`
 
 ## Switch templates if needed
@@ -485,10 +420,10 @@ crtr skill search <keyword>
 Content actually fits a typed template?
 
 \`\`\`
-crtr skill template playbook ${topic ? topic : '<topic>'}     # decide
-crtr skill template primer ${topic ? topic : '<topic>'}       # navigate codebase
-crtr skill template reference ${topic ? topic : '<topic>'}    # look up stable facts
-crtr skill template runbook ${topic ? topic : '<topic>'}      # execute a procedure
+echo '{"type":"playbook"${topic ? `,"topic":"${topic}"` : ''}}' | crtr skill author guide     # decide
+echo '{"type":"primer"${topic ? `,"topic":"${topic}"` : ''}}' | crtr skill author guide       # navigate codebase
+echo '{"type":"reference"${topic ? `,"topic":"${topic}"` : ''}}' | crtr skill author guide    # look up stable facts
+echo '{"type":"runbook"${topic ? `,"topic":"${topic}"` : ''}}' | crtr skill author guide      # execute a procedure
 \`\`\`
 `;
 }
@@ -509,7 +444,7 @@ ${topicLine(topic)}
 
 If you'd skim end-to-end → it's not reference. If you'd jump straight to
 the row you need → reference. If you'd make a decision after reading →
-\`crtr skill template playbook\`. If you'd execute steps → \`runbook\`.
+\`echo '{"type":"playbook"}' | crtr skill author guide\`. If you'd execute steps → \`echo '{"type":"runbook"}' | crtr skill author guide\`.
 
 **Reference markers:** mostly tables · stable across releases · authoritative
 source elsewhere · agent loads to *answer*, not to *think*.
@@ -530,12 +465,14 @@ field/flag/code values** — pull verbatim from source.
 
 - **Scope**: \`user\` for cross-project facts. \`project\` for repo-specific.
 - **Name**: noun-phrase. \`http-status-codes\` not \`learn-http-status\`.
-- Check \`crtr skill where <name>\`.
+- Check \`echo '{"name":"<name>"}' | crtr skill read where\` (returns \`.path\`, \`.scope\`, \`.plugin\`).
 
 ## 3. Scaffold
 
+Output is JSON; read the \`path\` field:
+
 \`\`\`
-crtr skill new <name> --type reference --scope <user|project> --description "<what to look up + when to load, ≤250 chars>"
+echo '{"qualifier":"<name>","type":"reference","scope":"<user|project>","description":"<what to look up + when to load, ≤250 chars>"}' | crtr skill author scaffold
 \`\`\`
 
 ## 4. Density rules
@@ -547,6 +484,7 @@ Reference skills are *load and scan*, not *load and read*. Optimize for jump-to-
 - Source URL at the top — agent verifies before trusting cached facts.
 - No prose paragraphs longer than 2 lines.
 - Skip *why* — playbooks teach why. Reference teaches what.
+- Every row is a settled fact. No "TBD", "varies", "may differ" rows — if a value isn't known, omit the row, don't hedge it.
 
 ## 5. Body skeleton
 
@@ -585,10 +523,12 @@ SKILL.md links to siblings (\`see [full-table.md](full-table.md)\`).
 
 ## 7. Verify
 
+Output is JSON; \`.content\` has the body, \`.path\` has the location:
+
 \`\`\`
-crtr skill where <name>
-crtr skill show <name>
-crtr skill search <keyword>
+echo '{"name":"<name>"}' | crtr skill read where
+echo '{"name":"<name>"}' | crtr skill read show
+echo '{"query":"<keyword>"}' | crtr skill find search
 \`\`\`
 
 Search must surface the skill on a typical lookup query. Sharpen the
@@ -597,8 +537,8 @@ description if it doesn't.
 ## Constraints
 
 - No invented values. If you can't cite the source, leave the row out.
-- Topic teaches *judgment*, not facts? → \`crtr skill template playbook\`.
-- Topic is a *procedure*? → \`crtr skill template runbook\`.
+- Topic teaches *judgment*, not facts? → \`echo '{"type":"playbook"}' | crtr skill author guide\`.
+- Topic is a *procedure*? → \`echo '{"type":"runbook"}' | crtr skill author guide\`.
 - Source updates faster than you'll update the skill? → don't capture; link.
 `;
 }
@@ -639,18 +579,21 @@ push to \\\`main\\\`, wait for green CI, click promote"* is a runbook step.
 
 - **Scope**: \`project\` for repo-specific procedures. \`user\` for cross-project.
 - **Name**: verb-phrase. \`deploy-to-prod\` not \`production-deployment-guide\`.
-- Check \`crtr skill where <name>\`.
+- Check \`echo '{"name":"<name>"}' | crtr skill read where\` (returns \`.path\`, \`.scope\`, \`.plugin\`).
 
 ## 3. Scaffold
 
+Output is JSON; read the \`path\` field:
+
 \`\`\`
-crtr skill new <name> --type runbook --scope <user|project> --description "<when to run + outcome, ≤250 chars, front-loaded trigger>"
+echo '{"qualifier":"<name>","type":"runbook","scope":"<user|project>","description":"<when to run + outcome, ≤250 chars, front-loaded trigger>"}' | crtr skill author scaffold
 \`\`\`
 
 ## 4. Density rules
 
 - Steps are commands, not advice. Each step is something the agent can verify.
 - Decision points get explicit branches, not "use judgment."
+- Prescriptive only. No "you may want to", "consider whether", "depending on" without the branch spelled out. If a step's outcome is uncertain, that's a decision point — write the branches, don't hedge the step.
 - Verification belongs in-line, after the step that produces the change.
 - Rollback is mandatory if the procedure changes prod state.
 
@@ -688,10 +631,12 @@ crtr skill new <name> --type runbook --scope <user|project> --description "<when
 
 ## 6. Verify
 
+Output is JSON; \`.content\` has the body, \`.path\` has the location:
+
 \`\`\`
-crtr skill where <name>
-crtr skill show <name>
-crtr skill search <keyword>
+echo '{"name":"<name>"}' | crtr skill read where
+echo '{"name":"<name>"}' | crtr skill read show
+echo '{"query":"<keyword>"}' | crtr skill find search
 \`\`\`
 
 Walk through the runbook mentally. Each step verifiable? Each decision
