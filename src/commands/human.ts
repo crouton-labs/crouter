@@ -66,13 +66,13 @@ function runCmd(dir: string): string {
 }
 
 function followUpResult(jobId: string): string {
-  return `{"job_id":"${jobId}","wait":true} | crtr job read result`;
+  return `{"job_id":"${jobId}"} | crtr job read result`;
 }
 
 function followUpDrain(jobId: string): string {
   return (
     'Not in tmux: a human must drain it — run `crtr human inbox` (or re-run ' +
-    `inside tmux). Then: {"job_id":"${jobId}","wait":true} | crtr job read result`
+    `inside tmux). Then: {"job_id":"${jobId}"} | crtr job read result`
   );
 }
 
@@ -112,7 +112,7 @@ const humanAsk = defineLeaf({
   name: 'ask',
   help: {
     name: 'human ask',
-    summary: 'put a humanloop decision deck in front of a person; returns a job handle immediately',
+    summary: 'put a humanloop decision deck in front of a person; returns a job handle immediately. Humans respond on human time (often >10 min) — never block on the result.',
     input: [
       { name: 'deck', type: 'object', required: true, constraint: 'A humanloop deck. Validated before any job is created.' },
       { name: 'wait', type: 'boolean', required: false, constraint: 'Accepted for symmetry with the job contract; the kickoff never blocks.' },
@@ -120,7 +120,7 @@ const humanAsk = defineLeaf({
     output: [
       { name: 'job_id', type: 'string', required: true, constraint: 'Poll with `crtr job read result|status|logs`; cancel with `crtr job cancel`.' },
       { name: 'dir', type: 'string', required: true, constraint: 'Interaction directory holding deck.json/run.json/response.json.' },
-      { name: 'follow_up', type: 'string', required: true, constraint: 'Recommended next call.' },
+      { name: 'follow_up', type: 'string', required: true, constraint: 'A non-blocking status peek. The human may take minutes to hours — never block waiting on this.' },
     ],
     outputKind: 'object',
     effects: [
@@ -162,7 +162,7 @@ const humanApprove = defineLeaf({
   name: 'approve',
   help: {
     name: 'human approve',
-    summary: 'a Yes/No approval gate; returns a job handle immediately',
+    summary: 'a Yes/No approval gate; returns a job handle immediately. Humans respond on human time (often >10 min) — never block on the result.',
     input: [
       { name: 'title', type: 'string', required: true, constraint: 'The question shown to the human.' },
       { name: 'subtitle', type: 'string', required: false, constraint: 'Optional one-line context.' },
@@ -171,7 +171,7 @@ const humanApprove = defineLeaf({
     output: [
       { name: 'job_id', type: 'string', required: true, constraint: 'Poll with `crtr job read result`; result is {approved, …envelope}.' },
       { name: 'dir', type: 'string', required: true, constraint: 'Interaction directory.' },
-      { name: 'follow_up', type: 'string', required: true, constraint: 'Recommended next call.' },
+      { name: 'follow_up', type: 'string', required: true, constraint: 'A non-blocking status peek. The human may take minutes to hours — never block waiting on this.' },
     ],
     outputKind: 'object',
     effects: [
@@ -218,7 +218,7 @@ const humanReview = defineLeaf({
   name: 'review',
   help: {
     name: 'human review',
-    summary: 'open a .md in a read-only review editor for anchored comments; returns a job handle immediately',
+    summary: 'open a .md in a read-only review editor for anchored comments; returns a job handle immediately. Humans respond on human time (often >10 min) — never block on the result.',
     input: [
       { name: 'file', type: 'string', required: true, constraint: 'Absolute path to an existing .md file.' },
       { name: 'output', type: 'string', required: false, constraint: 'Where the FeedbackResult JSON is written. Default: <dir>/feedback.json.' },
@@ -226,7 +226,7 @@ const humanReview = defineLeaf({
     output: [
       { name: 'job_id', type: 'string', required: true, constraint: 'Poll with `crtr job read result`; result is the humanloop FeedbackResult.' },
       { name: 'output', type: 'string', required: true, constraint: 'Path the FeedbackResult JSON is autosaved to.' },
-      { name: 'follow_up', type: 'string', required: true, constraint: 'Recommended next call.' },
+      { name: 'follow_up', type: 'string', required: true, constraint: 'A non-blocking status peek. The human may take minutes to hours — never block waiting on this.' },
     ],
     outputKind: 'object',
     effects: [
@@ -517,7 +517,7 @@ export function registerHuman(): BranchDef {
       name: 'human',
       summary: 'human-in-the-loop decisions, document review, and live display',
       model:
-        "Kickoff leaves create kind:'human' jobs; poll/cancel with `crtr job read result|status|logs` and `crtr job cancel`, exactly like `job`. notify/show create no job.",
+        "Kickoff leaves create kind:'human' jobs. Humans respond on human time (often >10 min) — never block waiting on the result; peek with `crtr job read result|status` (no `wait`). Cancel with `crtr job cancel`. notify/show create no job.",
       children: [
         { name: 'ask', desc: 'put a decision deck to a person', useWhen: 'a structured choice needs a human' },
         { name: 'approve', desc: 'a Yes/No approval gate', useWhen: 'gating a handoff on human sign-off' },
