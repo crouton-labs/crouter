@@ -39,6 +39,7 @@ describe('skill find list params', () => {
     includeDisabledFlag,
     { kind: 'flag', name: 'limit', type: 'int', required: false, default: 50, constraint: '' },
     { kind: 'flag', name: 'cursor', type: 'string', required: false, constraint: '' },
+    { kind: 'flag', name: 'full', type: 'bool', required: false, constraint: '' },
   ];
 
   test('no args: defaults applied', async () => {
@@ -94,6 +95,13 @@ describe('skill find list params', () => {
   test('--plugin my-plugin', async () => {
     const r = await parseArgv(params, ['--plugin', 'my-plugin']);
     assert.equal(r['plugin'], 'my-plugin');
+  });
+
+  test('--full presence = true, absence = false', async () => {
+    const present = await parseArgv(params, ['--full']);
+    assert.equal(present['full'], true);
+    const absent = await parseArgv(params, []);
+    assert.equal(absent['full'], false);
   });
 });
 

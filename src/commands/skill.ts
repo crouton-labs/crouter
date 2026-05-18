@@ -117,11 +117,13 @@ const findList = defineLeaf({
       { kind: 'flag', name: 'include-disabled', type: 'bool', required: false, constraint: 'When present, includes disabled skills.' },
       { kind: 'flag', name: 'limit', type: 'int', required: false, default: 50, constraint: 'Max 200.' },
       { kind: 'flag', name: 'cursor', type: 'string', required: false, constraint: 'Opaque token from next_cursor. Omit on first call.' },
+      { kind: 'flag', name: 'full', type: 'bool', required: false, constraint: 'When present, includes each skill\'s description in items. Off by default to keep enumerations cheap; pair with --plugin or --limit to bound cost.' },
     ],
     output: [
-      { name: 'items', type: 'object[]', required: true, constraint: 'Each: {name, plugin, scope, path, description?, enabled, disabled_in?}. Sorted by scope then plugin then name ascending.' },
+      { name: 'items', type: 'object[]', required: true, constraint: 'Each: {name, plugin, scope, enabled, disabled_in?}. With --full, each item also includes description. Sorted by scope then plugin then name ascending.' },
       { name: 'next_cursor', type: 'string | null', required: true, constraint: 'null means no more items.' },
       { name: 'total', type: 'integer | null', required: true, constraint: 'Exact when cheap; null otherwise.' },
+      { name: 'follow_up', type: 'string', required: true, constraint: 'Concrete next commands for drilling into an item or refining the list.' },
     ],
     outputKind: 'object',
     effects: ['None. Read-only.'],
@@ -133,6 +135,7 @@ const findList = defineLeaf({
     const limitRaw = input['limit'] as number;
     const limit = Math.min(Math.max(1, limitRaw), 200);
     const cursor = input['cursor'] as string | undefined;
+    const full = input['full'] as boolean;
 
     const scopes = listScopes(scopeStr);
     const skills = scopes
@@ -167,17 +170,22 @@ const findList = defineLeaf({
     });
 
     return {
-      items: result.items.map((sk) => ({
-        name: sk.name,
-        plugin: sk.plugin,
-        scope: sk.scope,
-        path: sk.path,
-        description: sk.frontmatter.description !== undefined ? sk.frontmatter.description : null,
-        enabled: sk.enabled,
-        disabled_in: sk.disabledIn !== undefined ? sk.disabledIn : null,
-      })),
+      items: result.items.map((sk) => {
+        const base: Record<string, unknown> = {
+          name: sk.name,
+          plugin: sk.plugin,
+          scope: sk.scope,
+          enabled: sk.enabled,
+          disabled_in: sk.disabledIn !== undefined ? sk.disabledIn : null,
+        };
+        if (full) {
+          base['description'] = sk.frontmatter.description !== undefined ? sk.frontmatter.description : null;
+        }
+        return base;
+      }),
       next_cursor: result.next_cursor,
       total: result.total,
+      follow_up: 'Use `crtr skill read show <name>` for the full SKILL.md body. Run `crtr skill find list -h` for filters and verbosity.',
     };
   },
 });
@@ -196,7 +204,8 @@ const findSearch = defineLeaf({
     ],
     output: [
       { name: 'query', type: 'string', required: true, constraint: 'Echo of the input query.' },
-      { name: 'hits', type: 'object[]', required: true, constraint: 'Each: {name, plugin, scope, path, description?, keywords?, enabled, score, matched}. Sorted by score descending.' },
+      { name: 'hits', type: 'object[]', required: true, constraint: 'Each: {name, plugin, scope, score, description}. Sorted by score descending. description is the frontmatter line — the discriminator for picking which hit to read in full.' },
+      { name: 'follow_up', type: 'string', required: true, constraint: 'Concrete next commands for drilling into a hit or refining the search.' },
     ],
     outputKind: 'object',
     effects: ['None. Read-only.'],
@@ -268,13 +277,10 @@ const findSearch = defineLeaf({
         name: h.skill.name,
         plugin: h.skill.plugin,
         scope: h.skill.scope,
-        path: h.skill.path,
-        description: h.skill.frontmatter.description !== undefined ? h.skill.frontmatter.description : null,
-        keywords: h.skill.frontmatter.keywords !== undefined ? h.skill.frontmatter.keywords : null,
-        enabled: h.skill.enabled,
         score: h.score,
-        matched: h.matched,
+        description: h.skill.frontmatter.description !== undefined ? h.skill.frontmatter.description : null,
       })),
+      follow_up: 'Use `crtr skill read show <name>` for the full SKILL.md body. Run `crtr skill find search -h` for filters.',
     };
   },
 });
@@ -757,7 +763,7 @@ export function registerSkill(): BranchDef {
       name: 'skill',
       summary: 'discover, read, author, and manage skill state',
       model:
-        'To consume: `find search <topic>` discovers candidates; `read show <name>` loads each relevant SKILL.md body (multiple may apply — load them all). To create: `author guide` picks a template, then re-run with `--type <t>` for the skeleton, then `author scaffold <plugin>:<name>` materializes the file. `state enable|disable` toggles visibility without deleting.',
+        '`find` when you do not yet know which skill applies — it locates candidates by topic, keyword, or body text. `read` when you have a name and need the SKILL.md content or its on-disk location. `author` when you are writing a new skill — it carries the template workflow and the scaffolder. `state` when a skill should be hidden from discovery without being removed. Append `-h` at any branch or leaf for its full schema.',
       dynamicState: buildSkillCatalog,
       children: [
         { name: 'find', desc: 'list, search, or grep skills', useWhen: 'discovering what skills are available' },
