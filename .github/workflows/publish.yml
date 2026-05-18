@@ -22,14 +22,27 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
-      - run: npm ci
-
-      - name: Bump version
+      - name: Configure git
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Bump version and push tag
+        run: |
           npm version patch -m "chore: release v%s"
           git push --follow-tags
+
+      - name: Swap yalc humanloop reference for latest published semver
+        run: |
+          HL_VERSION=$(npm view @crouton-kit/humanloop version)
+          echo "Pinning @crouton-kit/humanloop to ^${HL_VERSION} for publish"
+          jq --arg v "^${HL_VERSION}" \
+            '.dependencies["@crouton-kit/humanloop"] = $v' \
+            package.json > package.json.tmp
+          mv package.json.tmp package.json
+
+      - name: Install with real humanloop (working-tree only, not committed)
+        run: npm install --no-package-lock
 
       - run: npm run build
 
