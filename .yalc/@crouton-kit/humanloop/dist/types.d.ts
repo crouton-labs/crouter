@@ -45,6 +45,10 @@ export interface InteractionResponse {
     /** Multi-select picks (set only for `multiSelect` interactions). */
     selectedOptionIds?: string[];
     freetext?: string;
+    /** Multi-select per-option comments, keyed by option id. Each entry is a
+     *  comment scoped to that specific option (independent of the overall
+     *  `freetext`). Set only for `multiSelect` interactions. */
+    optionComments?: Record<string, string>;
 }
 export interface DeckSource {
     sessionName?: string;

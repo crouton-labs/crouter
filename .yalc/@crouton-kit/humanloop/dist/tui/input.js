@@ -177,15 +177,37 @@ function handleInteractionAction(input, key, state, interaction, render) {
         render();
         return;
     }
-    // Comment mode: allowFreetext + options exist. Multi-select carries its
-    // checked set on submit, so don't pre-attach a single option.
+    // Comment mode: allowFreetext + options exist.
+    //
+    // Single-select: pre-attach the focused option (the comment qualifies that
+    // pick). Multi-select: also pre-attach the focused option — the comment is
+    // saved under `optionComments[id]` (per-option note) and submitting
+    // auto-checks the option. From the [c] freetext row in multi-select,
+    // start with no attachment so the comment becomes the overall freetext.
     if (input === 'c' && interaction.allowFreetext && opts.length > 0) {
-        const preselected = !interaction.multiSelect && state.selectedAction < opts.length
-            ? opts[state.selectedAction].id
-            : undefined;
-        state.inputMode = preselected !== undefined
-            ? { kind: 'comment', buffer: '', selectedOptionId: preselected }
-            : { kind: 'comment', buffer: '' };
+        const onOption = state.selectedAction < opts.length;
+        if (onOption) {
+            const optId = opts[state.selectedAction].id;
+            let prefill = '';
+            if (interaction.multiSelect) {
+                const existing = state.responses.get(interaction.id);
+                const prior = existing?.optionComments?.[optId];
+                if (typeof prior === 'string')
+                    prefill = prior;
+            }
+            state.inputMode = { kind: 'comment', buffer: prefill, selectedOptionId: optId };
+        }
+        else {
+            // On the [c] row in multi-select: pre-fill from existing overall freetext.
+            let prefill = '';
+            if (interaction.multiSelect) {
+                const existing = state.responses.get(interaction.id);
+                if (existing !== undefined && typeof existing.freetext === 'string') {
+                    prefill = existing.freetext;
+                }
+            }
+            state.inputMode = { kind: 'comment', buffer: prefill };
+        }
         render();
         return;
     }
@@ -250,6 +272,18 @@ function handleInputMode(input, key, state, render) {
     }
     if (key.return) {
         const interaction = state.interactions[state.currentIndex];
+        const perOption = interaction.multiSelect === true
+            && mode.kind === 'comment'
+            && mode.selectedOptionId !== undefined;
+        if (perOption) {
+            // Per-option comment: save under optionComments[id], auto-check the
+            // option (idempotent), stay on this interaction so the human can comment
+            // on another option.
+            setOptionComment(state, interaction, mode.selectedOptionId, mode.buffer);
+            state.inputMode = null;
+            render();
+            return;
+        }
         if (interaction.multiSelect) {
             commitMulti(state, interaction, mode.buffer);
         }
@@ -361,14 +395,20 @@ function submitOption(state, interaction, selectedOptionId, freetext) {
 // submitOption immediacy); Enter just confirms the accumulated set + advances.
 function toggleMulti(state, interaction, optionId) {
     const existing = state.responses.get(interaction.id);
-    const set = new Set(existing?.selectedOptionIds ?? []);
+    const priorIds = existing !== undefined && existing.selectedOptionIds !== undefined
+        ? existing.selectedOptionIds
+        : [];
+    const set = new Set(priorIds);
     if (set.has(optionId))
         set.delete(optionId);
     else
         set.add(optionId);
     const response = { id: interaction.id, selectedOptionIds: [...set] };
-    if (existing?.freetext !== undefined)
+    if (existing !== undefined && existing.freetext !== undefined)
         response.freetext = existing.freetext;
+    if (existing !== undefined && existing.optionComments !== undefined) {
+        response.optionComments = { ...existing.optionComments };
+    }
     state.responses.set(interaction.id, response);
     // User edited the checked set — no longer a passive carry-over.
     state.preAnsweredIds.delete(interaction.id);
@@ -378,15 +418,52 @@ function toggleMulti(state, interaction, optionId) {
  *  answered, optionally setting/replacing freetext. */
 function commitMulti(state, interaction, freetext) {
     const existing = state.responses.get(interaction.id);
+    const priorIds = existing !== undefined && existing.selectedOptionIds !== undefined
+        ? existing.selectedOptionIds
+        : [];
     const response = {
         id: interaction.id,
-        selectedOptionIds: [...(existing?.selectedOptionIds ?? [])],
+        selectedOptionIds: [...priorIds],
     };
-    const ft = freetext ?? existing?.freetext;
+    let ft;
+    if (freetext !== undefined)
+        ft = freetext;
+    else if (existing !== undefined)
+        ft = existing.freetext;
     if (ft !== undefined)
         response.freetext = ft;
+    if (existing !== undefined && existing.optionComments !== undefined) {
+        response.optionComments = { ...existing.optionComments };
+    }
     state.responses.set(interaction.id, response);
     // Explicit confirm overrides any preAnswered seed.
+    state.preAnsweredIds.delete(interaction.id);
+    state.persist?.();
+}
+/**
+ * Multi-select per-option comment: write `comment` to optionComments[optionId]
+ * and auto-check the option. Empty comment still records the entry (the user
+ * committed deliberately via Enter; Esc cancels without write).
+ */
+function setOptionComment(state, interaction, optionId, comment) {
+    const existing = state.responses.get(interaction.id);
+    const priorIds = existing !== undefined && existing.selectedOptionIds !== undefined
+        ? existing.selectedOptionIds
+        : [];
+    const set = new Set(priorIds);
+    set.add(optionId);
+    const priorComments = existing !== undefined && existing.optionComments !== undefined
+        ? existing.optionComments
+        : {};
+    const nextComments = { ...priorComments, [optionId]: comment };
+    const response = {
+        id: interaction.id,
+        selectedOptionIds: [...set],
+        optionComments: nextComments,
+    };
+    if (existing !== undefined && existing.freetext !== undefined)
+        response.freetext = existing.freetext;
+    state.responses.set(interaction.id, response);
     state.preAnsweredIds.delete(interaction.id);
     state.persist?.();
 }

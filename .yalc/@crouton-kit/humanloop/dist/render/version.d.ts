@@ -1,1 +1,1 @@
-export declare const TERMRENDER_VERSION = "2.1.0";
+export declare const TERMRENDER_VERSION = "3.0.0";
