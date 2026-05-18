@@ -29,7 +29,7 @@ function withinInterval(lastIso: string | undefined, intervalHours: number): boo
 }
 
 function spawnDetachedSelfUpdate(): void {
-  const child = spawn('npm', ['i', '-g', '@crouton-kit/crtr@latest'], {
+  const child = spawn('npm', ['i', '-g', '@crouton-kit/crouter@latest'], {
     detached: true,
     stdio: 'ignore',
   });

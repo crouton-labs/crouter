@@ -663,7 +663,7 @@ const sysUpdateLeaf = defineLeaf({
         const r = selfCheck();
         if (r !== null) {
           updates.push({
-            name: '@crouton-kit/crtr',
+            name: '@crouton-kit/crouter',
             kind: 'self',
             current: r.current,
             latest: r.latest,
@@ -672,7 +672,7 @@ const sysUpdateLeaf = defineLeaf({
           });
         } else {
           updates.push({
-            name: '@crouton-kit/crtr',
+            name: '@crouton-kit/crouter',
             kind: 'self',
             current: null,
             latest: null,
@@ -708,7 +708,7 @@ const sysUpdateLeaf = defineLeaf({
     void (async () => {
       try {
         if (resolvedTarget === 'self' || resolvedTarget === 'all') {
-          appendEvent(jobId, { level: 'info', event: 'self-update:start', message: 'running npm install -g @crouton-kit/crtr@latest' });
+          appendEvent(jobId, { level: 'info', event: 'self-update:start', message: 'running npm install -g @crouton-kit/crouter@latest' });
           selfUpdate();
           const scopes: Scope[] = ['user'];
           if (projectScopeRoot()) scopes.unshift('project');

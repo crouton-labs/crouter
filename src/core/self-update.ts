@@ -26,7 +26,7 @@ export function currentVersion(): string {
 }
 
 export function selfUpdate(): void {
-  const res = spawnSync('npm', ['i', '-g', '@crouton-kit/crtr@latest'], { stdio: 'inherit' });
+  const res = spawnSync('npm', ['i', '-g', '@crouton-kit/crouter@latest'], { stdio: 'inherit' });
   if (res.status !== 0) {
     throw general('npm install failed');
   }
@@ -35,7 +35,7 @@ export function selfUpdate(): void {
 /** Check whether a newer crtr version is available on npm.
  *  Warns to stderr if network unavailable; returns {current, latest} or null if unreachable. */
 export function selfCheck(): { current: string; latest: string } | null {
-  const res = spawnSync('npm', ['view', '@crouton-kit/crtr', 'version'], { encoding: 'utf8' });
+  const res = spawnSync('npm', ['view', '@crouton-kit/crouter', 'version'], { encoding: 'utf8' });
   if (res.status !== 0) {
     return null;
   }
