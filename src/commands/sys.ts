@@ -120,24 +120,113 @@ function resolveScope(raw: string | undefined): Scope {
 
 type CheckStatus = 'pass' | 'fail' | 'warn';
 
+/**
+ * Structured fix action for a failing or warning check. Surfaced on each
+ * non-pass result so an agent reading doctor output can apply it directly
+ * when `--fix` is not used (or when --fix did not auto-apply). Every
+ * remediation includes absolute paths / exact keys — no inference required.
+ */
+interface Remediation {
+  kind: 'remove_config_key' | 'rm_path' | 'edit_frontmatter';
+  description: string;
+  // remove_config_key
+  scope?: Scope;
+  configKey?: string;       // dotted path, e.g. "plugins.llm-app-authoring"
+  // rm_path
+  path?: string;            // absolute path to remove
+  // edit_frontmatter
+  filePath?: string;        // absolute path to the SKILL.md
+  field?: string;           // frontmatter field to edit (currently only 'name')
+  value?: string;           // new value for that field
+}
+
 interface CheckResult {
   scope: Scope;
   name: string;
   status: CheckStatus;
   message: string;
   fixed?: boolean;
+  remediation?: Remediation;
 }
 
 function pass(scope: Scope, name: string, message: string): CheckResult {
   return { scope, name, status: 'pass', message };
 }
 
-function failCheck(scope: Scope, name: string, message: string): CheckResult {
-  return { scope, name, status: 'fail', message };
+function failCheck(scope: Scope, name: string, message: string, remediation?: Remediation): CheckResult {
+  return { scope, name, status: 'fail', message, ...(remediation ? { remediation } : {}) };
 }
 
-function warnCheck(scope: Scope, name: string, message: string): CheckResult {
-  return { scope, name, status: 'warn', message };
+function warnCheck(scope: Scope, name: string, message: string, remediation?: Remediation): CheckResult {
+  return { scope, name, status: 'warn', message, ...(remediation ? { remediation } : {}) };
+}
+
+/**
+ * Surgically replace a single frontmatter scalar field's value in a SKILL.md
+ * file. Preserves the rest of the file (key order, comments, extra fields,
+ * body) exactly. Returns true on success, false if no frontmatter or no such
+ * field was found.
+ */
+function editFrontmatterField(filePath: string, field: string, newValue: string): boolean {
+  let src: string;
+  try {
+    src = readText(filePath);
+  } catch {
+    return false;
+  }
+  const fmMatch = src.match(/^(---\s*\r?\n)([\s\S]*?)(\r?\n---\s*\r?\n?)/);
+  if (!fmMatch) return false;
+  const [, head, body, tail] = fmMatch;
+  const fieldRe = new RegExp(`^(\\s*${field}\\s*:\\s*)(.*)$`, 'm');
+  if (!fieldRe.test(body)) return false;
+  const quoted = /[:#\-\[\]{},&*?|<>=!%@`]/.test(newValue) || /^\s/.test(newValue) || /\s$/.test(newValue);
+  const formatted = quoted ? `"${newValue.replace(/"/g, '\\"')}"` : newValue;
+  const newBody = body.replace(fieldRe, `$1${formatted}`);
+  try {
+    writeText(filePath, head + newBody + tail + src.slice(fmMatch[0].length));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Apply a remediation. Returns true if applied successfully. Idempotent for
+ * the supported kinds (re-applying a config-key removal that's already gone
+ * returns true).
+ */
+function applyRemediation(rem: Remediation): boolean {
+  try {
+    switch (rem.kind) {
+      case 'remove_config_key': {
+        if (!rem.scope || !rem.configKey) return false;
+        const segments = rem.configKey.split('.');
+        updateConfig(rem.scope, (c) => {
+          let cursor: Record<string, unknown> = c as unknown as Record<string, unknown>;
+          for (let i = 0; i < segments.length - 1; i++) {
+            const next = cursor[segments[i]];
+            if (typeof next !== 'object' || next === null) return;
+            cursor = next as Record<string, unknown>;
+          }
+          delete cursor[segments[segments.length - 1]];
+        });
+        return true;
+      }
+      case 'rm_path': {
+        if (!rem.path) return false;
+        removePath(rem.path);
+        return true;
+      }
+      case 'edit_frontmatter': {
+        if (!rem.filePath || !rem.field || rem.value === undefined) return false;
+        return editFrontmatterField(rem.filePath, rem.field, rem.value);
+      }
+      default:
+        return false;
+    }
+  } catch {
+    return false;
+  }
 }
 
 function readRawTypeField(skillPath: string): string | undefined {
@@ -193,13 +282,16 @@ function runChecksForScope(scope: Scope, opts: { fix: boolean; remote: boolean }
     }
     const dir = join(mktDir, name);
     if (!pathExists(dir)) {
-      if (opts.fix) {
-        updateConfig(scope, (c) => {
-          delete c.marketplaces[name];
-        });
-        results.push({ scope, name: `marketplace:${name}:dir`, status: 'fail', message: `directory missing — removed stale config entry`, fixed: true });
+      const remediation: Remediation = {
+        kind: 'remove_config_key',
+        description: `Drop stale config entry config.${scope}.marketplaces.${name}`,
+        scope,
+        configKey: `marketplaces.${name}`,
+      };
+      if (opts.fix && applyRemediation(remediation)) {
+        results.push({ scope, name: `marketplace:${name}:dir`, status: 'fail', message: `directory missing — removed stale config entry`, fixed: true, remediation });
       } else {
-        results.push(failCheck(scope, `marketplace:${name}:dir`, `directory missing: ${dir}`));
+        results.push(failCheck(scope, `marketplace:${name}:dir`, `directory missing: ${dir}`, remediation));
       }
     } else {
       results.push(pass(scope, `marketplace:${name}:dir`, `directory exists`));
@@ -215,13 +307,16 @@ function runChecksForScope(scope: Scope, opts: { fix: boolean; remote: boolean }
     }
     const dir = join(plugDir, name);
     if (!pathExists(dir)) {
-      if (opts.fix) {
-        updateConfig(scope, (c) => {
-          delete c.plugins[name];
-        });
-        results.push({ scope, name: `plugin:${name}:dir`, status: 'fail', message: `directory missing — removed stale config entry`, fixed: true });
+      const remediation: Remediation = {
+        kind: 'remove_config_key',
+        description: `Drop stale config entry config.${scope}.plugins.${name}`,
+        scope,
+        configKey: `plugins.${name}`,
+      };
+      if (opts.fix && applyRemediation(remediation)) {
+        results.push({ scope, name: `plugin:${name}:dir`, status: 'fail', message: `directory missing — removed stale config entry`, fixed: true, remediation });
       } else {
-        results.push(failCheck(scope, `plugin:${name}:dir`, `directory missing: ${dir}`));
+        results.push(failCheck(scope, `plugin:${name}:dir`, `directory missing: ${dir}`, remediation));
       }
     } else {
       results.push(pass(scope, `plugin:${name}:dir`, `directory exists`));
@@ -234,11 +329,15 @@ function runChecksForScope(scope: Scope, opts: { fix: boolean; remote: boolean }
       const dir = join(mktDir, name);
       const manifest = readMarketplaceManifest(dir);
       if (!manifest) {
-        if (opts.fix) {
-          removePath(dir);
-          results.push({ scope, name: `marketplace:${name}:manifest`, status: 'fail', message: `no valid marketplace.json — removed dangling directory`, fixed: true });
+        const remediation: Remediation = {
+          kind: 'rm_path',
+          description: `Remove dangling marketplace directory (no valid .crouter-marketplace/marketplace.json)`,
+          path: dir,
+        };
+        if (opts.fix && applyRemediation(remediation)) {
+          results.push({ scope, name: `marketplace:${name}:manifest`, status: 'fail', message: `no valid marketplace.json — removed dangling directory`, fixed: true, remediation });
         } else {
-          results.push(failCheck(scope, `marketplace:${name}:manifest`, `no valid marketplace.json in ${dir}`));
+          results.push(failCheck(scope, `marketplace:${name}:manifest`, `no valid marketplace.json in ${dir}`, remediation));
         }
       } else {
         results.push(pass(scope, `marketplace:${name}:manifest`, `manifest valid`));
@@ -266,11 +365,15 @@ function runChecksForScope(scope: Scope, opts: { fix: boolean; remote: boolean }
       const dir = join(plugDir, name);
       const manifest = readPluginManifest(dir);
       if (!manifest) {
-        if (opts.fix) {
-          removePath(dir);
-          results.push({ scope, name: `plugin:${name}:manifest`, status: 'fail', message: `no valid plugin.json — removed dangling directory`, fixed: true });
+        const remediation: Remediation = {
+          kind: 'rm_path',
+          description: `Remove dangling plugin directory (no valid .crouter-plugin/plugin.json)`,
+          path: dir,
+        };
+        if (opts.fix && applyRemediation(remediation)) {
+          results.push({ scope, name: `plugin:${name}:manifest`, status: 'fail', message: `no valid plugin.json — removed dangling directory`, fixed: true, remediation });
         } else {
-          results.push(failCheck(scope, `plugin:${name}:manifest`, `no valid plugin.json in ${dir}`));
+          results.push(failCheck(scope, `plugin:${name}:manifest`, `no valid plugin.json in ${dir}`, remediation));
         }
         continue;
       }
@@ -283,17 +386,44 @@ function runChecksForScope(scope: Scope, opts: { fix: boolean; remote: boolean }
         seenPluginNames.set(name, dir);
       }
 
-      // Check: skills frontmatter parses and name matches directory
+      // Check: skills frontmatter name. Convention: frontmatter `name:` holds
+      // the leaf segment only (e.g. "cli-design"); the full discovered name
+      // ("interface/cli-design") is derived from the path automatically.
       const plugin = listInstalledPlugins(scope).find((p) => p.name === name);
       if (plugin) {
         const skills = listSkillsInPlugin(plugin);
         for (const skill of skills) {
-          if (!skill.frontmatter.name) {
-            results.push(failCheck(scope, `plugin:${name}:skill:${skill.name}:frontmatter`, `frontmatter missing or name field empty`));
-          } else if (skill.frontmatter.name !== skill.name) {
-            results.push(warnCheck(scope, `plugin:${name}:skill:${skill.name}:frontmatter`, `name mismatch: frontmatter says "${skill.frontmatter.name}", directory is "${skill.name}"`));
+          const checkName = `plugin:${name}:skill:${skill.name}:frontmatter`;
+          const segments = skill.name.split('/');
+          const baseName = segments[segments.length - 1];
+          if (skill.frontmatter.name === baseName) {
+            results.push(pass(scope, checkName, `frontmatter valid`));
+          } else if (skill.frontmatter.name === '') {
+            const remediation: Remediation = {
+              kind: 'edit_frontmatter',
+              description: `Set frontmatter "name: ${baseName}" (discovered name "${skill.name}" is auto-derived from the directory path; frontmatter holds the base segment only)`,
+              filePath: skill.path,
+              field: 'name',
+              value: baseName,
+            };
+            if (opts.fix && applyRemediation(remediation)) {
+              results.push({ scope, name: checkName, status: 'fail', message: `frontmatter name was missing — set to "${baseName}"`, fixed: true, remediation });
+            } else {
+              results.push(failCheck(scope, checkName, `frontmatter missing or name field empty`, remediation));
+            }
           } else {
-            results.push(pass(scope, `plugin:${name}:skill:${skill.name}:frontmatter`, `frontmatter valid`));
+            const remediation: Remediation = {
+              kind: 'edit_frontmatter',
+              description: `Replace frontmatter "name: ${skill.frontmatter.name}" with "name: ${baseName}" (discovered name "${skill.name}" is auto-derived from the directory path; frontmatter holds the base segment only)`,
+              filePath: skill.path,
+              field: 'name',
+              value: baseName,
+            };
+            if (opts.fix && applyRemediation(remediation)) {
+              results.push({ scope, name: checkName, status: 'warn', message: `frontmatter name updated from "${skill.frontmatter.name}" to "${baseName}"`, fixed: true, remediation });
+            } else {
+              results.push(warnCheck(scope, checkName, `name mismatch: frontmatter says "${skill.frontmatter.name}", expected base name "${baseName}" (discovered as "${skill.name}")`, remediation));
+            }
           }
 
           const typeCheckName = `plugin:${name}:skill:${skill.name}:type`;
@@ -451,17 +581,18 @@ const sysDoctorLeaf = defineLeaf({
     summary: 'diagnose missing manifests, broken config entries, and skill frontmatter drift',
     params: [
       { kind: 'flag', name: 'scope', type: 'enum', choices: ['user', 'project'], required: false, constraint: 'Scope to check. Default: all scopes.' },
-      { kind: 'flag', name: 'fix', type: 'bool', required: false, constraint: 'Drop stale config entries and prune directories without manifests.' },
+      { kind: 'flag', name: 'fix', type: 'bool', required: false, constraint: 'Apply each non-pass check\'s remediation and report what was fixed.' },
       { kind: 'flag', name: 'remote', type: 'bool', required: false, constraint: 'Check git remotes with ls-remote (slow — makes network calls).' },
     ],
     output: [
-      { name: 'checks', type: 'object[]', required: true, constraint: 'Each: {scope, name, status, message, fixed?}. status: pass | fail | warn. Sorted by scope then name.' },
+      { name: 'checks', type: 'object[]', required: true, constraint: 'Each: {scope, name, status, message, fixed?, remediation?}. status: pass | fail | warn. remediation (when present) is {kind, description, ...payload} where kind is remove_config_key | rm_path | edit_frontmatter. Sorted by scope then name.' },
       { name: 'ok', type: 'boolean', required: true, constraint: 'True when no unresolved fail checks remain.' },
     ],
     outputKind: 'object',
     effects: [
       'Read-only unless --fix is passed.',
-      'With --fix: removes stale config entries; deletes plugin/marketplace directories without valid manifests.',
+      'With --fix: applies each non-pass check\'s `remediation` — removes stale config entries, deletes dangling plugin/marketplace directories, edits frontmatter name fields to the base-name convention.',
+      'Each non-pass result carries a structured `remediation` describing the fix action (absolute paths, exact config keys) so callers can apply it directly without --fix.',
     ],
   },
   run: async (input) => {

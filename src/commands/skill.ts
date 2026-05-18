@@ -757,7 +757,7 @@ export function registerSkill(): BranchDef {
       name: 'skill',
       summary: 'discover, read, author, and manage skill state',
       model:
-        'Run only when (a) you need context — `find search <topic>` first (multiple skills may match; load all relevant ones with `read show`) — or (b) you are authoring a new skill — `author guide`. Otherwise skip.',
+        'To consume: `find search <topic>` discovers candidates; `read show <name>` loads each relevant SKILL.md body (multiple may apply — load them all). To create: `author guide` picks a template, then re-run with `--type <t>` for the skeleton, then `author scaffold <plugin>:<name>` materializes the file. `state enable|disable` toggles visibility without deleting.',
       dynamicState: buildSkillCatalog,
       children: [
         { name: 'find', desc: 'list, search, or grep skills', useWhen: 'discovering what skills are available' },
