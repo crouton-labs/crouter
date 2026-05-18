@@ -79,11 +79,10 @@ export function maybeAutoUpdate(argv: string[]): void {
     }
 
     if (content === 'notify') {
-      const entries = contentCheck();
-      for (const e of entries) {
-        if (!e.up_to_date && !e.unreachable) {
-          process.stderr.write(`crtr: ${e.kind} ${e.name} has updates available — run \`crtr sys update\`\n`);
-        }
+      const stale = contentCheck().filter((e) => !e.up_to_date && !e.unreachable);
+      if (stale.length > 0) {
+        const list = stale.map((e) => `${e.kind} ${e.name}`).join(', ');
+        process.stderr.write(`crtr: updates available for ${list} — run \`crtr sys update\`\n`);
       }
     } else if (content === 'apply') {
       info('applying content updates in background');
