@@ -13,7 +13,7 @@
 
 import { defineBranch, defineLeaf } from '../core/command.js';
 import type { BranchDef } from '../core/command.js';
-import { reqStr, str, bool, int, emitLine } from '../core/io.js';
+import { emitLine } from '../core/io.js';
 import { InputError } from '../core/io.js';
 import {
   createJob,
@@ -25,7 +25,7 @@ import {
   cancelJob,
   appendEvent,
 } from '../core/jobs.js';
-import { spawnAgent, spawnAndDetach, isInTmux } from '../core/spawn.js';
+import { spawnAgent, spawnAndDetach, scheduleKillCurrentPane, isInTmux } from '../core/spawn.js';
 import { readConfig } from '../core/config.js';
 import { planHandoffPrompt, implementHandoffPrompt, reviewerHandoffPrompt } from '../prompts/agent.js';
 import { paginate } from '../core/pagination.js';
@@ -36,7 +36,7 @@ const FOLLOW_POLL_MS = 1000;
 const DEFAULT_KILL_SECS = 2;
 
 function followUpResult(jobId: string): string {
-  return `{"job_id":"${jobId}","wait":true} | crtr job read result`;
+  return `crtr job read result ${jobId} --wait`;
 }
 
 function resolveMaxPanes(): number {
@@ -63,9 +63,9 @@ const startPrompt = defineLeaf({
   help: {
     name: 'job start prompt',
     summary: 'spawn a fresh Claude agent with a prompt; returns a job handle immediately',
-    input: [
-      { name: 'prompt', type: 'string', required: true, constraint: 'Prompt text sent to the spawned agent.' },
-      { name: 'cwd', type: 'string', required: false, constraint: 'Working directory for the spawned agent. Defaults to process.cwd().' },
+    params: [
+      { kind: 'stdin', name: 'prompt', required: true, constraint: 'Prompt text sent to the spawned agent.' },
+      { kind: 'flag', name: 'cwd', type: 'path', required: false, constraint: 'Working directory for the spawned agent. Defaults to process.cwd().' },
     ],
     output: [
       { name: 'job_id', type: 'string', required: true, constraint: 'Use with `job read status`, `job read logs`, `job read result`, `job cancel`.' },
@@ -80,8 +80,8 @@ const startPrompt = defineLeaf({
   },
   run: async (input) => {
     assertTmux();
-    const prompt = reqStr(input, 'prompt');
-    const cwd = str(input, 'cwd') !== undefined ? str(input, 'cwd') as string : process.cwd();
+    const prompt = input['prompt'] as string;
+    const cwd = typeof input['cwd'] === 'string' ? input['cwd'] : process.cwd();
 
     const { jobId } = createJob('prompt', { cwd });
 
@@ -90,7 +90,7 @@ const startPrompt = defineLeaf({
 ---
 When your task is complete, submit your result:
 \`\`\`bash
-echo '{"job_id":"${jobId}","result":{"status":"done","summary":"<brief summary>"}}' | crtr job submit
+crtr job submit ${jobId} --context-file /tmp/result.json
 \`\`\`
 If you cannot complete the task, still submit with status "failed" and a reason.`;
 
@@ -127,10 +127,9 @@ const startFork = defineLeaf({
   name: 'fork',
   help: {
     name: 'job start fork',
-    summary: 'fork the current Claude session into a sibling pane with a new prompt; returns a job handle immediately',
-    input: [
-      { name: 'prompt', type: 'string', required: true, constraint: 'Prompt text sent to the forked agent.' },
-      { name: 'cwd', type: 'string', required: false, constraint: 'Working directory. Defaults to process.cwd().' },
+    summary: 'fork the current Claude session into a sibling pane; returns a job handle immediately',
+    params: [
+      { kind: 'flag', name: 'cwd', type: 'path', required: false, constraint: 'Working directory. Defaults to process.cwd().' },
     ],
     output: [
       { name: 'job_id', type: 'string', required: true, constraint: 'Use with `job read *` and `job cancel`.' },
@@ -154,17 +153,16 @@ const startFork = defineLeaf({
       });
     }
 
-    const prompt = reqStr(input, 'prompt');
-    const cwd = str(input, 'cwd') !== undefined ? str(input, 'cwd') as string : process.cwd();
+    const cwd = typeof input['cwd'] === 'string' ? input['cwd'] : process.cwd();
 
     const { jobId } = createJob('fork', { cwd });
 
-    const promptWithSubmit = `${prompt}
+    const promptWithSubmit = `Fork of session ${parentSessionId}
 
 ---
 When your task is complete, submit your result:
 \`\`\`bash
-echo '{"job_id":"${jobId}","result":{"status":"done","summary":"<brief summary>"}}' | crtr job submit
+crtr job submit ${jobId} --context-file /tmp/result.json
 \`\`\`
 If you cannot complete the task, still submit with status "failed" and a reason.`;
 
@@ -203,9 +201,9 @@ const startPlanner = defineLeaf({
   help: {
     name: 'job start planner',
     summary: 'launch a planning agent for an approved spec; closes the originating pane after handoff',
-    input: [
-      { name: 'spec_path', type: 'string', required: true, constraint: 'Absolute path to the spec file.' },
-      { name: 'cwd', type: 'string', required: false, constraint: 'Working directory. Defaults to process.cwd().' },
+    params: [
+      { kind: 'positional', name: 'spec_path', type: 'path', required: true, constraint: 'Absolute path to the spec file.' },
+      { kind: 'flag', name: 'cwd', type: 'path', required: false, constraint: 'Working directory. Defaults to process.cwd().' },
     ],
     output: [
       { name: 'job_id', type: 'string', required: true, constraint: 'Use with `job read *` and `job cancel`.' },
@@ -220,8 +218,8 @@ const startPlanner = defineLeaf({
   },
   run: async (input) => {
     assertTmux();
-    const specPath = reqStr(input, 'spec_path');
-    const cwd = str(input, 'cwd') !== undefined ? str(input, 'cwd') as string : process.cwd();
+    const specPath = input['spec_path'] as string;
+    const cwd = typeof input['cwd'] === 'string' ? input['cwd'] : process.cwd();
 
     if (!existsSync(specPath)) {
       throw new InputError({
@@ -269,9 +267,9 @@ const startImplementer = defineLeaf({
   help: {
     name: 'job start implementer',
     summary: 'launch an implementation agent for an approved plan; closes the originating pane after handoff',
-    input: [
-      { name: 'plan_path', type: 'string', required: true, constraint: 'Absolute path to the plan file.' },
-      { name: 'cwd', type: 'string', required: false, constraint: 'Working directory. Defaults to process.cwd().' },
+    params: [
+      { kind: 'positional', name: 'plan_path', type: 'path', required: true, constraint: 'Absolute path to the plan file.' },
+      { kind: 'flag', name: 'cwd', type: 'path', required: false, constraint: 'Working directory. Defaults to process.cwd().' },
     ],
     output: [
       { name: 'job_id', type: 'string', required: true, constraint: 'Use with `job read *` and `job cancel`.' },
@@ -286,8 +284,8 @@ const startImplementer = defineLeaf({
   },
   run: async (input) => {
     assertTmux();
-    const planPath = reqStr(input, 'plan_path');
-    const cwd = str(input, 'cwd') !== undefined ? str(input, 'cwd') as string : process.cwd();
+    const planPath = input['plan_path'] as string;
+    const cwd = typeof input['cwd'] === 'string' ? input['cwd'] : process.cwd();
 
     if (!existsSync(planPath)) {
       throw new InputError({
@@ -312,7 +310,7 @@ const startImplementer = defineLeaf({
       throw new InputError({
         error: 'not_in_tmux',
         message: result.message,
-        next: 'Run inside a tmux session.',
+        next: 'Check tmux is running and try again.',
       });
     }
     if (result.status === 'spawn-failed') {
@@ -335,11 +333,11 @@ const startReviewer = defineLeaf({
   help: {
     name: 'job start reviewer',
     summary: 'launch a reviewer agent for a plan or spec artifact; the originating pane stays alive to collect the verdict',
-    input: [
-      { name: 'artifact_path', type: 'string', required: true, constraint: 'Absolute path to the artifact to review.' },
-      { name: 'artifact_kind', type: 'string', required: true, constraint: 'One of: plan, spec.' },
-      { name: 'spec_path', type: 'string', required: false, constraint: 'Absolute path to the spec, for plan reviews. Omit for spec reviews.' },
-      { name: 'cwd', type: 'string', required: false, constraint: 'Working directory. Defaults to process.cwd().' },
+    params: [
+      { kind: 'positional', name: 'artifact_path', type: 'path', required: true, constraint: 'Absolute path to the artifact to review.' },
+      { kind: 'flag', name: 'kind', type: 'enum', choices: ['plan', 'spec'], required: true, constraint: 'Artifact kind to review.' },
+      { kind: 'flag', name: 'spec-path', type: 'path', required: false, constraint: 'Absolute path to the spec, for plan reviews. Omit for spec reviews.' },
+      { kind: 'flag', name: 'cwd', type: 'path', required: false, constraint: 'Working directory. Defaults to process.cwd().' },
     ],
     output: [
       { name: 'job_id', type: 'string', required: true, constraint: 'Use with `job read *` and `job cancel`.' },
@@ -354,10 +352,10 @@ const startReviewer = defineLeaf({
   },
   run: async (input) => {
     assertTmux();
-    const artifactPath = reqStr(input, 'artifact_path');
-    const artifactKind = reqStr(input, 'artifact_kind', { enum: ['plan', 'spec'] }) as 'plan' | 'spec';
-    const specPath = str(input, 'spec_path');
-    const cwd = str(input, 'cwd') !== undefined ? str(input, 'cwd') as string : process.cwd();
+    const artifactPath = input['artifact_path'] as string;
+    const artifactKind = input['kind'] as 'plan' | 'spec';
+    const specPath = typeof input['specPath'] === 'string' ? input['specPath'] : undefined;
+    const cwd = typeof input['cwd'] === 'string' ? input['cwd'] : process.cwd();
 
     if (!existsSync(artifactPath)) {
       throw new InputError({
@@ -428,9 +426,9 @@ const readList = defineLeaf({
   help: {
     name: 'job read list',
     summary: 'paginated list of jobs, sorted by created_at ascending',
-    input: [
-      { name: 'limit', type: 'integer', required: false, constraint: 'Default 20, max 100.' },
-      { name: 'cursor', type: 'string', required: false, constraint: 'Opaque token from next_cursor. Omit on first call.' },
+    params: [
+      { kind: 'flag', name: 'limit', type: 'int', required: false, default: 20, constraint: 'Default 20, max 100.' },
+      { kind: 'flag', name: 'cursor', type: 'string', required: false, constraint: 'Opaque token from next_cursor. Omit on first call.' },
     ],
     output: [
       { name: 'items', type: 'object[]', required: true, constraint: 'Each: {job_id, kind, state, created_at}. Sorted by created_at ascending.' },
@@ -441,8 +439,8 @@ const readList = defineLeaf({
     effects: ['None. Read-only.'],
   },
   run: async (input) => {
-    const limit = int(input, 'limit', { default: 20, min: 1, max: 100 });
-    const cursor = str(input, 'cursor');
+    const limit = typeof input['limit'] === 'number' ? input['limit'] : 20;
+    const cursor = typeof input['cursor'] === 'string' ? input['cursor'] : undefined;
 
     const all = listJobs();
     const page = paginate(all, { limit, cursor }, {
@@ -465,8 +463,8 @@ const readStatus = defineLeaf({
   help: {
     name: 'job read status',
     summary: 'read the current status of a job',
-    input: [
-      { name: 'job_id', type: 'string', required: true, constraint: 'Job id from a `job start *` call.' },
+    params: [
+      { kind: 'positional', name: 'job_id', type: 'string', required: true, constraint: 'Job id from a `job start *` call.' },
     ],
     output: [
       { name: 'job_id', type: 'string', required: true, constraint: 'Echo of input.' },
@@ -478,7 +476,7 @@ const readStatus = defineLeaf({
     effects: ['None. Read-only.'],
   },
   run: async (input) => {
-    const jobId = reqStr(input, 'job_id');
+    const jobId = input['job_id'] as string;
     const status = jobStatus(jobId);
     return {
       job_id: jobId,
@@ -494,12 +492,12 @@ const readLogs = defineLeaf({
   help: {
     name: 'job read logs',
     summary: 'read log events from a job; emits JSONL — one event object per line',
-    input: [
-      { name: 'job_id', type: 'string', required: true, constraint: 'Job id from a `job start *` call.' },
-      { name: 'since', type: 'string', required: false, constraint: 'ISO 8601 timestamp. Only emit events at or after this time.' },
-      { name: 'until', type: 'string', required: false, constraint: 'ISO 8601 timestamp. Only emit events before this time.' },
-      { name: 'level', type: 'string', required: false, constraint: 'Minimum severity. One of: debug, info, warn, error. Default: info.' },
-      { name: 'follow', type: 'boolean', required: false, constraint: 'Default false. When true, stream new events until the job reaches a terminal state, then stop.' },
+    params: [
+      { kind: 'positional', name: 'job_id', type: 'string', required: true, constraint: 'Job id from a `job start *` call.' },
+      { kind: 'flag', name: 'since', type: 'string', required: false, constraint: 'ISO 8601 timestamp. Only emit events at or after this time.' },
+      { kind: 'flag', name: 'until', type: 'string', required: false, constraint: 'ISO 8601 timestamp. Only emit events before this time.' },
+      { kind: 'flag', name: 'level', type: 'enum', choices: ['debug', 'info', 'warn', 'error'], required: false, default: 'info', constraint: 'Minimum severity. Default: info.' },
+      { kind: 'flag', name: 'follow', type: 'bool', required: false, constraint: 'When present, stream new events until the job reaches a terminal state, then stop.' },
     ],
     output: [
       {
@@ -513,18 +511,17 @@ const readLogs = defineLeaf({
     effects: ['None. Read-only.'],
   },
   run: async (input): Promise<void> => {
-    const jobId = reqStr(input, 'job_id');
-    const since = str(input, 'since');
-    const until = str(input, 'until');
-    const level = str(input, 'level', { enum: ['debug', 'info', 'warn', 'error'] }) as
+    const jobId = input['job_id'] as string;
+    const since = typeof input['since'] === 'string' ? input['since'] : undefined;
+    const until = typeof input['until'] === 'string' ? input['until'] : undefined;
+    const level = (typeof input['level'] === 'string' ? input['level'] : 'info') as
       | 'debug'
       | 'info'
       | 'warn'
-      | 'error'
-      | undefined;
-    const follow = bool(input, 'follow', false);
+      | 'error';
+    const follow = input['follow'] === true;
 
-    const minLevel = level !== undefined ? level : 'info';
+    const minLevel = level;
 
     // Emit all existing events.
     const events = readLog(jobId, { sinceTs: since, untilTs: until, minLevel });
@@ -579,9 +576,9 @@ const readResult = defineLeaf({
   help: {
     name: 'job read result',
     summary: 'read the final result of a completed job',
-    input: [
-      { name: 'job_id', type: 'string', required: true, constraint: 'Job id from a `job start *` call.' },
-      { name: 'wait', type: 'boolean', required: false, constraint: 'Default false. When true, blocks until result.json appears (up to 10 min).' },
+    params: [
+      { kind: 'positional', name: 'job_id', type: 'string', required: true, constraint: 'Job id from a `job start *` call.' },
+      { kind: 'flag', name: 'wait', type: 'bool', required: false, constraint: 'When present, blocks until result.json appears (up to 10 min).' },
     ],
     output: [
       { name: 'job_id', type: 'string', required: true, constraint: 'Echo of input.' },
@@ -592,8 +589,8 @@ const readResult = defineLeaf({
     effects: ['None. Read-only.'],
   },
   run: async (input) => {
-    const jobId = reqStr(input, 'job_id');
-    const wait = bool(input, 'wait', false);
+    const jobId = input['job_id'] as string;
+    const wait = input['wait'] === true;
 
     const r = await jobsReadResult(jobId, { waitMs: wait ? WAIT_BUDGET_MS : 0 });
 
@@ -629,32 +626,37 @@ const jobSubmit = defineLeaf({
   help: {
     name: 'job submit',
     summary: 'inside a crtr-spawned pane, deliver the result back to the job record',
-    input: [
-      { name: 'job_id', type: 'string', required: true, constraint: 'Job id injected as $CRTR_JOB_ID in the spawned pane.' },
-      { name: 'result', type: 'object', required: true, constraint: 'Result payload. Must be a JSON object. Becomes the result.json content.' },
+    params: [
+      { kind: 'positional', name: 'job_id', type: 'string', required: true, constraint: 'Job id injected as $CRTR_JOB_ID in the spawned pane.' },
+      { kind: 'context-file', name: 'result', required: true, constraint: `Result payload JSON file. Must be a JSON object. Becomes the result.json content.` },
+      { kind: 'flag', name: 'kill-pane', type: 'bool', required: false, constraint: `When present, schedule the current tmux pane to close ${DEFAULT_KILL_SECS}s after submission so the spawned worker does not linger. Reviewer agents should pass this; planner/implementer handoffs already self-kill on spawn.` },
     ],
     output: [
       { name: 'submitted', type: 'boolean', required: true, constraint: 'Always true on success.' },
+      { name: 'pane_kill_scheduled', type: 'boolean', required: true, constraint: 'True when --kill-pane is set and a tmux pane kill was scheduled. False otherwise (--kill-pane not set, not in tmux, or TMUX_PANE unset).' },
     ],
     outputKind: 'object',
     effects: [
       'Writes result.json atomically for the job, marking it done.',
       'Updates meta.json status to done.',
+      `When --kill-pane is set, schedules \`tmux kill-pane\` on $TMUX_PANE after ${DEFAULT_KILL_SECS}s (detached; submit still returns cleanly).`,
     ],
   },
   run: async (input) => {
-    const jobId = reqStr(input, 'job_id');
+    const jobId = input['job_id'] as string;
     const result = input['result'];
     if (result === undefined || result === null || typeof result !== 'object' || Array.isArray(result)) {
       throw new InputError({
         error: 'invalid_field',
-        message: 'field "result" must be a JSON object.',
+        message: 'result file must contain a JSON object.',
         field: 'result',
-        next: 'Pass a JSON object as the result value.',
+        next: 'Pass a path to a file containing a JSON object via --context-file.',
       });
     }
+    const killPane = input['killPane'] === true;
     writeResult(jobId, result as object, 'done');
-    return { submitted: true };
+    const paneKillScheduled = killPane ? scheduleKillCurrentPane(DEFAULT_KILL_SECS) : false;
+    return { submitted: true, pane_kill_scheduled: paneKillScheduled };
   },
 });
 
@@ -667,8 +669,8 @@ const jobFail = defineLeaf({
   help: {
     name: 'job _fail',
     summary: 'internal: mark a job failed if it has not already been submitted (called by wrapper shell)',
-    input: [
-      { name: 'job_id', type: 'string', required: true, constraint: 'Job id. If result.json already exists, this is a no-op.' },
+    params: [
+      { kind: 'positional', name: 'job_id', type: 'string', required: true, constraint: 'Job id. If result.json already exists, this is a no-op.' },
     ],
     output: [
       { name: 'recorded', type: 'boolean', required: true, constraint: 'True if failure was recorded; false if result.json already existed (no-op).' },
@@ -680,7 +682,7 @@ const jobFail = defineLeaf({
     ],
   },
   run: async (input) => {
-    const jobId = reqStr(input, 'job_id');
+    const jobId = input['job_id'] as string;
     // No-op if result.json already exists (worker submitted successfully).
     try {
       const existing = await jobsReadResult(jobId, { waitMs: 0 });
@@ -708,8 +710,8 @@ const jobCancel = defineLeaf({
   help: {
     name: 'job cancel',
     summary: 'send a best-effort cancellation signal to a running job',
-    input: [
-      { name: 'job_id', type: 'string', required: true, constraint: 'Job id from a `job start *` call.' },
+    params: [
+      { kind: 'positional', name: 'job_id', type: 'string', required: true, constraint: 'Job id from a `job start *` call.' },
     ],
     output: [
       { name: 'canceled', type: 'boolean', required: true, constraint: 'True if a signal was delivered or the job was already terminal; false if the job was not live.' },
@@ -718,7 +720,7 @@ const jobCancel = defineLeaf({
     effects: ['Best-effort: delivers SIGTERM to the worker process and marks meta.json canceled.'],
   },
   run: async (input) => {
-    const jobId = reqStr(input, 'job_id');
+    const jobId = input['job_id'] as string;
     const result = cancelJob(jobId);
     return { canceled: result.canceled };
   },

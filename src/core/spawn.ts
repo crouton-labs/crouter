@@ -53,6 +53,11 @@ export interface DetachOptions {
   killAfterSeconds: number;
   /** Append `; crtr job _fail <jobId>` and inject CRTR_JOB_ID. Default true. */
   failGuard?: boolean;
+  /** Pin the new pane to this tmux pane: split-window splits it; new-window is
+   *  inserted immediately after its window (-a -t <pane>). Without this, tmux
+   *  uses the attached client's currently-focused pane — which drifts if the
+   *  user switches windows between kickoff and spawn. */
+  targetPane?: string;
 }
 
 export interface DetachResult {
@@ -75,6 +80,27 @@ export function countPanesInCurrentWindow(): number {
   });
   if (result.status !== 0) return 0;
   return result.stdout.split('\n').filter((line) => line.trim() !== '').length;
+}
+
+/**
+ * Schedule a kill-pane on the *current* tmux pane after `delaySeconds`, detached
+ * so the caller can return normally before the pane dies. No-op outside tmux
+ * or when TMUX_PANE is unset.
+ *
+ * Used by `crtr job submit` (kill_pane=true) so a reviewer agent can self-close
+ * its pane after delivering its verdict, and by `spawnAndDetach` for handoff
+ * self-kill.
+ */
+export function scheduleKillCurrentPane(delaySeconds: number): boolean {
+  const currentPane = process.env.TMUX_PANE;
+  if (currentPane === undefined || currentPane === '' || delaySeconds <= 0) {
+    return false;
+  }
+  const killCmd = `sleep ${delaySeconds}; tmux kill-pane -t ${currentPane}`;
+  spawnSync('sh', ['-c', `nohup sh -c ${shellQuote(killCmd)} </dev/null >/dev/null 2>&1 &`], {
+    stdio: 'ignore',
+  });
+  return true;
 }
 
 /**
@@ -117,9 +143,16 @@ export function spawnAndDetach(opts: DetachOptions): DetachResult {
   const splitArgs: string[] = [];
   if (opts.placement === 'new-window') {
     splitArgs.push('new-window');
+    if (opts.targetPane !== undefined && opts.targetPane !== '') {
+      // -a = insert after target window; -t <pane> resolves to that pane's window.
+      splitArgs.push('-a', '-t', opts.targetPane);
+    }
   } else {
     splitArgs.push('split-window');
     splitArgs.push(opts.placement === 'split-h' ? '-h' : '-v');
+    if (opts.targetPane !== undefined && opts.targetPane !== '') {
+      splitArgs.push('-t', opts.targetPane);
+    }
   }
   splitArgs.push('-P', '-F', '#{pane_id}');
   splitArgs.push('-c', opts.cwd);
@@ -137,13 +170,7 @@ export function spawnAndDetach(opts: DetachOptions): DetachResult {
   const paneId = split.stdout.trim();
 
   // Schedule self-kill of the originating pane.
-  const currentPane = process.env.TMUX_PANE;
-  if (currentPane !== undefined && currentPane !== '' && opts.killAfterSeconds > 0) {
-    const killCmd = `sleep ${opts.killAfterSeconds}; tmux kill-pane -t ${currentPane}`;
-    spawnSync('sh', ['-c', `nohup sh -c ${shellQuote(killCmd)} </dev/null >/dev/null 2>&1 &`], {
-      stdio: 'ignore',
-    });
-  }
+  scheduleKillCurrentPane(opts.killAfterSeconds);
 
   return {
     status: 'spawned',

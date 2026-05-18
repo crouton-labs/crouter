@@ -1,4 +1,4 @@
-// `crtr spec` subtree — spec new / show / list handlers.
+// `crtr flow spec` subtree — spec new / show / list handlers.
 export const SPEC_NEW_GUIDE = `## Spec workflow
 
 Build and save a design + requirements spec: a document describing what to
@@ -81,13 +81,13 @@ Required sections:
 
 ### Phase 5: Save
 
-Pipe JSON to \`crtr spec new\`:
+Run \`crtr flow spec new\`:
 
-  echo '{"name":"<kebab-case-name>","body":"<spec markdown>"}' | crtr spec new
+  echo '<spec markdown>' | crtr flow spec new <kebab-case-name>
 
-- \`name\`: short kebab-case slug. Nested names become subdirectories
+- NAME: short kebab-case slug. Nested names become subdirectories
   (e.g. \`auth/refresh-tokens\`).
-- \`body\`: the full spec markdown composed in Phase 4.
+- Pipe the full spec markdown composed in Phase 4 on stdin.
 
 Output: \`{path, follow_up}\`. The \`follow_up\` field names the exact next call
 — run it.
@@ -103,7 +103,6 @@ If the user is ready to plan, ask once whether to hand off; if yes, follow the
 
 import { defineBranch, defineLeaf } from '../core/command.js';
 import type { BranchDef } from '../core/command.js';
-import { reqStr, str, int } from '../core/io.js';
 import { saveArtifact, readArtifact, listArtifacts, OVERSIZE_WARN_LINES } from '../core/artifact.js';
 import { paginate } from '../core/pagination.js';
 
@@ -114,16 +113,17 @@ export function registerSpec(): BranchDef {
       name: 'spec new',
       summary: 'draft a specification artifact from intent',
       guide: SPEC_NEW_GUIDE,
-      input: [
+      params: [
         {
+          kind: 'positional',
           name: 'name',
           type: 'string',
           required: true,
-          constraint: 'Slug used as the artifact filename. No spaces; use hyphens.',
+          constraint: 'Kebab-case slug used as the artifact filename. No spaces; use hyphens.',
         },
         {
+          kind: 'stdin',
           name: 'body',
-          type: 'string',
           required: true,
           constraint: 'Full specification prose. Treated as ground truth for downstream planning.',
         },
@@ -146,16 +146,16 @@ export function registerSpec(): BranchDef {
       effects: ['Writes a spec artifact to the specs artifact directory.'],
     },
     run: async (input) => {
-      const name = reqStr(input, 'name');
-      const body = reqStr(input, 'body');
+      const name = input['name'] as string;
+      const body = input['body'] as string;
 
       const { path, oversize, lineCount } = saveArtifact('specs', name, body);
 
       let follow_up =
-        `Plan it: pipe {"spec_path":"${path}"} to \`crtr job start planner\` (returns {job_id}), then pipe {"job_id":"<id>","wait":true} to \`crtr job read result\`.`;
+        `Plan it: crtr job start planner --artifact-path ${path} (returns {job_id}), then crtr job read result <job_id> --wait.`;
 
       follow_up +=
-        ` Optional human gate before planning (complements, does not replace \`crtr job start reviewer\`): pipe {"file":"${path}"} to \`crtr human review\` for anchored comments, then gate with {"title":"Approve this spec?"} to \`crtr human approve\`.`;
+        ` Optional human gate before planning (complements, does not replace \`crtr job start reviewer\`): crtr human review --file ${path} for anchored comments, then gate with crtr human approve --title "Approve this spec?".`;
 
       if (oversize) {
         follow_up +=
@@ -171,8 +171,9 @@ export function registerSpec(): BranchDef {
     help: {
       name: 'spec show',
       summary: 'read a spec artifact by name',
-      input: [
+      params: [
         {
+          kind: 'positional',
           name: 'name',
           type: 'string',
           required: true,
@@ -203,7 +204,7 @@ export function registerSpec(): BranchDef {
       effects: ['None. Read-only.'],
     },
     run: async (input) => {
-      const name = reqStr(input, 'name');
+      const name = input['name'] as string;
       const record = readArtifact('specs', name);
       return { name: record.name, path: record.path, body: record.body };
     },
@@ -214,14 +215,25 @@ export function registerSpec(): BranchDef {
     help: {
       name: 'spec list',
       summary: 'paginated list of spec artifacts, sorted ascending by name',
-      input: [
+      params: [
         {
-          name: 'limit',
-          type: 'integer',
+          kind: 'flag',
+          name: 'scope',
+          type: 'enum',
+          choices: ['user', 'project', 'all'],
           required: false,
+          constraint: 'Filter by scope. Omit to list all.',
+        },
+        {
+          kind: 'flag',
+          name: 'limit',
+          type: 'int',
+          required: false,
+          default: 20,
           constraint: 'Default 20, max 100.',
         },
         {
+          kind: 'flag',
           name: 'cursor',
           type: 'string',
           required: false,
@@ -252,8 +264,8 @@ export function registerSpec(): BranchDef {
       effects: ['None. Read-only.'],
     },
     run: async (input) => {
-      const limit = int(input, 'limit', { default: 20, min: 1, max: 100 });
-      const cursor = str(input, 'cursor');
+      const limit = (input['limit'] as number | undefined) ?? 20;
+      const cursor = input['cursor'] as string | undefined;
 
       const all = listArtifacts('specs');
       const result = paginate(all, { limit, cursor }, {

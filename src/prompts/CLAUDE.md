@@ -1,0 +1,1 @@
+- `__CRTR_SUBMIT_INSTRUCTION__` in `review.ts`'s `SUBMIT_INSTRUCTIONS` is a sentinel replaced by `reviewerHandoffPrompt` in `agent.ts`. If it's removed or renamed in `review.ts`, `String.replace()` silently does nothing and the reviewer agent's prompt never gets the submit command — the job hangs with no error.

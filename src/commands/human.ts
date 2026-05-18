@@ -7,15 +7,14 @@
 // notify/show create no job. _run runs the blocking humanloop call at the pane
 // TTY and writes the job result itself.
 //
-// stdin vs TTY: readStdinRaw() returns '' immediately on a TTY (io.ts), so
-// `crtr human _run` in a pane gets {} from readInput() without consuming the
-// TTY — leaving it free for humanloop's raw-mode input. Control params travel
-// via CRTR_HUMAN_DIR (set inline in the spawned command) + run.json, never
-// stdin.
+// TTY safety: every leaf is argv-only — none declares a stdin parameter, so
+// the spawned pane's TTY stays free for humanloop's raw-mode input. Control
+// params travel via CRTR_HUMAN_DIR (set inline in the spawned command) +
+// run.json, never stdin.
 
 import { defineBranch, defineLeaf } from '../core/command.js';
 import type { BranchDef } from '../core/command.js';
-import { reqStr, str, bool, int, InputError } from '../core/io.js';
+import { InputError } from '../core/io.js';
 import { createJob, writeResult, recordJobPane, appendEvent } from '../core/jobs.js';
 import { spawnAndDetach, shellQuote, isInTmux, countPanesInCurrentWindow } from '../core/spawn.js';
 import { interactionsRoot, interactionDir } from '../core/artifact.js';
@@ -66,13 +65,13 @@ function runCmd(dir: string): string {
 }
 
 function followUpResult(jobId: string): string {
-  return `{"job_id":"${jobId}"} | crtr job read result`;
+  return `crtr job read result ${jobId}`;
 }
 
 function followUpDrain(jobId: string): string {
   return (
     'Not in tmux: a human must drain it — run `crtr human inbox` (or re-run ' +
-    `inside tmux). Then: {"job_id":"${jobId}"} | crtr job read result`
+    `inside tmux). Then: crtr job read result ${jobId}`
   );
 }
 
@@ -113,9 +112,9 @@ const humanAsk = defineLeaf({
   help: {
     name: 'human ask',
     summary: 'put a humanloop decision deck in front of a person; returns a job handle immediately. Humans respond on human time (often >10 min) — never block on the result.',
-    input: [
-      { name: 'deck', type: 'object', required: true, constraint: 'A humanloop deck. Validated before any job is created.' },
-      { name: 'wait', type: 'boolean', required: false, constraint: 'Accepted for symmetry with the job contract; the kickoff never blocks.' },
+    params: [
+      { kind: 'context-file', name: 'deck', required: true, constraint: 'Contains a humanloop deck. Validated before any job is created.', shape: DECK_SCHEMA_HINT },
+      { kind: 'flag', name: 'wait', type: 'bool', required: false, constraint: 'Accepted for symmetry with the job contract; the kickoff never blocks.' },
     ],
     output: [
       { name: 'job_id', type: 'string', required: true, constraint: 'Poll with `crtr job read result|status|logs`; cancel with `crtr job cancel`.' },
@@ -163,10 +162,10 @@ const humanApprove = defineLeaf({
   help: {
     name: 'human approve',
     summary: 'a Yes/No approval gate; returns a job handle immediately. Humans respond on human time (often >10 min) — never block on the result.',
-    input: [
-      { name: 'title', type: 'string', required: true, constraint: 'The question shown to the human.' },
-      { name: 'subtitle', type: 'string', required: false, constraint: 'Optional one-line context.' },
-      { name: 'body', type: 'string', required: false, constraint: 'Optional markdown body.' },
+    params: [
+      { kind: 'positional', name: 'title', type: 'string', required: true, constraint: 'The question shown to the human.' },
+      { kind: 'flag', name: 'subtitle', type: 'string', required: false, constraint: 'Optional one-line context.' },
+      { kind: 'flag', name: 'body', type: 'string', required: false, constraint: 'Optional markdown body.' },
     ],
     output: [
       { name: 'job_id', type: 'string', required: true, constraint: 'Poll with `crtr job read result`; result is {approved, …envelope}.' },
@@ -180,9 +179,9 @@ const humanApprove = defineLeaf({
     ],
   },
   run: async (input) => {
-    const title = reqStr(input, 'title');
-    const subtitle = str(input, 'subtitle');
-    const body = str(input, 'body');
+    const title = input['title'] as string;
+    const subtitle = input['subtitle'] as string | undefined;
+    const body = input['body'] as string | undefined;
 
     const interaction: Record<string, unknown> = {
       id: 'approve',
@@ -219,9 +218,9 @@ const humanReview = defineLeaf({
   help: {
     name: 'human review',
     summary: 'open a .md in a read-only review editor for anchored comments; returns a job handle immediately. Humans respond on human time (often >10 min) — never block on the result.',
-    input: [
-      { name: 'file', type: 'string', required: true, constraint: 'Absolute path to an existing .md file.' },
-      { name: 'output', type: 'string', required: false, constraint: 'Where the FeedbackResult JSON is written. Default: <dir>/feedback.json.' },
+    params: [
+      { kind: 'positional', name: 'file', type: 'path', required: true, constraint: 'Absolute path to an existing .md file.' },
+      { kind: 'flag', name: 'output', type: 'path', required: false, constraint: 'Where the FeedbackResult JSON is written. Default: <dir>/feedback.json.' },
     ],
     output: [
       { name: 'job_id', type: 'string', required: true, constraint: 'Poll with `crtr job read result`; result is the humanloop FeedbackResult.' },
@@ -235,7 +234,7 @@ const humanReview = defineLeaf({
     ],
   },
   run: async (input) => {
-    const fileArg = reqStr(input, 'file');
+    const fileArg = input['file'] as string;
     const abs = resolve(fileArg);
     if (!existsSync(abs)) {
       throw new InputError({
@@ -258,7 +257,8 @@ const humanReview = defineLeaf({
     const { jobId } = createJob('human', { cwd });
     const idir = interactionDir(jobId, cwd);
     mkdirSync(idir, { recursive: true });
-    const output = str(input, 'output', { default: join(idir, 'feedback.json') }) as string;
+    const outputArg = input['output'] as string | undefined;
+    const output = outputArg !== undefined ? outputArg : join(idir, 'feedback.json');
     const rc: RunRecord = { mode: 'review', job_id: jobId, file: abs, output };
     atomicWriteJson(join(idir, 'run.json'), rc);
 
@@ -276,9 +276,9 @@ const humanNotify = defineLeaf({
   help: {
     name: 'human notify',
     summary: 'show a fire-and-forget acknowledgement; creates no job',
-    input: [
-      { name: 'title', type: 'string', required: true, constraint: 'The notification headline.' },
-      { name: 'body', type: 'string', required: false, constraint: 'Optional markdown body.' },
+    params: [
+      { kind: 'positional', name: 'title', type: 'string', required: true, constraint: 'The notification headline.' },
+      { kind: 'flag', name: 'body', type: 'string', required: false, constraint: 'Optional markdown body.' },
     ],
     output: [
       { name: 'shown', type: 'boolean', required: true, constraint: 'True if the TUI pane was spawned; false when not in tmux (deck surfaces in `human inbox`).' },
@@ -291,8 +291,8 @@ const humanNotify = defineLeaf({
     ],
   },
   run: async (input) => {
-    const title = reqStr(input, 'title');
-    const body = str(input, 'body');
+    const title = input['title'] as string;
+    const body = input['body'] as string | undefined;
 
     const interaction: Record<string, unknown> = {
       id: 'notify',
@@ -336,10 +336,10 @@ const humanShow = defineLeaf({
   help: {
     name: 'human show',
     summary: 'put a file live on screen in a tmux pane via humanloop display',
-    input: [
-      { name: 'path', type: 'string', required: true, constraint: 'Path to the file to render.' },
-      { name: 'watch', type: 'boolean', required: false, constraint: 'Live-update the pane on edits. Default true.' },
-      { name: 'window', type: 'string', required: false, constraint: 'One of: auto, split, new. Default auto.' },
+    params: [
+      { kind: 'positional', name: 'path', type: 'path', required: true, constraint: 'Path to the file to render.' },
+      { kind: 'flag', name: 'watch', type: 'bool', required: false, constraint: 'When present, live-update the pane on edits. Default off.' },
+      { kind: 'flag', name: 'window', type: 'enum', choices: ['auto', 'split', 'new'], required: false, default: 'auto', constraint: 'Placement. Default auto.' },
     ],
     output: [
       { name: 'pane_id', type: 'string | null', required: true, constraint: 'Tmux pane id, or null when not displayed.' },
@@ -349,12 +349,10 @@ const humanShow = defineLeaf({
     effects: ['Spawns a live-watch tmux pane when possible. No job. Always exits 0.'],
   },
   run: async (input) => {
-    const path = reqStr(input, 'path');
-    const watch = bool(input, 'watch', true);
-    const window = str(input, 'window', { enum: ['auto', 'split', 'new'], default: 'auto' }) as
-      | 'auto'
-      | 'split'
-      | 'new';
+    const path = input['path'] as string;
+    const watch = (input['watch'] as boolean | undefined) === true;
+    const windowArg = input['window'] as 'auto' | 'split' | 'new' | undefined;
+    const window: 'auto' | 'split' | 'new' = windowArg !== undefined ? windowArg : 'auto';
 
     // `human show` must never fail the caller: any display error degrades to
     // {pane_id:null, reason} with exit 0 (matches humanloop display semantics).
@@ -385,6 +383,7 @@ const humanInbox = defineLeaf({
   help: {
     name: 'human inbox',
     summary: 'interactively drain pending interactions at your own terminal',
+    params: [],
     inputNote: 'No input. Run this at a human terminal — it blocks until the backlog is drained or you quit.',
     output: [{ name: 'drained', type: 'boolean', required: true, constraint: 'True once the loop returns.' }],
     outputKind: 'object',
@@ -405,9 +404,9 @@ const humanList = defineLeaf({
   help: {
     name: 'human list',
     summary: 'paginated list of pending, unclaimed interactions, oldest first',
-    input: [
-      { name: 'limit', type: 'integer', required: false, constraint: 'Default 20, max 100.' },
-      { name: 'cursor', type: 'string', required: false, constraint: "Opaque token from a previous response's next_cursor. Omit on first call." },
+    params: [
+      { kind: 'flag', name: 'limit', type: 'int', required: false, default: 20, constraint: 'Default 20, max 100.' },
+      { kind: 'flag', name: 'cursor', type: 'string', required: false, constraint: "Opaque token from a previous response's next_cursor. Omit on first call." },
     ],
     output: [
       { name: 'items', type: 'object[]', required: true, constraint: 'Each: {id, dir, title, kind, blocked_since}. Oldest first.' },
@@ -418,8 +417,9 @@ const humanList = defineLeaf({
     effects: ['None. Read-only.'],
   },
   run: async (input) => {
-    const limit = int(input, 'limit', { default: 20, min: 1, max: 100 });
-    const cursor = str(input, 'cursor');
+    const limitRaw = input['limit'] as number;
+    const limit = Math.min(Math.max(1, limitRaw), 100);
+    const cursor = input['cursor'] as string | undefined;
 
     const raw: InboxItem[] = scanInbox([interactionsRoot(process.cwd())]);
     const items = raw
@@ -456,6 +456,7 @@ const humanRun = defineLeaf({
   help: {
     name: 'human _run',
     summary: 'internal: the detached worker that runs the blocking humanloop call at the pane TTY',
+    params: [],
     inputNote: 'Internal; invoked by the spawned pane via CRTR_HUMAN_DIR + run.json. Not for manual use.',
     output: [{ name: 'none', type: 'void', required: false, constraint: 'No stdout; writes the job result file directly.' }],
     outputKind: 'object',

@@ -6,7 +6,6 @@ import { join, isAbsolute } from 'node:path';
 import { renameSync } from 'node:fs';
 import { defineBranch, defineLeaf } from '../core/command.js';
 import type { BranchDef } from '../core/command.js';
-import { reqStr, str, bool, int } from '../core/io.js';
 import { notFound, usage, general } from '../core/errors.js';
 import { createJob, appendEvent, writeResult } from '../core/jobs.js';
 import { paginate } from '../core/pagination.js';
@@ -69,10 +68,10 @@ const pluginInstall = defineLeaf({
   help: {
     name: 'pkg plugin manage install',
     summary: 'install a plugin from a git URL into the given scope',
-    input: [
-      { name: 'source', type: 'string', required: true, constraint: 'Git URL or relative path to the plugin directory.' },
-      { name: 'scope', type: 'string', required: false, constraint: 'One of: user, project. Default: project if available, else user.' },
-      { name: 'ref', type: 'string', required: false, constraint: 'Git ref (branch/tag) to clone. Default: default branch.' },
+    params: [
+      { kind: 'positional', name: 'source', type: 'string', required: true, constraint: 'Git URL or relative path to the plugin directory.' },
+      { kind: 'flag', name: 'scope', type: 'enum', choices: ['user', 'project'], required: false, constraint: 'One of: user, project. Default: project if available, else user.' },
+      { kind: 'flag', name: 'ref', type: 'string', required: false, constraint: 'Git ref (branch/tag) to clone. Default: default branch.' },
     ],
     output: [
       { name: 'name', type: 'string', required: true, constraint: 'Plugin name as declared in plugin.json.' },
@@ -83,9 +82,9 @@ const pluginInstall = defineLeaf({
     effects: ['Clones or copies the plugin into the scope plugins directory. Registers the plugin in config.json.'],
   },
   run: async (input) => {
-    const source = reqStr(input, 'source');
-    const scopeInput = str(input, 'scope');
-    const ref = str(input, 'ref');
+    const source = input['source'] as string;
+    const scopeInput = input['scope'] as string | undefined;
+    const ref = input['ref'] as string | undefined;
 
     if (!isGitUrl(source)) {
       throw usage(
@@ -113,7 +112,7 @@ const pluginInstall = defineLeaf({
     if (pathExists(tempDir)) {
       throw general(
         `plugin directory already exists: ${tempDir}\n` +
-          `Uninstall the existing plugin first with \`pkg plugin manage remove\` {\"name\":\"${tempName}\"}`,
+          `Uninstall the existing plugin first with \`pkg plugin manage remove ${tempName}\``,
       );
     }
 
@@ -158,9 +157,9 @@ const pluginRemove = defineLeaf({
   help: {
     name: 'pkg plugin manage remove',
     summary: 'remove a plugin and its directory from the given scope',
-    input: [
-      { name: 'name', type: 'string', required: true, constraint: 'Plugin name to remove.' },
-      { name: 'scope', type: 'string', required: false, constraint: 'One of: user, project. Default: searches all scopes.' },
+    params: [
+      { kind: 'positional', name: 'name', type: 'string', required: true, constraint: 'Plugin name to remove.' },
+      { kind: 'flag', name: 'scope', type: 'enum', choices: ['user', 'project'], required: false, constraint: 'One of: user, project. Default: searches all scopes.' },
     ],
     output: [
       { name: 'removed', type: 'boolean', required: true, constraint: 'True if removed from at least one scope.' },
@@ -170,8 +169,8 @@ const pluginRemove = defineLeaf({
     effects: ['Deletes the plugin directory. Removes the plugin entry from config.json.'],
   },
   run: async (input) => {
-    const name = reqStr(input, 'name');
-    const scopeInput = str(input, 'scope');
+    const name = input['name'] as string;
+    const scopeInput = input['scope'] as string | undefined;
 
     if (name === 'crtr') {
       throw usage('cannot remove builtin plugin "crtr" — it ships with the binary');
@@ -217,8 +216,8 @@ async function setPluginEnabled(
   input: Record<string, unknown>,
   enabled: boolean,
 ): Promise<Record<string, unknown>> {
-  const name = reqStr(input, 'name');
-  const scopeInput = str(input, 'scope');
+  const name = input['name'] as string;
+  const scopeInput = input['scope'] as string | undefined;
 
   let scopes: Scope[];
   if (scopeInput !== undefined) {
@@ -261,9 +260,9 @@ const pluginEnable = defineLeaf({
   help: {
     name: 'pkg plugin manage enable',
     summary: 'enable a plugin in the given scope',
-    input: [
-      { name: 'name', type: 'string', required: true, constraint: 'Plugin name to enable.' },
-      { name: 'scope', type: 'string', required: false, constraint: 'One of: user, project. Default: scope where the plugin is installed.' },
+    params: [
+      { kind: 'positional', name: 'name', type: 'string', required: true, constraint: 'Plugin name to enable.' },
+      { kind: 'flag', name: 'scope', type: 'enum', choices: ['user', 'project'], required: false, constraint: 'One of: user, project. Default: scope where the plugin is installed.' },
     ],
     output: [
       { name: 'name', type: 'string', required: true, constraint: 'Plugin name.' },
@@ -281,9 +280,9 @@ const pluginDisable = defineLeaf({
   help: {
     name: 'pkg plugin manage disable',
     summary: 'disable a plugin (keeps files, hides from resolution)',
-    input: [
-      { name: 'name', type: 'string', required: true, constraint: 'Plugin name to disable.' },
-      { name: 'scope', type: 'string', required: false, constraint: 'One of: user, project. Default: scope where the plugin is installed.' },
+    params: [
+      { kind: 'positional', name: 'name', type: 'string', required: true, constraint: 'Plugin name to disable.' },
+      { kind: 'flag', name: 'scope', type: 'enum', choices: ['user', 'project'], required: false, constraint: 'One of: user, project. Default: scope where the plugin is installed.' },
     ],
     output: [
       { name: 'name', type: 'string', required: true, constraint: 'Plugin name.' },
@@ -306,8 +305,8 @@ const pluginUpdate = defineLeaf({
   help: {
     name: 'pkg plugin manage update',
     summary: 'git pull updates for one or all installed plugins',
-    input: [
-      { name: 'name', type: 'string', required: false, constraint: 'Plugin name to update. Omit to update all (returns a job handle).' },
+    params: [
+      { kind: 'flag', name: 'name', type: 'string', required: false, constraint: 'Plugin name to update. Omit to update all (returns a job handle).' },
     ],
     output: [
       { name: 'updated', type: 'object[]', required: false, constraint: 'Present for single-plugin (blocking) path: [{name, updated, sha}].' },
@@ -318,7 +317,7 @@ const pluginUpdate = defineLeaf({
     effects: ['Runs git pull in plugin directories. Updates version in config.json.'],
   },
   run: async (input) => {
-    const name = str(input, 'name');
+    const name = input['name'] as string | undefined;
 
     if (name !== undefined) {
       // Single plugin — blocking (bounded network op, one repo)
@@ -415,7 +414,7 @@ const pluginUpdate = defineLeaf({
 
     return {
       job_id: jobId,
-      follow_up: `{"job_id":"${jobId}","wait":true} | crtr job read result`,
+      follow_up: `crtr job read result ${jobId} --wait`,
     };
   },
 });
@@ -445,11 +444,11 @@ const pluginList = defineLeaf({
   help: {
     name: 'pkg plugin inspect list',
     summary: 'paginated list of installed plugins',
-    input: [
-      { name: 'scope', type: 'string', required: false, constraint: 'One of: user, project, all. Default: all.' },
-      { name: 'include_disabled', type: 'boolean', required: false, constraint: 'Default false.' },
-      { name: 'limit', type: 'integer', required: false, constraint: 'Default 50, max 200.' },
-      { name: 'cursor', type: 'string', required: false, constraint: 'Opaque token from next_cursor. Omit on first call.' },
+    params: [
+      { kind: 'flag', name: 'scope', type: 'enum', choices: ['user', 'project', 'all'], required: false, constraint: 'Default: all.' },
+      { kind: 'flag', name: 'include-disabled', type: 'bool', required: false, constraint: 'Include disabled plugins. Default: false.' },
+      { kind: 'flag', name: 'limit', type: 'int', required: false, default: 50, constraint: 'Default 50, max 200.' },
+      { kind: 'flag', name: 'cursor', type: 'string', required: false, constraint: 'Opaque token from next_cursor. Omit on first call.' },
     ],
     output: [
       { name: 'items', type: 'object[]', required: true, constraint: 'Each: {name, scope, version?, enabled, source_marketplace?, path}. Sorted by scope then name ascending.' },
@@ -460,10 +459,11 @@ const pluginList = defineLeaf({
     effects: ['None. Read-only.'],
   },
   run: async (input) => {
-    const scopeInput = str(input, 'scope');
-    const includeDisabled = bool(input, 'include_disabled', false);
-    const limit = int(input, 'limit', { default: 50, min: 1, max: 200 });
-    const cursor = str(input, 'cursor');
+    const scopeInput = input['scope'] as string | undefined;
+    const includeDisabled = (input['includeDisabled'] as boolean | undefined) ?? false;
+    const limitRaw = input['limit'] as number | undefined;
+    const limit = limitRaw !== undefined ? Math.min(Math.max(1, limitRaw), 200) : 50;
+    const cursor = input['cursor'] as string | undefined;
 
     let scopesToScan: Scope[];
     if (scopeInput !== undefined) {
@@ -519,9 +519,9 @@ const pluginShow = defineLeaf({
   help: {
     name: 'pkg plugin inspect show',
     summary: 'read plugin manifest and metadata by name',
-    input: [
-      { name: 'name', type: 'string', required: true, constraint: 'Plugin name.' },
-      { name: 'scope', type: 'string', required: false, constraint: 'One of: user, project. Narrows resolution.' },
+    params: [
+      { kind: 'positional', name: 'name', type: 'string', required: true, constraint: 'Plugin name.' },
+      { kind: 'flag', name: 'scope', type: 'enum', choices: ['user', 'project'], required: false, constraint: 'One of: user, project. Narrows resolution.' },
     ],
     output: [
       { name: 'name', type: 'string', required: true, constraint: 'Plugin name.' },
@@ -535,8 +535,8 @@ const pluginShow = defineLeaf({
     effects: ['None. Read-only.'],
   },
   run: async (input) => {
-    const name = reqStr(input, 'name');
-    const scopeInput = str(input, 'scope');
+    const name = input['name'] as string;
+    const scopeInput = input['scope'] as string | undefined;
 
     let found;
     if (scopeInput !== undefined) {
@@ -607,10 +607,10 @@ const marketAdd = defineLeaf({
   help: {
     name: 'pkg market manage add',
     summary: 'add a marketplace by git URL',
-    input: [
-      { name: 'url', type: 'string', required: true, constraint: 'Git URL of the marketplace repo.' },
-      { name: 'ref', type: 'string', required: false, constraint: 'Git ref to track. Default: main.' },
-      { name: 'scope', type: 'string', required: false, constraint: 'One of: user, project. Default: project if available, else user.' },
+    params: [
+      { kind: 'flag', name: 'url', type: 'string', required: true, constraint: 'Git URL of the marketplace repo.' },
+      { kind: 'flag', name: 'ref', type: 'string', required: false, constraint: 'Git ref to track. Default: main.' },
+      { kind: 'flag', name: 'scope', type: 'enum', choices: ['user', 'project'], required: false, constraint: 'One of: user, project. Default: project if available, else user.' },
     ],
     output: [
       { name: 'name', type: 'string', required: true, constraint: 'Marketplace name as declared in marketplace.json.' },
@@ -621,9 +621,9 @@ const marketAdd = defineLeaf({
     effects: ['Clones the marketplace repo. Registers the marketplace in config.json.'],
   },
   run: async (input) => {
-    const url = reqStr(input, 'url');
-    const ref = str(input, 'ref');
-    const scopeInput = str(input, 'scope');
+    const url = input['url'] as string;
+    const ref = input['ref'] as string | undefined;
+    const scopeInput = input['scope'] as string | undefined;
 
     const scope = resolveInstallScope(scopeInput);
     const root = requireScopeRoot(scope);
@@ -680,9 +680,9 @@ const marketRemove = defineLeaf({
   help: {
     name: 'pkg market manage remove',
     summary: 'remove a marketplace and its directory',
-    input: [
-      { name: 'name', type: 'string', required: true, constraint: 'Marketplace name to remove.' },
-      { name: 'scope', type: 'string', required: false, constraint: 'One of: user, project.' },
+    params: [
+      { kind: 'positional', name: 'name', type: 'string', required: true, constraint: 'Marketplace name to remove.' },
+      { kind: 'flag', name: 'scope', type: 'enum', choices: ['user', 'project'], required: false, constraint: 'One of: user, project.' },
     ],
     output: [
       { name: 'name', type: 'string', required: true, constraint: 'Removed marketplace name.' },
@@ -692,8 +692,8 @@ const marketRemove = defineLeaf({
     effects: ['Deletes the marketplace directory. Removes the entry from config.json.'],
   },
   run: async (input) => {
-    const name = reqStr(input, 'name');
-    const scopeInput = str(input, 'scope');
+    const name = input['name'] as string;
+    const scopeInput = input['scope'] as string | undefined;
 
     let targetScope: Scope | undefined;
     let mktRoot: string | undefined;
@@ -759,8 +759,8 @@ const marketUpdate = defineLeaf({
   help: {
     name: 'pkg market manage update',
     summary: 'git pull updates for one or all registered marketplaces',
-    input: [
-      { name: 'name', type: 'string', required: false, constraint: 'Marketplace name to update. Omit to update all (returns a job handle).' },
+    params: [
+      { kind: 'flag', name: 'marketplace', type: 'string', required: false, constraint: 'Marketplace name to update. Omit to update all (returns a job handle).' },
     ],
     output: [
       { name: 'updated', type: 'object[]', required: false, constraint: 'Present for single (blocking) path: [{name, updated, sha}].' },
@@ -771,7 +771,7 @@ const marketUpdate = defineLeaf({
     effects: ['Runs git pull in marketplace directories.'],
   },
   run: async (input) => {
-    const name = str(input, 'name');
+    const name = input['marketplace'] as string | undefined;
 
     async function doUpdate(
       targets: Array<{ name: string; scope: Scope; root: string }>,
@@ -859,7 +859,7 @@ const marketUpdate = defineLeaf({
 
     return {
       job_id: jobId,
-      follow_up: `{"job_id":"${jobId}","wait":true} | crtr job read result`,
+      follow_up: `crtr job read result ${jobId} --wait`,
     };
   },
 });
@@ -873,10 +873,10 @@ const marketInstall = defineLeaf({
   help: {
     name: 'pkg market manage install',
     summary: 'install a plugin from an added marketplace by plugin name',
-    input: [
-      { name: 'marketplace', type: 'string', required: true, constraint: 'Marketplace name (must already be added via `pkg market manage add`).' },
-      { name: 'plugin', type: 'string', required: true, constraint: 'Plugin name as listed in the marketplace manifest.' },
-      { name: 'scope', type: 'string', required: false, constraint: 'One of: user, project. Default: project if available, else user.' },
+    params: [
+      { kind: 'flag', name: 'marketplace', type: 'string', required: true, constraint: 'Marketplace name (must already be added via `pkg market manage add`).' },
+      { kind: 'flag', name: 'plugin', type: 'string', required: true, constraint: 'Plugin name as listed in the marketplace manifest.' },
+      { kind: 'flag', name: 'scope', type: 'enum', choices: ['user', 'project'], required: false, constraint: 'One of: user, project. Default: project if available, else user.' },
     ],
     output: [
       { name: 'name', type: 'string', required: true, constraint: 'Installed plugin name.' },
@@ -887,9 +887,9 @@ const marketInstall = defineLeaf({
     effects: ['Clones or copies the plugin from the marketplace into the scope plugins directory. Registers the plugin in config.json with source_marketplace set.'],
   },
   run: async (input) => {
-    const mktName = reqStr(input, 'marketplace');
-    const pluginName = reqStr(input, 'plugin');
-    const scopeInput = str(input, 'scope');
+    const mktName = input['marketplace'] as string;
+    const pluginName = input['plugin'] as string;
+    const scopeInput = input['scope'] as string | undefined;
 
     const mkt = findMarketplaceByName(mktName);
     if (!mkt) throw notFound(`marketplace not found: ${mktName}`);
@@ -968,10 +968,10 @@ const marketList = defineLeaf({
   help: {
     name: 'pkg market inspect list',
     summary: 'list registered marketplaces',
-    input: [
-      { name: 'scope', type: 'string', required: false, constraint: 'One of: user, project, all. Default: all.' },
-      { name: 'limit', type: 'integer', required: false, constraint: 'Default 50, max 200.' },
-      { name: 'cursor', type: 'string', required: false, constraint: 'Opaque token from next_cursor. Omit on first call.' },
+    params: [
+      { kind: 'flag', name: 'scope', type: 'enum', choices: ['user', 'project', 'all'], required: false, constraint: 'One of: user, project, all. Default: all.' },
+      { kind: 'flag', name: 'limit', type: 'int', required: false, default: 50, constraint: 'Default 50, max 200.' },
+      { kind: 'flag', name: 'cursor', type: 'string', required: false, constraint: 'Opaque token from next_cursor. Omit on first call.' },
     ],
     output: [
       { name: 'items', type: 'object[]', required: true, constraint: 'Each: {name, scope, url, ref, path, last_updated?}. Sorted by scope then name ascending.' },
@@ -982,9 +982,10 @@ const marketList = defineLeaf({
     effects: ['None. Read-only.'],
   },
   run: async (input) => {
-    const scopeInput = str(input, 'scope');
-    const limit = int(input, 'limit', { default: 50, min: 1, max: 200 });
-    const cursor = str(input, 'cursor');
+    const scopeInput = input['scope'] as string | undefined;
+    const limitRaw = input['limit'] as number | undefined;
+    const limit = limitRaw !== undefined ? Math.min(Math.max(1, limitRaw), 200) : 50;
+    const cursor = input['cursor'] as string | undefined;
 
     let all: ReturnType<typeof listAllMarketplaces>;
     if (scopeInput !== undefined) {
@@ -1040,10 +1041,10 @@ const marketBrowse = defineLeaf({
   help: {
     name: 'pkg market inspect browse',
     summary: 'list plugins available in a marketplace',
-    input: [
-      { name: 'marketplace', type: 'string', required: true, constraint: 'Marketplace name.' },
-      { name: 'limit', type: 'integer', required: false, constraint: 'Default 50, max 200.' },
-      { name: 'cursor', type: 'string', required: false, constraint: 'Opaque token from next_cursor. Omit on first call.' },
+    params: [
+      { kind: 'flag', name: 'marketplace', type: 'string', required: false, constraint: 'Marketplace name. Omit to browse all registered marketplaces.' },
+      { kind: 'flag', name: 'limit', type: 'int', required: false, default: 50, constraint: 'Default 50, max 200.' },
+      { kind: 'flag', name: 'cursor', type: 'string', required: false, constraint: 'Opaque token from next_cursor. Omit on first call.' },
     ],
     output: [
       { name: 'marketplace', type: 'string', required: true, constraint: 'Echo of the input marketplace name.' },
@@ -1055,9 +1056,14 @@ const marketBrowse = defineLeaf({
     effects: ['None. Read-only.'],
   },
   run: async (input) => {
-    const mktName = reqStr(input, 'marketplace');
-    const limit = int(input, 'limit', { default: 50, min: 1, max: 200 });
-    const cursor = str(input, 'cursor');
+    const mktName = input['marketplace'] as string | undefined;
+    const limitRaw = input['limit'] as number | undefined;
+    const limit = limitRaw !== undefined ? Math.min(Math.max(1, limitRaw), 200) : 50;
+    const cursor = input['cursor'] as string | undefined;
+
+    if (mktName === undefined) {
+      throw usage('--marketplace is required for browse. Use `pkg market inspect list` to see registered marketplaces.');
+    }
 
     const mkt = findMarketplaceByName(mktName);
     if (!mkt) throw notFound(`marketplace not found: ${mktName}`);

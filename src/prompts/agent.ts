@@ -4,7 +4,7 @@ import { planReviewPrompt, specReviewPrompt } from './review.js';
  * First user message for a spec → plan handoff.
  *
  * Thin prompt: the worker discovers the full planning workflow by running
- * `crtr plan new -h`, then saves the plan via `crtr plan new`. This avoids
+ * `crtr flow plan new -h`, then saves the plan via `crtr flow plan new`. This avoids
  * embedding the planPrompt() blob here and keeps the prompt in sync with the
  * live CLI without any coupling.
  */
@@ -13,16 +13,22 @@ export function planHandoffPrompt(specPath: string, jobId: string): string {
 
 **Spec:** ${specPath}
 
-1. Run \`crtr plan new -h\` to load the planning workflow and output schema.
+1. Run \`crtr flow plan new -h\` to load the planning workflow and output schema.
 2. Read the spec end-to-end.
-3. Follow the workflow from step 1 and save the plan by piping JSON to \`crtr plan new\`.
+3. Follow the workflow from step 1 and save the plan by passing the plan markdown to \`crtr flow plan new\` on stdin.
 4. When done, submit your result:
 
 \`\`\`bash
-echo '{"job_id":"${jobId}","result":{"status":"done","plan_saved":true}}' | crtr job submit
+echo '{"status":"done","plan_saved":true}' > /tmp/crtr-result-${jobId}.json
+crtr job submit ${jobId} --context-file /tmp/crtr-result-${jobId}.json
 \`\`\`
 
-If you cannot complete the plan, still call \`crtr job submit\` with \`{"job_id":"${jobId}","result":{"status":"failed","reason":"<why>"}}\`.
+If you cannot complete the plan, still submit:
+
+\`\`\`bash
+echo '{"status":"failed","reason":"<why>"}' > /tmp/crtr-result-${jobId}.json
+crtr job submit ${jobId} --context-file /tmp/crtr-result-${jobId}.json
+\`\`\`
 
 Begin now.`;
 }
@@ -110,12 +116,14 @@ would be slower.
 When all tasks complete and verification passes, submit your result:
 
 \`\`\`bash
-echo '{"job_id":"${jobId}","result":{"status":"done","summary":"<one-line summary of files touched>"}}' | crtr job submit
+echo '{"status":"done","summary":"<one-line summary of files touched>"}' > /tmp/crtr-result-${jobId}.json
+crtr job submit ${jobId} --context-file /tmp/crtr-result-${jobId}.json
 \`\`\`
 
 If implementation fails, still submit:
 \`\`\`bash
-echo '{"job_id":"${jobId}","result":{"status":"failed","reason":"<why>"}}' | crtr job submit
+echo '{"status":"failed","reason":"<why>"}' > /tmp/crtr-result-${jobId}.json
+crtr job submit ${jobId} --context-file /tmp/crtr-result-${jobId}.json
 \`\`\`
 
 ## Guardrails (apply to you AND your subagents)
@@ -148,10 +156,10 @@ export function reviewerHandoffPrompt(
 
   const patched = reviewBody.replace(
     '__CRTR_SUBMIT_INSTRUCTION__',
-    `the submit command injected below:\n\n\`\`\`bash\necho '{"job_id":"${jobId}","result":{"status":"done","review":"<your full review markdown>"}}' | crtr job submit\n\`\`\``,
+    `the submit command injected below. The \`--kill-pane\` flag closes this reviewer pane after submission — keep it, do not drop it.\n\n\`\`\`bash\ncat > /tmp/crtr-result-${jobId}.json <<'JSON'\n{"status":"done","review":"<your full review markdown>"}\nJSON\ncrtr job submit ${jobId} --context-file /tmp/crtr-result-${jobId}.json --kill-pane\n\`\`\``,
   );
 
   return `${patched}
 
-After calling \`crtr job submit\`, your turn ends. Do NOT chat or summarize after submission.`;
+After calling \`crtr job submit\`, your turn ends and the pane closes itself. Do NOT chat or summarize after submission.`;
 }

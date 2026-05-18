@@ -5,7 +5,6 @@ import { join } from 'node:path';
 import { writeFileSync } from 'node:fs';
 import { defineBranch, defineLeaf } from '../core/command.js';
 import type { BranchDef } from '../core/command.js';
-import { reqStr, str, bool, int } from '../core/io.js';
 import { usage, general, notFound } from '../core/errors.js';
 import {
   SCOPE_SKILL_PLUGIN,
@@ -112,12 +111,12 @@ const findList = defineLeaf({
   help: {
     name: 'skill find list',
     summary: 'paginated list of installed skills',
-    input: [
-      { name: 'scope', type: 'string', required: false, constraint: 'One of: user, project, all. Default: all.' },
-      { name: 'plugin', type: 'string', required: false, constraint: 'Filter to a single plugin name.' },
-      { name: 'include_disabled', type: 'boolean', required: false, constraint: 'Default false. When true, includes disabled skills.' },
-      { name: 'limit', type: 'integer', required: false, constraint: 'Default 50, max 200.' },
-      { name: 'cursor', type: 'string', required: false, constraint: 'Opaque token from next_cursor. Omit on first call.' },
+    params: [
+      { kind: 'flag', name: 'scope', type: 'enum', choices: ['user', 'project', 'all'], required: false, constraint: 'Default: all.' },
+      { kind: 'flag', name: 'plugin', type: 'string', required: false, constraint: 'Filter to a single plugin name.' },
+      { kind: 'flag', name: 'include-disabled', type: 'bool', required: false, constraint: 'When present, includes disabled skills.' },
+      { kind: 'flag', name: 'limit', type: 'int', required: false, default: 50, constraint: 'Max 200.' },
+      { kind: 'flag', name: 'cursor', type: 'string', required: false, constraint: 'Opaque token from next_cursor. Omit on first call.' },
     ],
     output: [
       { name: 'items', type: 'object[]', required: true, constraint: 'Each: {name, plugin, scope, path, description?, enabled, disabled_in?}. Sorted by scope then plugin then name ascending.' },
@@ -128,11 +127,12 @@ const findList = defineLeaf({
     effects: ['None. Read-only.'],
   },
   run: async (input) => {
-    const scopeStr = str(input, 'scope');
-    const pluginFilter = str(input, 'plugin');
-    const includeDisabled = bool(input, 'include_disabled', false);
-    const limit = int(input, 'limit', { default: 50, min: 1, max: 200 });
-    const cursor = str(input, 'cursor');
+    const scopeStr = input['scope'] as string | undefined;
+    const pluginFilter = input['plugin'] as string | undefined;
+    const includeDisabled = input['includeDisabled'] as boolean;
+    const limitRaw = input['limit'] as number;
+    const limit = Math.min(Math.max(1, limitRaw), 200);
+    const cursor = input['cursor'] as string | undefined;
 
     const scopes = listScopes(scopeStr);
     const skills = scopes
@@ -187,12 +187,12 @@ const findSearch = defineLeaf({
   help: {
     name: 'skill find search',
     summary: 'search skills by name, description, and keywords',
-    input: [
-      { name: 'query', type: 'string', required: true, constraint: 'Search terms matched against name, description, and keywords fields.' },
-      { name: 'scope', type: 'string', required: false, constraint: 'One of: user, project, all. Default: all.' },
-      { name: 'plugin', type: 'string', required: false, constraint: 'Filter to a single plugin name.' },
-      { name: 'include_disabled', type: 'boolean', required: false, constraint: 'Default false.' },
-      { name: 'body', type: 'boolean', required: false, constraint: 'Default false. When true, also searches SKILL.md body text.' },
+    params: [
+      { kind: 'positional', name: 'query', required: true, constraint: 'Whitespace-separated terms matched case-insensitively against name, description, and keywords; skills matching more terms rank higher.' },
+      { kind: 'flag', name: 'scope', type: 'enum', choices: ['user', 'project', 'all'], required: false, constraint: 'Default: all.' },
+      { kind: 'flag', name: 'plugin', type: 'string', required: false, constraint: 'Filter to a single plugin name.' },
+      { kind: 'flag', name: 'include-disabled', type: 'bool', required: false, constraint: 'When present, includes disabled skills.' },
+      { kind: 'flag', name: 'search-body', type: 'bool', required: false, constraint: 'When present, also searches inside SKILL.md body text.' },
     ],
     output: [
       { name: 'query', type: 'string', required: true, constraint: 'Echo of the input query.' },
@@ -202,13 +202,18 @@ const findSearch = defineLeaf({
     effects: ['None. Read-only.'],
   },
   run: async (input) => {
-    const query = reqStr(input, 'query');
-    const scopeStr = str(input, 'scope');
-    const pluginFilter = str(input, 'plugin');
-    const includeDisabled = bool(input, 'include_disabled', false);
-    const searchBody = bool(input, 'body', false);
+    const query = input['query'] as string;
+    const scopeStr = input['scope'] as string | undefined;
+    const pluginFilter = input['plugin'] as string | undefined;
+    const includeDisabled = input['includeDisabled'] as boolean;
+    const searchBody = input['searchBody'] as boolean;
 
-    const needle = query.toLowerCase();
+    const terms = query
+      .toLowerCase()
+      .split(/\s+/)
+      .filter((t) => t.length > 0);
+    if (terms.length === 0) throw usage('query must contain at least one non-whitespace term');
+
     const scopes = listScopes(scopeStr);
     const candidates = scopes
       .flatMap((s) => listAllSkills(s))
@@ -226,30 +231,33 @@ const findSearch = defineLeaf({
 
     const hits: Hit[] = [];
     for (const sk of candidates) {
-      const matched: string[] = [];
+      const matchedSet = new Set<string>();
       let score = 0;
-      if (sk.name.toLowerCase().includes(needle)) {
-        score += 10;
-        matched.push('name');
-      }
-      const desc = sk.frontmatter.description;
-      if (desc !== undefined && desc.toLowerCase().includes(needle)) {
-        score += 4;
-        matched.push('description');
-      }
-      const kws = sk.frontmatter.keywords;
-      if (kws && kws.some((k) => k.toLowerCase().includes(needle))) {
-        score += 6;
-        matched.push('keywords');
-      }
-      if (searchBody) {
-        const text = readText(sk.path).toLowerCase();
-        if (text.includes(needle)) {
+      const nameLc = sk.name.toLowerCase();
+      const descLc = sk.frontmatter.description !== undefined ? sk.frontmatter.description.toLowerCase() : null;
+      const kwsLc = sk.frontmatter.keywords !== undefined ? sk.frontmatter.keywords.map((k) => k.toLowerCase()) : null;
+      const bodyLc = searchBody ? readText(sk.path).toLowerCase() : null;
+
+      for (const term of terms) {
+        if (nameLc.includes(term)) {
+          score += 10;
+          matchedSet.add('name');
+        }
+        if (descLc !== null && descLc.includes(term)) {
+          score += 4;
+          matchedSet.add('description');
+        }
+        if (kwsLc !== null && kwsLc.some((k) => k.includes(term))) {
+          score += 6;
+          matchedSet.add('keywords');
+        }
+        if (bodyLc !== null && bodyLc.includes(term)) {
           score += 1;
-          matched.push('body');
+          matchedSet.add('body');
         }
       }
-      if (score > 0) hits.push({ skill: sk, score, matched });
+
+      if (score > 0) hits.push({ skill: sk, score, matched: Array.from(matchedSet) });
     }
 
     hits.sort((a, b) => b.score - a.score || a.skill.name.localeCompare(b.skill.name));
@@ -276,10 +284,10 @@ const findGrep = defineLeaf({
   help: {
     name: 'skill find grep',
     summary: 'search skill file contents for a regex pattern',
-    input: [
-      { name: 'pattern', type: 'string', required: true, constraint: 'ECMAScript regex. Applied to each line of every SKILL.md file.' },
-      { name: 'scope', type: 'string', required: false, constraint: 'One of: user, project, all. Default: all.' },
-      { name: 'plugin', type: 'string', required: false, constraint: 'Filter to a single plugin name.' },
+    params: [
+      { kind: 'positional', name: 'pattern', required: true, constraint: 'ECMAScript regex. Applied to each line of every SKILL.md file.' },
+      { kind: 'flag', name: 'scope', type: 'enum', choices: ['user', 'project', 'all'], required: false, constraint: 'Default: all.' },
+      { kind: 'flag', name: 'plugin', type: 'string', required: false, constraint: 'Filter to a single plugin name.' },
     ],
     output: [
       { name: 'matches', type: 'object[]', required: true, constraint: 'Each: {path, line, text}. path is absolute. Sorted by path then line ascending.' },
@@ -288,9 +296,9 @@ const findGrep = defineLeaf({
     effects: ['None. Read-only.'],
   },
   run: async (input) => {
-    const pattern = reqStr(input, 'pattern');
-    const scopeStr = str(input, 'scope');
-    const pluginFilter = str(input, 'plugin');
+    const pattern = input['pattern'] as string;
+    const scopeStr = input['scope'] as string | undefined;
+    const pluginFilter = input['plugin'] as string | undefined;
 
     let regex: RegExp;
     try {
@@ -360,27 +368,27 @@ const readShow = defineLeaf({
   help: {
     name: 'skill read show',
     summary: 'print SKILL.md body for a named skill',
-    input: [
-      { name: 'name', type: 'string', required: true, constraint: 'Skill identifier. Forms: <name>, <plugin>:<name>, <scope>:<name>, <scope>:<plugin>/<name>.' },
-      { name: 'scope', type: 'string', required: false, constraint: 'One of: user, project. Narrows resolution when name is ambiguous.' },
-      { name: 'plugin', type: 'string', required: false, constraint: 'Narrows resolution to a specific plugin.' },
-      { name: 'frontmatter', type: 'boolean', required: false, constraint: 'Default false. When true, includes YAML frontmatter in the body.' },
+    params: [
+      { kind: 'positional', name: 'name', required: true, constraint: 'Skill identifier. Forms: <name>, <plugin>:<name>, <scope>:<name>, <scope>:<plugin>/<name>.' },
+      { kind: 'flag', name: 'scope', type: 'enum', choices: ['user', 'project'], required: false, constraint: 'Narrows resolution when name is ambiguous.' },
+      { kind: 'flag', name: 'plugin', type: 'string', required: false, constraint: 'Narrows resolution to a specific plugin.' },
+      { kind: 'flag', name: 'frontmatter', type: 'bool', required: false, constraint: 'When present, includes YAML frontmatter in the output.' },
     ],
     output: [
       { name: 'name', type: 'string', required: true, constraint: 'Resolved skill name.' },
       { name: 'plugin', type: 'string', required: true, constraint: 'Plugin the skill belongs to.' },
       { name: 'scope', type: 'string', required: true, constraint: 'Scope the skill was resolved from.' },
       { name: 'path', type: 'string', required: true, constraint: 'Absolute path to SKILL.md.' },
-      { name: 'content', type: 'string', required: true, constraint: 'SKILL.md body (with or without frontmatter per the `frontmatter` input field).' },
+      { name: 'content', type: 'string', required: true, constraint: 'SKILL.md body (with or without frontmatter per the --frontmatter flag).' },
     ],
     outputKind: 'object',
     effects: ['None. Read-only.'],
   },
   run: async (input) => {
-    const nameRaw = reqStr(input, 'name');
-    const scopeStr = str(input, 'scope');
-    const pluginFilter = str(input, 'plugin');
-    const includeFrontmatter = bool(input, 'frontmatter', false);
+    const nameRaw = input['name'] as string;
+    const scopeStr = input['scope'] as string | undefined;
+    const pluginFilter = input['plugin'] as string | undefined;
+    const includeFrontmatter = input['frontmatter'] as boolean;
 
     const resolveOpts: { scope?: Scope; pluginFilter?: string } = {};
     if (scopeStr !== undefined) {
@@ -409,10 +417,10 @@ const readWhere = defineLeaf({
   help: {
     name: 'skill read where',
     summary: 'show resolution metadata for a named skill without reading its body',
-    input: [
-      { name: 'name', type: 'string', required: true, constraint: 'Skill identifier. Same forms as skill read show.' },
-      { name: 'scope', type: 'string', required: false, constraint: 'One of: user, project.' },
-      { name: 'plugin', type: 'string', required: false, constraint: 'Narrows resolution to a specific plugin.' },
+    params: [
+      { kind: 'positional', name: 'name', required: true, constraint: 'Skill identifier. Same forms as skill read show.' },
+      { kind: 'flag', name: 'scope', type: 'enum', choices: ['user', 'project'], required: false, constraint: 'Narrows resolution.' },
+      { kind: 'flag', name: 'plugin', type: 'string', required: false, constraint: 'Narrows resolution to a specific plugin.' },
     ],
     output: [
       { name: 'name', type: 'string', required: true, constraint: 'Resolved skill name.' },
@@ -424,9 +432,9 @@ const readWhere = defineLeaf({
     effects: ['None. Read-only.'],
   },
   run: async (input) => {
-    const nameRaw = reqStr(input, 'name');
-    const scopeStr = str(input, 'scope');
-    const pluginFilter = str(input, 'plugin');
+    const nameRaw = input['name'] as string;
+    const scopeStr = input['scope'] as string | undefined;
+    const pluginFilter = input['plugin'] as string | undefined;
 
     const resolveOpts: { scope?: Scope; pluginFilter?: string } = {};
     if (scopeStr !== undefined) {
@@ -470,9 +478,9 @@ const authorGuide = defineLeaf({
   help: {
     name: 'skill author guide',
     summary: 'load the skill authoring workflow — two stages: omit type to pick one, pass type for its full skeleton',
-    input: [
-      { name: 'type', type: 'string', required: false, constraint: 'One of: playbook, primer, reference, runbook, freeform. OMIT to receive the template-picker guide first; pass it on the second call for that type\'s full workflow + skeleton.' },
-      { name: 'topic', type: 'string', required: false, constraint: 'Optional topic context injected into the guide.' },
+    params: [
+      { kind: 'flag', name: 'type', type: 'enum', choices: [...VALID_TYPES], required: false, constraint: 'OMIT to receive the template-picker guide first; pass on the second call for that type\'s full workflow + skeleton.' },
+      { kind: 'flag', name: 'topic', type: 'string', required: false, constraint: 'Optional topic context injected into the guide.' },
     ],
     output: [
       { name: 'guide', type: 'string', required: true, constraint: 'Stage 1 (no type): the template-picker workflow. Stage 2 (type given): that type\'s authoring workflow + skeleton.' },
@@ -482,8 +490,8 @@ const authorGuide = defineLeaf({
     effects: ['None. Read-only.'],
   },
   run: async (input) => {
-    const type = str(input, 'type', { enum: VALID_TYPES });
-    const topic = str(input, 'topic');
+    const type = input['type'] as string | undefined;
+    const topic = input['topic'] as string | undefined;
     const topicArg = topic !== undefined ? topic : '';
 
     // Progressive disclosure: no type → template picker (stage 1);
@@ -500,11 +508,11 @@ const authorScaffold = defineLeaf({
   help: {
     name: 'skill author scaffold',
     summary: 'create an empty SKILL.md stub at the given qualifier',
-    input: [
-      { name: 'qualifier', type: 'string', required: true, constraint: 'Skill identifier in <name> or <plugin>:<name> form.' },
-      { name: 'type', type: 'string', required: false, constraint: 'One of: playbook, primer, reference, runbook, freeform.' },
-      { name: 'description', type: 'string', required: false, constraint: 'Short description written to frontmatter.' },
-      { name: 'scope', type: 'string', required: false, constraint: 'One of: user, project. Default: project if available, else user.' },
+    params: [
+      { kind: 'positional', name: 'qualifier', required: true, constraint: 'Skill identifier in <plugin>:<skill> form.' },
+      { kind: 'flag', name: 'type', type: 'enum', choices: [...VALID_TYPES], required: false, constraint: 'One of: playbook, primer, reference, runbook, freeform.' },
+      { kind: 'flag', name: 'description', type: 'string', required: false, constraint: 'Short description written to frontmatter.' },
+      { kind: 'flag', name: 'scope', type: 'enum', choices: ['user', 'project'], required: false, constraint: 'Default: project if available, else user.' },
     ],
     output: [
       { name: 'path', type: 'string', required: true, constraint: 'Absolute path to the scaffolded SKILL.md.' },
@@ -517,10 +525,10 @@ const authorScaffold = defineLeaf({
     ],
   },
   run: async (input) => {
-    const qualifier = reqStr(input, 'qualifier');
-    const typeStr = str(input, 'type', { enum: VALID_TYPES });
-    const description = str(input, 'description');
-    const scopeStr = str(input, 'scope');
+    const qualifier = input['qualifier'] as string;
+    const typeStr = input['type'] as string | undefined;
+    const description = input['description'] as string | undefined;
+    const scopeStr = input['scope'] as string | undefined;
 
     const { plugin: pluginName, name: skillName } = parseSkillQualifier(qualifier);
     if (!skillName) {
@@ -589,8 +597,8 @@ const authorScaffold = defineLeaf({
       writeFileSync(skillFile, fm, 'utf8');
     }
 
-    const typeHint = skillType !== undefined ? skillType : '<type>';
-    const follow_up = `{"type":"${typeHint}","topic":"${skillName}"} | crtr skill author guide`;
+    const typeHint = skillType !== undefined ? `--type ${skillType} ` : '';
+    const follow_up = `crtr skill author guide ${typeHint}--topic "${skillName}"`;
 
     return { path: skillFile, follow_up };
   },
@@ -617,8 +625,8 @@ async function toggleSkill(
   input: Record<string, unknown>,
   enabled: boolean,
 ): Promise<Record<string, unknown>> {
-  const nameRaw = reqStr(input, 'name');
-  const scopeStr = str(input, 'scope');
+  const nameRaw = input['name'] as string;
+  const scopeStr = input['scope'] as string | undefined;
   const scope = resolveWriteScope(scopeStr);
 
   const skillObj = resolveSkill(nameRaw);
@@ -639,9 +647,9 @@ const stateEnable = defineLeaf({
   help: {
     name: 'skill state enable',
     summary: 'enable a skill in the given scope',
-    input: [
-      { name: 'name', type: 'string', required: true, constraint: 'Skill identifier. Same forms as skill read show.' },
-      { name: 'scope', type: 'string', required: false, constraint: 'One of: user, project. Default: project if available, else user.' },
+    params: [
+      { kind: 'positional', name: 'name', required: true, constraint: 'Skill identifier. Same forms as skill read show.' },
+      { kind: 'flag', name: 'scope', type: 'enum', choices: ['user', 'project'], required: false, constraint: 'Default: project if available, else user.' },
     ],
     output: [
       { name: 'name', type: 'string', required: true, constraint: 'Resolved skill name.' },
@@ -659,9 +667,9 @@ const stateDisable = defineLeaf({
   help: {
     name: 'skill state disable',
     summary: 'disable a skill in the given scope, hiding it from list and agent discovery',
-    input: [
-      { name: 'name', type: 'string', required: true, constraint: 'Skill identifier. Same forms as skill read show.' },
-      { name: 'scope', type: 'string', required: false, constraint: 'One of: user, project. Default: project if available, else user.' },
+    params: [
+      { kind: 'positional', name: 'name', required: true, constraint: 'Skill identifier. Same forms as skill read show.' },
+      { kind: 'flag', name: 'scope', type: 'enum', choices: ['user', 'project'], required: false, constraint: 'Default: project if available, else user.' },
     ],
     output: [
       { name: 'name', type: 'string', required: true, constraint: 'Resolved skill name.' },
@@ -688,6 +696,57 @@ const stateBranch = defineBranch({
 });
 
 // ---------------------------------------------------------------------------
+// Loaded-skills catalog (dynamicState for `skill -h`)
+// ---------------------------------------------------------------------------
+
+// A skill is a forest root within its source (scope+plugin) when no other
+// skill in that same source is its ancestor (`name` prefix + '/'). Nested
+// children stay discoverable via `skill find list` and the Neighbors section.
+function buildSkillCatalog(): string | null {
+  let skills: Skill[];
+  try {
+    skills = listAllSkills().filter((s) => s.enabled);
+  } catch {
+    return null;
+  }
+  if (skills.length === 0) return null;
+
+  const bySource = new Map<string, Skill[]>();
+  for (const s of skills) {
+    const key = `${s.scope} ${s.plugin}`;
+    const arr = bySource.get(key);
+    if (arr) arr.push(s);
+    else bySource.set(key, [s]);
+  }
+
+  const byPrefix = new Map<string, Set<string>>();
+  for (const group of bySource.values()) {
+    const names = group.map((g) => g.name);
+    for (const s of group) {
+      const isChild = names.some((n) => n !== s.name && s.name.startsWith(n + '/'));
+      if (isChild) continue;
+      const prefix =
+        s.plugin === SCOPE_SKILL_PLUGIN ? `${s.scope}:` : `${s.plugin}/`;
+      let set = byPrefix.get(prefix);
+      if (!set) {
+        set = new Set<string>();
+        byPrefix.set(prefix, set);
+      }
+      set.add(s.name);
+    }
+  }
+
+  const prefixes = [...byPrefix.keys()].sort();
+  const prefixW = prefixes.reduce((m, p) => (p.length > m ? p.length : m), 0);
+  const lines = [`Loaded skills (${skills.length})`];
+  for (const prefix of prefixes) {
+    const names = [...byPrefix.get(prefix)!].sort();
+    lines.push(`  ${prefix.padEnd(prefixW)}  ${names.join(', ')}`);
+  }
+  return lines.join('\n');
+}
+
+// ---------------------------------------------------------------------------
 // Root export
 // ---------------------------------------------------------------------------
 
@@ -697,6 +756,9 @@ export function registerSkill(): BranchDef {
     help: {
       name: 'skill',
       summary: 'discover, read, author, and manage skill state',
+      model:
+        'Run only when (a) you need context — `find search <topic>` first (multiple skills may match; load all relevant ones with `read show`) — or (b) you are authoring a new skill — `author guide`. Otherwise skip.',
+      dynamicState: buildSkillCatalog,
       children: [
         { name: 'find', desc: 'list, search, or grep skills', useWhen: 'discovering what skills are available' },
         { name: 'read', desc: 'read skill content or resolve location', useWhen: 'loading a skill to act on it' },

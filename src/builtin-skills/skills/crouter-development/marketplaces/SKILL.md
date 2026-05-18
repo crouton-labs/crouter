@@ -7,13 +7,13 @@ keywords: [marketplace, marketplace.json, plugin, index, publishing]
 
 # Authoring crtr marketplaces
 
-A **marketplace** is a git repo that indexes multiple plugins. Users register it once, then `echo '{"marketplace":"<mkt>","plugin":"<plugin>"}' | crtr pkg market manage install` symlinks any plugin from it. `echo '{"marketplace":"<mkt>"}' | crtr pkg market manage update` pulls updates for every installed plugin at once.
+A **marketplace** is a git repo that indexes multiple plugins. Users register it once, then `crtr pkg market manage install --marketplace <mkt> --plugin <plugin>` symlinks any plugin from it. `crtr pkg market manage update --marketplace <mkt>` pulls updates for every installed plugin at once.
 
 Audience: LLM agents creating a marketplace or adding plugins to an existing one.
 
 ## When you need a marketplace (vs a single-plugin repo)
 
-A solo plugin ships from any git URL via `echo '{"source":"<url>","scope":"user"}' | crtr pkg plugin manage install` — no marketplace needed.
+A solo plugin ships from any git URL via `crtr pkg plugin manage install <url> --scope user` — no marketplace needed.
 
 Reach for a marketplace when:
 - You want to publish ≥3 plugins under one brand or theme.
@@ -70,12 +70,12 @@ The `plugins[]` array IS the index — what's installable. A plugin on disk but 
 
 ## Install mechanics — symlinks, not clones
 
-When a user runs `echo '{"marketplace":"my-marketplace","plugin":"plugin-a"}' | crtr pkg market manage install`:
+When a user runs `crtr pkg market manage install --marketplace my-marketplace --plugin plugin-a`:
 1. Crouter looks up `plugin-a` in the marketplace's manifest.
 2. **Symlinks** `<marketplace-clone>/plugins/plugin-a/` → `<user-scope>/plugins/plugin-a/`.
 3. Records the install in the scope config with `source_marketplace: my-marketplace`.
 
-Therefore `echo '{"marketplace":"my-marketplace"}' | crtr pkg market manage update` (which does `git pull` in the marketplace clone) updates every installed plugin from it — no per-plugin re-install, no second clone.
+Therefore `crtr pkg market manage update --marketplace my-marketplace` (which does `git pull` in the marketplace clone) updates every installed plugin from it — no per-plugin re-install, no second clone.
 
 ## Version-bump automation (recommended)
 
@@ -107,14 +107,14 @@ mkdir -p plugins/my-new-plugin/.crouter-plugin plugins/my-new-plugin/skills
 $EDITOR plugins/my-new-plugin/.crouter-plugin/plugin.json
 
 # Add at least one skill
-echo '{"qualifier":"my-new-plugin:first-skill","type":"playbook","description":"Use when …"}' | crtr skill author scaffold
+crtr skill author scaffold my-new-plugin:first-skill --type playbook --description "Use when …"
 
 # Add the plugin to the marketplace index
 $EDITOR .crouter-marketplace/marketplace.json
 # (append to plugins[] with name, initial version, source, description)
 
 # Validate
-echo '{}' | crtr sys doctor
+crtr sys doctor
 
 # Commit — CI bumps versions if you've wired up auto-bump
 git add -A
@@ -122,7 +122,7 @@ git commit -m "feat: add my-new-plugin"
 git push
 ```
 
-Existing users pick it up on their next `echo '{"marketplace":"<marketplace-name>"}' | crtr pkg market manage update` (or on the next auto-update tick if they've set `auto_update.content: "apply"`).
+Existing users pick it up on their next `crtr pkg market manage update --marketplace <marketplace-name>` (or on the next auto-update tick if they've set `auto_update.content: "apply"`).
 
 ## Updating an existing plugin
 
@@ -141,11 +141,11 @@ A marketplace itself registers per-scope:
 | user | `~/.crouter/marketplaces/<name>/` | Private to your machine — your personal subscriptions |
 | project | `<project>/.crouter/marketplaces/<name>/` | Checked into the repo — anyone cloning gets the same marketplace pinned |
 
-`echo '{"url":"<git-url>","scope":"user"}' | crtr pkg market manage add` is the default. Use `"scope":"project"` when the marketplace is integral to how the repo expects to be developed.
+`crtr pkg market manage add --url <git-url> --scope user` is the default. Use `--scope project` when the marketplace is integral to how the repo expects to be developed.
 
 ## Validation
 
-`echo '{}' | crtr sys doctor` checks marketplaces:
+`crtr sys doctor` checks marketplaces:
 - `marketplace.json` is valid JSON.
 - Every entry in `plugins[]` corresponds to a real directory under `plugins/`.
 - Each plugin under `plugins/` passes plugin-level validation.

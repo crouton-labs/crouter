@@ -1,4 +1,4 @@
-// `crtr plan` subtree — plan new / show / list handlers.
+// `crtr flow plan` subtree — plan new / show / list handlers.
 export const PLAN_NEW_GUIDE = `## Planning workflow
 
 Build and save an implementation plan: a map another agent can execute without
@@ -74,14 +74,14 @@ parallelism to unlock.
 
 ### Phase 5: Save
 
-Pipe JSON to \`crtr plan new\`:
+Run \`crtr flow plan new\`:
 
-  echo '{"name":"<kebab-case-name>","body":"<plan markdown>","spec":"<spec-name>"}' | crtr plan new
+  echo '<plan markdown>' | crtr flow plan new <kebab-case-name> [--spec <spec-name>]
 
-- \`name\`: short kebab-case slug. Nested names become subdirectories
+- NAME: short kebab-case slug. Nested names become subdirectories
   (e.g. \`auth/jwt-refresh\`).
-- \`body\`: the full plan markdown composed in Phase 4.
-- \`spec\` (optional): name of the spec this plan implements. Enables alignment
+- Pipe the full plan markdown composed in Phase 4 on stdin.
+- \`--spec\` (optional): name of the spec this plan implements. Enables alignment
   check by the reviewer.
 
 Output: \`{path, follow_up}\`. The \`follow_up\` field names the exact next call
@@ -107,7 +107,6 @@ export const PLAN_SHOW_GUIDE = '';
 
 import { defineBranch, defineLeaf } from '../core/command.js';
 import type { BranchDef } from '../core/command.js';
-import { reqStr, str, int } from '../core/io.js';
 import { saveArtifact, readArtifact, listArtifacts, OVERSIZE_WARN_LINES } from '../core/artifact.js';
 import { paginate } from '../core/pagination.js';
 
@@ -118,20 +117,22 @@ export function registerPlan(): BranchDef {
       name: 'plan new',
       summary: 'draft a plan from intent and optional spec alignment',
       guide: PLAN_NEW_GUIDE,
-      input: [
+      params: [
         {
+          kind: 'positional',
           name: 'name',
           type: 'string',
           required: true,
-          constraint: 'Slug used as the artifact filename. No spaces; use hyphens.',
+          constraint: 'Kebab-case slug used as the artifact filename. No spaces; use hyphens.',
         },
         {
+          kind: 'stdin',
           name: 'body',
-          type: 'string',
           required: true,
           constraint: "Full planning prose. Treated as the planner's north star; not parsed further.",
         },
         {
+          kind: 'flag',
           name: 'spec',
           type: 'string',
           required: false,
@@ -155,13 +156,13 @@ export function registerPlan(): BranchDef {
       outputKind: 'object',
       effects: [
         'Writes a plan artifact to the plans artifact directory.',
-        'If `spec` is provided, records the spec alignment reference in the artifact frontmatter.',
+        'If `--spec` is provided, records the spec alignment reference in the artifact frontmatter.',
       ],
     },
     run: async (input) => {
-      const name = reqStr(input, 'name');
-      const body = reqStr(input, 'body');
-      const spec = str(input, 'spec');
+      const name = input['name'] as string;
+      const body = input['body'] as string;
+      const spec = input['spec'] as string | undefined;
 
       const meta: Record<string, string> = {};
       if (spec !== undefined) meta['spec'] = spec;
@@ -169,10 +170,10 @@ export function registerPlan(): BranchDef {
       const { path, oversize, lineCount } = saveArtifact('plans', name, body, meta);
 
       let follow_up =
-        `Review it: pipe {"artifact_path":"${path}","artifact_kind":"plan"} to \`crtr job start reviewer\` (returns {job_id}), then pipe {"job_id":"<id>","wait":true} to \`crtr job read result\`.`;
+        `Review it: crtr job start reviewer --artifact-path ${path} --artifact-kind plan (returns {job_id}), then crtr job read result <job_id> --wait.`;
 
       follow_up +=
-        ` Optional human gate (complements, does not replace the agent reviewer): pipe {"file":"${path}"} to \`crtr human review\` for anchored comments, then gate handoff with {"title":"Approve this plan?"} to \`crtr human approve\`.`;
+        ` Optional human gate (complements, does not replace the agent reviewer): crtr human review --file ${path} for anchored comments, then gate handoff with crtr human approve --title "Approve this plan?".`;
 
       if (oversize) {
         follow_up +=
@@ -188,8 +189,9 @@ export function registerPlan(): BranchDef {
     help: {
       name: 'plan show',
       summary: 'read a plan artifact by name',
-      input: [
+      params: [
         {
+          kind: 'positional',
           name: 'name',
           type: 'string',
           required: true,
@@ -226,7 +228,7 @@ export function registerPlan(): BranchDef {
       effects: ['None. Read-only.'],
     },
     run: async (input) => {
-      const name = reqStr(input, 'name');
+      const name = input['name'] as string;
       const record = readArtifact('plans', name);
       return { name: record.name, path: record.path, body: record.body, spec: record.spec };
     },
@@ -237,14 +239,25 @@ export function registerPlan(): BranchDef {
     help: {
       name: 'plan list',
       summary: 'paginated list of plan artifacts, sorted ascending by name',
-      input: [
+      params: [
         {
-          name: 'limit',
-          type: 'integer',
+          kind: 'flag',
+          name: 'scope',
+          type: 'enum',
+          choices: ['user', 'project', 'all'],
           required: false,
+          constraint: 'Filter by scope. Omit to list all.',
+        },
+        {
+          kind: 'flag',
+          name: 'limit',
+          type: 'int',
+          required: false,
+          default: 20,
           constraint: 'Default 20, max 100.',
         },
         {
+          kind: 'flag',
           name: 'cursor',
           type: 'string',
           required: false,
@@ -275,8 +288,8 @@ export function registerPlan(): BranchDef {
       effects: ['None. Read-only.'],
     },
     run: async (input) => {
-      const limit = int(input, 'limit', { default: 20, min: 1, max: 100 });
-      const cursor = str(input, 'cursor');
+      const limit = (input['limit'] as number | undefined) ?? 20;
+      const cursor = input['cursor'] as string | undefined;
 
       const all = listArtifacts('plans');
       const result = paginate(all, { limit, cursor }, {

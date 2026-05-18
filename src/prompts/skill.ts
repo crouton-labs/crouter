@@ -40,7 +40,7 @@ is still chosen by what the agent does after reading, not by the script.
   dir path under \`skills/\` — slashes nest (\`web/frontend/design\`).
 - \`description\`: one sentence, front-load "Use when…" — it drives discovery.
 - Budget ~150 lines per \`SKILL.md\`; spill deeper material into sibling files.
-- \`echo '{"qualifier":"<name>","type":"<t>","scope":"<s>","description":"<d>"}' | crtr skill author scaffold\` writes correct frontmatter for you; \`echo '{}' | crtr sys doctor\` validates.
+- \`crtr skill author scaffold <n> --type <t> --scope <s> --description "<d>"\` writes correct frontmatter for you; \`crtr sys doctor\` validates.
 
 ## Voice (every type) — prescriptive or descriptive, never speculative
 
@@ -57,7 +57,7 @@ Hedging is the tell — \`may\`, \`might\`, \`consider whether\`, \`it depends\`
 2. Run (output is JSON; read the \`guide\` field):
 
    \`\`\`
-   echo '{"type":"<type>"${topic ? `,"topic":"${topic}"` : ''}}' | crtr skill author guide
+   crtr skill author guide --type <type>${topic ? ` --topic "${topic}"` : ''}
    \`\`\`
 
    That output contains the research methodology, SKILL.md skeleton, and
@@ -78,7 +78,7 @@ export function skillTemplatePrompt(type: string, topic: string): string {
   if (t === 'reference') return referenceTemplatePrompt(topic);
   if (t === 'runbook') return runbookTemplatePrompt(topic);
   if (t === 'freeform') return freeformTemplatePrompt(topic);
-  return `unknown template type: ${type}\nvalid: playbook | primer | reference | runbook | freeform\nrun \`echo '{}' | crtr skill author guide\` to pick.\n`;
+  return `unknown template type: ${type}\nvalid: playbook | primer | reference | runbook | freeform\nrun \`crtr skill author guide\` to pick.\n`;
 }
 
 function topicLine(topic: string): string {
@@ -101,7 +101,7 @@ ${topicLine(topic)}
 - \`ls\` repo top level
 - check stack manifests
 - \`git log --oneline -15\` in this area
-- \`echo '{"query":"<topic>"}' | crtr skill find search\` / \`echo '{}' | crtr skill find list\` — does a primer already exist?
+- \`crtr skill find search "<topic>"\` / \`crtr skill find list\` — does a primer already exist?
 
 If subsystem is small/self-evident, **stop**. Suggest a CLAUDE.md note. Primers
 are for large, complicated, or unintuitive systems only.
@@ -109,7 +109,7 @@ are for large, complicated, or unintuitive systems only.
 ## 2. Scope + name
 
 - **Scope**: \`project\` by default. \`user\` only if cross-repo.
-- **Name**: kebab-case. Confirm no collision: \`echo '{"name":"<name>"}' | crtr skill read where\` (returns \`.path\`, \`.scope\`, \`.plugin\`).
+- **Name**: kebab-case. Confirm no collision: \`crtr skill read where <name>\` (returns \`.path\`, \`.scope\`, \`.plugin\`).
 
 ## 3. Parallel exploration
 
@@ -145,7 +145,7 @@ assumptions.**
 Output is JSON; read the \`path\` field:
 
 \`\`\`
-echo '{"qualifier":"<name>","type":"primer","scope":"project","description":"<what+when, ≤250 chars, front-loaded triggers>"}' | crtr skill author scaffold
+crtr skill author scaffold <name> --type primer --scope project --description "<what+when, ≤250 chars, front-loaded triggers>"
 \`\`\`
 
 ## 6. Write the body
@@ -176,7 +176,7 @@ Non-obvious coupling. Looks-broken-but-isn't. Past footguns.
 \`\`\`
 
 **No \`## Related\` for within-plugin siblings** — the CLI auto-appends a
-\`## Neighbors\` section on \`echo '{"name":"<name>"}' | crtr skill read show\`. Add a manual \`## Related\`
+\`## Neighbors\` section on \`crtr skill read show <name>\`. Add a manual \`## Related\`
 only for cross-plugin or distant refs.
 
 **Density rules:**
@@ -193,9 +193,9 @@ only for cross-plugin or distant refs.
 Output is JSON; \`.content\` has the body, \`.path\` has the location:
 
 \`\`\`
-echo '{"name":"<name>"}' | crtr skill read where
-echo '{"name":"<name>"}' | crtr skill read show
-echo '{"query":"<keyword>"}' | crtr skill find search    # confirm description triggers discovery
+crtr skill read where <name>
+crtr skill read show <name>
+crtr skill find search "<keyword>"    # confirm description triggers discovery
 \`\`\`
 
 Sharpen description if discovery misses. Cut body if bloated.
@@ -222,7 +222,7 @@ ${topicLine(topic)}
 
 If you'd write *"when X, do Y because Z"* → playbook. If you'd write tables
 of fields/flags/events → reference material (put in sibling \`reference.md\`,
-not SKILL.md). If neither fits → use \`echo '{"type":"freeform"${topic ? `,"topic":"${topic}"` : ''}}' | crtr skill author guide\` instead.
+not SKILL.md). If neither fits → use \`crtr skill author guide --type freeform${topic ? ` --topic "${topic}"` : ''}\` instead.
 
 **Playbook markers:** teaches a framework · has "when (not) to use" · prose
 over tables · reader makes better decisions after 30 seconds.
@@ -245,14 +245,14 @@ PR over many small ones for refactors here, because review churn dominates"*
 
 - **Scope**: \`user\` for cross-project methodology. \`project\` for repo-specific.
 - **Name**: kebab-case, verb-or-noun-phrase. Not "guide-to-X".
-- Check \`echo '{"name":"<name>"}' | crtr skill read where\` (returns \`.path\`, \`.scope\`, \`.plugin\`).
+- Check \`crtr skill read where <name>\` (returns \`.path\`, \`.scope\`, \`.plugin\`).
 
 ## 3. Scaffold
 
 Output is JSON; read the \`path\` field:
 
 \`\`\`
-echo '{"qualifier":"<name>","type":"playbook","scope":"<user|project>","description":"<what it teaches + when to load, ≤250 chars, front-loaded triggers>"}' | crtr skill author scaffold
+crtr skill author scaffold <name> --type playbook --scope <user|project> --description "<what it teaches + when to load, ≤250 chars, front-loaded triggers>"
 \`\`\`
 
 ## 4. Density rules
@@ -296,7 +296,7 @@ to read the whole thing for value, you've buried the judgment.
 \`\`\`
 
 **No \`## Related\` for within-plugin siblings** — the CLI auto-appends a
-\`## Neighbors\` section on \`echo '{"name":"<name>"}' | crtr skill read show\`. Add a manual \`## Related\`
+\`## Neighbors\` section on \`crtr skill read show <name>\`. Add a manual \`## Related\`
 only for cross-plugin or distant refs.
 
 ## 6. Progressive disclosure
@@ -318,14 +318,14 @@ loads supporting files only when needed.
 Output is JSON; \`.content\` has the body, \`.path\` has the location:
 
 \`\`\`
-echo '{"name":"<name>"}' | crtr skill read where
-echo '{"name":"<name>"}' | crtr skill read show
-echo '{"query":"<keyword>"}' | crtr skill find search
+crtr skill read where <name>
+crtr skill read show <name>
+crtr skill find search "<keyword>"
 \`\`\`
 
 ## Constraints
 
-- Topic fails litmus? → \`echo '{"type":"freeform"}' | crtr skill author guide\`, \`echo '{"type":"reference"}' | crtr skill author guide\`, or \`echo '{"type":"runbook"}' | crtr skill author guide\`.
+- Topic fails litmus? → \`crtr skill author guide --type freeform\`, \`crtr skill author guide --type reference\`, or \`crtr skill author guide --type runbook\`.
 - No unconfirmed heuristics — if not from user experience or clear principle,
   leave it out.
 `;
@@ -365,7 +365,7 @@ tradeoffs; if you can't state the answer, cut the line.
 Output is JSON; read the \`path\` field:
 
 \`\`\`
-echo '{"qualifier":"<name>","type":"freeform","scope":"<user|project>","description":"<what+when, ≤250 chars, front-loaded triggers>"}' | crtr skill author scaffold
+crtr skill author scaffold <name> --type freeform --scope <user|project> --description "<what+when, ≤250 chars, front-loaded triggers>"
 \`\`\`
 
 ## 4. Body — pick the closest skeleton
@@ -410,9 +410,9 @@ Or invent your own. Stay tight — no padding.
 Output is JSON; \`.content\` has the body, \`.path\` has the location:
 
 \`\`\`
-echo '{"name":"<name>"}' | crtr skill read where
-echo '{"name":"<name>"}' | crtr skill read show
-echo '{"query":"<keyword>"}' | crtr skill find search
+crtr skill read where <name>
+crtr skill read show <name>
+crtr skill find search "<keyword>"
 \`\`\`
 
 ## Switch templates if needed
@@ -420,10 +420,10 @@ echo '{"query":"<keyword>"}' | crtr skill find search
 Content actually fits a typed template?
 
 \`\`\`
-echo '{"type":"playbook"${topic ? `,"topic":"${topic}"` : ''}}' | crtr skill author guide     # decide
-echo '{"type":"primer"${topic ? `,"topic":"${topic}"` : ''}}' | crtr skill author guide       # navigate codebase
-echo '{"type":"reference"${topic ? `,"topic":"${topic}"` : ''}}' | crtr skill author guide    # look up stable facts
-echo '{"type":"runbook"${topic ? `,"topic":"${topic}"` : ''}}' | crtr skill author guide      # execute a procedure
+crtr skill author guide --type playbook${topic ? ` --topic "${topic}"` : ''}     # decide
+crtr skill author guide --type primer${topic ? ` --topic "${topic}"` : ''}       # navigate codebase
+crtr skill author guide --type reference${topic ? ` --topic "${topic}"` : ''}    # look up stable facts
+crtr skill author guide --type runbook${topic ? ` --topic "${topic}"` : ''}      # execute a procedure
 \`\`\`
 `;
 }
@@ -444,7 +444,7 @@ ${topicLine(topic)}
 
 If you'd skim end-to-end → it's not reference. If you'd jump straight to
 the row you need → reference. If you'd make a decision after reading →
-\`echo '{"type":"playbook"}' | crtr skill author guide\`. If you'd execute steps → \`echo '{"type":"runbook"}' | crtr skill author guide\`.
+\`crtr skill author guide --type playbook\`. If you'd execute steps → \`crtr skill author guide --type runbook\`.
 
 **Reference markers:** mostly tables · stable across releases · authoritative
 source elsewhere · agent loads to *answer*, not to *think*.
@@ -465,14 +465,14 @@ field/flag/code values** — pull verbatim from source.
 
 - **Scope**: \`user\` for cross-project facts. \`project\` for repo-specific.
 - **Name**: noun-phrase. \`http-status-codes\` not \`learn-http-status\`.
-- Check \`echo '{"name":"<name>"}' | crtr skill read where\` (returns \`.path\`, \`.scope\`, \`.plugin\`).
+- Check \`crtr skill read where <name>\` (returns \`.path\`, \`.scope\`, \`.plugin\`).
 
 ## 3. Scaffold
 
 Output is JSON; read the \`path\` field:
 
 \`\`\`
-echo '{"qualifier":"<name>","type":"reference","scope":"<user|project>","description":"<what to look up + when to load, ≤250 chars>"}' | crtr skill author scaffold
+crtr skill author scaffold <name> --type reference --scope <user|project> --description "<what to look up + when to load, ≤250 chars>"
 \`\`\`
 
 ## 4. Density rules
@@ -526,9 +526,9 @@ SKILL.md links to siblings (\`see [full-table.md](full-table.md)\`).
 Output is JSON; \`.content\` has the body, \`.path\` has the location:
 
 \`\`\`
-echo '{"name":"<name>"}' | crtr skill read where
-echo '{"name":"<name>"}' | crtr skill read show
-echo '{"query":"<keyword>"}' | crtr skill find search
+crtr skill read where <name>
+crtr skill read show <name>
+crtr skill find search "<keyword>"
 \`\`\`
 
 Search must surface the skill on a typical lookup query. Sharpen the
@@ -537,8 +537,8 @@ description if it doesn't.
 ## Constraints
 
 - No invented values. If you can't cite the source, leave the row out.
-- Topic teaches *judgment*, not facts? → \`echo '{"type":"playbook"}' | crtr skill author guide\`.
-- Topic is a *procedure*? → \`echo '{"type":"runbook"}' | crtr skill author guide\`.
+- Topic teaches *judgment*, not facts? → \`crtr skill author guide --type playbook\`.
+- Topic is a *procedure*? → \`crtr skill author guide --type runbook\`.
 - Source updates faster than you'll update the skill? → don't capture; link.
 `;
 }
@@ -579,14 +579,14 @@ push to \\\`main\\\`, wait for green CI, click promote"* is a runbook step.
 
 - **Scope**: \`project\` for repo-specific procedures. \`user\` for cross-project.
 - **Name**: verb-phrase. \`deploy-to-prod\` not \`production-deployment-guide\`.
-- Check \`echo '{"name":"<name>"}' | crtr skill read where\` (returns \`.path\`, \`.scope\`, \`.plugin\`).
+- Check \`crtr skill read where <name>\` (returns \`.path\`, \`.scope\`, \`.plugin\`).
 
 ## 3. Scaffold
 
 Output is JSON; read the \`path\` field:
 
 \`\`\`
-echo '{"qualifier":"<name>","type":"runbook","scope":"<user|project>","description":"<when to run + outcome, ≤250 chars, front-loaded trigger>"}' | crtr skill author scaffold
+crtr skill author scaffold <name> --type runbook --scope <user|project> --description "<when to run + outcome, ≤250 chars, front-loaded trigger>"
 \`\`\`
 
 ## 4. Density rules
@@ -634,9 +634,9 @@ echo '{"qualifier":"<name>","type":"runbook","scope":"<user|project>","descripti
 Output is JSON; \`.content\` has the body, \`.path\` has the location:
 
 \`\`\`
-echo '{"name":"<name>"}' | crtr skill read where
-echo '{"name":"<name>"}' | crtr skill read show
-echo '{"query":"<keyword>"}' | crtr skill find search
+crtr skill read where <name>
+crtr skill read show <name>
+crtr skill find search "<keyword>"
 \`\`\`
 
 Walk through the runbook mentally. Each step verifiable? Each decision

@@ -1,6 +1,6 @@
 {
   "name": "@crouton-kit/crouter",
-  "version": "0.2.6",
+  "version": "0.3.0",
   "description": "crtr — fast access to skills, plugins, and marketplaces",
   "type": "module",
   "main": "dist/index.js",
@@ -26,7 +26,8 @@
     "build": "tsc && rm -rf dist/builtin-skills && cp -R src/builtin-skills dist/builtin-skills",
     "dev": "tsx src/cli.ts",
     "link": "npm link",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "test": "node --import tsx/esm --test 'src/core/__tests__/**/*.test.ts'"
   },
   "repository": {
     "type": "git",

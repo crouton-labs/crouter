@@ -6,14 +6,13 @@ import { join, dirname } from 'node:path';
 import { readFileSync } from 'node:fs';
 import { defineBranch, defineLeaf } from '../core/command.js';
 import type { BranchDef } from '../core/command.js';
-import { reqStr, str, bool } from '../core/io.js';
 import { readConfig, writeConfig, configPath as coreConfigPath, updateConfig, updateState } from '../core/config.js';
 import { usage, notFound } from '../core/errors.js';
 import { scopeRoot, listScopes, builtinSkillsRoot, marketplacesDir, pluginsDir, projectScopeRoot } from '../core/scope.js';
 import { listInstalledPlugins, listSkillsInPlugin } from '../core/resolver.js';
 import { readMarketplaceManifest, readPluginManifest } from '../core/manifest.js';
 import { parseFrontmatter } from '../core/frontmatter.js';
-import { pathExists, listDirs, removePath, readText, nowIso } from '../core/fs-utils.js';
+import { pathExists, listDirs, removePath, readText, writeText, nowIso } from '../core/fs-utils.js';
 import { lsRemote } from '../core/git.js';
 import { createJob, appendEvent, writeResult } from '../core/jobs.js';
 import { selfCheck, selfUpdate, contentCheck, contentUpdate } from '../core/self-update.js';
@@ -333,9 +332,9 @@ const configGet = defineLeaf({
   help: {
     name: 'sys config get',
     summary: 'read a config value by dotted key',
-    input: [
-      { name: 'key', type: 'string', required: true, constraint: 'Dotted key path. Top-level keys: auto_update, marketplaces, plugins, max_panes_per_window.' },
-      { name: 'scope', type: 'string', required: false, constraint: 'One of: user, project. Default: user.' },
+    params: [
+      { kind: 'positional', name: 'key', type: 'string', required: true, constraint: 'Dotted key path. Top-level keys: auto_update, marketplaces, plugins, max_panes_per_window.' },
+      { kind: 'flag', name: 'scope', type: 'enum', choices: ['user', 'project', 'all'], required: false, constraint: 'Scope to read from. Default: user.' },
     ],
     output: [
       { name: 'key', type: 'string', required: true, constraint: 'Echo of input key.' },
@@ -346,8 +345,8 @@ const configGet = defineLeaf({
     effects: ['None. Read-only.'],
   },
   run: async (input) => {
-    const key = reqStr(input, 'key');
-    const scope = resolveScope(str(input, 'scope'));
+    const key = input['key'] as string;
+    const scope = resolveScope(input['scope'] as string | undefined);
     const cfg = readConfig(scope);
     const value = getNestedValue(cfg, key);
     if (value === undefined) {
@@ -362,10 +361,10 @@ const configSet = defineLeaf({
   help: {
     name: 'sys config set',
     summary: 'write a config value by dotted key',
-    input: [
-      { name: 'key', type: 'string', required: true, constraint: 'Dotted key path. Supported: auto_update.crtr, auto_update.content, auto_update.interval_hours, max_panes_per_window.' },
-      { name: 'value', type: 'string | number | boolean', required: true, constraint: 'New value. String "true"/"false" coerced to boolean; integer strings coerced to number.' },
-      { name: 'scope', type: 'string', required: false, constraint: 'One of: user, project. Default: user.' },
+    params: [
+      { kind: 'positional', name: 'key', type: 'string', required: true, constraint: 'Dotted key path. Supported: auto_update.crtr, auto_update.content, auto_update.interval_hours, max_panes_per_window.' },
+      { kind: 'flag', name: 'value', type: 'string', required: true, constraint: 'value VALUE — string, required. Stored as-is if quoted; coerced to number or boolean when unambiguous.' },
+      { kind: 'flag', name: 'scope', type: 'enum', choices: ['user', 'project'], required: false, constraint: 'Scope to write to. Default: user.' },
     ],
     output: [
       { name: 'key', type: 'string', required: true, constraint: 'Echo of input key.' },
@@ -376,19 +375,12 @@ const configSet = defineLeaf({
     effects: ['Writes the updated value to config.json in the target scope.'],
   },
   run: async (input) => {
-    const key = reqStr(input, 'key');
-    const rawValue = input['value'];
-    const scope = resolveScope(str(input, 'scope'));
+    const key = input['key'] as string;
+    const rawValue = input['value'] as string;
+    const scope = resolveScope(input['scope'] as string | undefined);
 
-    if (rawValue === undefined || rawValue === null) {
-      throw notFound(`required field "value" is missing.`);
-    }
-
-    // Accept string (auto-parse), number, or boolean directly
-    const parsed: boolean | number | string =
-      typeof rawValue === 'boolean' ? rawValue
-      : typeof rawValue === 'number' ? rawValue
-      : parseConfigValue(String(rawValue));
+    // Flags are stringly-typed; coerce to number or boolean when unambiguous
+    const parsed: boolean | number | string = parseConfigValue(rawValue);
 
     const cfg = readConfig(scope);
     setNestedValue(cfg, key, parsed);
@@ -405,8 +397,8 @@ const configPath = defineLeaf({
   help: {
     name: 'sys config path',
     summary: 'print absolute path(s) to config.json',
-    input: [
-      { name: 'scope', type: 'string', required: false, constraint: 'One of: user, project, all. Default: all.' },
+    params: [
+      { kind: 'flag', name: 'scope', type: 'enum', choices: ['user', 'project', 'all'], required: false, constraint: 'Scope to show paths for. Default: all.' },
     ],
     output: [
       { name: 'paths', type: 'object[]', required: true, constraint: 'Each: {scope, path}. Only includes scopes that have a config file.' },
@@ -415,7 +407,7 @@ const configPath = defineLeaf({
     effects: ['None. Read-only.'],
   },
   run: async (input) => {
-    const scopeArg = str(input, 'scope');
+    const scopeArg = input['scope'] as string | undefined;
     // Resolve 'all' or undefined → all writable scopes
     let scopes: Scope[];
     if (scopeArg === undefined || scopeArg === 'all') {
@@ -457,10 +449,10 @@ const sysDoctorLeaf = defineLeaf({
   help: {
     name: 'sys doctor',
     summary: 'diagnose missing manifests, broken config entries, and skill frontmatter drift',
-    input: [
-      { name: 'scope', type: 'string', required: false, constraint: 'One of: user, project, all. Default: all.' },
-      { name: 'fix', type: 'boolean', required: false, constraint: 'Default false. When true, drops stale config entries and prunes directories without manifests.' },
-      { name: 'remote', type: 'boolean', required: false, constraint: 'Default false. When true, checks git remotes with ls-remote (slow — makes network calls).' },
+    params: [
+      { kind: 'flag', name: 'scope', type: 'enum', choices: ['user', 'project'], required: false, constraint: 'Scope to check. Default: all scopes.' },
+      { kind: 'flag', name: 'fix', type: 'bool', required: false, constraint: 'Drop stale config entries and prune directories without manifests.' },
+      { kind: 'flag', name: 'remote', type: 'bool', required: false, constraint: 'Check git remotes with ls-remote (slow — makes network calls).' },
     ],
     output: [
       { name: 'checks', type: 'object[]', required: true, constraint: 'Each: {scope, name, status, message, fixed?}. status: pass | fail | warn. Sorted by scope then name.' },
@@ -468,14 +460,14 @@ const sysDoctorLeaf = defineLeaf({
     ],
     outputKind: 'object',
     effects: [
-      'Read-only unless `fix` is true.',
-      'When `fix` is true: removes stale config entries; deletes plugin/marketplace directories without valid manifests.',
+      'Read-only unless --fix is passed.',
+      'With --fix: removes stale config entries; deletes plugin/marketplace directories without valid manifests.',
     ],
   },
   run: async (input) => {
-    const scopeArg = str(input, 'scope');
-    const fix = bool(input, 'fix', false);
-    const remote = bool(input, 'remote', false);
+    const scopeArg = input['scope'] as string | undefined;
+    const fix = input['fix'] as boolean;
+    const remote = input['remote'] as boolean;
 
     const scopes = listScopes(scopeArg);
     const allResults: CheckResult[] = [];
@@ -504,25 +496,25 @@ const sysUpdateLeaf = defineLeaf({
   help: {
     name: 'sys update',
     summary: 'update the crtr binary and/or installed plugins and marketplaces',
-    input: [
-      { name: 'target', type: 'string', required: false, constraint: "One of: 'self', 'content', 'all'. Default: 'all'." },
-      { name: 'check', type: 'boolean', required: false, constraint: 'Default false. When true, checks for updates without applying them (bounded, blocking).' },
+    params: [
+      { kind: 'flag', name: 'target', type: 'enum', choices: ['self', 'content', 'all'], required: false, constraint: "What to update. Default: all." },
+      { kind: 'flag', name: 'check', type: 'bool', required: false, constraint: 'Check for updates without applying them (bounded, blocking).' },
     ],
     output: [
-      { name: 'job_id', type: 'string', required: false, constraint: 'Present when applying updates. Poll with `crtr job result {job_id, wait:true}`.' },
+      { name: 'job_id', type: 'string', required: false, constraint: 'Present when applying updates. Poll with `crtr job read result JOB_ID --wait`.' },
       { name: 'follow_up', type: 'string', required: false, constraint: 'Instruction for retrieving the job result.' },
-      { name: 'updates', type: 'object[]', required: false, constraint: 'Present when check:true. Each: {name, current, latest, up_to_date, unreachable, kind}.' },
-      { name: 'up_to_date', type: 'boolean', required: false, constraint: 'Present when check:true. True when all items are up to date.' },
+      { name: 'updates', type: 'object[]', required: false, constraint: 'Present when --check. Each: {name, current, latest, up_to_date, unreachable, kind}.' },
+      { name: 'up_to_date', type: 'boolean', required: false, constraint: 'Present when --check. True when all items are up to date.' },
     ],
     outputKind: 'object',
     effects: [
-      'check:true — read-only, bounded network calls.',
-      'check:false (default) — launches a background job; returns job handle immediately.',
+      '--check — read-only, bounded network calls.',
+      'Default (no --check) — launches a background job; returns job handle immediately.',
     ],
   },
   run: async (input) => {
-    const target = str(input, 'target', { enum: ['self', 'content', 'all'] as const });
-    const check = bool(input, 'check', false);
+    const target = input['target'] as string | undefined;
+    const check = input['check'] as boolean;
     const resolvedTarget = target !== undefined ? target : 'all';
 
     if (check) {
@@ -613,7 +605,7 @@ const sysUpdateLeaf = defineLeaf({
 
     return {
       job_id: jobId,
-      follow_up: `{"job_id":"${jobId}","wait":true} | crtr job read result`,
+      follow_up: `crtr job read result ${jobId} --wait`,
     };
   },
 });
@@ -623,7 +615,7 @@ const sysVersionLeaf = defineLeaf({
   help: {
     name: 'sys version',
     summary: 'print the installed crtr version',
-    inputNote: 'No input fields. Omit stdin or send {}.',
+    params: [],
     output: [
       { name: 'version', type: 'string', required: true, constraint: 'Semver string from package.json.' },
     ],

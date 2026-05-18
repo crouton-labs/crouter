@@ -41,6 +41,11 @@ export function readText(path: string): string {
   return readFileSync(path, 'utf8');
 }
 
+export function writeText(path: string, content: string): void {
+  ensureDir(dirname(path));
+  writeFileSync(path, content, 'utf8');
+}
+
 export function isDir(path: string): boolean {
   try {
     return statSync(path).isDirectory();

@@ -1,7 +1,7 @@
-// The agent-facing I/O contract. One JSON object on stdin; one JSON object on
-// stdout (JSONL for streams); structured errors; stderr is diagnostics only and
-// never carries the result. No flags, no envelope, no decoration — the stdout
-// value is the next caller's stdin. See cli-design SKILL.md / reference.md.
+// The agent-facing I/O contract. Flags and positional args on input; one JSON
+// object on stdout (JSONL for streams); structured errors; stderr is
+// diagnostics only and never carries the result. The stdout value is the next
+// caller's stdin. See cli-design SKILL.md / reference.md.
 
 import { CrtrError } from './errors.js';
 import { ExitCode, type ExitCodeValue } from '../types.js';
@@ -30,160 +30,13 @@ export class InputError extends CrtrError {
 // stdin
 // ---------------------------------------------------------------------------
 
-async function readStdinRaw(): Promise<string> {
+/** Read raw stdin to EOF. Returns empty string when stdin is a TTY (no pipe).
+ *  Called by the argv parser for leaves declaring a `stdin` parameter. */
+export async function readStdinRaw(): Promise<string> {
   if (process.stdin.isTTY) return '';
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
   return Buffer.concat(chunks).toString('utf8');
-}
-
-/** Parse the single JSON object on stdin. Empty stdin → `{}` (a leaf decides
- *  whether the empty call is meaningful, e.g. `plan new` returns the guide). */
-export async function readInput(): Promise<Record<string, unknown>> {
-  const raw = (await readStdinRaw()).trim();
-  if (raw === '') return {};
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw new InputError({
-      error: 'invalid_json',
-      message: 'stdin is not valid JSON.',
-      received: raw.length > 200 ? raw.slice(0, 200) + '…' : raw,
-      next: 'Send a single JSON object on stdin. See this leaf -h for the schema.',
-    });
-  }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    throw new InputError({
-      error: 'invalid_input',
-      message: 'stdin must be a single JSON object.',
-      received: parsed,
-      next: 'Wrap parameters in one object, e.g. {"name":"…"}. See -h.',
-    });
-  }
-  return parsed as Record<string, unknown>;
-}
-
-export function isEmpty(input: Record<string, unknown>): boolean {
-  return Object.keys(input).length === 0;
-}
-
-// ---------------------------------------------------------------------------
-// typed field accessors — terse leaves, uniform errors
-// ---------------------------------------------------------------------------
-
-interface StrOpts {
-  required?: boolean;
-  default?: string;
-  enum?: readonly string[];
-  next?: string;
-}
-
-export function str(
-  o: Record<string, unknown>,
-  field: string,
-  opts: StrOpts = {},
-): string | undefined {
-  const v = o[field];
-  if (v === undefined || v === null) {
-    if (opts.required) {
-      const next =
-        opts.next !== undefined
-          ? opts.next
-          : `Add "${field}" to the stdin object. See -h for its schema.`;
-      throw new InputError({
-        error: 'missing_field',
-        message: `required field "${field}" is missing.`,
-        field,
-        next,
-      });
-    }
-    return opts.default;
-  }
-  if (typeof v !== 'string') {
-    const next = opts.next !== undefined ? opts.next : `Set "${field}" to a string.`;
-    throw new InputError({
-      error: 'invalid_field',
-      message: `field "${field}" must be a string.`,
-      received: v,
-      field,
-      next,
-    });
-  }
-  if (opts.enum && !opts.enum.includes(v)) {
-    throw new InputError({
-      error: 'invalid_field',
-      message: `field "${field}" must be one of: ${opts.enum.join(', ')}.`,
-      received: v,
-      field,
-      next: `Retry with one of: ${opts.enum.join(', ')}.`,
-    });
-  }
-  return v;
-}
-
-export function reqStr(
-  o: Record<string, unknown>,
-  field: string,
-  opts: Omit<StrOpts, 'required'> = {},
-): string {
-  return str(o, field, { ...opts, required: true }) as string;
-}
-
-export function bool(
-  o: Record<string, unknown>,
-  field: string,
-  dflt: boolean,
-): boolean {
-  const v = o[field];
-  if (v === undefined || v === null) return dflt;
-  if (typeof v !== 'boolean') {
-    throw new InputError({
-      error: 'invalid_field',
-      message: `field "${field}" must be a boolean.`,
-      received: v,
-      field,
-      next: `Set "${field}" to true or false, or omit it (default ${dflt}).`,
-    });
-  }
-  return v;
-}
-
-export function int(
-  o: Record<string, unknown>,
-  field: string,
-  opts: { default: number; min?: number; max?: number },
-): number {
-  const v = o[field];
-  if (v === undefined || v === null) return opts.default;
-  if (typeof v !== 'number' || !Number.isInteger(v)) {
-    throw new InputError({
-      error: 'invalid_field',
-      message: `field "${field}" must be an integer.`,
-      received: v,
-      field,
-      next: `Set "${field}" to an integer, or omit it (default ${opts.default}).`,
-    });
-  }
-  if (opts.min !== undefined && v < opts.min) {
-    throw new InputError({
-      error: 'invalid_field',
-      message: `field "${field}" must be >= ${opts.min}.`,
-      received: v,
-      field,
-      next: `Raise "${field}" to at least ${opts.min}.`,
-    });
-  }
-  if (opts.max !== undefined && v > opts.max) {
-    throw new InputError({
-      error: 'invalid_field',
-      message: `field "${field}" must be <= ${opts.max}.`,
-      received: v,
-      field,
-      next: `Lower "${field}" to at most ${opts.max}.`,
-    });
-  }
-  return v;
 }
 
 // ---------------------------------------------------------------------------
