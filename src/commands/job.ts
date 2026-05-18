@@ -39,10 +39,6 @@ function followUpResult(jobId: string): string {
   return `{"job_id":"${jobId}","wait":true} | crtr job read result`;
 }
 
-function followUpLogs(jobId: string): string {
-  return `{"job_id":"${jobId}","follow":true} | crtr job read logs`;
-}
-
 function resolveMaxPanes(): number {
   const cfg = readConfig('user');
   return cfg.max_panes_per_window;
@@ -338,7 +334,7 @@ const startReviewer = defineLeaf({
   name: 'reviewer',
   help: {
     name: 'job start reviewer',
-    summary: 'launch a reviewer agent for a plan or spec artifact; closes the originating pane after handoff',
+    summary: 'launch a reviewer agent for a plan or spec artifact; the originating pane stays alive to collect the verdict',
     input: [
       { name: 'artifact_path', type: 'string', required: true, constraint: 'Absolute path to the artifact to review.' },
       { name: 'artifact_kind', type: 'string', required: true, constraint: 'One of: plan, spec.' },
@@ -352,7 +348,7 @@ const startReviewer = defineLeaf({
     outputKind: 'object',
     effects: [
       'Spawns a reviewer agent in a sibling tmux pane.',
-      'Closes the originating pane after a short delay.',
+      'The originating pane stays alive — wait on the result and act on the verdict.',
       'Creates a job entry and result sidecar.',
     ],
   },
@@ -374,12 +370,15 @@ const startReviewer = defineLeaf({
 
     const { jobId } = createJob('reviewer', { cwd });
 
-    const result = spawnAndDetach({
+    // The reviewer is a subordinate the caller waits on (verdict → revise or
+    // hand off), NOT a handoff successor. Use spawnAgent so the originating
+    // pane (planner/orchestrator) stays alive to collect the result; do not
+    // self-kill the caller the way planner/implementer handoffs do.
+    const result = spawnAgent({
       prompt: reviewerHandoffPrompt(artifactPath, artifactKind, specPath !== undefined ? specPath : null, jobId),
       cwd,
       jobId,
-      placement: 'split-h',
-      killAfterSeconds: DEFAULT_KILL_SECS,
+      maxPanesPerWindow: resolveMaxPanes(),
     });
 
     if (result.status === 'not-in-tmux') {
@@ -400,7 +399,7 @@ const startReviewer = defineLeaf({
     const reviewerPaneLabel = result.paneId !== undefined ? result.paneId : 'unknown';
     appendEvent(jobId, { level: 'info', event: 'worker_started', message: `reviewer pane ${reviewerPaneLabel} spawned` });
 
-    return { job_id: jobId, follow_up: followUpLogs(jobId) };
+    return { job_id: jobId, follow_up: followUpResult(jobId) };
   },
 });
 

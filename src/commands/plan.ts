@@ -101,7 +101,7 @@ For a human gate, optionally put the plan in front of a person with \`crtr
 human review\` (anchored comments) and gate the handoff with \`crtr human
 approve\`. This complements — it does not replace — \`crtr job start reviewer\`.
 If the user is ready to build, ask once whether to hand off; if yes, run:
-\`crtr job start planner\` with the plan path.`;
+\`crtr job start implementer\` with the plan path.`;
 
 export const PLAN_SHOW_GUIDE = '';
 
