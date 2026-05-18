@@ -4,6 +4,7 @@ export interface Key {
     return: boolean;
     escape: boolean;
     ctrl: boolean;
+    meta: boolean;
     tab: boolean;
     backspace: boolean;
 }

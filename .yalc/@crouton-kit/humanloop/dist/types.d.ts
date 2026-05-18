@@ -6,6 +6,23 @@ export interface InteractionOption {
     description?: string;
     shortcut?: string;
 }
+/**
+ * Seed an interaction with an answer the caller already has on hand — e.g. a
+ * prior approval the human shouldn't have to re-confirm. When present, the
+ * panel: (a) populates `responses[id]` from these fields at mount, (b) renders
+ * a distinct "previously answered" marker in overview/final and labels it in
+ * item-review, and (c) skips past the interaction on post-submit auto-advance.
+ * The human can still navigate to it with `n`/`p` and override the seeded
+ * answer — once they do, it renders as user-answered.
+ */
+export interface InteractionPreAnswer {
+    selectedOptionId?: string;
+    selectedOptionIds?: string[];
+    freetext?: string;
+    /** One-line marker shown in the answered chrome (e.g. "Previously approved").
+     *  Defaults to "Previously answered" when omitted. */
+    label?: string;
+}
 export interface Interaction {
     id: string;
     title: string;
@@ -19,6 +36,7 @@ export interface Interaction {
     allowFreetext?: boolean;
     freetextLabel?: string;
     kind?: InteractionKind;
+    preAnswered?: InteractionPreAnswer;
 }
 export interface InteractionResponse {
     id: string;
@@ -84,6 +102,10 @@ export interface TuiState {
     interactions: Interaction[];
     responses: Map<string, InteractionResponse>;
     visuals: Map<string, VisualBlock>;
+    /** Ids of interactions whose response was seeded from `Interaction.preAnswered`
+     *  and which the human has not yet overridden. Drives the distinct
+     *  "previously answered" rendering and the skip-on-advance behavior. */
+    preAnsweredIds: Set<string>;
     inputMode: InputMode;
     selectedAction: number;
     detailExpanded: boolean;
@@ -156,4 +178,10 @@ export interface MountedPanel {
         progressPath?: string;
     }): void;
     canAcceptHostKeys(): boolean;
+    /**
+     * True when the deck is at its top level: overview phase with no active
+     * comment/freetext input. A host that owns mount/unmount uses this to decide
+     * whether Esc should step back inside the deck (false) or tear it down (true).
+     */
+    atDeckTop(): boolean;
 }

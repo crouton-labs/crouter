@@ -117,7 +117,8 @@ function handleItemReview(input, key, state, render) {
         render();
         return;
     }
-    if (input === 'q') {
+    // q / Esc step back to the deck overview (one level up from a card).
+    if (input === 'q' || key.escape) {
         state.phase = 'overview';
         render();
         return;
@@ -172,7 +173,7 @@ function handleInteractionAction(input, key, state, interaction, render) {
             return;
         }
         submitOption(state, interaction, matched.id, undefined);
-        advanceItem(state, 1);
+        advanceToNextUnanswered(state);
         render();
         return;
     }
@@ -203,13 +204,13 @@ function handleInteractionAction(input, key, state, interaction, render) {
     if (key.return && state.selectedAction < opts.length) {
         if (interaction.multiSelect) {
             commitMulti(state, interaction);
-            advanceItem(state, 1);
+            advanceToNextUnanswered(state);
             render();
             return;
         }
         const o = opts[state.selectedAction];
         submitOption(state, interaction, o.id, undefined);
-        advanceItem(state, 1);
+        advanceToNextUnanswered(state);
         render();
         return;
     }
@@ -257,7 +258,12 @@ function handleInputMode(input, key, state, render) {
             submitOption(state, interaction, attached, mode.buffer);
         }
         state.inputMode = null;
-        advanceItem(state, 1);
+        advanceToNextUnanswered(state);
+        render();
+        return;
+    }
+    if (key.backspace && key.meta) {
+        mode.buffer = deleteWordBack(mode.buffer);
         render();
         return;
     }
@@ -277,10 +283,22 @@ function handleInputMode(input, key, state, render) {
         render();
     }
 }
+function deleteWordBack(buffer) {
+    const chars = [...buffer];
+    while (chars.length > 0 && /\s/.test(chars[chars.length - 1]))
+        chars.pop();
+    while (chars.length > 0 && !/\s/.test(chars[chars.length - 1]))
+        chars.pop();
+    return chars.join('');
+}
 // ── Final ────────────────────────────────────────────────────────────────────
 function handleFinal(input, key, state, render, exit) {
     if (key.return) {
         exit();
+    }
+    else if (key.escape) {
+        state.phase = 'overview';
+        render();
     }
     else if (input === 'p') {
         state.phase = 'item-review';
@@ -302,6 +320,27 @@ function advanceItem(state, direction) {
     state.detailExpanded = false;
     state.scrollOffset = 0;
 }
+/**
+ * Move to the next interaction WITHOUT a response, falling through to the
+ * final phase if every following interaction is already answered (whether
+ * user-answered or `preAnswered`-seeded). Used by all post-submit advance
+ * sites so the human flies through pre-approved items by hitting Enter; raw
+ * `n`/`p` still step one at a time via `advanceItem`.
+ */
+function advanceToNextUnanswered(state) {
+    let next = state.currentIndex + 1;
+    while (next < state.interactions.length && state.responses.has(state.interactions[next].id)) {
+        next++;
+    }
+    if (next >= state.interactions.length) {
+        state.phase = 'final';
+        return;
+    }
+    state.currentIndex = next;
+    state.selectedAction = 0;
+    state.detailExpanded = false;
+    state.scrollOffset = 0;
+}
 function actionCount(interaction) {
     return interaction.options.length + (interaction.allowFreetext && interaction.options.length > 0 ? 1 : 0);
 }
@@ -312,6 +351,9 @@ function submitOption(state, interaction, selectedOptionId, freetext) {
     if (freetext !== undefined)
         response.freetext = freetext;
     state.responses.set(interaction.id, response);
+    // Explicit user submission overrides any preAnswered seed — flip the icon
+    // from "previously answered" to user-answered.
+    state.preAnsweredIds.delete(interaction.id);
     state.persist?.();
 }
 // ── Multi-select ─────────────────────────────────────────────────────────────
@@ -328,6 +370,8 @@ function toggleMulti(state, interaction, optionId) {
     if (existing?.freetext !== undefined)
         response.freetext = existing.freetext;
     state.responses.set(interaction.id, response);
+    // User edited the checked set — no longer a passive carry-over.
+    state.preAnsweredIds.delete(interaction.id);
     state.persist?.();
 }
 /** Ensure a (possibly empty) response exists so the interaction counts as
@@ -342,5 +386,7 @@ function commitMulti(state, interaction, freetext) {
     if (ft !== undefined)
         response.freetext = ft;
     state.responses.set(interaction.id, response);
+    // Explicit confirm overrides any preAnswered seed.
+    state.preAnsweredIds.delete(interaction.id);
     state.persist?.();
 }

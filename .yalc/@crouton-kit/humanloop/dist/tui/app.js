@@ -1,4 +1,4 @@
-import { readFileSync, existsSync, writeFileSync, renameSync, unlinkSync } from 'fs';
+import { readFileSync, existsSync, writeFileSync, renameSync, unlinkSync, statSync } from 'fs';
 import { dirname, resolve as resolvePath } from 'node:path';
 import { setupTerminal, restoreTerminal, parseKeypress, getTerminalSize } from './terminal.js';
 import { diffFrame, renderOverview, renderItemReview, renderFinal } from './render.js';
@@ -6,7 +6,7 @@ import { handleKeypress, assignShortcuts } from './input.js';
 import { readConversation } from '../conversation/reader.js';
 import { defaultGenerateVisual } from '../visuals/generate.js';
 import { validateDeck } from '../inbox/deck-schema.js';
-import { progressPath as progressPathFor, writeResponse, clearProgress } from '../inbox/convention.js';
+import { progressPath as progressPathFor, deckPath as deckPathFor, writeResponse, clearProgress } from '../inbox/convention.js';
 /** Validate an arbitrary parsed value as a Deck. Delegates to the canonical
  * Zod validator in `inbox/deck-schema.ts` (the single source of truth shared
  * with sisyphus). Kept exported for back-compat. */
@@ -18,12 +18,36 @@ function buildInitialState(deck) {
     // Single-question decks skip the overview list — there's nothing to overview,
     // and overview hides the option hotkeys so users press 'y' and nothing happens.
     const initialPhase = deck.interactions.length === 1 ? 'item-review' : 'overview';
+    const responses = new Map();
+    const preAnsweredIds = new Set();
+    // Seed responses + preAnsweredIds from any `preAnswered` field. The seeded
+    // response counts as answered for navigation/auto-advance, but is rendered
+    // distinctly so the human knows it carried over. `tryResume` runs after and
+    // takes priority — mid-deck progress should not be overwritten by defaults.
+    for (const interaction of deck.interactions) {
+        const pa = interaction.preAnswered;
+        if (pa === undefined)
+            continue;
+        const response = { id: interaction.id };
+        if (pa.selectedOptionId !== undefined)
+            response.selectedOptionId = pa.selectedOptionId;
+        if (pa.selectedOptionIds !== undefined)
+            response.selectedOptionIds = [...pa.selectedOptionIds];
+        if (pa.freetext !== undefined)
+            response.freetext = pa.freetext;
+        responses.set(interaction.id, response);
+        preAnsweredIds.add(interaction.id);
+    }
+    // Start cursor on the first unanswered interaction — humans land where they
+    // need to act. If every interaction is pre-answered, fall back to index 0.
+    const firstUnanswered = deck.interactions.findIndex((i) => !responses.has(i.id));
     return {
         phase: initialPhase,
-        currentIndex: 0,
+        currentIndex: firstUnanswered >= 0 ? firstUnanswered : 0,
         interactions: deck.interactions,
-        responses: new Map(),
+        responses,
         visuals: new Map(),
+        preAnsweredIds,
         inputMode: null,
         selectedAction: 0,
         detailExpanded: false,
@@ -179,6 +203,11 @@ export function mountPanel(opts) {
                 return false;
             return internals.state.inputMode === null;
         },
+        atDeckTop() {
+            if (!internals.mounted)
+                return true;
+            return internals.state.phase === 'overview' && internals.state.inputMode === null;
+        },
     };
 }
 /**
@@ -187,6 +216,12 @@ export function mountPanel(opts) {
  * with skips) write `<dir>/response.json` atomically and drop the progress
  * file. A hard process kill leaves `progress.json` for a later resume —
  * `tryResume` (unchanged logic) reads the new dir-derived path.
+ *
+ * While the panel is mounted, `<dir>/deck.json` is polled for changes (an
+ * agent calling `hl deck update`). On a valid rewrite the panel is reloaded
+ * in place via `loadDeck`, so the human's pane reflects the new questions
+ * without a respawn; answers for surviving interaction ids are kept. The
+ * returned `deck` is the one actually answered (post-reload).
  */
 export async function resolveInteractionDir(dir, deck, opts = {}) {
     let conversationContext = '';
@@ -212,6 +247,12 @@ export async function resolveInteractionDir(dir, deck, opts = {}) {
         let prevFrameLocal = [];
         let lastResponses = [];
         let onData;
+        // The deck the human is actually answering. An agent may replace it
+        // mid-flight via `hl deck update` (atomic deck.json rewrite); the poller
+        // below reloads the panel in place and tracks the live deck here so the
+        // returned envelope/summary describes what was answered, not the kickoff.
+        let currentDeck = deck;
+        let deckWatch = null;
         const flushHost = (lines) => {
             const { rows: currentRows } = getTerminalSize();
             const { writes, nextPrevFrame } = diffFrame(prevFrameLocal, lines, currentRows);
@@ -222,6 +263,10 @@ export async function resolveInteractionDir(dir, deck, opts = {}) {
             prevFrameLocal = nextPrevFrame;
         };
         const finalize = (responses) => {
+            if (deckWatch !== null) {
+                clearInterval(deckWatch);
+                deckWatch = null;
+            }
             restoreTerminal();
             process.stdin.removeListener('data', onData);
             panel?.unmount();
@@ -229,7 +274,7 @@ export async function resolveInteractionDir(dir, deck, opts = {}) {
             // Resolved supersedes in-progress: write response.json, drop progress.json.
             const rp = writeResponse(dir, responses, completedAt);
             clearProgress(dir);
-            resolve({ responses, completedAt, responsePath: rp });
+            resolve({ responses, completedAt, responsePath: rp, deck: currentDeck });
         };
         panel = mountPanel({
             deck,
@@ -248,6 +293,49 @@ export async function resolveInteractionDir(dir, deck, opts = {}) {
             },
         });
         flushHost(panel.render());
+        // ── Live deck reload ──────────────────────────────────────────────────
+        // Poll deck.json mtime (cheap stat; full read only on change). atomicWrite
+        // does write-tmp + rename, so stat/read always see a whole file — no
+        // fs.watch rename flakiness. The TUI never writes deck.json, so there is
+        // no feedback loop. A structurally identical rewrite is ignored so a
+        // no-op touch never disrupts the human mid-answer.
+        const deckFile = deckPathFor(dir);
+        const deckMtime = () => {
+            try {
+                return statSync(deckFile).mtimeMs;
+            }
+            catch {
+                return 0;
+            }
+        };
+        let lastDeckMtime = deckMtime();
+        let lastDeckJson = JSON.stringify(currentDeck);
+        deckWatch = setInterval(() => {
+            if (panel === null)
+                return;
+            const m = deckMtime();
+            if (m === 0 || m === lastDeckMtime)
+                return;
+            lastDeckMtime = m;
+            let nextDeck;
+            try {
+                const parsed = JSON.parse(readFileSync(deckFile, 'utf8'));
+                nextDeck = validateDeck(parsed);
+            }
+            catch {
+                // Mid-rename, invalid, or rejected by schema: keep the live deck,
+                // retry on the next tick. `hl deck update` validates before writing,
+                // so a persistently bad file is an out-of-band edit, not our concern.
+                return;
+            }
+            const nextJson = JSON.stringify(nextDeck);
+            if (nextJson === lastDeckJson)
+                return; // touch / identical content
+            lastDeckJson = nextJson;
+            currentDeck = nextDeck;
+            panel.loadDeck(nextDeck, { progressPath: progressPathFor(dir) });
+            flushHost(panel.render());
+        }, 500);
         onData = (data) => {
             const { input: inp, key } = parseKeypress(data);
             panel.handleKey(inp, key);

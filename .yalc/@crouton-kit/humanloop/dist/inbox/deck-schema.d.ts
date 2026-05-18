@@ -6,6 +6,12 @@ export declare const interactionOptionSchema: z.ZodObject<{
     description: z.ZodOptional<z.ZodString>;
     shortcut: z.ZodOptional<z.ZodString>;
 }, z.core.$strip>;
+export declare const preAnswerSchema: z.ZodObject<{
+    selectedOptionId: z.ZodOptional<z.ZodString>;
+    selectedOptionIds: z.ZodOptional<z.ZodArray<z.ZodString>>;
+    freetext: z.ZodOptional<z.ZodString>;
+    label: z.ZodOptional<z.ZodString>;
+}, z.core.$strip>;
 export declare const deckSchema: z.ZodObject<{
     title: z.ZodOptional<z.ZodString>;
     source: z.ZodOptional<z.ZodObject<{
@@ -35,6 +41,12 @@ export declare const deckSchema: z.ZodObject<{
             context: "context";
             error: "error";
         }>>;
+        preAnswered: z.ZodOptional<z.ZodObject<{
+            selectedOptionId: z.ZodOptional<z.ZodString>;
+            selectedOptionIds: z.ZodOptional<z.ZodArray<z.ZodString>>;
+            freetext: z.ZodOptional<z.ZodString>;
+            label: z.ZodOptional<z.ZodString>;
+        }, z.core.$strip>>;
     }, z.core.$strip>>;
 }, z.core.$strip>;
 export declare function inlineBodyPath(deckPath: string, bodyPath: string): string;

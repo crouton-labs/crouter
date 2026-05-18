@@ -1,6 +1,6 @@
 {
   "name": "@crouton-kit/humanloop",
-  "version": "0.3.2",
+  "version": "0.3.4",
   "description": "Human-in-the-loop decision TUI — agents write questions, humans answer them",
   "type": "module",
   "main": "dist/index.js",
@@ -34,5 +34,5 @@
     "string-width": "^7.0.0",
     "zod": "^4.3.6"
   },
-  "yalcSig": "0cc33e1abb780ee9edf54e10aacc0a61"
+  "yalcSig": "11029f38fc76b032130e5ceb8cc90814"
 }
