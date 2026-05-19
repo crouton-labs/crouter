@@ -1,0 +1,5 @@
+allowBuilds:
+  '@crouton-kit/humanloop': true
+  esbuild: true
+minimumReleaseAgeExclude:
+  - '@crouton-kit/humanloop'

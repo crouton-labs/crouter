@@ -30,6 +30,8 @@ import {
   inbox,
   scanInbox,
   validateDeck,
+  approveDeck,
+  notifyDeck,
   parseDeck,
   deckPath,
   atomicWriteJson,
@@ -183,18 +185,10 @@ const humanApprove = defineLeaf({
     const subtitle = input['subtitle'] as string | undefined;
     const body = input['body'] as string | undefined;
 
-    const interaction: Record<string, unknown> = {
-      id: 'approve',
-      title,
-      kind: 'validation',
-      options: [
-        { id: 'yes', label: 'Yes' },
-        { id: 'no', label: 'No' },
-      ],
-    };
-    if (subtitle !== undefined) interaction['subtitle'] = subtitle;
-    if (body !== undefined) interaction['body'] = body;
-    const deck = validateDeck({ interactions: [interaction] });
+    const deck = approveDeck(title, {
+      ...(subtitle !== undefined ? { subtitle } : {}),
+      ...(body !== undefined ? { body } : {}),
+    });
 
     const cwd = process.cwd();
     const { jobId } = createJob('human', { cwd });
@@ -294,14 +288,7 @@ const humanNotify = defineLeaf({
     const title = input['title'] as string;
     const body = input['body'] as string | undefined;
 
-    const interaction: Record<string, unknown> = {
-      id: 'notify',
-      title,
-      kind: 'notify',
-      options: [{ id: 'ack', label: 'OK' }],
-    };
-    if (body !== undefined) interaction['body'] = body;
-    const deck = validateDeck({ interactions: [interaction] });
+    const deck = notifyDeck(title, body !== undefined ? { body } : {});
 
     const cwd = process.cwd();
     const id = `nfy-${randomBytes(4).toString('hex')}`;
