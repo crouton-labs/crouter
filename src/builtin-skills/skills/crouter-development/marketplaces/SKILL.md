@@ -107,7 +107,7 @@ mkdir -p plugins/my-new-plugin/.crouter-plugin plugins/my-new-plugin/skills
 $EDITOR plugins/my-new-plugin/.crouter-plugin/plugin.json
 
 # Add at least one skill
-crtr skill author scaffold my-new-plugin:first-skill --type playbook --description "Use when …"
+crtr skill author scaffold my-new-plugin/first-skill --type playbook --description "Use when …"
 
 # Add the plugin to the marketplace index
 $EDITOR .crouter-marketplace/marketplace.json

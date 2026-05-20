@@ -19,8 +19,8 @@ crtr --help
 Browse and install plugins from it:
 
 ```bash
-crtr marketplace browse crouter-official-marketplace
-crtr marketplace install crouter-official-marketplace:<plugin>
+crtr pkg market inspect browse --marketplace crouter-official-marketplace
+crtr pkg market manage install --marketplace crouter-official-marketplace --plugin <plugin>
 ```
 
 To opt out of the bootstrap (e.g. in CI), set `CRTR_NO_BOOTSTRAP=1`.

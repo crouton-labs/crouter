@@ -1,8 +1,9 @@
 import { join } from 'node:path';
-import { CONFIG_FILE, STATE_FILE, defaultScopeConfig, defaultScopeState } from '../types.js';
+import { CONFIG_FILE, STATE_FILE, SCHEMA_VERSION, defaultScopeConfig, defaultScopeState } from '../types.js';
 import type { Scope, ScopeConfig, ScopeState } from '../types.js';
 import { readJsonIfExists, writeJson, ensureDir } from './fs-utils.js';
 import { scopeRoot, requireScopeRoot } from './scope.js';
+import { diag } from './io.js';
 
 function configPathFor(root: string): string {
   return join(root, CONFIG_FILE);
@@ -27,7 +28,25 @@ export function readConfig(scope: Scope): ScopeConfig {
   if (!root) return defaultScopeConfig();
   const existing = readJsonIfExists<Partial<ScopeConfig>>(configPathFor(root));
   if (!existing) return defaultScopeConfig();
-  return mergeConfig(existing);
+  const cfg = mergeConfig(existing);
+  if ((existing.schema_version ?? 0) < SCHEMA_VERSION) {
+    migrateSkillConfigKeys(cfg, scope, root);
+  }
+  return cfg;
+}
+
+function migrateSkillConfigKeys(cfg: ScopeConfig, scope: Scope, root: string): void {
+  const colonKeys = Object.keys(cfg.skills).filter((k) => k.includes(':'));
+  if (colonKeys.length > 0) {
+    for (const key of colonKeys) {
+      const newKey = key.replace(/:/g, '/');
+      cfg.skills[newKey] = cfg.skills[key];
+      delete cfg.skills[key];
+    }
+    diag(`crtr: migrated ${colonKeys.length} skill config keys to slash form in ${scope}`);
+  }
+  cfg.schema_version = SCHEMA_VERSION;
+  writeJson(configPathFor(root), cfg);
 }
 
 export function readState(scope: Scope): ScopeState {

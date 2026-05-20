@@ -44,7 +44,7 @@ import type { Skill } from '../types.js';
 
 function formatNeighborQualifier(s: Skill): string {
   return s.plugin === SCOPE_SKILL_PLUGIN
-    ? `${s.scope}:${s.name}`
+    ? `${s.scope}/${s.name}`
     : `${s.plugin}/${s.name}`;
 }
 
@@ -157,7 +157,7 @@ const findList = defineLeaf({
       return a.name.localeCompare(b.name);
     });
 
-    const keyOf = (sk: Skill) => `${sk.scope}:${sk.plugin}/${sk.name}`;
+    const keyOf = (sk: Skill) => `${sk.scope}/${sk.plugin}/${sk.name}`;
     const params: { limit?: number; cursor?: string } = {};
     if (limit !== undefined) params.limit = limit;
     if (cursor !== undefined) params.cursor = cursor;
@@ -375,7 +375,7 @@ const readShow = defineLeaf({
     name: 'skill read show',
     summary: 'print SKILL.md body for a named skill',
     params: [
-      { kind: 'positional', name: 'name', required: true, constraint: 'Skill identifier. Forms: <name>, <plugin>:<name>, <scope>:<name>, <scope>:<plugin>/<name>.' },
+      { kind: 'positional', name: 'name', required: true, constraint: 'Skill identifier. Forms: <name>, <plugin>/<name>, <scope>/<name>, <scope>/<plugin>/<name>.' },
       { kind: 'flag', name: 'scope', type: 'enum', choices: ['user', 'project'], required: false, constraint: 'Narrows resolution when name is ambiguous.' },
       { kind: 'flag', name: 'plugin', type: 'string', required: false, constraint: 'Narrows resolution to a specific plugin.' },
       { kind: 'flag', name: 'frontmatter', type: 'bool', required: false, constraint: 'When present, includes YAML frontmatter in the output.' },
@@ -515,7 +515,7 @@ const authorScaffold = defineLeaf({
     name: 'skill author scaffold',
     summary: 'create an empty SKILL.md stub at the given qualifier',
     params: [
-      { kind: 'positional', name: 'qualifier', required: true, constraint: 'Skill identifier in <plugin>:<skill> form.' },
+      { kind: 'positional', name: 'qualifier', required: true, constraint: 'Skill identifier in <plugin>/<skill> form.' },
       { kind: 'flag', name: 'type', type: 'enum', choices: [...VALID_TYPES], required: false, constraint: 'One of: playbook, primer, reference, runbook, freeform.' },
       { kind: 'flag', name: 'description', type: 'string', required: false, constraint: 'Short description written to frontmatter.' },
       { kind: 'flag', name: 'scope', type: 'enum', choices: ['user', 'project'], required: false, constraint: 'Default: project if available, else user.' },
@@ -536,10 +536,16 @@ const authorScaffold = defineLeaf({
     const description = input['description'] as string | undefined;
     const scopeStr = input['scope'] as string | undefined;
 
-    const { plugin: pluginName, name: skillName } = parseSkillQualifier(qualifier);
-    if (!skillName) {
+    const parsed = parseSkillQualifier(qualifier);
+    if (parsed.segments.length === 0) {
       throw usage('skill name required in qualifier');
     }
+    // For scaffold, the qualifier is always <plugin>/<skill>. If it's a single segment,
+    // treat it as a scope-direct skill name. Otherwise first segment is the plugin.
+    const pluginName = parsed.segments.length > 1 ? parsed.segments[0] : undefined;
+    const skillName = parsed.segments.length > 1
+      ? parsed.segments.slice(1).join('/')
+      : parsed.segments[0];
 
     if (typeStr !== undefined && !isSkillType(typeStr)) {
       throw usage(`unknown skill type: ${typeStr} / valid: ${SKILL_TYPES.join(' | ')}`);
@@ -548,7 +554,7 @@ const authorScaffold = defineLeaf({
 
     let skillFile: string;
 
-    // Scope-direct: no plugin qualifier, or explicit `_:` sentinel
+    // Scope-direct: no plugin qualifier, or explicit `_/` sentinel (internal only)
     if (pluginName === undefined || pluginName === SCOPE_SKILL_PLUGIN) {
       const scope = resolveWriteScope(scopeStr);
       const scopeRootPath = requireScopeRoot(scope);
@@ -705,9 +711,13 @@ const stateBranch = defineBranch({
 // Loaded-skills catalog (dynamicState for `skill -h`)
 // ---------------------------------------------------------------------------
 
-// A skill is a forest root within its source (scope+plugin) when no other
-// skill in that same source is its ancestor (`name` prefix + '/'). Nested
-// children stay discoverable via `skill find list` and the Neighbors section.
+// Sections: Project first (most relevant to cwd), then User (folding user-
+// and builtin-scope plugins together). Within a section, sentinel-plugin
+// skills list bare; named plugins render inline unless they have 2+ distinct
+// top-level subcategories — those break into a subcategory tree. Forest-root
+// skills only (nested children stay discoverable via `skill find list`).
+type CatalogSource = { plugin: string; roots: string[] };
+
 function buildSkillCatalog(): string | null {
   let skills: Skill[];
   try {
@@ -719,37 +729,98 @@ function buildSkillCatalog(): string | null {
 
   const bySource = new Map<string, Skill[]>();
   for (const s of skills) {
-    const key = `${s.scope} ${s.plugin}`;
+    const key = `${s.scope}\t${s.plugin}`;
     const arr = bySource.get(key);
     if (arr) arr.push(s);
     else bySource.set(key, [s]);
   }
 
-  const byPrefix = new Map<string, Set<string>>();
-  for (const group of bySource.values()) {
+  const projectSources: CatalogSource[] = [];
+  const userSources: CatalogSource[] = [];
+  for (const [key, group] of bySource) {
+    const [scope, plugin] = key.split('\t');
     const names = group.map((g) => g.name);
-    for (const s of group) {
-      const isChild = names.some((n) => n !== s.name && s.name.startsWith(n + '/'));
-      if (isChild) continue;
-      const prefix =
-        s.plugin === SCOPE_SKILL_PLUGIN ? `${s.scope}:` : `${s.plugin}/`;
-      let set = byPrefix.get(prefix);
-      if (!set) {
-        set = new Set<string>();
-        byPrefix.set(prefix, set);
-      }
-      set.add(s.name);
-    }
+    const roots = names
+      .filter((n) => !names.some((m) => m !== n && n.startsWith(m + '/')))
+      .sort();
+    if (roots.length === 0) continue;
+    (scope === 'project' ? projectSources : userSources).push({ plugin, roots });
   }
 
-  const prefixes = [...byPrefix.keys()].sort();
-  const prefixW = prefixes.reduce((m, p) => (p.length > m ? p.length : m), 0);
   const lines = [`Loaded skills (${skills.length})`];
-  for (const prefix of prefixes) {
-    const names = [...byPrefix.get(prefix)!].sort();
-    lines.push(`  ${prefix.padEnd(prefixW)}  ${names.join(', ')}`);
-  }
+  renderCatalogSection('Project', projectSources, lines);
+  renderCatalogSection('User', userSources, lines);
   return lines.join('\n');
+}
+
+function renderCatalogSection(
+  label: string,
+  sources: CatalogSource[],
+  out: string[],
+): void {
+  if (sources.length === 0) return;
+  const count = sources.reduce((n, s) => n + s.roots.length, 0);
+  out.push('');
+  out.push(`${label} (${count})`);
+
+  const sentinel = sources.filter((s) => s.plugin === SCOPE_SKILL_PLUGIN);
+  const named = sources
+    .filter((s) => s.plugin !== SCOPE_SKILL_PLUGIN)
+    .sort((a, b) => a.plugin.localeCompare(b.plugin));
+
+  for (const s of sentinel) {
+    for (const n of s.roots) out.push(`  ${n}`);
+  }
+  if (named.length === 0) return;
+
+  type Classified = {
+    plugin: string;
+    roots: string[];
+    subcats: Map<string, string[]>;
+    bare: string[];
+  };
+  const classified: Classified[] = named.map((s) => {
+    const subcats = new Map<string, string[]>();
+    const bare: string[] = [];
+    for (const n of s.roots) {
+      const slash = n.indexOf('/');
+      if (slash === -1) {
+        bare.push(n);
+      } else {
+        const sub = n.slice(0, slash);
+        const rest = n.slice(slash + 1);
+        const arr = subcats.get(sub);
+        if (arr) arr.push(rest);
+        else subcats.set(sub, [rest]);
+      }
+    }
+    return { plugin: s.plugin, roots: s.roots, subcats, bare };
+  });
+
+  // Smart-nest: a plugin nests iff it has 2+ distinct subcategories.
+  const nests = (p: Classified) => p.subcats.size >= 2;
+
+  const inlineLabels = classified.filter((p) => !nests(p)).map((p) => `${p.plugin}/`);
+  const inlineW = inlineLabels.reduce((m, p) => (p.length > m ? p.length : m), 0);
+
+  for (const p of classified) {
+    if (nests(p)) {
+      out.push(`  ${p.plugin}/`);
+      if (p.bare.length > 0) {
+        out.push(`    ${[...p.bare].sort().join(', ')}`);
+      }
+      const subKeys = [...p.subcats.keys()].sort();
+      const subLabels = subKeys.map((k) => `${k}/`);
+      const subW = subLabels.reduce((m, k) => (k.length > m ? k.length : m), 0);
+      for (let i = 0; i < subKeys.length; i++) {
+        const children = p.subcats.get(subKeys[i])!.sort();
+        out.push(`    ${subLabels[i].padEnd(subW)}  ${children.join(', ')}`);
+      }
+    } else {
+      const pluginLabel = `${p.plugin}/`;
+      out.push(`  ${pluginLabel.padEnd(inlineW)}  ${[...p.roots].sort().join(', ')}`);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -321,18 +321,18 @@ describe('skill author scaffold params', () => {
   });
 
   test('qualifier parsed correctly', async () => {
-    const r = await parseArgv(params, ['myplugin:myskill']);
-    assert.equal(r['qualifier'], 'myplugin:myskill');
+    const r = await parseArgv(params, ['myplugin/myskill']);
+    assert.equal(r['qualifier'], 'myplugin/myskill');
   });
 
   test('full invocation', async () => {
     const r = await parseArgv(params, [
-      'myplugin:myskill',
+      'myplugin/myskill',
       '--type', 'playbook',
       '--scope', 'project',
       '--description', 'Use when debugging',
     ]);
-    assert.equal(r['qualifier'], 'myplugin:myskill');
+    assert.equal(r['qualifier'], 'myplugin/myskill');
     assert.equal(r['type'], 'playbook');
     assert.equal(r['scope'], 'project');
     assert.equal(r['description'], 'Use when debugging');
@@ -340,14 +340,14 @@ describe('skill author scaffold params', () => {
 
   test('--type invalid rejects', async () => {
     await assert.rejects(
-      () => parseArgv(params, ['q:s', '--type', 'invalid']),
+      () => parseArgv(params, ['q/s', '--type', 'invalid']),
       (e: Error) => { assert.match(e.message, /must be one of/); return true; },
     );
   });
 
   test('--scope all rejects', async () => {
     await assert.rejects(
-      () => parseArgv(params, ['q:s', '--scope', 'all']),
+      () => parseArgv(params, ['q/s', '--scope', 'all']),
       (e: Error) => { assert.match(e.message, /must be one of/); return true; },
     );
   });
@@ -392,8 +392,8 @@ describe('skill state enable/disable params', () => {
     );
   });
 
-  test('plugin:skill qualifier as name', async () => {
-    const r = await parseArgv(params, ['myplugin:myskill']);
-    assert.equal(r['name'], 'myplugin:myskill');
+  test('plugin/skill qualifier as name', async () => {
+    const r = await parseArgv(params, ['myplugin/myskill']);
+    assert.equal(r['name'], 'myplugin/myskill');
   });
 });

@@ -22,6 +22,7 @@ import {
 import { readMarketplaceManifest, readPluginManifest } from './manifest.js';
 import { parseFrontmatter } from './frontmatter.js';
 import { ambiguous, notFound, usage } from './errors.js';
+import { InputError } from './io.js';
 import {
   builtinSkillsRoot,
   marketplacesDir,
@@ -253,34 +254,52 @@ export function resolveSkill(
       `scope conflict: identifier "${rawName}" uses scope "${parsed.scope}" but --scope is "${opts.scope}"`,
     );
   }
-  if (parsed.plugin && opts.pluginFilter && parsed.plugin !== opts.pluginFilter) {
+
+  const effectiveScope: Scope | undefined = opts.scope ?? parsed.scope;
+
+  // Lookup-based disambiguation: if segments[0] matches an installed plugin, treat it as plugin.
+  // Otherwise the entire segments array is the skill path under the scope-direct plugin.
+  let pluginQualifier: string | undefined;
+  let skillName: string;
+
+  if (parsed.segments.length === 0) {
+    throw usage(`skill name required`);
+  }
+
+  if (opts.pluginFilter !== undefined) {
+    // Explicit plugin filter overrides disambiguation.
+    pluginQualifier = opts.pluginFilter;
+    skillName = parsed.segments.join('/');
+  } else if (parsed.segments.length > 1) {
+    const maybePlugin = parsed.segments[0];
+    const pluginMatch = findPluginByName(maybePlugin, effectiveScope) ??
+      (effectiveScope === undefined ? null : findPluginByName(maybePlugin));
+    if (pluginMatch !== null) {
+      pluginQualifier = maybePlugin;
+      skillName = parsed.segments.slice(1).join('/');
+    } else {
+      pluginQualifier = undefined;
+      skillName = parsed.segments.join('/');
+    }
+  } else {
+    pluginQualifier = undefined;
+    skillName = parsed.segments[0];
+  }
+
+  if (pluginQualifier && opts.pluginFilter && pluginQualifier !== opts.pluginFilter) {
     throw usage(
-      `plugin conflict: identifier "${rawName}" uses plugin "${parsed.plugin}" but --plugin is "${opts.pluginFilter}"`,
+      `plugin conflict: identifier "${rawName}" uses plugin "${pluginQualifier}" but --plugin is "${opts.pluginFilter}"`,
     );
   }
 
-  const effectiveScope: Scope | undefined = opts.scope ?? parsed.scope;
-  const effectivePluginFilter: string | undefined = opts.pluginFilter ?? parsed.plugin;
+  const effectivePluginFilter: string | undefined = opts.pluginFilter ?? pluginQualifier;
 
-  const direct = findSkillMatches(parsed.name, parsed.plugin, effectiveScope, effectivePluginFilter);
-  if (direct.length > 0) return pickMatch(direct, parsed.name, parsed.plugin);
+  const direct = findSkillMatches(skillName, pluginQualifier, effectiveScope, effectivePluginFilter);
+  if (direct.length > 0) return pickMatch(direct, skillName, pluginQualifier);
 
-  // Fallback: bare `plugin/name` (no colon) — try splitting on first `/`.
-  // Disambiguates "claude-authoring/rules" (which the search/list display also emits as
-  // "user:claude-authoring/rules") from a nested scope-root skill of the same shape.
-  if (!parsed.plugin && parsed.name.includes('/')) {
-    const slashIdx = parsed.name.indexOf('/');
-    const maybePlugin = parsed.name.slice(0, slashIdx);
-    const rest = parsed.name.slice(slashIdx + 1);
-    if (effectivePluginFilter === undefined || effectivePluginFilter === maybePlugin) {
-      const fallback = findSkillMatches(rest, maybePlugin, effectiveScope, maybePlugin);
-      if (fallback.length > 0) return pickMatch(fallback, rest, maybePlugin);
-    }
-  }
-
-  throw notFound(formatNotFoundMessage(rawName, parsed), {
-    skill: parsed.name,
-    plugin: parsed.plugin,
+  throw notFound(formatNotFoundMessage(rawName, skillName, pluginQualifier), {
+    skill: skillName,
+    plugin: pluginQualifier,
     scope: parsed.scope,
   });
 }
@@ -373,14 +392,18 @@ function pickMatch(matches: Skill[], name: string, pluginQualifier: string | und
   });
 }
 
-function formatNotFoundMessage(rawName: string, parsed: ParsedSkillQualifier): string {
-  const suggestions = suggestSkills(parsed.name, parsed.plugin);
+function formatNotFoundMessage(
+  rawName: string,
+  skillName: string,
+  pluginQualifier: string | undefined,
+): string {
+  const suggestions = suggestSkills(skillName, pluginQualifier);
   const lines: string[] = [`skill not found: ${rawName}`];
-  lines.push('       expected forms: <name>, <plugin>:<name>, <scope>:<plugin>/<name>');
+  lines.push('       expected forms: <name>, <plugin>/<name>, <scope>/<name>, <scope>/<plugin>/<name>');
   if (suggestions.length > 0) {
     const formatted = suggestions
       .map((s) =>
-        s.plugin === SCOPE_SKILL_PLUGIN ? s.name : `${s.plugin}:${s.name}`,
+        s.plugin === SCOPE_SKILL_PLUGIN ? s.name : `${s.plugin}/${s.name}`,
       )
       .slice(0, 3);
     lines.push(`       did you mean: ${formatted.join(', ')}`);
@@ -449,36 +472,33 @@ function editDistance(a: string, b: string): number {
 
 export interface ParsedSkillQualifier {
   scope?: Scope;
-  plugin?: string;
-  name: string;
+  segments: string[];
 }
 
 const SCOPE_QUALIFIERS: ReadonlySet<string> = new Set<Scope>(['user', 'project']);
 
 // Accepted identifier forms:
 //   <name>                         — bare name; scope-root first, then plugins
-//   <plugin>:<name>                — explicit plugin
-//   <scope>:<name>                 — scope-root in a specific scope
-//   <scope>:<plugin>/<name>        — fully qualified (matches `skill list` / `skill search` display)
-// Bare `<plugin>/<name>` (no colon) is handled as a fallback inside resolveSkill.
+//   <plugin>/<name>                — explicit plugin (plugin may contain slashes)
+//   <scope>/<name>                 — scope-root in a specific scope
+//   <scope>/<plugin>/<name>        — fully qualified; plugin-vs-path disambiguation is lookup-based in resolveSkill
 export function parseSkillQualifier(raw: string): ParsedSkillQualifier {
-  const colonIdx = raw.indexOf(':');
-  if (colonIdx === -1) return { name: raw };
-  const before = raw.slice(0, colonIdx);
-  const after = raw.slice(colonIdx + 1);
-  if (SCOPE_QUALIFIERS.has(before)) {
-    const scope = before as Scope;
-    const slashIdx = after.indexOf('/');
-    if (slashIdx !== -1) {
-      return {
-        scope,
-        plugin: after.slice(0, slashIdx),
-        name: after.slice(slashIdx + 1),
-      };
-    }
-    return { scope, name: after };
+  if (raw.includes(':')) {
+    const suggested = raw.replace(/:/g, '/');
+    throw new InputError({
+      error: 'invalid_qualifier',
+      message: "mixed separators ':' and '/' no longer supported; use slashes throughout",
+      received: raw,
+      field: 'name',
+      next: `Use ${suggested}.`,
+    });
   }
-  return { plugin: before, name: after };
+  const segments = raw.split('/');
+  if (SCOPE_QUALIFIERS.has(segments[0])) {
+    const scope = segments[0] as Scope;
+    return { scope, segments: segments.slice(1) };
+  }
+  return { segments };
 }
 
 function orderPluginsByResolution(plugins: InstalledPlugin[]): InstalledPlugin[] {

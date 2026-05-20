@@ -10,7 +10,7 @@ export const ExitCode = {
 } as const;
 export type ExitCodeValue = (typeof ExitCode)[keyof typeof ExitCode];
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export interface OwnerRef {
   name?: string;
@@ -154,7 +154,7 @@ export function defaultScopeConfig(): ScopeConfig {
 }
 
 export function skillConfigKey(plugin: string, name: string): string {
-  return `${plugin}:${name}`;
+  return `${plugin}/${name}`;
 }
 
 export function defaultScopeState(): ScopeState {

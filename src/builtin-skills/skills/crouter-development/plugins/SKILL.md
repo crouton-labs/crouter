@@ -96,7 +96,7 @@ Three ways a plugin lands in a scope:
 mkdir -p my-plugin/.crouter-plugin my-plugin/skills
 $EDITOR my-plugin/.crouter-plugin/plugin.json      # write the manifest
 cd my-plugin
-crtr skill author scaffold my-plugin:my-first-skill --type playbook --description "Use when …"
+crtr skill author scaffold my-plugin/my-first-skill --type playbook --description "Use when …"
 
 # Symlink for fast iteration — no clone, edits land immediately
 ln -s $(pwd) ~/.crouter/plugins/my-plugin
@@ -126,7 +126,7 @@ Standard semver:
 
 `crtr pkg plugin manage disable <name>` flips the per-scope config without removing files. Disabled plugins are hidden from `crtr skill find list` and don't resolve via `crtr skill read show <name>`. Re-enable with `crtr pkg plugin manage enable <name>`.
 
-Individual skills inside an enabled plugin can also be disabled: `crtr skill state disable <plugin>:<skill>`.
+Individual skills inside an enabled plugin can also be disabled: `crtr skill state disable <plugin>/<skill>`.
 
 ## What goes in a plugin
 
