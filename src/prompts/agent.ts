@@ -4,18 +4,18 @@ import { planReviewPrompt, specReviewPrompt } from './review.js';
  * First user message for a spec → plan handoff.
  *
  * Thin prompt: the worker discovers the full planning workflow by running
- * `crtr flow plan new -h`, then saves the plan via `crtr flow plan new`. This avoids
- * embedding the planPrompt() blob here and keeps the prompt in sync with the
- * live CLI without any coupling.
+ * `crtr agent plan new -h`, then saves the plan via `crtr agent plan new`. This
+ * avoids embedding the planPrompt() blob here and keeps the prompt in sync
+ * with the live CLI without any coupling.
  */
 export function planHandoffPrompt(specPath: string, jobId: string): string {
   return `You were launched in a new tmux pane to turn an approved spec into a plan.
 
 **Spec:** ${specPath}
 
-1. Run \`crtr flow plan new -h\` to load the planning workflow and output schema.
+1. Run \`crtr agent plan new -h\` to load the planning workflow and output schema.
 2. Read the spec end-to-end.
-3. Follow the workflow from step 1 and save the plan by passing the plan markdown to \`crtr flow plan new\` on stdin.
+3. Follow the workflow from step 1 and save the plan by passing the plan markdown to \`crtr agent plan new\` on stdin.
 4. When done, submit a short markdown report on stdin:
 
 \`\`\`bash

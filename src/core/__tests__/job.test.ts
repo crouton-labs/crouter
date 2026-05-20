@@ -1,6 +1,6 @@
-// Tests for the job subtree argv migration.
-// Exercises parseArgv against each leaf's param schema directly — no subprocess,
-// no tmux, no filesystem side-effects from the handler.
+// Tests for the job subtree (monitoring) and agent new * (spawning) argv
+// migration. Exercises parseArgv against each leaf's param schema directly —
+// no subprocess, no tmux, no filesystem side-effects from the handler.
 //
 // Run with: node --import tsx/esm --test src/core/__tests__/job.test.ts
 
@@ -83,10 +83,10 @@ const failParams: InputParam[] = [
 ];
 
 // ---------------------------------------------------------------------------
-// job start prompt
+// agent new prompt (formerly job start prompt)
 // ---------------------------------------------------------------------------
 
-describe('job start prompt', () => {
+describe('agent new prompt', () => {
   // stdin is handled by readStdinRaw() which requires actual stdin — we only
   // test the non-stdin flag parsing here.
   test('--cwd flag parsed as string', async () => {
@@ -110,10 +110,10 @@ describe('job start prompt', () => {
 });
 
 // ---------------------------------------------------------------------------
-// job start fork
+// agent new fork (formerly job start fork)
 // ---------------------------------------------------------------------------
 
-describe('job start fork', () => {
+describe('agent new fork', () => {
   test('no args parses cleanly', async () => {
     const result = await parseArgv(startForkParams, []);
     assert.equal(result['cwd'], undefined);
@@ -133,10 +133,10 @@ describe('job start fork', () => {
 });
 
 // ---------------------------------------------------------------------------
-// job start planner
+// agent new planner (formerly job start planner)
 // ---------------------------------------------------------------------------
 
-describe('job start planner', () => {
+describe('agent new planner', () => {
   test('positional spec_path required', async () => {
     await assert.rejects(
       () => parseArgv(startPlannerParams, []),
@@ -158,10 +158,10 @@ describe('job start planner', () => {
 });
 
 // ---------------------------------------------------------------------------
-// job start implementer
+// agent new implementer (formerly job start implementer)
 // ---------------------------------------------------------------------------
 
-describe('job start implementer', () => {
+describe('agent new implementer', () => {
   test('positional plan_path required', async () => {
     await assert.rejects(
       () => parseArgv(startImplementerParams, []),
@@ -176,10 +176,10 @@ describe('job start implementer', () => {
 });
 
 // ---------------------------------------------------------------------------
-// job start reviewer
+// agent new reviewer (formerly job start reviewer)
 // ---------------------------------------------------------------------------
 
-describe('job start reviewer', () => {
+describe('agent new reviewer', () => {
   test('positional + --kind required', async () => {
     await assert.rejects(
       () => parseArgv(startReviewerParams, ['/tmp/artifact.md']),

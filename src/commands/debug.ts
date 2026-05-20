@@ -1,14 +1,14 @@
-// `crtr flow debug` leaf — reproduce-first root-cause workflow.
+// `crtr agent debug` leaf — reproduce-first root-cause workflow.
 //
 // Running it spawns a reproduction-only agent in a sibling tmux pane (the same
-// spawn + job-handle shape as `crtr job start prompt`) and returns a job handle
+// spawn + job-handle shape as `crtr agent new prompt`) and returns a job handle
 // plus a follow_up. The orchestrator-side methodology lives in FLOW_DEBUG_GUIDE
-// (the leaf's help.guide), loaded via `crtr flow debug -h` after the repro
+// (the leaf's help.guide), loaded via `crtr agent debug -h` after the repro
 // agent returns. Methodology stays in the CLI guide field, like PLAN_NEW_GUIDE;
 // no builtin skill.
 export const FLOW_DEBUG_GUIDE = `## Debug workflow — reproduce first
 
-Audience: the agent that ran \`crtr flow debug\`. A reproduction agent is
+Audience: the agent that ran \`crtr agent debug\`. A reproduction agent is
 already spawned in a sibling pane. It writes ONE failing integration test and
 never fixes anything. You do everything after: gate on the repro, root-cause,
 fix, verify against that same test.
@@ -86,7 +86,7 @@ function assertTmux(): void {
   if (!isInTmux()) {
     throw new InputError({
       error: 'not_in_tmux',
-      message: 'crtr flow debug requires tmux (TMUX env var not set).',
+      message: 'crtr agent debug requires tmux (TMUX env var not set).',
       next: 'Run inside a tmux session.',
     });
   }
@@ -96,7 +96,7 @@ export function registerDebug(): LeafDef {
   return defineLeaf({
     name: 'debug',
     help: {
-      name: 'flow debug',
+      name: 'agent debug',
       summary:
         'reproduce-first root-cause workflow: spawns a reproduction agent, then you root-cause and fix',
       guide: FLOW_DEBUG_GUIDE,
@@ -184,7 +184,7 @@ export function registerDebug(): LeafDef {
 
       return {
         job_id: jobId,
-        follow_up: `Await the reproduction agent: crtr job read result ${jobId} --wait. Then run \`crtr flow debug -h\` and follow the workflow from Phase 1.`,
+        follow_up: `Await the reproduction agent: crtr job read result ${jobId} --wait. Then run \`crtr agent debug -h\` and follow the workflow from Phase 1.`,
       };
     },
   });
