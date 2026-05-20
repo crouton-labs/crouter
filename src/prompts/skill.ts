@@ -109,7 +109,7 @@ are for large, complicated, or unintuitive systems only.
 ## 2. Scope + name
 
 - **Scope**: \`project\` by default. \`user\` only if cross-repo.
-- **Name**: kebab-case. Confirm no collision: \`crtr skill read where <name>\` (returns \`.path\`, \`.scope\`, \`.plugin\`).
+- **Name**: kebab-case. Confirm no collision: \`crtr skill read <name> --no-body\` (returns \`.path\`, \`.scope\`, \`.plugin\`).
 
 ## 3. Parallel exploration
 
@@ -176,7 +176,7 @@ Non-obvious coupling. Looks-broken-but-isn't. Past footguns.
 \`\`\`
 
 **No \`## Related\` for within-plugin siblings** — the CLI auto-appends a
-\`## Neighbors\` section on \`crtr skill read show <name>\`. Add a manual \`## Related\`
+\`## Neighbors\` section on \`crtr skill read <name>\`. Add a manual \`## Related\`
 only for cross-plugin or distant refs.
 
 **Density rules:**
@@ -193,8 +193,8 @@ only for cross-plugin or distant refs.
 Output is JSON; \`.content\` has the body, \`.path\` has the location:
 
 \`\`\`
-crtr skill read where <name>
-crtr skill read show <name>
+crtr skill read <name> --no-body
+crtr skill read <name>
 crtr skill find search "<keyword>"    # confirm description triggers discovery
 \`\`\`
 
@@ -245,7 +245,7 @@ PR over many small ones for refactors here, because review churn dominates"*
 
 - **Scope**: \`user\` for cross-project methodology. \`project\` for repo-specific.
 - **Name**: kebab-case, verb-or-noun-phrase. Not "guide-to-X".
-- Check \`crtr skill read where <name>\` (returns \`.path\`, \`.scope\`, \`.plugin\`).
+- Check \`crtr skill read <name> --no-body\` (returns \`.path\`, \`.scope\`, \`.plugin\`).
 
 ## 3. Scaffold
 
@@ -296,7 +296,7 @@ to read the whole thing for value, you've buried the judgment.
 \`\`\`
 
 **No \`## Related\` for within-plugin siblings** — the CLI auto-appends a
-\`## Neighbors\` section on \`crtr skill read show <name>\`. Add a manual \`## Related\`
+\`## Neighbors\` section on \`crtr skill read <name>\`. Add a manual \`## Related\`
 only for cross-plugin or distant refs.
 
 ## 6. Progressive disclosure
@@ -318,8 +318,8 @@ loads supporting files only when needed.
 Output is JSON; \`.content\` has the body, \`.path\` has the location:
 
 \`\`\`
-crtr skill read where <name>
-crtr skill read show <name>
+crtr skill read <name> --no-body
+crtr skill read <name>
 crtr skill find search "<keyword>"
 \`\`\`
 
@@ -410,8 +410,8 @@ Or invent your own. Stay tight — no padding.
 Output is JSON; \`.content\` has the body, \`.path\` has the location:
 
 \`\`\`
-crtr skill read where <name>
-crtr skill read show <name>
+crtr skill read <name> --no-body
+crtr skill read <name>
 crtr skill find search "<keyword>"
 \`\`\`
 
@@ -465,7 +465,7 @@ field/flag/code values** — pull verbatim from source.
 
 - **Scope**: \`user\` for cross-project facts. \`project\` for repo-specific.
 - **Name**: noun-phrase. \`http-status-codes\` not \`learn-http-status\`.
-- Check \`crtr skill read where <name>\` (returns \`.path\`, \`.scope\`, \`.plugin\`).
+- Check \`crtr skill read <name> --no-body\` (returns \`.path\`, \`.scope\`, \`.plugin\`).
 
 ## 3. Scaffold
 
@@ -526,8 +526,8 @@ SKILL.md links to siblings (\`see [full-table.md](full-table.md)\`).
 Output is JSON; \`.content\` has the body, \`.path\` has the location:
 
 \`\`\`
-crtr skill read where <name>
-crtr skill read show <name>
+crtr skill read <name> --no-body
+crtr skill read <name>
 crtr skill find search "<keyword>"
 \`\`\`
 
@@ -579,7 +579,7 @@ push to \\\`main\\\`, wait for green CI, click promote"* is a runbook step.
 
 - **Scope**: \`project\` for repo-specific procedures. \`user\` for cross-project.
 - **Name**: verb-phrase. \`deploy-to-prod\` not \`production-deployment-guide\`.
-- Check \`crtr skill read where <name>\` (returns \`.path\`, \`.scope\`, \`.plugin\`).
+- Check \`crtr skill read <name> --no-body\` (returns \`.path\`, \`.scope\`, \`.plugin\`).
 
 ## 3. Scaffold
 
@@ -634,8 +634,8 @@ crtr skill author scaffold <name> --type runbook --scope <user|project> --descri
 Output is JSON; \`.content\` has the body, \`.path\` has the location:
 
 \`\`\`
-crtr skill read where <name>
-crtr skill read show <name>
+crtr skill read <name> --no-body
+crtr skill read <name>
 crtr skill find search "<keyword>"
 \`\`\`
 

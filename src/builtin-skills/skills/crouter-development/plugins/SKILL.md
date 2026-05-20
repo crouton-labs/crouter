@@ -124,7 +124,7 @@ Standard semver:
 
 ## Enable/disable
 
-`crtr pkg plugin manage disable <name>` flips the per-scope config without removing files. Disabled plugins are hidden from `crtr skill find list` and don't resolve via `crtr skill read show <name>`. Re-enable with `crtr pkg plugin manage enable <name>`.
+`crtr pkg plugin manage disable <name>` flips the per-scope config without removing files. Disabled plugins are hidden from `crtr skill find list` and don't resolve via `crtr skill read <name>`. Re-enable with `crtr pkg plugin manage enable <name>`.
 
 Individual skills inside an enabled plugin can also be disabled: `crtr skill state disable <plugin>/<skill>`.
 

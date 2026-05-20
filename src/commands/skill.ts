@@ -1,5 +1,6 @@
 // `crtr skill` subtree handlers — P3 implementation.
-// Sub-branches: find {list, search, grep}, read {show, where}, author {guide, scaffold}, state {enable, disable}.
+// Sub-branches: find {list, search, grep}, author {guide, scaffold}, state {enable, disable}.
+// Leaf children of skill: read.
 
 import { join } from 'node:path';
 import { writeFileSync } from 'node:fs';
@@ -61,7 +62,7 @@ function buildNeighborsSection(skill: Skill): string | null {
 
   const lines: string[] = [
     '## Neighbors',
-    '*Auto-discovered from filesystem. Run `crtr skill read show <name>` for full description + body.*',
+    '*Auto-discovered from filesystem. Run `crtr skill read <name>` for full description + body.*',
     '',
   ];
   if (siblings.length > 0) {
@@ -185,7 +186,7 @@ const findList = defineLeaf({
       }),
       next_cursor: result.next_cursor,
       total: result.total,
-      follow_up: 'Use `crtr skill read show <name>` for the full SKILL.md body. Run `crtr skill find list -h` for filters and verbosity.',
+      follow_up: 'Use `crtr skill read <name>` for the full SKILL.md body. Run `crtr skill find list -h` for filters and verbosity.',
     };
   },
 });
@@ -280,7 +281,7 @@ const findSearch = defineLeaf({
         score: h.score,
         description: h.skill.frontmatter.description !== undefined ? h.skill.frontmatter.description : null,
       })),
-      follow_up: 'Use `crtr skill read show <name>` for the full SKILL.md body. Run `crtr skill find search -h` for filters.',
+      follow_up: 'Use `crtr skill read <name>` for the full SKILL.md body. Run `crtr skill find search -h` for filters.',
     };
   },
 });
@@ -366,26 +367,28 @@ const findBranch = defineBranch({
 });
 
 // ---------------------------------------------------------------------------
-// read sub-branch
+// read leaf
 // ---------------------------------------------------------------------------
 
-const readShow = defineLeaf({
-  name: 'show',
+const readLeaf = defineLeaf({
+  name: 'read',
   help: {
-    name: 'skill read show',
-    summary: 'print SKILL.md body for a named skill',
+    name: 'skill read',
+    summary: 'load SKILL.md body and resolution metadata for a named skill',
     params: [
       { kind: 'positional', name: 'name', required: true, constraint: 'Skill identifier. Forms: <name>, <plugin>/<name>, <scope>/<name>, <scope>/<plugin>/<name>.' },
       { kind: 'flag', name: 'scope', type: 'enum', choices: ['user', 'project'], required: false, constraint: 'Narrows resolution when name is ambiguous.' },
       { kind: 'flag', name: 'plugin', type: 'string', required: false, constraint: 'Narrows resolution to a specific plugin.' },
-      { kind: 'flag', name: 'frontmatter', type: 'bool', required: false, constraint: 'When present, includes YAML frontmatter in the output.' },
+      { kind: 'flag', name: 'frontmatter', type: 'bool', required: false, constraint: 'When present, includes YAML frontmatter in the output content.' },
+      { kind: 'flag', name: 'no-body', type: 'bool', required: false, constraint: 'When present, omits the body — returns resolution metadata only. Use to confirm a skill exists or locate it without loading SKILL.md.' },
     ],
     output: [
       { name: 'name', type: 'string', required: true, constraint: 'Resolved skill name.' },
       { name: 'plugin', type: 'string', required: true, constraint: 'Plugin the skill belongs to.' },
       { name: 'scope', type: 'string', required: true, constraint: 'Scope the skill was resolved from.' },
       { name: 'path', type: 'string', required: true, constraint: 'Absolute path to SKILL.md.' },
-      { name: 'content', type: 'string', required: true, constraint: 'SKILL.md body (with or without frontmatter per the --frontmatter flag).' },
+      { name: 'content', type: 'string', required: false, constraint: 'SKILL.md body (with or without frontmatter per --frontmatter). Omitted when --no-body is set.' },
+      { name: 'follow_up', type: 'string', required: false, constraint: 'Hints at variant flags. Present on default reads; omitted when --no-body is set.' },
     ],
     outputKind: 'object',
     effects: ['None. Read-only.'],
@@ -395,6 +398,7 @@ const readShow = defineLeaf({
     const scopeStr = input['scope'] as string | undefined;
     const pluginFilter = input['plugin'] as string | undefined;
     const includeFrontmatter = input['frontmatter'] as boolean;
+    const noBody = input['noBody'] as boolean;
 
     const resolveOpts: { scope?: Scope; pluginFilter?: string } = {};
     if (scopeStr !== undefined) {
@@ -404,73 +408,22 @@ const readShow = defineLeaf({
     if (pluginFilter !== undefined) resolveOpts.pluginFilter = pluginFilter;
 
     const skillObj = resolveSkill(nameRaw, resolveOpts);
+
+    const out: Record<string, unknown> = {
+      name: skillObj.name,
+      plugin: skillObj.plugin,
+      scope: skillObj.scope,
+      path: skillObj.path,
+    };
+
+    if (noBody) return out;
+
     const rawContent = readText(skillObj.path);
     const rawBody = includeFrontmatter ? rawContent : parseFrontmatter(rawContent).body;
-    const content = appendNeighbors(skillObj, rawBody);
-
-    return {
-      name: skillObj.name,
-      plugin: skillObj.plugin,
-      scope: skillObj.scope,
-      path: skillObj.path,
-      content,
-    };
+    out['content'] = appendNeighbors(skillObj, rawBody);
+    out['follow_up'] = 'Add --no-body to skip the body and return path/scope/plugin only. Add --frontmatter to include YAML frontmatter in content.';
+    return out;
   },
-});
-
-const readWhere = defineLeaf({
-  name: 'where',
-  help: {
-    name: 'skill read where',
-    summary: 'show resolution metadata for a named skill without reading its body',
-    params: [
-      { kind: 'positional', name: 'name', required: true, constraint: 'Skill identifier. Same forms as skill read show.' },
-      { kind: 'flag', name: 'scope', type: 'enum', choices: ['user', 'project'], required: false, constraint: 'Narrows resolution.' },
-      { kind: 'flag', name: 'plugin', type: 'string', required: false, constraint: 'Narrows resolution to a specific plugin.' },
-    ],
-    output: [
-      { name: 'name', type: 'string', required: true, constraint: 'Resolved skill name.' },
-      { name: 'plugin', type: 'string', required: true, constraint: 'Plugin the skill belongs to.' },
-      { name: 'scope', type: 'string', required: true, constraint: 'Scope the skill was resolved from.' },
-      { name: 'path', type: 'string', required: true, constraint: 'Absolute path to SKILL.md.' },
-    ],
-    outputKind: 'object',
-    effects: ['None. Read-only.'],
-  },
-  run: async (input) => {
-    const nameRaw = input['name'] as string;
-    const scopeStr = input['scope'] as string | undefined;
-    const pluginFilter = input['plugin'] as string | undefined;
-
-    const resolveOpts: { scope?: Scope; pluginFilter?: string } = {};
-    if (scopeStr !== undefined) {
-      const resolved = resolveScopeArg(scopeStr);
-      if (resolved !== 'all') resolveOpts.scope = resolved;
-    }
-    if (pluginFilter !== undefined) resolveOpts.pluginFilter = pluginFilter;
-
-    const skillObj = resolveSkill(nameRaw, resolveOpts);
-
-    return {
-      name: skillObj.name,
-      plugin: skillObj.plugin,
-      scope: skillObj.scope,
-      path: skillObj.path,
-    };
-  },
-});
-
-const readBranch = defineBranch({
-  name: 'read',
-  help: {
-    name: 'skill read',
-    summary: 'read skill content or resolve its location',
-    children: [
-      { name: 'show', desc: 'print SKILL.md body', useWhen: 'loading skill content to act on it' },
-      { name: 'where', desc: 'show resolution metadata only', useWhen: 'verifying which skill resolves and from where, without loading its body' },
-    ],
-  },
-  children: [readShow, readWhere],
 });
 
 // ---------------------------------------------------------------------------
@@ -660,7 +613,7 @@ const stateEnable = defineLeaf({
     name: 'skill state enable',
     summary: 'enable a skill in the given scope',
     params: [
-      { kind: 'positional', name: 'name', required: true, constraint: 'Skill identifier. Same forms as skill read show.' },
+      { kind: 'positional', name: 'name', required: true, constraint: 'Skill identifier. Same forms as skill read.' },
       { kind: 'flag', name: 'scope', type: 'enum', choices: ['user', 'project'], required: false, constraint: 'Default: project if available, else user.' },
     ],
     output: [
@@ -680,7 +633,7 @@ const stateDisable = defineLeaf({
     name: 'skill state disable',
     summary: 'disable a skill in the given scope, hiding it from list and agent discovery',
     params: [
-      { kind: 'positional', name: 'name', required: true, constraint: 'Skill identifier. Same forms as skill read show.' },
+      { kind: 'positional', name: 'name', required: true, constraint: 'Skill identifier. Same forms as skill read.' },
       { kind: 'flag', name: 'scope', type: 'enum', choices: ['user', 'project'], required: false, constraint: 'Default: project if available, else user.' },
     ],
     output: [
@@ -834,15 +787,15 @@ export function registerSkill(): BranchDef {
       name: 'skill',
       summary: 'discover, read, author, and manage skill state',
       model:
-        '`find` when you do not yet know which skill applies — it locates candidates by topic, keyword, or body text. `read` when you have a name and need the SKILL.md content or its on-disk location. `author` when you are writing a new skill — it carries the template workflow and the scaffolder. `state` when a skill should be hidden from discovery without being removed. Append `-h` at any branch or leaf for its full schema.',
+        '`find` when you do not yet know which skill applies — it locates candidates by topic, keyword, or body text. `read` (leaf) loads SKILL.md by name; takes the name as a positional, returns body + metadata, accepts --no-body to skip the body. `author` when you are writing a new skill — it carries the template workflow and the scaffolder. `state` when a skill should be hidden from discovery without being removed. Append `-h` at any branch or leaf for its full schema.',
       dynamicState: buildSkillCatalog,
       children: [
         { name: 'find', desc: 'list, search, or grep skills', useWhen: 'discovering what skills are available' },
-        { name: 'read', desc: 'read skill content or resolve location', useWhen: 'loading a skill to act on it' },
+        { name: 'read', desc: 'load SKILL.md body + metadata for a named skill', useWhen: 'loading a skill to act on it' },
         { name: 'author', desc: 'create and scaffold skills', useWhen: 'writing a new skill' },
         { name: 'state', desc: 'enable or disable skills', useWhen: 'toggling skill visibility' },
       ],
     },
-    children: [findBranch, readBranch, authorBranch, stateBranch],
+    children: [findBranch, readLeaf, authorBranch, stateBranch],
   });
 }

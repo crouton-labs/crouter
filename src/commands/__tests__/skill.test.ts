@@ -183,15 +183,16 @@ describe('skill find grep params', () => {
 });
 
 // ---------------------------------------------------------------------------
-// skill read show
+// skill read
 // ---------------------------------------------------------------------------
 
-describe('skill read show params', () => {
+describe('skill read params', () => {
   const params: InputParam[] = [
     { kind: 'positional', name: 'name', required: true, constraint: '' },
     scopeWriteFlag,
     pluginFlag,
     { kind: 'flag', name: 'frontmatter', type: 'bool', required: false, constraint: '' },
+    { kind: 'flag', name: 'no-body', type: 'bool', required: false, constraint: '' },
   ];
 
   test('name positional required', async () => {
@@ -206,6 +207,11 @@ describe('skill read show params', () => {
     assert.equal(r['name'], 'my-skill');
   });
 
+  test('nested name parsed correctly', async () => {
+    const r = await parseArgv(params, ['some/nested/skill']);
+    assert.equal(r['name'], 'some/nested/skill');
+  });
+
   test('--frontmatter presence = true', async () => {
     const r = await parseArgv(params, ['my-skill', '--frontmatter']);
     assert.equal(r['frontmatter'], true);
@@ -214,6 +220,16 @@ describe('skill read show params', () => {
   test('--frontmatter absent = false', async () => {
     const r = await parseArgv(params, ['my-skill']);
     assert.equal(r['frontmatter'], false);
+  });
+
+  test('--no-body presence = true (kebab to camelCase key)', async () => {
+    const r = await parseArgv(params, ['my-skill', '--no-body']);
+    assert.equal(r['noBody'], true);
+  });
+
+  test('--no-body absent = false', async () => {
+    const r = await parseArgv(params, ['my-skill']);
+    assert.equal(r['noBody'], false);
   });
 
   test('--scope rejects all', async () => {
@@ -226,30 +242,6 @@ describe('skill read show params', () => {
   test('--scope user valid', async () => {
     const r = await parseArgv(params, ['my-skill', '--scope', 'user']);
     assert.equal(r['scope'], 'user');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// skill read where
-// ---------------------------------------------------------------------------
-
-describe('skill read where params', () => {
-  const params: InputParam[] = [
-    { kind: 'positional', name: 'name', required: true, constraint: '' },
-    scopeWriteFlag,
-    pluginFlag,
-  ];
-
-  test('name positional required', async () => {
-    await assert.rejects(
-      () => parseArgv(params, []),
-      (e: Error) => { assert.match(e.message, /required parameter is missing/); return true; },
-    );
-  });
-
-  test('name parsed correctly', async () => {
-    const r = await parseArgv(params, ['some/nested/skill']);
-    assert.equal(r['name'], 'some/nested/skill');
   });
 
   test('--scope project valid', async () => {
