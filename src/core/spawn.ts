@@ -1,7 +1,7 @@
 // Tmux pane spawning machinery for crtr job subtree.
 //
 // Kept: spawnAgent (fire-and-forget new pane), spawnAndDetach (detach + kill originating pane),
-//       shellQuote, isInTmux, countPanesInCurrentWindow.
+//       shellQuote, isInTmux, countPanesInCurrentWindow, findWindowWithSpace.
 //
 // Removed: createSession, submitToSession, awaitSession, waitForResult,
 //          sessionDirForId, writeSessionMeta, readSessionMeta — all superseded
@@ -26,6 +26,8 @@ export interface SpawnAgentOptions {
   fork?: { sessionId: string };
   /** Max panes per tmux window before overflowing to a new window. */
   maxPanesPerWindow: number;
+  /** Display name passed to `claude -n`; surfaces in pane title and /resume picker. */
+  name?: string;
 }
 
 export interface SpawnAgentResult {
@@ -58,6 +60,9 @@ export interface DetachOptions {
    *  uses the attached client's currently-focused pane — which drifts if the
    *  user switches windows between kickoff and spawn. */
   targetPane?: string;
+  /** Display name passed to `claude -n`; ignored when `command` is set
+   *  (caller controls the full argv in that mode). */
+  name?: string;
 }
 
 export interface DetachResult {
@@ -80,6 +85,124 @@ export function countPanesInCurrentWindow(): number {
   });
   if (result.status !== 0) return 0;
   return result.stdout.split('\n').filter((line) => line.trim() !== '').length;
+}
+
+interface WindowInfo {
+  windowId: string;
+  paneCount: number;
+  isActive: boolean;
+}
+
+function listWindowsInCurrentSession(): WindowInfo[] {
+  const result = spawnSync(
+    'tmux',
+    ['list-windows', '-F', '#{window_id} #{window_panes} #{window_active}'],
+    { encoding: 'utf8' },
+  );
+  if (result.status !== 0) return [];
+  return result.stdout
+    .split('\n')
+    .filter((line) => line.trim() !== '')
+    .map((line) => {
+      const [id, count, active] = line.split(' ');
+      return {
+        windowId: id,
+        paneCount: Number.parseInt(count, 10),
+        isActive: active === '1',
+      };
+    });
+}
+
+/**
+ * Map of window_id → list of pane TTYs (basename, e.g. `ttys008`) for every
+ * pane in the current tmux session. Used as the bridge between tmux's pane
+ * model and the system process table for foreground-command lookup.
+ *
+ * tmux's `#{pane_current_command}` is unreliable on macOS because the Claude
+ * Code CLI sets `process.title` to its version (e.g. `2.1.143`), which is what
+ * tmux then reports. Going through the TTY + `ps` gives us the real binary
+ * name (`claude`) from the kernel.
+ */
+function paneTtysByWindow(): Map<string, string[]> {
+  const result = spawnSync(
+    'tmux',
+    ['list-panes', '-s', '-F', '#{window_id} #{pane_tty}'],
+    { encoding: 'utf8' },
+  );
+  const out = new Map<string, string[]>();
+  if (result.status !== 0) return out;
+  for (const line of result.stdout.split('\n')) {
+    if (line.trim() === '') continue;
+    const idx = line.indexOf(' ');
+    if (idx === -1) continue;
+    const windowId = line.slice(0, idx);
+    const tty = line.slice(idx + 1);
+    const ttyBase = tty.startsWith('/dev/') ? tty.slice(5) : tty;
+    const existing = out.get(windowId);
+    if (existing === undefined) {
+      out.set(windowId, [ttyBase]);
+    } else {
+      existing.push(ttyBase);
+    }
+  }
+  return out;
+}
+
+/**
+ * Map of tty basename → set of foreground process `comm` names on that tty.
+ * A process is "foreground" if its STAT field includes `+` (member of the
+ * terminal's foreground process group). Built from one `ps -axo ...` call.
+ */
+function foregroundCommsByTty(): Map<string, Set<string>> {
+  const result = spawnSync('ps', ['-axo', 'stat=,comm=,tty='], { encoding: 'utf8' });
+  const out = new Map<string, Set<string>>();
+  if (result.status !== 0) return out;
+  for (const line of result.stdout.split('\n')) {
+    if (line.trim() === '') continue;
+    const m = line.match(/^(\S+)\s+(.+?)\s+(\S+)\s*$/);
+    if (m === null) continue;
+    const [, stat, comm, tty] = m;
+    if (!stat.includes('+')) continue;
+    if (tty === '??' || tty === '?') continue;
+    const existing = out.get(tty);
+    if (existing === undefined) {
+      out.set(tty, new Set<string>([comm.trim()]));
+    } else {
+      existing.add(comm.trim());
+    }
+  }
+  return out;
+}
+
+/**
+ * Find a window in the current tmux session with fewer than `maxPanesPerWindow`
+ * panes AND where every existing pane has `claude` as a foreground process.
+ * Prefers the active window so the spawned pane is visible to the user;
+ * otherwise falls back to the first other eligible window. Returns the tmux
+ * window id (e.g. `@5`) to pass via `-t`, or null if no window qualifies.
+ *
+ * Windows holding non-agent panes (dashboards, log tails, idle shells, editors,
+ * REPLs, etc.) are skipped so spawning never disrupts those workflows. A pane
+ * qualifies as long as `claude` is among its foreground commands — co-resident
+ * helpers like `caffeinate` don't disqualify it.
+ */
+export function findWindowWithSpace(maxPanesPerWindow: number): string | null {
+  const windows = listWindowsInCurrentSession();
+  const ttysByWindow = paneTtysByWindow();
+  const fgByTty = foregroundCommsByTty();
+  const isClaudeOnly = (windowId: string): boolean => {
+    const ttys = ttysByWindow.get(windowId);
+    if (ttys === undefined || ttys.length === 0) return false;
+    return ttys.every((tty) => fgByTty.get(tty)?.has('claude') === true);
+  };
+  const eligible = windows.filter(
+    (w) => w.paneCount < maxPanesPerWindow && isClaudeOnly(w.windowId),
+  );
+  const active = eligible.find((w) => w.isActive);
+  if (active !== undefined) return active.windowId;
+  const first = eligible[0];
+  if (first === undefined) return null;
+  return first.windowId;
 }
 
 /**
@@ -132,10 +255,15 @@ export function spawnAndDetach(opts: DetachOptions): DetachResult {
     };
   }
 
-  const inner =
-    opts.command !== undefined
-      ? opts.command
-      : ['claude', '--dangerously-skip-permissions', shellQuote(opts.prompt as string)].join(' ');
+  const buildClaudeInner = (): string => {
+    const parts: string[] = ['claude'];
+    if (opts.name !== undefined && opts.name !== '') {
+      parts.push('-n', shellQuote(opts.name));
+    }
+    parts.push('--dangerously-skip-permissions', shellQuote(opts.prompt as string));
+    return parts.join(' ');
+  };
+  const inner = opts.command !== undefined ? opts.command : buildClaudeInner();
 
   const useFailGuard = opts.failGuard !== false;
   const fullCmd = useFailGuard ? wrapperCmd(inner, opts.jobId as string) : inner;
@@ -180,9 +308,14 @@ export function spawnAndDetach(opts: DetachOptions): DetachResult {
 }
 
 /**
- * Async sibling spawn. Launches a claude session in a new tmux pane or window
- * (depending on current pane count vs maxPanesPerWindow). Returns immediately
- * with the pane id; the parent stays alive.
+ * Async sibling spawn. Launches a claude session in a tmux pane, progressively
+ * filling existing windows up to `maxPanesPerWindow` before creating a new
+ * window. Returns immediately with the pane id; the parent stays alive.
+ *
+ * Placement order:
+ *   1. Current window, if it has space.
+ *   2. Any other window in the session with space.
+ *   3. New window (every existing window at capacity).
  *
  * If `fork` is set, uses `claude --resume <id> --fork-session`.
  */
@@ -195,6 +328,9 @@ export function spawnAgent(opts: SpawnAgentOptions): SpawnAgentResult {
   }
 
   const claudeParts: string[] = ['claude'];
+  if (opts.name !== undefined && opts.name !== '') {
+    claudeParts.push('-n', shellQuote(opts.name));
+  }
   if (opts.fork !== undefined) {
     claudeParts.push('--resume', opts.fork.sessionId, '--fork-session');
   }
@@ -203,11 +339,14 @@ export function spawnAgent(opts: SpawnAgentOptions): SpawnAgentResult {
 
   const fullCmd = wrapperCmd(claudeCmd, opts.jobId);
 
-  const useNewWindow = countPanesInCurrentWindow() >= opts.maxPanesPerWindow;
-  const placement: 'split-window' | 'new-window' = useNewWindow ? 'new-window' : 'split-window';
+  const targetWindow = findWindowWithSpace(opts.maxPanesPerWindow);
+  const placement: 'split-window' | 'new-window' =
+    targetWindow === null ? 'new-window' : 'split-window';
 
   const tmuxArgs: string[] = [placement];
-  if (!useNewWindow) tmuxArgs.push('-h');
+  if (placement === 'split-window') {
+    tmuxArgs.push('-h', '-t', targetWindow as string);
+  }
   tmuxArgs.push(
     '-P',
     '-F',
@@ -226,6 +365,13 @@ export function spawnAgent(opts: SpawnAgentOptions): SpawnAgentResult {
     return { status: 'spawn-failed', message: msg };
   }
   const paneId = split.stdout.trim();
+
+  // Re-balance the target window's panes evenly so the new pane doesn't end up
+  // half the size of its siblings. -t <pane_id> resolves to the window it lives
+  // in for both placements (split + new-window).
+  spawnSync('tmux', ['select-layout', '-t', paneId, 'even-horizontal'], {
+    encoding: 'utf8',
+  });
 
   return {
     status: 'spawned',
