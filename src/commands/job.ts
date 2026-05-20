@@ -17,7 +17,7 @@ import { emitLine } from '../core/io.js';
 import { InputError } from '../core/io.js';
 import {
   createJob,
-  writeResult,
+  writeMarkdownResult,
   readResult as jobsReadResult,
   jobStatus,
   listJobs,
@@ -66,6 +66,7 @@ const startPrompt = defineLeaf({
     params: [
       { kind: 'stdin', name: 'prompt', required: true, constraint: 'Prompt text sent to the spawned agent.' },
       { kind: 'flag', name: 'cwd', type: 'path', required: false, constraint: 'Working directory for the spawned agent. Defaults to process.cwd().' },
+      { kind: 'flag', name: 'name', type: 'string', required: true, constraint: 'Display name passed to `claude -n`; surfaces in pane title and /resume picker.' },
     ],
     output: [
       { name: 'job_id', type: 'string', required: true, constraint: 'Use with `job read status`, `job read logs`, `job read result`, `job cancel`.' },
@@ -82,23 +83,30 @@ const startPrompt = defineLeaf({
     assertTmux();
     const prompt = input['prompt'] as string;
     const cwd = typeof input['cwd'] === 'string' ? input['cwd'] : process.cwd();
+    const name = input['name'] as string;
 
     const { jobId } = createJob('prompt', { cwd });
 
     const promptWithSubmit = `${prompt}
 
 ---
-When your task is complete, submit your result:
+When your task is complete, submit your result (markdown body piped on stdin):
 \`\`\`bash
-crtr job submit ${jobId} --context-file /tmp/result.json
+crtr job submit ${jobId} <<'MD'
+<your result as markdown>
+MD
 \`\`\`
-If you cannot complete the task, still submit with status "failed" and a reason.`;
+If you cannot complete the task, submit a failure with a reason (no stdin needed):
+\`\`\`bash
+crtr job submit ${jobId} --status failed --reason "<why>"
+\`\`\``;
 
     const result = spawnAgent({
       prompt: promptWithSubmit,
       cwd,
       jobId,
       maxPanesPerWindow: resolveMaxPanes(),
+      name,
     });
 
     if (result.status === 'not-in-tmux') {
@@ -130,6 +138,7 @@ const startFork = defineLeaf({
     summary: 'fork the current Claude session into a sibling pane; returns a job handle immediately',
     params: [
       { kind: 'flag', name: 'cwd', type: 'path', required: false, constraint: 'Working directory. Defaults to process.cwd().' },
+      { kind: 'flag', name: 'name', type: 'string', required: true, constraint: 'Display name passed to `claude -n`; surfaces in pane title and /resume picker.' },
     ],
     output: [
       { name: 'job_id', type: 'string', required: true, constraint: 'Use with `job read *` and `job cancel`.' },
@@ -154,17 +163,23 @@ const startFork = defineLeaf({
     }
 
     const cwd = typeof input['cwd'] === 'string' ? input['cwd'] : process.cwd();
+    const name = input['name'] as string;
 
     const { jobId } = createJob('fork', { cwd });
 
     const promptWithSubmit = `Fork of session ${parentSessionId}
 
 ---
-When your task is complete, submit your result:
+When your task is complete, submit your result (markdown body piped on stdin):
 \`\`\`bash
-crtr job submit ${jobId} --context-file /tmp/result.json
+crtr job submit ${jobId} <<'MD'
+<your result as markdown>
+MD
 \`\`\`
-If you cannot complete the task, still submit with status "failed" and a reason.`;
+If you cannot complete the task, submit a failure with a reason (no stdin needed):
+\`\`\`bash
+crtr job submit ${jobId} --status failed --reason "<why>"
+\`\`\``;
 
     const result = spawnAgent({
       prompt: promptWithSubmit,
@@ -172,6 +187,7 @@ If you cannot complete the task, still submit with status "failed" and a reason.
       jobId,
       fork: { sessionId: parentSessionId },
       maxPanesPerWindow: resolveMaxPanes(),
+      name,
     });
 
     if (result.status === 'not-in-tmux') {
@@ -204,6 +220,7 @@ const startPlanner = defineLeaf({
     params: [
       { kind: 'positional', name: 'spec_path', type: 'path', required: true, constraint: 'Absolute path to the spec file.' },
       { kind: 'flag', name: 'cwd', type: 'path', required: false, constraint: 'Working directory. Defaults to process.cwd().' },
+      { kind: 'flag', name: 'name', type: 'string', required: true, constraint: 'Display name passed to `claude -n`; surfaces in pane title and /resume picker.' },
     ],
     output: [
       { name: 'job_id', type: 'string', required: true, constraint: 'Use with `job read *` and `job cancel`.' },
@@ -220,6 +237,7 @@ const startPlanner = defineLeaf({
     assertTmux();
     const specPath = input['spec_path'] as string;
     const cwd = typeof input['cwd'] === 'string' ? input['cwd'] : process.cwd();
+    const name = input['name'] as string;
 
     if (!existsSync(specPath)) {
       throw new InputError({
@@ -238,6 +256,7 @@ const startPlanner = defineLeaf({
       jobId,
       placement: 'split-h',
       killAfterSeconds: DEFAULT_KILL_SECS,
+      name,
     });
 
     if (result.status === 'not-in-tmux') {
@@ -270,6 +289,7 @@ const startImplementer = defineLeaf({
     params: [
       { kind: 'positional', name: 'plan_path', type: 'path', required: true, constraint: 'Absolute path to the plan file.' },
       { kind: 'flag', name: 'cwd', type: 'path', required: false, constraint: 'Working directory. Defaults to process.cwd().' },
+      { kind: 'flag', name: 'name', type: 'string', required: true, constraint: 'Display name passed to `claude -n`; surfaces in pane title and /resume picker.' },
     ],
     output: [
       { name: 'job_id', type: 'string', required: true, constraint: 'Use with `job read *` and `job cancel`.' },
@@ -286,6 +306,7 @@ const startImplementer = defineLeaf({
     assertTmux();
     const planPath = input['plan_path'] as string;
     const cwd = typeof input['cwd'] === 'string' ? input['cwd'] : process.cwd();
+    const name = input['name'] as string;
 
     if (!existsSync(planPath)) {
       throw new InputError({
@@ -304,6 +325,7 @@ const startImplementer = defineLeaf({
       jobId,
       placement: 'split-h',
       killAfterSeconds: DEFAULT_KILL_SECS,
+      name,
     });
 
     if (result.status === 'not-in-tmux') {
@@ -338,6 +360,7 @@ const startReviewer = defineLeaf({
       { kind: 'flag', name: 'kind', type: 'enum', choices: ['plan', 'spec'], required: true, constraint: 'Artifact kind to review.' },
       { kind: 'flag', name: 'spec-path', type: 'path', required: false, constraint: 'Absolute path to the spec, for plan reviews. Omit for spec reviews.' },
       { kind: 'flag', name: 'cwd', type: 'path', required: false, constraint: 'Working directory. Defaults to process.cwd().' },
+      { kind: 'flag', name: 'name', type: 'string', required: true, constraint: 'Display name passed to `claude -n`; surfaces in pane title and /resume picker.' },
     ],
     output: [
       { name: 'job_id', type: 'string', required: true, constraint: 'Use with `job read *` and `job cancel`.' },
@@ -356,6 +379,7 @@ const startReviewer = defineLeaf({
     const artifactKind = input['kind'] as 'plan' | 'spec';
     const specPath = typeof input['specPath'] === 'string' ? input['specPath'] : undefined;
     const cwd = typeof input['cwd'] === 'string' ? input['cwd'] : process.cwd();
+    const name = input['name'] as string;
 
     if (!existsSync(artifactPath)) {
       throw new InputError({
@@ -377,6 +401,7 @@ const startReviewer = defineLeaf({
       cwd,
       jobId,
       maxPanesPerWindow: resolveMaxPanes(),
+      name,
     });
 
     if (result.status === 'not-in-tmux') {
@@ -578,12 +603,14 @@ const readResult = defineLeaf({
     summary: 'read the final result of a completed job',
     params: [
       { kind: 'positional', name: 'job_id', type: 'string', required: true, constraint: 'Job id from a `job start *` call.' },
-      { kind: 'flag', name: 'wait', type: 'bool', required: false, constraint: 'When present, blocks until result.json appears (up to 10 min).' },
+      { kind: 'flag', name: 'wait', type: 'bool', required: false, constraint: 'When present, blocks until a result file appears (up to 10 min).' },
     ],
     output: [
       { name: 'job_id', type: 'string', required: true, constraint: 'Echo of input.' },
       { name: 'status', type: 'string', required: true, constraint: 'One of: done, failed, canceled, timeout.' },
-      { name: 'result', type: 'object', required: false, constraint: 'The result object submitted by the worker. Present when status is done or failed.' },
+      { name: 'result_md', type: 'string', required: false, constraint: 'Markdown body submitted by an agent via `crtr job submit`. Present when the job used the agent submit path.' },
+      { name: 'result', type: 'object', required: false, constraint: 'Structured object submitted by a programmatic caller (human/sys). Present when the job used the programmatic submit path.' },
+      { name: 'reason', type: 'string', required: false, constraint: 'Failure reason from frontmatter when status is failed and the agent submit path was used.' },
     ],
     outputKind: 'object',
     effects: ['None. Read-only.'],
@@ -597,6 +624,12 @@ const readResult = defineLeaf({
     const out: Record<string, unknown> = { job_id: jobId, status: r.status };
     if (r.result !== undefined) {
       out['result'] = r.result;
+    }
+    if (r.result_md !== undefined) {
+      out['result_md'] = r.result_md;
+    }
+    if (r.reason !== undefined) {
+      out['reason'] = r.reason;
     }
     return out;
   },
@@ -625,10 +658,12 @@ const jobSubmit = defineLeaf({
   name: 'submit',
   help: {
     name: 'job submit',
-    summary: 'inside a crtr-spawned pane, deliver the result back to the job record',
+    summary: 'inside a crtr-spawned pane, deliver the markdown result back to the job record',
     params: [
       { kind: 'positional', name: 'job_id', type: 'string', required: true, constraint: 'Job id injected as $CRTR_JOB_ID in the spawned pane.' },
-      { kind: 'context-file', name: 'result', required: true, constraint: `Result payload JSON file. Must be a JSON object. Becomes the result.json content.` },
+      { kind: 'stdin', name: 'body', required: false, constraint: 'Markdown body of the result, piped on stdin. Required when --status is done (the default). When --status failed, stdin is optional; --reason carries the explanation.' },
+      { kind: 'flag', name: 'status', type: 'enum', choices: ['done', 'failed'], required: false, default: 'done', constraint: 'Terminal status to record. Default: done.' },
+      { kind: 'flag', name: 'reason', type: 'string', required: false, constraint: 'Short failure reason. Required when --status failed; ignored otherwise.' },
       { kind: 'flag', name: 'kill-pane', type: 'bool', required: false, constraint: `When present, schedule the current tmux pane to close ${DEFAULT_KILL_SECS}s after submission so the spawned worker does not linger. Reviewer agents should pass this; planner/implementer handoffs already self-kill on spawn.` },
     ],
     output: [
@@ -637,24 +672,36 @@ const jobSubmit = defineLeaf({
     ],
     outputKind: 'object',
     effects: [
-      'Writes result.json atomically for the job, marking it done.',
-      'Updates meta.json status to done.',
+      'Writes <jobdir>/result.md atomically (YAML frontmatter + body), marking the job done or failed.',
+      'Updates meta.json status to match.',
       `When --kill-pane is set, schedules \`tmux kill-pane\` on $TMUX_PANE after ${DEFAULT_KILL_SECS}s (detached; submit still returns cleanly).`,
     ],
   },
   run: async (input) => {
     const jobId = input['job_id'] as string;
-    const result = input['result'];
-    if (result === undefined || result === null || typeof result !== 'object' || Array.isArray(result)) {
+    const status = (typeof input['status'] === 'string' ? input['status'] : 'done') as 'done' | 'failed';
+    const body = typeof input['body'] === 'string' ? input['body'] : '';
+    const reason = typeof input['reason'] === 'string' ? input['reason'] : '';
+    const killPane = input['killPane'] === true;
+
+    if (status === 'done' && body.trim() === '') {
       throw new InputError({
         error: 'invalid_field',
-        message: 'result file must contain a JSON object.',
-        field: 'result',
-        next: 'Pass a path to a file containing a JSON object via --context-file.',
+        message: '--status done requires a markdown body on stdin.',
+        field: 'body',
+        next: `Pipe the markdown result on stdin, e.g. \`crtr job submit ${jobId} <<'MD' ... MD\`. For failures, use \`--status failed --reason "<why>"\`.`,
       });
     }
-    const killPane = input['killPane'] === true;
-    writeResult(jobId, result as object, 'done');
+    if (status === 'failed' && reason.trim() === '') {
+      throw new InputError({
+        error: 'invalid_field',
+        message: '--status failed requires --reason "<text>".',
+        field: 'reason',
+        next: 'Pass --reason explaining why the task could not complete.',
+      });
+    }
+
+    writeMarkdownResult(jobId, body, status, status === 'failed' ? reason : undefined);
     const paneKillScheduled = killPane ? scheduleKillCurrentPane(DEFAULT_KILL_SECS) : false;
     return { submitted: true, pane_kill_scheduled: paneKillScheduled };
   },
@@ -670,20 +717,20 @@ const jobFail = defineLeaf({
     name: 'job _fail',
     summary: 'internal: mark a job failed if it has not already been submitted (called by wrapper shell)',
     params: [
-      { kind: 'positional', name: 'job_id', type: 'string', required: true, constraint: 'Job id. If result.json already exists, this is a no-op.' },
+      { kind: 'positional', name: 'job_id', type: 'string', required: true, constraint: 'Job id. If a result file already exists, this is a no-op.' },
     ],
     output: [
-      { name: 'recorded', type: 'boolean', required: true, constraint: 'True if failure was recorded; false if result.json already existed (no-op).' },
+      { name: 'recorded', type: 'boolean', required: true, constraint: 'True if failure was recorded; false if a result file already existed (no-op).' },
     ],
     outputKind: 'object',
     effects: [
-      'Writes result.json with status "failed" if not already present.',
+      'Writes result.md with status "failed" and a reason if no result file is present.',
       'Updates meta.json status to failed.',
     ],
   },
   run: async (input) => {
     const jobId = input['job_id'] as string;
-    // No-op if result.json already exists (worker submitted successfully).
+    // No-op if a result file already exists (worker submitted successfully).
     try {
       const existing = await jobsReadResult(jobId, { waitMs: 0 });
       if (existing.status !== 'timeout') {
@@ -693,7 +740,7 @@ const jobFail = defineLeaf({
       // job dir not found — still try to write to surface the failure
     }
     try {
-      writeResult(jobId, { reason: 'worker exited without submitting' }, 'failed');
+      writeMarkdownResult(jobId, '', 'failed', 'worker exited without submitting');
       return { recorded: true };
     } catch {
       return { recorded: false };

@@ -19,18 +19,25 @@ Rules — follow exactly:
 
 Submit exactly one of the following via \`crtr job submit\`, then your turn ends — do not chat:
 
-Reproduced:
+Reproduced (markdown body on stdin):
 \`\`\`bash
-cat > /tmp/crtr-result-${jobId}.json <<'JSON'
-{"status":"done","reproduces":true,"test_path":"<path>","test_command":"<exact cmd>","failure_output":"<pasted failing output>"}
-JSON
-crtr job submit ${jobId} --context-file /tmp/crtr-result-${jobId}.json
+crtr job submit ${jobId} <<'MD'
+**Reproduces:** yes
+
+**Test path:** <path>
+
+**Test command:** \`<exact cmd>\`
+
+**Failure output:**
+\`\`\`
+<pasted failing output>
+\`\`\`
+MD
 \`\`\`
 
 Gave up (no faithful repro achievable):
 \`\`\`bash
-echo '{"status":"failed","reproduces":false,"reason":"<why a faithful repro was not achievable>"}' > /tmp/crtr-result-${jobId}.json
-crtr job submit ${jobId} --context-file /tmp/crtr-result-${jobId}.json
+crtr job submit ${jobId} --status failed --reason "<why a faithful repro was not achievable>"
 \`\`\`
 
 Begin now.`;

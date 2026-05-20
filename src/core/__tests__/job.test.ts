@@ -6,9 +6,6 @@
 
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync, mkdirSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { parseArgv } from '../command.js';
 import type { InputParam } from '../help.js';
 
@@ -64,9 +61,16 @@ const readLogsParams: InputParam[] = [
   { kind: 'flag', name: 'follow', type: 'bool', required: false, constraint: '' },
 ];
 
+// NOTE: the real leaf also declares a `stdin` param for `body`. We omit it
+// from the test schema because parseArgv reads stdin to EOF whenever a stdin
+// param is declared — and under `node --test`, stdin is piped with no EOF, so
+// the call hangs forever. The body-required-on-status=done check lives in the
+// leaf's `run` handler, not in parseArgv, so the schema tests below cover
+// everything parseArgv can see without needing stdin.
 const submitParams: InputParam[] = [
   { kind: 'positional', name: 'job_id', type: 'string', required: true, constraint: '' },
-  { kind: 'context-file', name: 'result', required: true, constraint: '' },
+  { kind: 'flag', name: 'status', type: 'enum', choices: ['done', 'failed'], required: false, default: 'done', constraint: '' },
+  { kind: 'flag', name: 'reason', type: 'string', required: false, constraint: '' },
   { kind: 'flag', name: 'kill-pane', type: 'bool', required: false, constraint: '' },
 ];
 
@@ -77,29 +81,6 @@ const cancelParams: InputParam[] = [
 const failParams: InputParam[] = [
   { kind: 'positional', name: 'job_id', type: 'string', required: true, constraint: '' },
 ];
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-let tmpDir: string;
-
-function setup(): void {
-  tmpDir = join(tmpdir(), `crtr-job-test-${Date.now()}`);
-  mkdirSync(tmpDir, { recursive: true });
-}
-
-function teardown(): void {
-  if (tmpDir !== undefined) {
-    rmSync(tmpDir, { recursive: true, force: true });
-  }
-}
-
-function writeTmpJson(name: string, obj: unknown): string {
-  const p = join(tmpDir, name);
-  writeFileSync(p, JSON.stringify(obj), 'utf8');
-  return p;
-}
 
 // ---------------------------------------------------------------------------
 // job start prompt
@@ -373,37 +354,29 @@ describe('job read logs', () => {
 // ---------------------------------------------------------------------------
 
 describe('job submit', () => {
-  // setup/teardown wraps tests via explicit calls since node:test lacks
-  // per-describe lifecycle hooks in older versions.
-  test('--context-file with valid JSON object', async () => {
-    setup();
-    try {
-      const p = writeTmpJson('result.json', { status: 'done', summary: 'all good' });
-      const result = await parseArgv(submitParams, ['job-abc', '--context-file', p]);
-      assert.equal(result['job_id'], 'job-abc');
-      assert.deepEqual(result['result'], { status: 'done', summary: 'all good' });
-      assert.equal(result['killPane'], false);
-    } finally {
-      teardown();
-    }
+  test('positional job_id + defaults: status=done, killPane=false', async () => {
+    const result = await parseArgv(submitParams, ['job-abc']);
+    assert.equal(result['job_id'], 'job-abc');
+    assert.equal(result['status'], 'done');
+    assert.equal(result['killPane'], false);
+  });
+
+  test('--status failed parsed', async () => {
+    const result = await parseArgv(submitParams, ['job-abc', '--status', 'failed', '--reason', 'broken']);
+    assert.equal(result['status'], 'failed');
+    assert.equal(result['reason'], 'broken');
+  });
+
+  test('--status invalid enum throws', async () => {
+    await assert.rejects(
+      () => parseArgv(submitParams, ['job-abc', '--status', 'bogus']),
+      (err: Error) => { assert.match(err.message, /must be one of/); return true; },
+    );
   });
 
   test('--kill-pane presence = true, killPane key', async () => {
-    setup();
-    try {
-      const p = writeTmpJson('result.json', { status: 'done' });
-      const result = await parseArgv(submitParams, ['job-abc', '--context-file', p, '--kill-pane']);
-      assert.equal(result['killPane'], true);
-    } finally {
-      teardown();
-    }
-  });
-
-  test('missing --context-file throws missing_parameter', async () => {
-    await assert.rejects(
-      () => parseArgv(submitParams, ['job-abc']),
-      (err: Error) => { assert.match(err.message, /required parameter is missing/); return true; },
-    );
+    const result = await parseArgv(submitParams, ['job-abc', '--kill-pane']);
+    assert.equal(result['killPane'], true);
   });
 
   test('missing positional job_id throws missing_parameter', async () => {
@@ -413,25 +386,11 @@ describe('job submit', () => {
     );
   });
 
-  test('--context-file with non-existent file throws invalid_type', async () => {
+  test('--context-file no longer accepted', async () => {
     await assert.rejects(
-      () => parseArgv(submitParams, ['job-abc', '--context-file', '/no/such/file.json']),
-      (err: Error) => { assert.match(err.message, /cannot read file/); return true; },
+      () => parseArgv(submitParams, ['job-abc', '--context-file', '/tmp/anything']),
+      (err: Error) => { assert.match(err.message, /unknown flag: --context-file/); return true; },
     );
-  });
-
-  test('--context-file with invalid JSON throws invalid_type', async () => {
-    setup();
-    try {
-      const p = join(tmpDir, 'bad.json');
-      writeFileSync(p, 'not json', 'utf8');
-      await assert.rejects(
-        () => parseArgv(submitParams, ['job-abc', '--context-file', p]),
-        (err: Error) => { assert.match(err.message, /not valid JSON/); return true; },
-      );
-    } finally {
-      teardown();
-    }
   });
 });
 

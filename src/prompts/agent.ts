@@ -16,18 +16,18 @@ export function planHandoffPrompt(specPath: string, jobId: string): string {
 1. Run \`crtr flow plan new -h\` to load the planning workflow and output schema.
 2. Read the spec end-to-end.
 3. Follow the workflow from step 1 and save the plan by passing the plan markdown to \`crtr flow plan new\` on stdin.
-4. When done, submit your result:
+4. When done, submit a short markdown report on stdin:
 
 \`\`\`bash
-echo '{"status":"done","plan_saved":true}' > /tmp/crtr-result-${jobId}.json
-crtr job submit ${jobId} --context-file /tmp/crtr-result-${jobId}.json
+crtr job submit ${jobId} <<'MD'
+Plan saved at <path>. <one-line summary of the plan's shape>.
+MD
 \`\`\`
 
-If you cannot complete the plan, still submit:
+If you cannot complete the plan, submit a failure with a reason:
 
 \`\`\`bash
-echo '{"status":"failed","reason":"<why>"}' > /tmp/crtr-result-${jobId}.json
-crtr job submit ${jobId} --context-file /tmp/crtr-result-${jobId}.json
+crtr job submit ${jobId} --status failed --reason "<why>"
 \`\`\`
 
 Begin now.`;
@@ -113,17 +113,19 @@ would be slower.
 
 ## Phase 6: Report and submit
 
-When all tasks complete and verification passes, submit your result:
+When all tasks complete and verification passes, submit a markdown report on stdin:
 
 \`\`\`bash
-echo '{"status":"done","summary":"<one-line summary of files touched>"}' > /tmp/crtr-result-${jobId}.json
-crtr job submit ${jobId} --context-file /tmp/crtr-result-${jobId}.json
+crtr job submit ${jobId} <<'MD'
+**Summary:** <one-line summary of files touched>
+
+<optional further notes — verification output, surprises, callouts>
+MD
 \`\`\`
 
-If implementation fails, still submit:
+If implementation fails, submit a failure with a reason:
 \`\`\`bash
-echo '{"status":"failed","reason":"<why>"}' > /tmp/crtr-result-${jobId}.json
-crtr job submit ${jobId} --context-file /tmp/crtr-result-${jobId}.json
+crtr job submit ${jobId} --status failed --reason "<why>"
 \`\`\`
 
 ## Guardrails (apply to you AND your subagents)
@@ -156,7 +158,7 @@ export function reviewerHandoffPrompt(
 
   const patched = reviewBody.replace(
     '__CRTR_SUBMIT_INSTRUCTION__',
-    `the submit command injected below. The \`--kill-pane\` flag closes this reviewer pane after submission — keep it, do not drop it.\n\n\`\`\`bash\ncat > /tmp/crtr-result-${jobId}.json <<'JSON'\n{"status":"done","review":"<your full review markdown>"}\nJSON\ncrtr job submit ${jobId} --context-file /tmp/crtr-result-${jobId}.json --kill-pane\n\`\`\``,
+    `the submit command injected below. Pipe your full review markdown on stdin. The \`--kill-pane\` flag closes this reviewer pane after submission — keep it, do not drop it.\n\n\`\`\`bash\ncrtr job submit ${jobId} --kill-pane <<'MD'\n<your full review markdown — the same Status/Issues/Recommendations block you composed above>\nMD\n\`\`\`\n\nIf the artifact is too malformed to review, submit a failure instead:\n\n\`\`\`bash\ncrtr job submit ${jobId} --status failed --reason "<why>" --kill-pane\n\`\`\``,
   );
 
   return `${patched}

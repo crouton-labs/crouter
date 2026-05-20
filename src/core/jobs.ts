@@ -6,7 +6,9 @@
 // Layout: ${XDG_STATE_HOME or ~/.local/state}/crtr/jobs/<job_id>/
 //   meta.json    — written atomically on create; updated atomically on terminal transition.
 //   log.jsonl    — append-only event log.
-//   result.json  — written atomically; its APPEARANCE is the only completion signal.
+//   result.md    — agent submissions (markdown body + YAML frontmatter). Written atomically.
+//   result.json  — programmatic submissions (structured object). Written atomically.
+// Either result file's APPEARANCE is the completion signal. Exactly one is written per job.
 
 import {
   existsSync,
@@ -51,10 +53,16 @@ interface LogEvent {
   data?: object;
 }
 
-interface ResultFile {
+interface JsonResultFile {
   status: TerminalStatus;
   result: object;
   written_at: string;
+}
+
+interface MarkdownResultFrontmatter {
+  status: TerminalStatus;
+  written_at: string;
+  reason?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -79,8 +87,21 @@ function logPath(jobId: string): string {
   return join(jobDir(jobId), 'log.jsonl');
 }
 
-function resultPath(jobId: string): string {
+function resultJsonPath(jobId: string): string {
   return join(jobDir(jobId), 'result.json');
+}
+
+function resultMdPath(jobId: string): string {
+  return join(jobDir(jobId), 'result.md');
+}
+
+/** Path of whichever result file currently exists, or null if neither does. */
+function existingResultPath(jobId: string): string | null {
+  const md = resultMdPath(jobId);
+  if (existsSync(md)) return md;
+  const js = resultJsonPath(jobId);
+  if (existsSync(js)) return js;
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -195,9 +216,9 @@ export function appendEvent(
 }
 
 /**
- * Atomically write result.json and update meta.json status.
- * result.json's appearance is the ONLY completion signal — never inferred from
- * log content.
+ * Atomically write result.json (structured object) and update meta.json status.
+ * Used by programmatic callers (human, sys) that produce object results.
+ * The result file's appearance is the completion signal — never inferred from log content.
  */
 export function writeResult(
   jobId: string,
@@ -209,50 +230,159 @@ export function writeResult(
     throw notFound(`job not found: ${jobId}`, { job_id: jobId });
   }
 
-  const payload: ResultFile = {
+  const payload: JsonResultFile = {
     status: terminalStatus,
     result,
     written_at: new Date().toISOString(),
   };
 
-  // Atomic write: tmp + rename within same directory (same fs, rename is atomic).
   const tmp = join(dir, '.result.tmp');
   writeFileSync(tmp, JSON.stringify(payload, null, 2), 'utf8');
-  renameSync(tmp, resultPath(jobId));
+  renameSync(tmp, resultJsonPath(jobId));
 
-  // Update meta status.
   const meta = readMeta(jobId);
   meta.status = terminalStatus;
   writeMeta(jobId, meta);
 }
 
 /**
- * Read result.json. If it doesn't exist and waitMs is given, block via fs.watch
- * until result.json appears or the timeout elapses.
- *
- * Race safety: registers the watcher THEN re-stats. If result.json appeared
- * between the first stat and the watch registration, the re-stat catches it
- * before the watcher has a chance to miss it.
+ * Atomically write result.md (YAML frontmatter + markdown body) and update meta.json status.
+ * Used by `crtr job submit` for agent-driven markdown results.
  */
-export function readResult(
+export function writeMarkdownResult(
   jobId: string,
-  opts: { waitMs?: number } = {},
-): Promise<{ status: 'done' | 'failed' | 'canceled' | 'timeout'; result?: object }> {
+  body: string,
+  terminalStatus: TerminalStatus,
+  reason?: string,
+): void {
   const dir = jobDir(jobId);
   if (!existsSync(dir)) {
     throw notFound(`job not found: ${jobId}`, { job_id: jobId });
   }
 
-  function parseResult(): { status: TerminalStatus; result: object } {
-    const raw = readFileSync(resultPath(jobId), 'utf8');
-    const parsed = JSON.parse(raw) as ResultFile;
+  const fm: MarkdownResultFrontmatter = {
+    status: terminalStatus,
+    written_at: new Date().toISOString(),
+  };
+  if (reason !== undefined && reason !== '') {
+    fm.reason = reason;
+  }
+
+  const content = `${renderFrontmatter(fm)}${body}`;
+  const tmp = join(dir, '.result.tmp');
+  writeFileSync(tmp, content, 'utf8');
+  renameSync(tmp, resultMdPath(jobId));
+
+  const meta = readMeta(jobId);
+  meta.status = terminalStatus;
+  writeMeta(jobId, meta);
+}
+
+/**
+ * Render a small fixed-shape frontmatter block. We control writer and reader,
+ * so a 3-key hand-rolled emitter is plenty — no YAML dep, no escaping surprises.
+ * Values are plain strings; we double-quote `reason` to survive newlines/colons.
+ */
+function renderFrontmatter(fm: MarkdownResultFrontmatter): string {
+  const lines = ['---', `status: ${fm.status}`, `written_at: ${fm.written_at}`];
+  if (fm.reason !== undefined) {
+    const escaped = fm.reason.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
+    lines.push(`reason: "${escaped}"`);
+  }
+  lines.push('---', '');
+  return lines.join('\n');
+}
+
+/**
+ * Parse the small fixed-shape frontmatter we emit. Tolerant of trailing
+ * whitespace; returns `{ frontmatter, body }`. Throws if the document does not
+ * start with `---\n` or no closing `---` is found.
+ */
+function parseMarkdownResult(raw: string): { frontmatter: MarkdownResultFrontmatter; body: string } {
+  if (!raw.startsWith('---\n') && !raw.startsWith('---\r\n')) {
+    throw new Error('result.md missing opening --- delimiter');
+  }
+  const afterOpen = raw.indexOf('\n') + 1;
+  const closeIdx = raw.indexOf('\n---', afterOpen);
+  if (closeIdx === -1) {
+    throw new Error('result.md missing closing --- delimiter');
+  }
+  const fmBlock = raw.slice(afterOpen, closeIdx);
+  // Body starts after the closing `---` line.
+  const afterCloseLine = raw.indexOf('\n', closeIdx + 1);
+  const body = afterCloseLine === -1 ? '' : raw.slice(afterCloseLine + 1);
+
+  const fm: Partial<MarkdownResultFrontmatter> = {};
+  for (const line of fmBlock.split('\n')) {
+    const m = line.match(/^([a-z_]+):\s*(.*)$/);
+    if (m === null) continue;
+    const key = m[1];
+    if (m[2] === undefined) continue;
+    let val = m[2];
+    if (val.startsWith('"') && val.endsWith('"') && val.length >= 2) {
+      val = val.slice(1, -1).replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+    }
+    if (key === 'status') {
+      fm.status = val as TerminalStatus;
+    } else if (key === 'written_at') {
+      fm.written_at = val;
+    } else if (key === 'reason') {
+      fm.reason = val;
+    }
+  }
+  if (fm.status === undefined || fm.written_at === undefined) {
+    throw new Error('result.md frontmatter missing status or written_at');
+  }
+  return { frontmatter: fm as MarkdownResultFrontmatter, body };
+}
+
+/**
+ * Read whichever result file exists (result.md or result.json). If neither
+ * exists and waitMs is given, block via fs.watch until one appears or the
+ * timeout elapses.
+ *
+ * Race safety: registers the watcher THEN re-stats. If a result file appeared
+ * between the first stat and the watch registration, the re-stat catches it
+ * before the watcher has a chance to miss it.
+ *
+ * Returns shape:
+ *   - JSON path:     { status, result: object }
+ *   - Markdown path: { status, result_md: string, reason?: string }
+ *   - Timeout:       { status: 'timeout' }
+ */
+export interface ReadResultResponse {
+  status: 'done' | 'failed' | 'canceled' | 'timeout';
+  result?: object;
+  result_md?: string;
+  reason?: string;
+}
+
+export function readResult(
+  jobId: string,
+  opts: { waitMs?: number } = {},
+): Promise<ReadResultResponse> {
+  const dir = jobDir(jobId);
+  if (!existsSync(dir)) {
+    throw notFound(`job not found: ${jobId}`, { job_id: jobId });
+  }
+
+  function parseAt(path: string): ReadResultResponse {
+    const raw = readFileSync(path, 'utf8');
+    if (path.endsWith('.md')) {
+      const { frontmatter, body } = parseMarkdownResult(raw);
+      const out: ReadResultResponse = { status: frontmatter.status, result_md: body };
+      if (frontmatter.reason !== undefined) {
+        out.reason = frontmatter.reason;
+      }
+      return out;
+    }
+    const parsed = JSON.parse(raw) as JsonResultFile;
     return { status: parsed.status, result: parsed.result };
   }
 
-  // Fast path: result already present.
-  if (existsSync(resultPath(jobId))) {
-    const r = parseResult();
-    return Promise.resolve({ status: r.status, result: r.result });
+  const existing = existingResultPath(jobId);
+  if (existing !== null) {
+    return Promise.resolve(parseAt(existing));
   }
 
   if (opts.waitMs === undefined || opts.waitMs <= 0) {
@@ -262,38 +392,37 @@ export function readResult(
   return new Promise((resolve) => {
     let settled = false;
 
-    const finish = (status: 'done' | 'failed' | 'canceled' | 'timeout', result?: object): void => {
+    const finish = (response: ReadResultResponse): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       try { watcher.close(); } catch { /* noop */ }
-      resolve({ status, result });
+      resolve(response);
     };
 
-    // Register watcher first, then re-stat (race safety).
     const watcher = watch(dir, (_event, name) => {
-      if (name === 'result.json' && existsSync(resultPath(jobId))) {
-        const r = parseResult();
-        finish(r.status, r.result);
+      if (name !== 'result.md' && name !== 'result.json') return;
+      const path = existingResultPath(jobId);
+      if (path !== null) {
+        finish(parseAt(path));
       }
     });
 
-    // Re-stat after watcher is registered to close the race window.
-    if (existsSync(resultPath(jobId))) {
-      const r = parseResult();
-      finish(r.status, r.result);
+    const path = existingResultPath(jobId);
+    if (path !== null) {
+      finish(parseAt(path));
       return;
     }
 
     const timer = setTimeout(() => {
-      finish('timeout');
+      finish({ status: 'timeout' });
     }, opts.waitMs);
   });
 }
 
 /**
- * Derive job state from meta.json, result.json, and the tail of log.jsonl.
- * If a pid is recorded, is not alive, and no result.json exists → 'failed'.
+ * Derive job state from meta.json, the result file, and the tail of log.jsonl.
+ * If a pid is recorded, is not alive, and no result file exists → 'failed'.
  */
 export function jobStatus(jobId: string): {
   state: JobState;
@@ -303,14 +432,19 @@ export function jobStatus(jobId: string): {
   const meta = readMeta(jobId);
   const age_s = (Date.now() - new Date(meta.created_at).getTime()) / 1000;
 
-  // Derive effective state.
   let state: JobState = meta.status;
   if (state === 'live') {
-    if (existsSync(resultPath(jobId))) {
-      // result.json present but meta not yet updated (rare); trust the file.
+    const existing = existingResultPath(jobId);
+    if (existing !== null) {
+      // Result file present but meta not yet updated (rare); trust the file.
       try {
-        const r = JSON.parse(readFileSync(resultPath(jobId), 'utf8')) as ResultFile;
-        state = r.status;
+        if (existing.endsWith('.md')) {
+          const { frontmatter } = parseMarkdownResult(readFileSync(existing, 'utf8'));
+          state = frontmatter.status;
+        } else {
+          const r = JSON.parse(readFileSync(existing, 'utf8')) as JsonResultFile;
+          state = r.status;
+        }
       } catch { /* leave as live */ }
     } else if (meta.pid !== undefined && !pidAlive(meta.pid)) {
       state = 'failed';
@@ -355,12 +489,19 @@ export function listJobs(): { job_id: string; kind: string; state: JobState; cre
       if (!existsSync(mp)) continue;
       const meta = JSON.parse(readFileSync(mp, 'utf8')) as JobMeta;
 
-      // Derive effective state (result.json beats meta.status for live jobs).
+      // Derive effective state (result file beats meta.status for live jobs).
       let state: JobState = meta.status;
-      if (state === 'live' && existsSync(join(dir, 'result.json'))) {
+      if (state === 'live') {
+        const mdP = join(dir, 'result.md');
+        const jsP = join(dir, 'result.json');
         try {
-          const r = JSON.parse(readFileSync(join(dir, 'result.json'), 'utf8')) as ResultFile;
-          state = r.status;
+          if (existsSync(mdP)) {
+            const { frontmatter } = parseMarkdownResult(readFileSync(mdP, 'utf8'));
+            state = frontmatter.status;
+          } else if (existsSync(jsP)) {
+            const r = JSON.parse(readFileSync(jsP, 'utf8')) as JsonResultFile;
+            state = r.status;
+          }
         } catch { /* leave as live */ }
       }
 
