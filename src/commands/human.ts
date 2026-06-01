@@ -15,7 +15,7 @@
 import { defineBranch, defineLeaf } from '../core/command.js';
 import type { BranchDef } from '../core/command.js';
 import { InputError } from '../core/io.js';
-import { createJob, writeResult, recordJobPane, appendEvent } from '../core/jobs.js';
+import { createJob, writeResult, recordJobPane, appendEvent, readResult as jobsReadResult } from '../core/jobs.js';
 import { spawnAndDetach, shellQuote, isInTmux, countPanesInCurrentWindow } from '../core/spawn.js';
 import { interactionsRoot, interactionDir } from '../core/artifact.js';
 import { paginate } from '../core/pagination.js';
@@ -79,11 +79,12 @@ function followUpDrain(jobId: string): string {
 
 /**
  * Spawn the detached `_run` pane for a job-backed kickoff, record the pane for
- * cancellation, log the start, and return the appropriate follow_up. Degrades
- * to the inbox-drain follow_up (job still created) when not in tmux / spawn
- * fails — kickoffs are intentionally non-fatal off-tmux.
+ * cancellation, log the start, and return whether the pane spawned plus the
+ * appropriate follow_up. Degrades to the inbox-drain follow_up (job still
+ * created) when not in tmux / spawn fails — kickoffs are intentionally
+ * non-fatal off-tmux.
  */
-function spawnHumanJob(jobId: string, idir: string, cwd: string): string {
+function spawnHumanJob(jobId: string, idir: string, cwd: string): { spawned: boolean; follow_up: string } {
   const spawn = spawnAndDetach({
     command: runCmd(idir),
     cwd,
@@ -93,7 +94,7 @@ function spawnHumanJob(jobId: string, idir: string, cwd: string): string {
     failGuard: true,
   });
   if (spawn.status !== 'spawned') {
-    return followUpDrain(jobId);
+    return { spawned: false, follow_up: followUpDrain(jobId) };
   }
   if (spawn.paneId !== undefined) recordJobPane(jobId, spawn.paneId);
   const paneLabel = spawn.paneId !== undefined ? spawn.paneId : 'unknown';
@@ -102,7 +103,7 @@ function spawnHumanJob(jobId: string, idir: string, cwd: string): string {
     event: 'worker_started',
     message: `human pane ${paneLabel} spawned`,
   });
-  return followUpResult(jobId);
+  return { spawned: true, follow_up: followUpResult(jobId) };
 }
 
 // ---------------------------------------------------------------------------
@@ -113,9 +114,9 @@ const humanAsk = defineLeaf({
   name: 'ask',
   help: {
     name: 'human ask',
-    summary: 'put a humanloop decision deck in front of a person; returns a job handle immediately. Humans respond on human time (often >10 min) — never block on the result.',
+    summary: 'put a humanloop decision deck in front of a person; returns a job handle immediately. This is the default, expected channel for posing ANY question or decision to the user — reach for it instead of writing the question as prose in your reply.',
     guide:
-      'The deck body is directive-flavored markdown rendered by termrender (panels, columns, trees, callouts, mermaid) — see `termrender doc -h` for the directive set before authoring one.',
+      'Use this for quick, open-ended, and nuanced asks alike — not just "formal" multiple-choice. Set `allowFreetext: true` (with `freetextLabel`) when the answer is open-ended; offer a few `options` as starting points even for judgment calls. The kickoff is instant and NEVER blocks — "never block on the result" refers only to not busy-waiting on the job; the human answering on their own time is not a reason to avoid asking or to fall back to inline prose. The deck body is directive-flavored markdown rendered by termrender (panels, columns, trees, callouts, mermaid) — see `termrender doc -h` for the directive set before authoring one.',
     params: [
       { kind: 'context-file', name: 'deck', required: true, constraint: 'Contains a humanloop deck. Validated before any job is created.', shape: DECK_SCHEMA_HINT },
       { kind: 'flag', name: 'wait', type: 'bool', required: false, constraint: 'Accepted for symmetry with the job contract; the kickoff never blocks.' },
@@ -152,7 +153,7 @@ const humanAsk = defineLeaf({
     const rc: RunRecord = { mode: 'ask', job_id: jobId };
     atomicWriteJson(join(idir, 'run.json'), rc);
 
-    const follow_up = spawnHumanJob(jobId, idir, cwd);
+    const { follow_up } = spawnHumanJob(jobId, idir, cwd);
     return { job_id: jobId, dir: idir, follow_up };
   },
 });
@@ -165,7 +166,7 @@ const humanApprove = defineLeaf({
   name: 'approve',
   help: {
     name: 'human approve',
-    summary: 'a Yes/No approval gate; returns a job handle immediately. Humans respond on human time (often >10 min) — never block on the result.',
+    summary: 'a Yes/No approval gate; returns a job handle immediately. The standard way to gate a handoff on human sign-off. Kickoff never blocks — peek at the result later rather than busy-waiting; the human answering on their own time is not a reason to skip the gate.',
     guide:
       'The body is directive-flavored markdown rendered by termrender (panels, columns, trees, callouts, mermaid) — see `termrender doc -h` for the directive set before authoring one.',
     params: [
@@ -202,7 +203,7 @@ const humanApprove = defineLeaf({
     const rc: RunRecord = { mode: 'approve', job_id: jobId, approve_iid: 'approve' };
     atomicWriteJson(join(idir, 'run.json'), rc);
 
-    const follow_up = spawnHumanJob(jobId, idir, cwd);
+    const { follow_up } = spawnHumanJob(jobId, idir, cwd);
     return { job_id: jobId, dir: idir, follow_up };
   },
 });
@@ -215,22 +216,26 @@ const humanReview = defineLeaf({
   name: 'review',
   help: {
     name: 'human review',
-    summary: 'open a .md in a read-only review editor for anchored comments; returns a job handle immediately. Humans respond on human time (often >10 min) — never block on the result.',
+    summary: 'open a .md in a read-only review editor for anchored comments; BLOCKS until the human submits the review. Humans respond on human time (often >10 min) — if you want to keep working, background this call (your harness will notify you when it finishes).',
     guide:
-      'The .md you point at is directive-flavored markdown rendered by termrender (panels, columns, trees, callouts, mermaid) — see `termrender doc -h` for the directive set before authoring one.',
+      'Unlike ask/approve, this call does not return a job handle and walk away — it blocks until the human finishes reviewing and submits (or closes the pane). Run it in the background when you have other work to do; the harness surfaces the result on completion. The returned `result` is the humanloop FeedbackResult (anchored comments). The .md you point at is directive-flavored markdown rendered by termrender (panels, columns, trees, callouts, mermaid) — see `termrender doc -h` for the directive set before authoring one.',
     params: [
       { kind: 'positional', name: 'file', type: 'path', required: true, constraint: 'Absolute path to an existing .md file.' },
       { kind: 'flag', name: 'output', type: 'path', required: false, constraint: 'Where the FeedbackResult JSON is written. Default: <dir>/feedback.json.' },
     ],
     output: [
-      { name: 'job_id', type: 'string', required: true, constraint: 'Poll with `crtr job read result`; result is the humanloop FeedbackResult.' },
+      { name: 'job_id', type: 'string', required: true, constraint: 'The kind:"human" job backing this review. Cancel with `crtr job cancel`.' },
       { name: 'output', type: 'string', required: true, constraint: 'Path the FeedbackResult JSON is autosaved to.' },
-      { name: 'follow_up', type: 'string', required: true, constraint: 'A non-blocking status peek. The human may take minutes to hours — never block waiting on this.' },
+      { name: 'status', type: 'string', required: true, constraint: 'Terminal state once the call unblocks: done (submitted), failed, canceled, or closed (pane went away before submit).' },
+      { name: 'result', type: 'object', required: false, constraint: 'The humanloop FeedbackResult (anchored comments). Present when status is done.' },
+      { name: 'reason', type: 'string', required: false, constraint: 'Short explanation when status is failed or closed.' },
+      { name: 'follow_up', type: 'string', required: false, constraint: 'Present only when off-tmux: a human must drain the review via `crtr human inbox`, then read the result.' },
     ],
     outputKind: 'object',
     effects: [
       'Creates a kind:"human" job and writes run.json to the interaction dir.',
       'Spawns a read-only nvim/vim review session in a detached tmux pane (when in tmux).',
+      'Blocks the calling process until the human submits, the pane closes, or the job is canceled.',
     ],
   },
   run: async (input) => {
@@ -262,8 +267,20 @@ const humanReview = defineLeaf({
     const rc: RunRecord = { mode: 'review', job_id: jobId, file: abs, output };
     atomicWriteJson(join(idir, 'run.json'), rc);
 
-    const follow_up = spawnHumanJob(jobId, idir, cwd);
-    return { job_id: jobId, output, follow_up };
+    const { spawned, follow_up } = spawnHumanJob(jobId, idir, cwd);
+    // Off-tmux: no pane to block on — fall back to the non-blocking handle the
+    // way ask/approve do, so the review can still be drained from the inbox.
+    if (!spawned) {
+      return { job_id: jobId, output, status: 'live', follow_up };
+    }
+    // In tmux: block until the human submits, the pane closes, or the job is
+    // canceled. Infinity = no timeout (the human owns the clock); the poll in
+    // readResult still reaps a dead pane, so this never hangs on a closed pane.
+    const r = await jobsReadResult(jobId, { waitMs: Infinity });
+    const out: Record<string, unknown> = { job_id: jobId, output, status: r.status };
+    if (r.result !== undefined) out['result'] = r.result;
+    if (r.reason !== undefined) out['reason'] = r.reason;
+    return out;
   },
 });
 
@@ -489,8 +506,13 @@ const humanRun = defineLeaf({
         }
         // notify: no job — nothing to write
       } else if (rc.mode === 'review') {
+        // The _run worker is already its own dedicated tmux pane with a TTY, so
+        // run nvim directly in it (noTmux) instead of letting launchReview
+        // split off a SECOND pane and sit polling. This matches how ask/approve
+        // render in-place and avoids the redundant side pane.
         const res: FeedbackResult = await launchReview(rc.file as string, {
           output: rc.output as string,
+          noTmux: true,
         });
         writeResult(rc.job_id as string, res, 'done');
       }
@@ -520,7 +542,7 @@ export function registerHuman(): BranchDef {
       name: 'human',
       summary: 'human-in-the-loop decisions, document review, and live display',
       model:
-        "Reach for human whenever you have a question for the user or want their feedback — never guess or assume when a person can decide. ask puts a structured choice in front of them; approve gates a handoff on a Yes/No sign-off; review collects anchored comments on a plan or spec; notify informs without blocking; show puts a file live on screen. Every body and displayed file is directive-flavored markdown rendered by termrender (panels, columns, trees, callouts, mermaid) — see `termrender doc -h` for the directive set before authoring one. Kickoff leaves create kind:'human' jobs. Humans respond on human time (often >10 min) — never block waiting on the result; peek with `crtr job read result|status` (no `wait`). Cancel with `crtr job cancel`. notify/show create no job.",
+        "Reach for human whenever you have a question for the user or want their feedback — never guess or assume when a person can decide. ask puts a structured choice in front of them; approve gates a handoff on a Yes/No sign-off; review collects anchored comments on a plan or spec; notify informs without blocking; show puts a file live on screen. Every body and displayed file is directive-flavored markdown rendered by termrender (panels, columns, trees, callouts, mermaid) — see `termrender doc -h` for the directive set before authoring one. ask/approve/review are the DEFAULT channel for questions, sign-offs, and feedback — reach for them even for quick or open-ended asks (use `allowFreetext`), and don't substitute prose in your reply. ask and approve are kickoffs: they create kind:'human' jobs and return instantly, never blocking — peek later with `crtr job read result|status` (no `wait`). review is different: it BLOCKS until the human submits, so background the call if you want to keep working (your harness notifies you when it finishes). 'Humans respond on human time' describes response latency only — it is never a reason to avoid asking. Cancel with `crtr job cancel`. notify/show create no job.",
       children: [
         { name: 'ask', desc: 'put a decision deck to a person', useWhen: 'a structured choice needs a human' },
         { name: 'approve', desc: 'a Yes/No approval gate', useWhen: 'gating a handoff on human sign-off' },

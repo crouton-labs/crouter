@@ -12,6 +12,8 @@ import {
   writeResult,
   writeMarkdownResult,
   readResult,
+  recordJobPane,
+  jobStatus,
 } from '../jobs.js';
 
 let stateDir: string;
@@ -80,5 +82,46 @@ describe('writeMarkdownResult + readResult round-trip', () => {
     const { jobId } = createJob('prompt', { cwd: '/tmp' });
     const r = await readResult(jobId, { waitMs: 0 });
     assert.equal(r.status, 'timeout');
+  });
+});
+
+describe('closed-pane reaping (zombie prevention)', () => {
+  test('live job whose recorded pane is gone is reaped to closed on status read', () => {
+    const { jobId } = createJob('prompt', { cwd: '/tmp' });
+    // A pane id that cannot exist on any tmux server.
+    recordJobPane(jobId, '%999999999');
+
+    const status = jobStatus(jobId);
+    assert.equal(status.state, 'closed');
+  });
+
+  test('reaped job exposes a closed result explaining the closed pane', async () => {
+    const { jobId } = createJob('prompt', { cwd: '/tmp' });
+    recordJobPane(jobId, '%999999999');
+
+    // Trigger the reaper.
+    jobStatus(jobId);
+
+    const r = await readResult(jobId, { waitMs: 0 });
+    assert.equal(r.status, 'closed');
+    assert.match(r.reason ?? '', /pane closed/);
+  });
+
+  test('job with no recorded pane is NOT reaped (stays live)', () => {
+    const { jobId } = createJob('prompt', { cwd: '/tmp' });
+    const status = jobStatus(jobId);
+    assert.equal(status.state, 'live');
+  });
+
+  test('already-submitted job is never overwritten by the reaper', async () => {
+    const { jobId } = createJob('prompt', { cwd: '/tmp' });
+    recordJobPane(jobId, '%999999999');
+    writeMarkdownResult(jobId, '**done**\n', 'done');
+
+    jobStatus(jobId);
+
+    const r = await readResult(jobId, { waitMs: 0 });
+    assert.equal(r.status, 'done');
+    assert.equal(r.result_md, '**done**\n');
   });
 });

@@ -9,6 +9,13 @@
 //   result.md    — agent submissions (markdown body + YAML frontmatter). Written atomically.
 //   result.json  — programmatic submissions (structured object). Written atomically.
 // Either result file's APPEARANCE is the completion signal. Exactly one is written per job.
+//
+// A worker is not required to submit. Besides an explicit submit, a job becomes
+// terminal when (a) the wrapper shell's `crtr job _fail` runs on a clean exit,
+// or (b) the hosting tmux pane is closed — which sends SIGHUP so (a) never runs.
+// Case (b) is reaped here: when a live job's recorded pane is gone and no result
+// exists, we write a `closed` result (terminal, but distinct from `failed`) so
+// the job stops being a zombie without claiming an outcome we can't know.
 
 import {
   existsSync,
@@ -31,7 +38,10 @@ import { notFound, general } from './errors.js';
 // Types
 // ---------------------------------------------------------------------------
 
-type TerminalStatus = 'done' | 'failed' | 'canceled';
+// 'closed' = the worker's tmux pane went away before any result was submitted.
+// It is terminal but distinct from 'failed' (a worker that ran and reported an
+// error) — we simply don't know the outcome, so we don't claim it failed.
+type TerminalStatus = 'done' | 'failed' | 'canceled' | 'closed';
 type JobState = 'live' | TerminalStatus;
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
@@ -146,6 +156,52 @@ function pidAlive(pid: number): boolean {
   }
 }
 
+/**
+ * Set of every tmux pane id across all sessions on the running server. Empty
+ * when no server is running (→ every recorded pane is treated as gone).
+ *
+ * This bridges tmux's pane lifecycle to the job registry. A worker whose pane
+ * is closed/killed receives SIGHUP, so the wrapper shell's `crtr job _fail`
+ * never runs and the job would otherwise stay `live` forever (a zombie). We
+ * detect the vanished pane and reap the job instead.
+ */
+function allTmuxPaneIds(): Set<string> {
+  const set = new Set<string>();
+  const r = spawnSync('tmux', ['list-panes', '-a', '-F', '#{pane_id}'], { encoding: 'utf8' });
+  if (r.status !== 0 || typeof r.stdout !== 'string') return set;
+  for (const line of r.stdout.split('\n')) {
+    const t = line.trim();
+    if (t !== '') set.add(t);
+  }
+  return set;
+}
+
+/**
+ * Reap a job whose hosting tmux pane has disappeared. Acts only when the job is
+ * still `live`, has a recorded pane, and has produced no result file. Writes a
+ * terminal `closed` result so the job stops being a zombie and every reader
+ * (status, list, result --wait) agrees. `closed` is distinct from `failed`: we
+ * don't know the outcome, only that the pane is gone. Returns true if it reaped.
+ *
+ * `panes` lets a caller reuse a single tmux query across many jobs (listJobs).
+ */
+function reapIfPaneDead(meta: JobMeta, panes?: Set<string>): boolean {
+  if (meta.status !== 'live') return false;
+  if (meta.pane_id === undefined || meta.pane_id === '') return false;
+  if (existingResultPath(meta.job_id) !== null) return false;
+  const set = panes ?? allTmuxPaneIds();
+  if (set.has(meta.pane_id)) return false;
+  try {
+    writeMarkdownResult(meta.job_id, '', 'closed', 'worker pane closed before submitting a result');
+  } catch {
+    return false;
+  }
+  return true;
+}
+
+/** Poll cadence (ms) for detecting a closed worker pane during result --wait. */
+const PANE_POLL_MS = 2000;
+
 const LEVEL_RANK: Record<LogLevel, number> = {
   debug: 0,
   info: 1,
@@ -191,6 +247,16 @@ export function createJob(
 export function recordJobPane(jobId: string, paneId: string): void {
   const meta = readMeta(jobId);
   meta.pane_id = paneId;
+  writeMeta(jobId, meta);
+}
+
+/**
+ * Record the pid of a detached worker (e.g. a headless background agent) so
+ * jobStatus can mark the job failed if the process dies without a result.
+ */
+export function recordJobPid(jobId: string, pid: number): void {
+  const meta = readMeta(jobId);
+  meta.pid = pid;
   writeMeta(jobId, meta);
 }
 
@@ -349,9 +415,10 @@ function parseMarkdownResult(raw: string): { frontmatter: MarkdownResultFrontmat
  *   - JSON path:     { status, result: object }
  *   - Markdown path: { status, result_md: string, reason?: string }
  *   - Timeout:       { status: 'timeout' }
+ *   - Closed:        pane vanished with no result → status 'closed'
  */
 export interface ReadResultResponse {
-  status: 'done' | 'failed' | 'canceled' | 'timeout';
+  status: 'done' | 'failed' | 'canceled' | 'closed' | 'timeout';
   result?: object;
   result_md?: string;
   reason?: string;
@@ -391,11 +458,14 @@ export function readResult(
 
   return new Promise((resolve) => {
     let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let poll: ReturnType<typeof setInterval> | undefined;
 
     const finish = (response: ReadResultResponse): void => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      if (timer !== undefined) clearTimeout(timer);
+      if (poll !== undefined) clearInterval(poll);
       try { watcher.close(); } catch { /* noop */ }
       resolve(response);
     };
@@ -414,9 +484,32 @@ export function readResult(
       return;
     }
 
-    const timer = setTimeout(() => {
-      finish({ status: 'timeout' });
-    }, opts.waitMs);
+    // fs.watch only fires on result files. A pane that closes without a submit
+    // produces no such event, so poll to reap it instead of hanging until the
+    // full timeout budget elapses.
+    poll = setInterval(() => {
+      const found = existingResultPath(jobId);
+      if (found !== null) {
+        finish(parseAt(found));
+        return;
+      }
+      try {
+        if (reapIfPaneDead(readMeta(jobId))) {
+          const reaped = existingResultPath(jobId);
+          if (reaped !== null) finish(parseAt(reaped));
+        }
+      } catch { /* noop */ }
+    }, PANE_POLL_MS);
+
+    // A non-finite budget (Infinity) means block until a result appears or the
+    // worker pane dies — used by `human review`, where the human may take an
+    // unbounded amount of time. The poll above still reaps a dead pane, so this
+    // never hangs forever on a closed pane.
+    if (Number.isFinite(opts.waitMs)) {
+      timer = setTimeout(() => {
+        finish({ status: 'timeout' });
+      }, opts.waitMs);
+    }
   });
 }
 
@@ -429,7 +522,10 @@ export function jobStatus(jobId: string): {
   age_s: number;
   last_event: { event: string; ts: string } | null;
 } {
-  const meta = readMeta(jobId);
+  let meta = readMeta(jobId);
+  if (reapIfPaneDead(meta)) {
+    meta = readMeta(jobId);
+  }
   const age_s = (Date.now() - new Date(meta.created_at).getTime()) / 1000;
 
   let state: JobState = meta.status;
@@ -481,13 +577,19 @@ export function listJobs(): { job_id: string; kind: string; state: JobState; cre
   const entries = readdirSync(root);
   const jobs: { job_id: string; kind: string; state: JobState; created_at: string }[] = [];
 
+  // One tmux query, reused to reap every job whose pane has vanished.
+  const panes = allTmuxPaneIds();
+
   for (const entry of entries) {
     const dir = join(root, entry);
     try {
       if (!statSync(dir).isDirectory()) continue;
       const mp = join(dir, 'meta.json');
       if (!existsSync(mp)) continue;
-      const meta = JSON.parse(readFileSync(mp, 'utf8')) as JobMeta;
+      let meta = JSON.parse(readFileSync(mp, 'utf8')) as JobMeta;
+      if (reapIfPaneDead(meta, panes)) {
+        meta = JSON.parse(readFileSync(mp, 'utf8')) as JobMeta;
+      }
 
       // Derive effective state (result file beats meta.status for live jobs).
       let state: JobState = meta.status;
