@@ -323,9 +323,10 @@ const humanShow = defineLeaf({
   help: {
     name: 'human show',
     summary: 'put a file live on screen in a tmux pane via humanloop display',
+    guide:
+      'The pane always watches the file and live-updates on every save — a displayed doc is a live view by definition, so point it at a file something keeps rewriting (a status board, a running summary) and it stays current.',
     params: [
       { kind: 'positional', name: 'path', type: 'path', required: true, constraint: 'Path to the file to render.' },
-      { kind: 'flag', name: 'watch', type: 'bool', required: false, constraint: 'When present, live-update the pane on edits. Default off.' },
       { kind: 'flag', name: 'window', type: 'enum', choices: ['auto', 'split', 'new'], required: false, default: 'auto', constraint: 'Placement. Default auto.' },
     ],
     output: [
@@ -337,7 +338,6 @@ const humanShow = defineLeaf({
   },
   run: async (input) => {
     const path = input['path'] as string;
-    const watch = (input['watch'] as boolean | undefined) === true;
     const windowArg = input['window'] as 'auto' | 'split' | 'new' | undefined;
     const window: 'auto' | 'split' | 'new' = windowArg !== undefined ? windowArg : 'auto';
 
@@ -345,7 +345,7 @@ const humanShow = defineLeaf({
     // {pane_id:null, reason} with exit 0 (matches humanloop display semantics).
     let paneId: string | undefined;
     try {
-      const r = display(path, { watch, window, maxPanes: resolveMaxPanes() });
+      const r = display(path, { window, maxPanes: resolveMaxPanes() });
       paneId = r.paneId;
     } catch {
       paneId = undefined;
@@ -501,11 +501,18 @@ const humanRun = defineLeaf({
 export function registerHuman(): BranchDef {
   return defineBranch({
     name: 'human',
+    rootEntry: {
+      concept:
+        'human-in-the-loop decisions, document review, and live display: ask puts a structured choice to a person, approve gates a handoff on a Yes/No sign-off, review collects anchored comments on a plan or spec, notify informs without blocking, show puts a file live on screen',
+      desc: 'ask, approve, review, notify, show, inbox, list',
+      useWhen:
+        'you have a question for the user or want their feedback — always reach for human instead of guessing or assuming when a person can decide',
+    },
     help: {
       name: 'human',
       summary: 'human-in-the-loop decisions, document review, and live display',
       model:
-        "Kickoff leaves create kind:'human' jobs. Humans respond on human time (often >10 min) — never block waiting on the result; peek with `crtr job read result|status` (no `wait`). Cancel with `crtr job cancel`. notify/show create no job.",
+        "Reach for human whenever you have a question for the user or want their feedback — never guess or assume when a person can decide. ask puts a structured choice in front of them; approve gates a handoff on a Yes/No sign-off; review collects anchored comments on a plan or spec; notify informs without blocking; show puts a file live on screen. Every body and displayed file is directive-flavored markdown rendered by termrender (panels, columns, trees, callouts, mermaid) — see `termrender doc -h` for the directive set before authoring one. Kickoff leaves create kind:'human' jobs. Humans respond on human time (often >10 min) — never block waiting on the result; peek with `crtr job read result|status` (no `wait`). Cancel with `crtr job cancel`. notify/show create no job.",
       children: [
         { name: 'ask', desc: 'put a decision deck to a person', useWhen: 'a structured choice needs a human' },
         { name: 'approve', desc: 'a Yes/No approval gate', useWhen: 'gating a handoff on human sign-off' },
