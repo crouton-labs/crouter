@@ -7,17 +7,22 @@
 //          sessionDirForId, writeSessionMeta, readSessionMeta — all superseded
 //          by the jobs.ts sidecar model (result.json + log.jsonl).
 //
+// Agent-CLI selection: crtr can be hosted by different coding agents (Claude
+// Code, pi). `detectAgentKind()` inspects the environment crtr inherited from
+// its host and `buildAgentCommand()` emits the matching invocation, so a spawn
+// launches a sibling of whatever agent is driving it.
+//
 // Crash detection: the wrapper shell command is:
-//   `claude --dangerously-skip-permissions <prompt>; crtr job _fail <job_id>`
-// If the worker calls `crtr job submit` before claude exits, result.json is
+//   `<agent invocation>; crtr job _fail <job_id>`
+// If the worker calls `crtr job submit` before the agent exits, result.json is
 // written and `_fail` is a no-op (writeResult is idempotent for done status).
-// If claude dies without a submit, `_fail` writes status 'failed'. Either way
+// If the agent dies without a submit, `_fail` writes status 'failed'. Either way
 // `job read result` sees a terminal result.json.
 
-import { spawnSync } from 'node:child_process';
+import { spawnSync, spawn } from 'node:child_process';
 
 export interface SpawnAgentOptions {
-  /** First user message for the new claude session. */
+  /** First user message for the new agent session. */
   prompt: string;
   cwd: string;
   /** crtr job_id injected as CRTR_JOB_ID env var in the pane. */
@@ -26,8 +31,14 @@ export interface SpawnAgentOptions {
   fork?: { sessionId: string };
   /** Max panes per tmux window before overflowing to a new window. */
   maxPanesPerWindow: number;
-  /** Display name passed to `claude -n`; surfaces in pane title and /resume picker. */
+  /** Display name passed to the agent's `-n` flag; surfaces in pane title and resume picker. */
   name?: string;
+  /** Persona appended via `--append-system-prompt` (subagent body). */
+  systemPrompt?: string;
+  /** Model pattern/id passed via `--model`. */
+  model?: string;
+  /** Tool allow-list passed to pi via `--tools`. */
+  tools?: string[];
 }
 
 export interface SpawnAgentResult {
@@ -40,10 +51,11 @@ export interface SpawnAgentResult {
 }
 
 export interface DetachOptions {
-  /** Inner command to run in the pane. If omitted, build `claude … <prompt>`. */
+  /** Inner command to run in the pane. If omitted, build the detected agent's
+   *  invocation around `<prompt>`. */
   command?: string;
-  /** Full first user message for the new claude session (claude mode only;
-   *  ignored when `command` is set). No custom system prompt. */
+  /** Full first user message for the new agent session (ignored when `command`
+   *  is set). No custom system prompt. */
   prompt?: string;
   cwd: string;
   /** crtr job_id injected as CRTR_JOB_ID env var in the pane and used by the
@@ -60,7 +72,7 @@ export interface DetachOptions {
    *  uses the attached client's currently-focused pane — which drifts if the
    *  user switches windows between kickoff and spawn. */
   targetPane?: string;
-  /** Display name passed to `claude -n`; ignored when `command` is set
+  /** Display name passed to the agent's `-n` flag; ignored when `command` is set
    *  (caller controls the full argv in that mode). */
   name?: string;
 }
@@ -77,6 +89,283 @@ export function isInTmux(): boolean {
 
 export function shellQuote(s: string): string {
   return `'${s.replace(/'/g, "'\\''")}'`;
+}
+
+// ---------------------------------------------------------------------------
+// Agent CLI selection
+// ---------------------------------------------------------------------------
+
+/** Coding-agent CLIs crtr knows how to spawn as a sibling worker. */
+export type AgentKind = 'claude' | 'pi';
+
+/**
+ * Foreground `comm` names that mark a tmux pane as hosting an interactive
+ * agent. claude reports `claude`; pi sets process.title to `pi`. Used by
+ * findWindowWithSpace so panes of EITHER agent count as agent panes and a
+ * mixed window still qualifies for placement.
+ */
+const AGENT_COMMS = new Set<string>(['claude', 'pi']);
+
+/**
+ * Detect which coding-agent CLI is hosting the current crtr process so spawns
+ * launch a matching sibling. pi exports `PI_CODING_AGENT=true` into its tool
+ * subprocess environment; Claude Code exports `CLAUDECODE` /
+ * `CLAUDE_CODE_SESSION_ID`. Defaults to claude when no signal is present
+ * (preserves prior behavior).
+ */
+export function detectAgentKind(): AgentKind {
+  if (process.env.PI_CODING_AGENT === 'true') return 'pi';
+  return 'claude';
+}
+
+/** Bare Claude-Code model aliases that subagent frontmatter uses. */
+const CLAUDE_MODEL_ALIASES = new Set<string>(['sonnet', 'opus', 'haiku']);
+
+/**
+ * Normalize a `--model` value for the target agent CLI.
+ *
+ * Subagent frontmatter uses Claude Code's bare aliases (`sonnet`, `opus`,
+ * `haiku`, optionally with a `:thinking` suffix). The `claude` CLI resolves
+ * those natively, but `pi` maps a bare alias to its default provider —
+ * `amazon-bedrock` — which most users have not authenticated, so the spawn
+ * dies with "No API key found for amazon-bedrock". These aliases name Anthropic
+ * models, so under pi we pin them to the `anthropic/` provider (preserving any
+ * `:thinking` suffix). Values that already carry a `provider/` prefix or are
+ * concrete model ids are passed through untouched.
+ */
+export function normalizeModelForKind(model: string, kind: AgentKind): string {
+  if (kind !== 'pi') return model;
+  if (model.includes('/')) return model;
+  const [base, ...rest] = model.split(':');
+  if (!CLAUDE_MODEL_ALIASES.has(base.toLowerCase())) return model;
+  const suffix = rest.length > 0 ? `:${rest.join(':')}` : '';
+  return `anthropic/${base.toLowerCase()}${suffix}`;
+}
+
+export interface AgentCommandOptions {
+  /** First user message delivered to the new agent session. */
+  prompt: string;
+  /** Display name (`-n`); surfaces in the pane title and resume picker. */
+  name?: string;
+  /** Fork an existing session into a fresh one rather than starting clean. */
+  fork?: { sessionId: string };
+  /** Persona/system prompt appended to the agent's default (`--append-system-prompt`).
+   *  Used to apply a subagent definition's body. */
+  systemPrompt?: string;
+  /** Model pattern/id passed via `--model` (both claude and pi). */
+  model?: string;
+  /** Tool allow-list. Passed to pi via `--tools`; ignored for claude, whose
+   *  tool names and gating flag differ. */
+  tools?: string[];
+}
+
+/**
+ * Build the agent-CLI invocation (no job wrapper) for the given kind.
+ *
+ *   claude: `claude [-n <name>] [--resume <id> --fork-session] \
+ *            --dangerously-skip-permissions <prompt>`
+ *   pi:     `pi [-n <name>] [--fork <id>] <prompt>`
+ *
+ * pi has no permission popups, so it needs no skip-permissions flag.
+ */
+export function buildAgentCommand(
+  opts: AgentCommandOptions,
+  kind: AgentKind = detectAgentKind(),
+): string {
+  if (kind === 'pi') {
+    const parts: string[] = ['pi'];
+    if (opts.name !== undefined && opts.name !== '') {
+      parts.push('-n', shellQuote(opts.name));
+    }
+    if (opts.fork !== undefined) {
+      parts.push('--fork', shellQuote(opts.fork.sessionId));
+    }
+    if (opts.model !== undefined && opts.model !== '') {
+      parts.push('--model', shellQuote(normalizeModelForKind(opts.model, 'pi')));
+    }
+    if (opts.tools !== undefined && opts.tools.length > 0) {
+      parts.push('--tools', shellQuote(opts.tools.join(',')));
+    }
+    if (opts.systemPrompt !== undefined && opts.systemPrompt.trim() !== '') {
+      parts.push('--append-system-prompt', shellQuote(opts.systemPrompt));
+    }
+    parts.push(shellQuote(opts.prompt));
+    return parts.join(' ');
+  }
+
+  const parts: string[] = ['claude'];
+  if (opts.name !== undefined && opts.name !== '') {
+    parts.push('-n', shellQuote(opts.name));
+  }
+  if (opts.fork !== undefined) {
+    parts.push('--resume', shellQuote(opts.fork.sessionId), '--fork-session');
+  }
+  if (opts.model !== undefined && opts.model !== '') {
+    parts.push('--model', shellQuote(opts.model));
+  }
+  if (opts.systemPrompt !== undefined && opts.systemPrompt.trim() !== '') {
+    parts.push('--append-system-prompt', shellQuote(opts.systemPrompt));
+  }
+  parts.push('--dangerously-skip-permissions', shellQuote(opts.prompt));
+  return parts.join(' ');
+}
+
+// ---------------------------------------------------------------------------
+// Headless (print-mode) execution
+//
+// "Headless" runs the agent CLI in non-interactive print mode (`-p`) as a child
+// process with no tmux pane. The agent's stdout IS the result — no `crtr job
+// submit` needed. This is the default for `crtr agent new`.
+// ---------------------------------------------------------------------------
+
+export interface AgentPrintArgv {
+  cmd: string;
+  args: string[];
+}
+
+/**
+ * Argv for a non-interactive print-mode run.
+ *
+ *   claude: `claude [-n <name>] [--resume <id> --fork-session] -p \
+ *            --dangerously-skip-permissions <prompt>`
+ *   pi:     `pi [-n <name>] [--fork <id>] -p <prompt>`
+ *
+ * Returned as a cmd + args array so callers can spawn without a shell.
+ */
+export function buildAgentPrintArgv(
+  opts: AgentCommandOptions,
+  kind: AgentKind = detectAgentKind(),
+): AgentPrintArgv {
+  if (kind === 'pi') {
+    const args: string[] = [];
+    if (opts.name !== undefined && opts.name !== '') args.push('-n', opts.name);
+    if (opts.fork !== undefined) args.push('--fork', opts.fork.sessionId);
+    if (opts.model !== undefined && opts.model !== '') args.push('--model', normalizeModelForKind(opts.model, 'pi'));
+    if (opts.tools !== undefined && opts.tools.length > 0) args.push('--tools', opts.tools.join(','));
+    if (opts.systemPrompt !== undefined && opts.systemPrompt.trim() !== '') {
+      args.push('--append-system-prompt', opts.systemPrompt);
+    }
+    args.push('-p', opts.prompt);
+    return { cmd: 'pi', args };
+  }
+  const args: string[] = [];
+  if (opts.name !== undefined && opts.name !== '') args.push('-n', opts.name);
+  if (opts.fork !== undefined) args.push('--resume', opts.fork.sessionId, '--fork-session');
+  if (opts.model !== undefined && opts.model !== '') args.push('--model', opts.model);
+  if (opts.systemPrompt !== undefined && opts.systemPrompt.trim() !== '') {
+    args.push('--append-system-prompt', opts.systemPrompt);
+  }
+  args.push('-p', '--dangerously-skip-permissions', opts.prompt);
+  return { cmd: 'claude', args };
+}
+
+/** Same as buildAgentPrintArgv but rendered as a single shell-quoted string. */
+export function buildAgentPrintCommand(
+  opts: AgentCommandOptions,
+  kind: AgentKind = detectAgentKind(),
+): string {
+  const { cmd, args } = buildAgentPrintArgv(opts, kind);
+  return [cmd, ...args.map(shellQuote)].join(' ');
+}
+
+export interface HeadlessRunResult {
+  status: 'done' | 'failed';
+  /** Captured stdout on success; stdout+stderr (or an error message) on failure. */
+  output: string;
+  exitCode: number | null;
+}
+
+/**
+ * Run the agent headlessly and resolve once it exits. A blocking caller awaits
+ * this. stdout is captured as the result; a non-zero exit yields status
+ * 'failed' with the combined output.
+ */
+export function runAgentHeadless(
+  opts: { prompt: string; name?: string; cwd: string; systemPrompt?: string; model?: string; tools?: string[] },
+): Promise<HeadlessRunResult> {
+  const { cmd, args } = buildAgentPrintArgv({
+    prompt: opts.prompt,
+    name: opts.name,
+    systemPrompt: opts.systemPrompt,
+    model: opts.model,
+    tools: opts.tools,
+  });
+  return new Promise((resolve) => {
+    let out = '';
+    let err = '';
+    let child;
+    try {
+      // stdin 'ignore' so the agent never blocks waiting for stdin EOF (the
+      // prompt is passed as an argv arg, not piped).
+      child = spawn(cmd, args, { cwd: opts.cwd, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (e) {
+      resolve({ status: 'failed', output: `failed to launch ${cmd}: ${String(e)}`, exitCode: null });
+      return;
+    }
+    child.stdout?.on('data', (d: Buffer) => { out += d.toString(); });
+    child.stderr?.on('data', (d: Buffer) => { err += d.toString(); });
+    child.on('error', (e: Error) => {
+      resolve({ status: 'failed', output: `failed to launch ${cmd}: ${String(e)}`, exitCode: null });
+    });
+    child.on('close', (code: number | null) => {
+      if (code === 0) {
+        resolve({ status: 'done', output: out.trim() !== '' ? out : '(agent produced no output)', exitCode: 0 });
+      } else {
+        const combined = `${out}${err}`.trim();
+        resolve({
+          status: 'failed',
+          output: combined !== '' ? combined : `agent exited with code ${code ?? 'null'}`,
+          exitCode: code,
+        });
+      }
+    });
+  });
+}
+
+export interface HeadlessDetachResult {
+  status: 'spawned' | 'spawn-failed';
+  pid?: number;
+  message: string;
+}
+
+/**
+ * Launch a headless agent detached (background). Its print output is captured
+ * and delivered to the job via `crtr job submit`; a non-zero exit marks the job
+ * failed. Returns immediately with the wrapper pid (recorded for crash
+ * detection). No tmux required.
+ */
+export function spawnHeadlessDetached(
+  opts: { prompt: string; name?: string; cwd: string; jobId: string; systemPrompt?: string; model?: string; tools?: string[] },
+): HeadlessDetachResult {
+  const agentCmd = buildAgentPrintCommand({
+    prompt: opts.prompt,
+    name: opts.name,
+    systemPrompt: opts.systemPrompt,
+    model: opts.model,
+    tools: opts.tools,
+  });
+  const jid = shellQuote(opts.jobId);
+  // On failure, forward the captured stdout+stderr as the result body so the
+  // real cause (e.g. an auth error) is visible via `crtr job read result`/`logs`
+  // instead of being discarded behind a generic exit-code reason.
+  const wrapper =
+    `out="$(${agentCmd} 2>&1)"; ec=$?; ` +
+    `if [ "$ec" -eq 0 ]; then ` +
+    `if [ -z "$out" ]; then out='(agent produced no output)'; fi; ` +
+    `printf '%s' "$out" | crtr job submit ${jid}; ` +
+    `else printf '%s' "$out" | crtr job submit ${jid} --status failed --reason "agent exited with code $ec"; fi`;
+  try {
+    const child = spawn('sh', ['-c', wrapper], {
+      cwd: opts.cwd,
+      env: process.env,
+      detached: true,
+      stdio: 'ignore',
+    });
+    child.unref();
+    return { status: 'spawned', pid: child.pid, message: `headless agent started (pid ${child.pid ?? 'unknown'})` };
+  } catch (e) {
+    return { status: 'spawn-failed', message: `failed to launch headless agent: ${String(e)}` };
+  }
 }
 
 export function countPanesInCurrentWindow(): number {
@@ -120,8 +409,8 @@ function listWindowsInCurrentSession(): WindowInfo[] {
  *
  * tmux's `#{pane_current_command}` is unreliable on macOS because the Claude
  * Code CLI sets `process.title` to its version (e.g. `2.1.143`), which is what
- * tmux then reports. Going through the TTY + `ps` gives us the real binary
- * name (`claude`) from the kernel.
+ * tmux then reports. Going through the TTY + `ps` gives us the real foreground
+ * `comm` (`claude`, or `pi` from its process.title) from the kernel.
  */
 function paneTtysByWindow(): Map<string, string[]> {
   const result = spawnSync(
@@ -176,27 +465,34 @@ function foregroundCommsByTty(): Map<string, Set<string>> {
 
 /**
  * Find a window in the current tmux session with fewer than `maxPanesPerWindow`
- * panes AND where every existing pane has `claude` as a foreground process.
- * Prefers the active window so the spawned pane is visible to the user;
- * otherwise falls back to the first other eligible window. Returns the tmux
- * window id (e.g. `@5`) to pass via `-t`, or null if no window qualifies.
+ * panes AND where every existing pane hosts an agent (claude or pi) as its
+ * foreground process. Prefers the active window so the spawned pane is visible
+ * to the user; otherwise falls back to the first other eligible window. Returns
+ * the tmux window id (e.g. `@5`) to pass via `-t`, or null if no window qualifies.
  *
  * Windows holding non-agent panes (dashboards, log tails, idle shells, editors,
  * REPLs, etc.) are skipped so spawning never disrupts those workflows. A pane
- * qualifies as long as `claude` is among its foreground commands — co-resident
- * helpers like `caffeinate` don't disqualify it.
+ * qualifies as long as an agent comm is among its foreground commands —
+ * co-resident helpers like `caffeinate` don't disqualify it.
  */
 export function findWindowWithSpace(maxPanesPerWindow: number): string | null {
   const windows = listWindowsInCurrentSession();
   const ttysByWindow = paneTtysByWindow();
   const fgByTty = foregroundCommsByTty();
-  const isClaudeOnly = (windowId: string): boolean => {
+  const isAgentOnly = (windowId: string): boolean => {
     const ttys = ttysByWindow.get(windowId);
     if (ttys === undefined || ttys.length === 0) return false;
-    return ttys.every((tty) => fgByTty.get(tty)?.has('claude') === true);
+    return ttys.every((tty) => {
+      const comms = fgByTty.get(tty);
+      if (comms === undefined) return false;
+      for (const c of comms) {
+        if (AGENT_COMMS.has(c)) return true;
+      }
+      return false;
+    });
   };
   const eligible = windows.filter(
-    (w) => w.paneCount < maxPanesPerWindow && isClaudeOnly(w.windowId),
+    (w) => w.paneCount < maxPanesPerWindow && isAgentOnly(w.windowId),
   );
   const active = eligible.find((w) => w.isActive);
   if (active !== undefined) return active.windowId;
@@ -229,23 +525,23 @@ export function scheduleKillCurrentPane(delaySeconds: number): boolean {
 /**
  * Build the wrapper shell command passed to the tmux pane.
  *
- * Pattern: `claude <args>; crtr job _fail <job_id>`
+ * Pattern: `<agent invocation>; crtr job _fail <job_id>`
  *
- * If the worker submits via `crtr job submit` before claude exits,
+ * If the worker submits via `crtr job submit` before the agent exits,
  * result.json is already written (`done`); `_fail` sees it and is a no-op.
- * If claude crashes/exits without submitting, `_fail` writes status `failed`
+ * If the agent crashes/exits without submitting, `_fail` writes status `failed`
  * so `job read result` can distinguish completion from crash.
  */
-function wrapperCmd(claudeCmd: string, jobId: string): string {
-  return `${claudeCmd}; crtr job _fail ${shellQuote(jobId)}`;
+function wrapperCmd(agentCmd: string, jobId: string): string {
+  return `${agentCmd}; crtr job _fail ${shellQuote(jobId)}`;
 }
 
 /**
- * Fire-and-forget: launch an interactive `claude` in a new pane (or window),
+ * Fire-and-forget: launch an interactive agent in a new pane (or window),
  * then schedule the originating pane to be killed after `killAfterSeconds`.
  *
  * No custom system prompt — the task is delivered as the first user message.
- * Returns as soon as the new pane is up; does NOT wait for claude to finish.
+ * Returns as soon as the new pane is up; does NOT wait for the agent to finish.
  */
 export function spawnAndDetach(opts: DetachOptions): DetachResult {
   if (!isInTmux()) {
@@ -255,15 +551,9 @@ export function spawnAndDetach(opts: DetachOptions): DetachResult {
     };
   }
 
-  const buildClaudeInner = (): string => {
-    const parts: string[] = ['claude'];
-    if (opts.name !== undefined && opts.name !== '') {
-      parts.push('-n', shellQuote(opts.name));
-    }
-    parts.push('--dangerously-skip-permissions', shellQuote(opts.prompt as string));
-    return parts.join(' ');
-  };
-  const inner = opts.command !== undefined ? opts.command : buildClaudeInner();
+  const inner = opts.command !== undefined
+    ? opts.command
+    : buildAgentCommand({ prompt: opts.prompt as string, name: opts.name });
 
   const useFailGuard = opts.failGuard !== false;
   const fullCmd = useFailGuard ? wrapperCmd(inner, opts.jobId as string) : inner;
@@ -307,17 +597,157 @@ export function spawnAndDetach(opts: DetachOptions): DetachResult {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Dedicated subagent session
+//
+// Every subagent crtr spawns lands in a tmux session dedicated to the pi/claude
+// session that launched it, instead of splitting the user's working window. The
+// session is keyed on the originating pane ($TMUX_PANE) so it is reused across
+// spawns for the life of that pane. Spawns are interactive (headed) panes but
+// never steal focus — the user jumps to the session with Alt-o.
+//
+// Navigation state is written as tmux user-options so a keybinding can toggle
+// between the two without crtr involvement:
+//   - origin session:   @crtr_subagent_session = <subagent session name>
+//   - subagent session: @crtr_origin_session   = <origin session id>
+//                       @crtr_origin_pane      = <origin pane id>
+// ---------------------------------------------------------------------------
+
+function tmuxQuery(args: string[]): string | null {
+  const r = spawnSync('tmux', args, { encoding: 'utf8' });
+  if (r.status !== 0) return null;
+  return r.stdout.trim();
+}
+
+/** Originating pane id + session id of the host (pi/claude) crtr runs under. */
+export function originContext(): { pane: string; sessionId: string } | null {
+  const pane = process.env.TMUX_PANE;
+  if (pane === undefined || pane === '') return null;
+  const sessionId = tmuxQuery(['display-message', '-p', '-t', pane, '#{session_id}']);
+  if (sessionId === null || sessionId === '') return null;
+  return { pane, sessionId };
+}
+
+/** Deterministic subagent session name for an originating pane id (e.g. `%5`). */
+export function subagentSessionName(pane: string): string {
+  return `crtr-agents-${pane.replace(/[^a-zA-Z0-9]/g, '')}`;
+}
+
+/** A window in `session` with fewer than `maxPanes` panes (active preferred). */
+function findWindowWithSpaceInSession(session: string, maxPanes: number): string | null {
+  const r = spawnSync(
+    'tmux',
+    ['list-windows', '-t', session, '-F', '#{window_id} #{window_panes} #{window_active}'],
+    { encoding: 'utf8' },
+  );
+  if (r.status !== 0) return null;
+  const wins = r.stdout
+    .split('\n')
+    .filter((l) => l.trim() !== '')
+    .map((l) => {
+      const [id, count, active] = l.split(' ');
+      return { id, count: Number.parseInt(count, 10), active: active === '1' };
+    });
+  const eligible = wins.filter((w) => w.count < maxPanes);
+  const active = eligible.find((w) => w.active);
+  if (active !== undefined) return active.id;
+  return eligible[0]?.id ?? null;
+}
+
+interface PlaceResult {
+  status: 'spawned' | 'spawn-failed' | 'not-in-tmux';
+  paneId?: string;
+  session?: string;
+  placement?: 'new-session' | 'split-window' | 'new-window';
+  message: string;
+}
+
 /**
- * Async sibling spawn. Launches a claude session in a tmux pane, progressively
- * filling existing windows up to `maxPanesPerWindow` before creating a new
- * window. Returns immediately with the pane id; the parent stays alive.
+ * Ensure the dedicated subagent session exists and launch `fullCmd` in it,
+ * filling windows up to `maxPanes` before opening a new window. Records the
+ * cross-session navigation options on both sides. Never switches focus — the
+ * user navigates to the subagent session themselves (Alt-o).
+ */
+function placeInSubagentSession(opts: {
+  fullCmd: string;
+  jobId?: string;
+  cwd: string;
+  maxPanes: number;
+}): PlaceResult {
+  if (!isInTmux()) {
+    return { status: 'not-in-tmux', message: 'requires tmux (TMUX env var not set)' };
+  }
+  const origin = originContext();
+  if (origin === null) {
+    return { status: 'not-in-tmux', message: 'requires tmux (TMUX_PANE not set)' };
+  }
+  const session = subagentSessionName(origin.pane);
+  const envArgs = opts.jobId !== undefined ? ['-e', `CRTR_JOB_ID=${opts.jobId}`] : [];
+  const exists = spawnSync('tmux', ['has-session', '-t', session], { encoding: 'utf8' }).status === 0;
+
+  let paneId: string;
+  let placement: PlaceResult['placement'];
+  if (!exists) {
+    const r = spawnSync(
+      'tmux',
+      ['new-session', '-d', '-s', session, '-c', opts.cwd, '-P', '-F', '#{pane_id}', ...envArgs, opts.fullCmd],
+      { encoding: 'utf8' },
+    );
+    if (r.status !== 0) {
+      return { status: 'spawn-failed', message: r.stderr.trim() || 'tmux new-session failed' };
+    }
+    paneId = r.stdout.trim();
+    placement = 'new-session';
+  } else {
+    const targetWindow = findWindowWithSpaceInSession(session, opts.maxPanes);
+    if (targetWindow === null) {
+      const r = spawnSync(
+        'tmux',
+        ['new-window', '-t', session, '-c', opts.cwd, '-P', '-F', '#{pane_id}', ...envArgs, opts.fullCmd],
+        { encoding: 'utf8' },
+      );
+      if (r.status !== 0) {
+        return { status: 'spawn-failed', message: r.stderr.trim() || 'tmux new-window failed' };
+      }
+      paneId = r.stdout.trim();
+      placement = 'new-window';
+    } else {
+      const r = spawnSync(
+        'tmux',
+        ['split-window', '-h', '-t', targetWindow, '-c', opts.cwd, '-P', '-F', '#{pane_id}', ...envArgs, opts.fullCmd],
+        { encoding: 'utf8' },
+      );
+      if (r.status !== 0) {
+        return { status: 'spawn-failed', message: r.stderr.trim() || 'tmux split-window failed' };
+      }
+      paneId = r.stdout.trim();
+      placement = 'split-window';
+      spawnSync('tmux', ['select-layout', '-t', paneId, 'even-horizontal'], { encoding: 'utf8' });
+    }
+  }
+
+  // Record navigation state for the M-o toggle keybinding.
+  spawnSync('tmux', ['set-option', '-t', origin.sessionId, '@crtr_subagent_session', session], { encoding: 'utf8' });
+  spawnSync('tmux', ['set-option', '-t', session, '@crtr_origin_session', origin.sessionId], { encoding: 'utf8' });
+  spawnSync('tmux', ['set-option', '-t', session, '@crtr_origin_pane', origin.pane], { encoding: 'utf8' });
+
+  return {
+    status: 'spawned',
+    paneId,
+    session,
+    placement,
+    message: `agent spawned in pane ${paneId} of session ${session} (${placement})`,
+  };
+}
+
+/**
+ * Async sibling spawn. Launches an interactive agent (claude or pi, per
+ * detectAgentKind) in the dedicated subagent session, progressively filling
+ * windows up to `maxPanesPerWindow` before creating a new window. Returns
+ * immediately with the pane id; the parent stays alive. Focus is never
+ * switched — the user jumps to the subagent session with Alt-o.
  *
- * Placement order:
- *   1. Current window, if it has space.
- *   2. Any other window in the session with space.
- *   3. New window (every existing window at capacity).
- *
- * If `fork` is set, uses `claude --resume <id> --fork-session`.
+ * If `fork` is set, forks the host session into a fresh one.
  */
 export function spawnAgent(opts: SpawnAgentOptions): SpawnAgentResult {
   if (!isInTmux()) {
@@ -327,57 +757,29 @@ export function spawnAgent(opts: SpawnAgentOptions): SpawnAgentResult {
     };
   }
 
-  const claudeParts: string[] = ['claude'];
-  if (opts.name !== undefined && opts.name !== '') {
-    claudeParts.push('-n', shellQuote(opts.name));
-  }
-  if (opts.fork !== undefined) {
-    claudeParts.push('--resume', opts.fork.sessionId, '--fork-session');
-  }
-  claudeParts.push('--dangerously-skip-permissions', shellQuote(opts.prompt));
-  const claudeCmd = claudeParts.join(' ');
+  const agentCmd = buildAgentCommand({
+    prompt: opts.prompt,
+    name: opts.name,
+    fork: opts.fork,
+    systemPrompt: opts.systemPrompt,
+    model: opts.model,
+    tools: opts.tools,
+  });
 
-  const fullCmd = wrapperCmd(claudeCmd, opts.jobId);
-
-  const targetWindow = findWindowWithSpace(opts.maxPanesPerWindow);
-  const placement: 'split-window' | 'new-window' =
-    targetWindow === null ? 'new-window' : 'split-window';
-
-  const tmuxArgs: string[] = [placement];
-  if (placement === 'split-window') {
-    tmuxArgs.push('-h', '-t', targetWindow as string);
-  }
-  tmuxArgs.push(
-    '-P',
-    '-F',
-    '#{pane_id}',
-    '-c',
-    opts.cwd,
-    '-e',
-    `CRTR_JOB_ID=${opts.jobId}`,
+  const fullCmd = wrapperCmd(agentCmd, opts.jobId);
+  const placed = placeInSubagentSession({
     fullCmd,
-  );
-
-  const split = spawnSync('tmux', tmuxArgs, { encoding: 'utf8' });
-  if (split.status !== 0) {
-    const stderrText = split.stderr.trim();
-    const msg = stderrText === '' ? `tmux ${placement} failed` : stderrText;
-    return { status: 'spawn-failed', message: msg };
-  }
-  const paneId = split.stdout.trim();
-
-  // Re-balance the target window's panes evenly so the new pane doesn't end up
-  // half the size of its siblings. -t <pane_id> resolves to the window it lives
-  // in for both placements (split + new-window).
-  spawnSync('tmux', ['select-layout', '-t', paneId, 'even-horizontal'], {
-    encoding: 'utf8',
+    jobId: opts.jobId,
+    cwd: opts.cwd,
+    maxPanes: opts.maxPanesPerWindow,
   });
 
   return {
-    status: 'spawned',
-    paneId,
-    placement,
-    message: `agent spawned in pane ${paneId} (${placement})`,
+    status: placed.status,
+    paneId: placed.paneId,
+    placement: placed.placement === 'split-window' ? 'split-window' : 'new-window',
+    message: placed.message,
   };
 }
+
 
