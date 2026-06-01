@@ -15,10 +15,40 @@ export function parseFrontmatter(source: string): ParsedFrontmatter {
   }
   const raw = match[1];
   const body = source.slice(match[0].length);
-  return { data: parseSimpleYaml(raw), body, raw };
+  return { data: toSkillFrontmatter(parseYamlRecord(raw)), body, raw };
 }
 
-function parseSimpleYaml(yaml: string): SkillFrontmatter {
+export interface ParsedFrontmatterGeneric {
+  /** Raw, uncoerced key/value record from the YAML block (null when absent). */
+  data: Record<string, unknown> | null;
+  body: string;
+  raw: string;
+}
+
+/** Like parseFrontmatter but returns the raw key/value record instead of
+ *  coercing to SkillFrontmatter. Used by consumers (e.g. subagents) that read
+ *  fields skills don't declare, such as `tools` and `model`. */
+export function parseFrontmatterGeneric(source: string): ParsedFrontmatterGeneric {
+  const match = source.match(FRONTMATTER_RE);
+  if (!match) {
+    return { data: null, body: source, raw: '' };
+  }
+  const raw = match[1];
+  const body = source.slice(match[0].length);
+  return { data: parseYamlRecord(raw), body, raw };
+}
+
+function toSkillFrontmatter(out: Record<string, unknown>): SkillFrontmatter {
+  const fm: SkillFrontmatter = {
+    name: typeof out.name === 'string' ? out.name : '',
+    description: typeof out.description === 'string' ? out.description : undefined,
+    keywords: Array.isArray(out.keywords) ? (out.keywords as string[]) : undefined,
+    type: isSkillType(out.type) ? out.type : undefined,
+  };
+  return fm;
+}
+
+function parseYamlRecord(yaml: string): Record<string, unknown> {
   const lines = yaml.split(/\r?\n/);
   const out: Record<string, unknown> = {};
   let i = 0;
@@ -129,13 +159,7 @@ function parseSimpleYaml(yaml: string): SkillFrontmatter {
     out[key] = stripQuotes(rest);
     i++;
   }
-  const fm: SkillFrontmatter = {
-    name: typeof out.name === 'string' ? out.name : '',
-    description: typeof out.description === 'string' ? out.description : undefined,
-    keywords: Array.isArray(out.keywords) ? (out.keywords as string[]) : undefined,
-    type: isSkillType(out.type) ? out.type : undefined,
-  };
-  return fm;
+  return out;
 }
 
 function stripQuotes(s: string): string {

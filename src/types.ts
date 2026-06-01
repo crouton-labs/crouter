@@ -106,6 +106,28 @@ export interface Skill {
   disabledIn?: Scope;
 }
 
+export interface SubagentFrontmatter {
+  name: string;
+  description?: string;
+  /** Tool allow-list (pi tool names). Passed through to pi via `--tools`. */
+  tools?: string[];
+  /** Model pattern/id passed to the agent CLI via `--model`. */
+  model?: string;
+}
+
+export interface Subagent {
+  name: string;
+  /** Plugin the subagent belongs to, or SCOPE_SKILL_PLUGIN ('_') for a
+   *  scope-root agent stored at `<scope-root>/agents/<name>.md`. */
+  plugin: string;
+  scope: Scope;
+  /** Absolute path to the agent's .md file. */
+  path: string;
+  frontmatter: SubagentFrontmatter;
+  /** Markdown body — used as the spawned agent's appended system prompt. */
+  systemPrompt: string;
+}
+
 export interface InstalledPlugin {
   name: string;
   scope: Scope;
@@ -135,6 +157,9 @@ export const CONFIG_FILE = 'config.json';
 export const STATE_FILE = 'state.json';
 export const SKILL_ENTRY_FILE = 'SKILL.md';
 export const SKILLS_DIR = 'skills';
+// Subagent definitions live as flat `<name>.md` files under `<root>/agents/`,
+// for both scope roots and plugins. Mirrors SKILLS_DIR.
+export const AGENTS_DIR = 'agents';
 // Sentinel plugin name for skills that live at a scope root (no plugin wrapper).
 // Stored as `<scope-root>/skills/<name>/SKILL.md`. Shown in listings without the
 // `_/` prefix.

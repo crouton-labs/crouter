@@ -4,7 +4,7 @@ import { planReviewPrompt, specReviewPrompt } from './review.js';
  * First user message for a spec → plan handoff.
  *
  * Thin prompt: the worker discovers the full planning workflow by running
- * `crtr agent plan new -h`, then saves the plan via `crtr agent plan new`. This
+ * `crtr mode plan new -h`, then saves the plan via `crtr mode plan new`. This
  * avoids embedding the planPrompt() blob here and keeps the prompt in sync
  * with the live CLI without any coupling.
  */
@@ -13,9 +13,9 @@ export function planHandoffPrompt(specPath: string, jobId: string): string {
 
 **Spec:** ${specPath}
 
-1. Run \`crtr agent plan new -h\` to load the planning workflow and output schema.
+1. Run \`crtr mode plan new -h\` to load the planning workflow and output schema.
 2. Read the spec end-to-end.
-3. Follow the workflow from step 1 and save the plan by passing the plan markdown to \`crtr agent plan new\` on stdin.
+3. Follow the workflow from step 1 and save the plan by passing the plan markdown to \`crtr mode plan new\` on stdin.
 4. When done, submit a short markdown report on stdin:
 
 \`\`\`bash
@@ -164,4 +164,36 @@ export function reviewerHandoffPrompt(
   return `${patched}
 
 After calling \`crtr job submit\`, your turn ends and the pane closes itself. Do NOT chat or summarize after submission.`;
+}
+
+/**
+ * First user message for a general `agent new` worker.
+ *
+ * The worker runs as an interactive agent in a tmux pane (not print mode), so
+ * its stdout is NOT captured as the result — it must deliver its answer via
+ * `crtr job submit`, exactly like the mode-handoff workers. The original task
+ * is sent verbatim; the submit contract is appended after a separator.
+ */
+export function agentNewPrompt(task: string, jobId: string): string {
+  return `${task}
+
+---
+
+When you have finished the task above, deliver your final answer by piping your
+full markdown result to \`crtr job submit\` — this is how the result is returned
+to whoever spawned you:
+
+\`\`\`bash
+crtr job submit ${jobId} <<'MD'
+<your complete answer / findings>
+MD
+\`\`\`
+
+If you cannot complete the task, submit a failure with a reason instead:
+
+\`\`\`bash
+crtr job submit ${jobId} --status failed --reason "<why>"
+\`\`\`
+
+Do your work first; submit exactly once when done. After submitting, your turn ends.`;
 }
