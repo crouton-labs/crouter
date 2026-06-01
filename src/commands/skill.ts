@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { writeFileSync } from 'node:fs';
 import { defineBranch, defineLeaf } from '../core/command.js';
 import type { BranchDef } from '../core/command.js';
+import { stateBlock } from '../core/help.js';
 import { usage, general, notFound } from '../core/errors.js';
 import {
   SCOPE_SKILL_PLUGIN,
@@ -671,6 +672,11 @@ const stateBranch = defineBranch({
 // skills only (nested children stay discoverable via `skill find list`).
 type CatalogSource = { plugin: string; roots: string[] };
 
+/** The skill subtree's live state: the loaded-skills catalog as a self-named
+ *  `<skills count="N">` element. The tag carries the label and the count is an
+ *  attribute, so the body is the grouped tree alone — no "Loaded skills (N)"
+ *  header to duplicate. Returns null (block omitted) when discovery fails or
+ *  nothing is loaded. */
 function buildSkillCatalog(): string | null {
   let skills: Skill[];
   try {
@@ -700,10 +706,13 @@ function buildSkillCatalog(): string | null {
     (scope === 'project' ? projectSources : userSources).push({ plugin, roots });
   }
 
-  const lines = [`Loaded skills (${skills.length})`];
-  renderCatalogSection('Project', projectSources, lines);
-  renderCatalogSection('User', userSources, lines);
-  return lines.join('\n');
+  const body: string[] = [];
+  renderCatalogSection('Project', projectSources, body);
+  renderCatalogSection('User', userSources, body);
+  // renderCatalogSection leads each section with a blank separator; drop the
+  // leading one so the element body starts on its first real line.
+  while (body.length > 0 && body[0] === '') body.shift();
+  return stateBlock('skills', { count: skills.length }, body.join('\n'));
 }
 
 function renderCatalogSection(
@@ -783,6 +792,12 @@ function renderCatalogSection(
 export function registerSkill(): BranchDef {
   return defineBranch({
     name: 'skill',
+    rootEntry: {
+      concept: 'a SKILL.md you read to adopt its workflow',
+      desc: 'find, read, author, and manage skills',
+      useWhen: 'a task matches a loaded skill — read it before improvising. `crtr skill read <name>` loads one by name from the catalog below; `crtr skill find` only when the name is not already listed. Names are crtr identifiers, not file paths — never cat or find SKILL.md off disk.',
+      dynamicState: buildSkillCatalog,
+    },
     help: {
       name: 'skill',
       summary: 'discover, read, author, and manage skill state',

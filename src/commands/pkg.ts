@@ -1149,6 +1149,11 @@ const marketBranch = defineBranch({
 export function registerPkg(): BranchDef {
   return defineBranch({
     name: 'pkg',
+    rootEntry: {
+      concept: 'plugins and marketplaces that supply skills',
+      desc: 'manage plugins and marketplaces',
+      useWhen: 'installing or browsing skill collections',
+    },
     help: {
       name: 'pkg',
       summary: 'manage plugins and plugin marketplaces',

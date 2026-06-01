@@ -66,11 +66,42 @@ export interface ContextFileParam {
 
 export type InputParam = PositionalParam | FlagParam | StdinParam | ContextFileParam;
 
+/** A subtree's self-description at the parent (root) level. Each subtree owns
+ *  the content that represents it one level up: its vocabulary line, its
+ *  selection rubric, and any bounded block it contributes to the parent's -h.
+ *  defineRoot assembles the root help from these — root never hardcodes a
+ *  subtree's representation. See cli-design "Each node owns its parent-level
+ *  representation". */
+export interface RootEntry {
+  /** One-line vocabulary desc — what this subtree is. Rendered first in the
+   *  subtree's <name> block at root. */
+  concept: string;
+  /** Operations summary (verb list). Carried for completeness; the root block
+   *  leads with concept + rubric, so this is available but not rendered. */
+  desc: string;
+  /** The selection rubric — `use when X` in the subtree's <name> block. */
+  useWhen: string;
+  /** Optional bounded block this subtree contributes to its <name> block at
+   *  root. Returns a complete self-named state element (build it with
+   *  stateBlock), e.g. `<skills count="42">…</skills>`. Aggregate, never an
+   *  unbounded enumeration on a cold path. Soft-fails to omission on
+   *  null/throw. */
+  dynamicState?: () => string | null;
+}
+
 export interface RootHelp {
   tagline: string;
-  /** Vocabulary block — rendered before subtrees. */
-  concepts: { name: string; desc: string }[];
-  subtrees: { name: string; desc: string; useWhen: string }[];
+  /** One entry per listed subtree. Each renders as its own <name> XML block at
+   *  root, carrying the subtree's concept, selection rubric, and any nested
+   *  runtime-state block. Assembled from subtrees' RootEntry by defineRoot;
+   *  root hardcodes none of it. */
+  commands: {
+    name: string;
+    concept: string;
+    desc: string;
+    useWhen: string;
+    dynamicState?: () => string | null;
+  }[];
   globals: { name: string; desc: string }[];
 }
 
@@ -79,8 +110,9 @@ export interface BranchHelp {
   summary: string;
   /** Local lifecycle/model line that extends the parent definition. */
   model?: string;
-  /** Bounded runtime aggregate, e.g. "Current: 2 draft, 1 active".
-   *  Renderer soft-fails to omission if this returns null or throws. */
+  /** Bounded runtime aggregate as a complete self-named state element (build
+   *  it with stateBlock), e.g. `<skills count="42">…</skills>`. Renderer
+   *  soft-fails to omission if this returns null or throws. */
   dynamicState?: () => string | null;
   children: { name: string; desc: string; useWhen: string }[];
 }
@@ -105,6 +137,34 @@ export interface LeafHelp {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
+/** Build a self-named runtime-state element: `<tag attr="v">body</tag>`. The
+ *  subtree that owns the state authors it through this, so the tag name and any
+ *  scalar metadata (e.g. a count) travel with the data and render identically
+ *  at every level the block appears. The tag name carries the label, so the
+ *  body never repeats it. Attribute values are controlled (counts, short
+ *  tokens) and not escaped. */
+export function stateBlock(
+  tag: string,
+  attrs: Record<string, string | number>,
+  body: string,
+): string {
+  const a = Object.entries(attrs)
+    .map(([k, v]) => ` ${k}="${v}"`)
+    .join('');
+  return `<${tag}${a}>\n${body}\n</${tag}>`;
+}
+
+/** Evaluate a dynamicState hook, soft-failing to null on throw or empty. */
+function evalDynamic(fn?: () => string | null): string | null {
+  if (fn === undefined) return null;
+  try {
+    const s = fn();
+    return s !== null && s !== '' ? s : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Return the longest string length in an array of names. */
 function maxLen(names: string[]): number {
   let max = 0;
@@ -127,31 +187,42 @@ const IO_CONTRACT =
   'I/O contract: flags and positional args on input, JSON on stdout (JSONL for streams).\n' +
   'Exit 0 on success, non-zero on failure. Schemas appear at leaf -h.';
 
+// Behavioral instruction (not a schema) — engrained in the appended system
+// prompt so the model treats unfamiliar capabilities as a cue to discover the
+// contract, never to guess. Lives in the root guide, outside any leaf -h.
+const CAPABILITY_DISCOVERY =
+  "If the user mentions or implies a crtr capability you don't fully understand, " +
+  'do not guess or assume it is unsupported — run `-h` on the relevant command ' +
+  '(append it anywhere along the path) to read the contract before acting.';
+
 export function renderRoot(h: RootHelp): string {
   const lines: string[] = [];
 
   lines.push(`${h.tagline}`);
   lines.push('');
 
-  // Concepts block
-  lines.push('Concepts');
-  const cNameW = maxLen(h.concepts.map((c) => c.name));
-  for (const c of h.concepts) {
-    lines.push(`  ${pad(c.name, cNameW)}  ${c.desc}`);
+  // Each subtree is one <command name="…"> block. The uniform wrapper states
+  // "this is a command you invoke as `crtr <name>`" — so the model reads them
+  // by one rule, and a nested state element (which is never a <command>) can't
+  // be mistaken for a sibling command. Inside: the concept (what it is), the
+  // selection rubric (when to pick it), then any self-named state element
+  // grouped with the command it belongs to. Once injected into a system prompt,
+  // each block reads as one self-contained concern domain. Header (tagline) and
+  // footer (Globals + I/O contract + capability-discovery rule) are the only
+  // non-command areas. Two levels of nesting: <command> → <state>.
+  for (const c of h.commands) {
+    lines.push(`<command name="${c.name}">`);
+    lines.push(c.concept);
+    lines.push(`use when ${c.useWhen}`);
+    // dynamicState returns a complete self-named element (e.g.
+    // <skills count="42">…</skills>) — emit it as-is, nested in the command.
+    const state = evalDynamic(c.dynamicState);
+    if (state !== null) lines.push(state);
+    lines.push('</command>');
+    lines.push('');
   }
-  lines.push('');
 
-  // Subtrees block
-  lines.push('Subtrees');
-  const sNameW = maxLen(h.subtrees.map((s) => s.name));
-  // Align desc column so "| use when X" starts at a consistent offset
-  const sDescW = maxLen(h.subtrees.map((s) => s.desc));
-  for (const s of h.subtrees) {
-    lines.push(`  ${pad(s.name, sNameW)}  ${pad(s.desc, sDescW)}  | use when ${s.useWhen}`);
-  }
-  lines.push('');
-
-  // Globals block
+  // Globals block (footer)
   lines.push('Globals');
   const gNameW = maxLen(h.globals.map((g) => g.name));
   for (const g of h.globals) {
@@ -160,6 +231,8 @@ export function renderRoot(h: RootHelp): string {
   lines.push('');
 
   lines.push(IO_CONTRACT);
+  lines.push('');
+  lines.push(CAPABILITY_DISCOVERY);
 
   return lines.join('\n');
 }
@@ -173,24 +246,20 @@ export function renderBranch(h: BranchHelp): string {
 
   lines.push(`${h.name}: ${h.summary}.`);
 
-  if (h.model !== undefined) {
-    lines.push(h.model);
+  // Dynamic content leads — the live aggregate (e.g. the <skills> catalog)
+  // renders right after the name, before the hardcoded model prose, so current
+  // state is read first. The subtree authors the whole element, so the same
+  // self-named block appears identically at root and at `skill -h`.
+  const branchState = evalDynamic(h.dynamicState);
+  if (branchState !== null) {
+    // dynamicState returns a complete self-named element — emit as-is.
+    lines.push('');
+    lines.push(branchState);
   }
 
-  // Dynamic state — soft-fail to omission. Rendered as its own block,
-  // blank-line separated from the summary, so a multi-line runtime
-  // aggregate (e.g. the loaded-skills catalog) reads cleanly.
-  if (h.dynamicState !== undefined) {
-    let state: string | null = null;
-    try {
-      state = h.dynamicState();
-    } catch {
-      // soft-fail: omit the block
-    }
-    if (state !== null && state !== '') {
-      lines.push('');
-      lines.push(state);
-    }
+  if (h.model !== undefined) {
+    lines.push('');
+    lines.push(h.model);
   }
 
   lines.push('');

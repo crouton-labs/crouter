@@ -761,6 +761,11 @@ const sysVersionLeaf = defineLeaf({
 export function registerSys(): BranchDef {
   return defineBranch({
     name: 'sys',
+    rootEntry: {
+      concept: 'crtr configuration, diagnostics, and self-management',
+      desc: 'config, doctor, update, version',
+      useWhen: 'managing the crtr installation',
+    },
     help: {
       name: 'sys',
       summary: 'crtr system configuration, diagnostics, and self-management',

@@ -6,10 +6,12 @@
 // cancel.
 //
 // Terminal-write contract:
-//   Worker calls `crtr job submit` → jobs.writeResult(jobId, result, 'done').
-//   If claude exits without submitting, the wrapper shell calls `crtr job _fail`
-//   → jobs.writeResult(jobId, {}, 'failed') IF result.json does not yet exist.
-//   `job read result` watches result.json appearance as the sole completion signal.
+//   Worker MAY call `crtr job submit` → writes result.md (done|failed).
+//   If claude exits without submitting, the wrapper shell's `crtr job _fail`
+//   marks it failed IF no result file exists yet.
+//   If the worker's tmux pane is closed, SIGHUP skips `_fail`; the jobs layer
+//   then reaps the job by detecting that its recorded pane has vanished.
+//   `job read result` watches result file appearance and polls for pane death.
 //
 // `job read logs` is the only JSONL leaf.
 
@@ -24,12 +26,35 @@ import {
   listJobs,
   readLog,
   cancelJob,
+  appendEvent,
 } from '../core/jobs.js';
 import { scheduleKillCurrentPane } from '../core/spawn.js';
 import { paginate } from '../core/pagination.js';
+import { stateBlock } from '../core/help.js';
 
 const WAIT_BUDGET_MS = 10 * 60 * 1000;
 const FOLLOW_POLL_MS = 1000;
+
+/** Count of jobs currently in the live state, or null when listing fails.
+ *  Backs the always-on "Workers running" signal on root -h so an agent never
+ *  forgets it has in-flight workers to collect. */
+export function liveJobCount(): number | null {
+  try {
+    return listJobs().filter((j) => j.state === 'live').length;
+  } catch {
+    return null;
+  }
+}
+
+/** The job subtree's root-level dynamic block. A bounded aggregate (running
+ *  count + how to collect), never an enumeration: live jobs are volatile and
+ *  unbounded, so listing them in root -h would balloon (cli-design rule 15).
+ *  Omitted when nothing is running. */
+export function buildJobRootBlock(): string | null {
+  const n = liveJobCount();
+  if (n === null || n === 0) return null;
+  return stateBlock('workers', { count: n }, '`crtr job read list` to see them; `crtr job read result ID` to collect');
+}
 const DEFAULT_KILL_SECS = 2;
 
 // ---------------------------------------------------------------------------
@@ -83,7 +108,7 @@ const readStatus = defineLeaf({
     ],
     output: [
       { name: 'job_id', type: 'string', required: true, constraint: 'Echo of input.' },
-      { name: 'state', type: 'string', required: true, constraint: 'One of: live, done, failed, canceled.' },
+      { name: 'state', type: 'string', required: true, constraint: 'One of: live, done, failed, canceled, closed (worker pane closed with no submitted result).' },
       { name: 'age_s', type: 'number', required: true, constraint: 'Seconds since job creation.' },
       { name: 'last_event', type: 'object | null', required: true, constraint: 'Most recent log event {event, ts}, or null if no events yet.' },
     ],
@@ -157,7 +182,7 @@ const readLogs = defineLeaf({
       }
     }
 
-    const terminalStates = new Set(['done', 'failed', 'canceled']);
+    const terminalStates = new Set(['done', 'failed', 'canceled', 'closed']);
 
     await new Promise<void>((resolve) => {
       const poll = (): void => {
@@ -195,10 +220,10 @@ const readResult = defineLeaf({
     ],
     output: [
       { name: 'job_id', type: 'string', required: true, constraint: 'Echo of input.' },
-      { name: 'status', type: 'string', required: true, constraint: 'One of: done, failed, canceled, timeout.' },
+      { name: 'status', type: 'string', required: true, constraint: 'One of: done, failed, canceled, closed, timeout. closed = the worker pane went away before submitting a result.' },
       { name: 'result_md', type: 'string', required: false, constraint: 'Markdown body submitted by an agent via `crtr job submit`. Present when the job used the agent submit path.' },
       { name: 'result', type: 'object', required: false, constraint: 'Structured object submitted by a programmatic caller (human/sys). Present when the job used the programmatic submit path.' },
-      { name: 'reason', type: 'string', required: false, constraint: 'Failure reason from frontmatter when status is failed and the agent submit path was used.' },
+      { name: 'reason', type: 'string', required: false, constraint: 'Short explanation from frontmatter. Present when status is failed (agent-reported error) or closed (worker pane closed before submitting).' },
     ],
     outputKind: 'object',
     effects: ['None. Read-only.'],
@@ -291,6 +316,11 @@ const jobSubmit = defineLeaf({
     }
 
     writeMarkdownResult(jobId, body, status, status === 'failed' ? reason : undefined);
+    appendEvent(jobId, {
+      level: status === 'failed' ? 'error' : 'info',
+      event: 'worker_finished',
+      message: status === 'failed' ? `worker failed: ${reason}` : 'worker submitted result',
+    });
     const paneKillScheduled = killPane ? scheduleKillCurrentPane(DEFAULT_KILL_SECS) : false;
     return { submitted: true, pane_kill_scheduled: paneKillScheduled };
   },
@@ -329,6 +359,11 @@ const jobFail = defineLeaf({
     }
     try {
       writeMarkdownResult(jobId, '', 'failed', 'worker exited without submitting');
+      appendEvent(jobId, {
+        level: 'error',
+        event: 'worker_finished',
+        message: 'worker exited without submitting',
+      });
       return { recorded: true };
     } catch {
       return { recorded: false };
@@ -368,11 +403,17 @@ const jobCancel = defineLeaf({
 export function registerJob(): BranchDef {
   return defineBranch({
     name: 'job',
+    rootEntry: {
+      concept: 'producer-agnostic record of any ongoing task — its logs and result',
+      desc: 'monitor and collect from any ongoing task',
+      useWhen: 'reading status, logs, or result of a job started by any producer',
+      dynamicState: buildJobRootBlock,
+    },
     help: {
       name: 'job',
       summary: 'monitor and collect results from any ongoing task',
       model:
-        'A job is a producer-agnostic record of an ongoing task: state, logs, terminal result. Producers (`crtr agent new *`, future task systems) create jobs; this subtree is the shared read/cancel/submit surface. States: live | done | failed | canceled.',
+        'A job is a producer-agnostic record of an ongoing task: state, logs, terminal result. Producers (`crtr agent new *`, future task systems) create jobs; this subtree is the shared read/cancel/submit surface. States: live | done | failed | canceled | closed (worker pane closed before submitting a result).',
       children: [
         { name: 'read', desc: 'read status, logs, or results', useWhen: 'monitoring or collecting from a running or completed job' },
         { name: 'submit', desc: 'deliver result from inside a worker pane or any producer', useWhen: 'a worker is ready to return its output' },

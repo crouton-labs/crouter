@@ -1,0 +1,1 @@
+- `resetScopeCache()` must be called in `before`/`after` hooks whenever `process.env['HOME']` is mutated between test suites — `scope.js` caches plugin dirs on first access keyed to the home at that moment; a new `HOME` without a cache reset silently resolves skills from the previous suite's fixture with no error.

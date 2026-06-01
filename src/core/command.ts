@@ -6,7 +6,7 @@
 // edge cases.
 
 import { renderRoot, renderBranch, renderLeafArgv } from './help.js';
-import type { RootHelp, BranchHelp, LeafHelp, InputParam, FlagParam } from './help.js';
+import type { RootHelp, RootEntry, BranchHelp, LeafHelp, InputParam, FlagParam } from './help.js';
 import { readStdinRaw, emit, handle } from './io.js';
 import { CrtrError } from './errors.js';
 import { ExitCode } from '../types.js';
@@ -16,10 +16,29 @@ import { readFileSync } from 'node:fs';
 // Node types
 // ---------------------------------------------------------------------------
 
+/** Opt-in flag that surfaces a node as an editor slash command (a pi prompt
+ *  template / Claude Code command). When set, the bootstrap auto-writes a
+ *  markdown template named `<name>.md` to the host's command dirs on each crtr
+ *  run, so `/name` becomes available. The body is thin — it points the agent at
+ *  the live `crtr` workflow so the CLI stays the source of truth. */
+export interface SlashSpec {
+  /** Command name → `/<name>` and the template filename. */
+  name: string;
+  /** Frontmatter description shown in the autocomplete dropdown. */
+  description: string;
+  /** Optional autocomplete hint, e.g. `<url>` or `[topic]`. */
+  argumentHint?: string;
+  /** Markdown body (no frontmatter). Bootstrap wraps it with frontmatter + a
+   *  version marker. Use `$ARGUMENTS` for the invocation's free text. */
+  body: string;
+}
+
 export interface LeafDef {
   kind: 'leaf';
   name: string;
   help: LeafHelp;
+  /** Opt into editor slash-command exposure (see SlashSpec). */
+  slash?: SlashSpec;
   run: (input: Record<string, unknown>) => Promise<Record<string, unknown> | void>;
 }
 
@@ -27,6 +46,12 @@ export interface BranchDef {
   kind: 'branch';
   name: string;
   help: BranchHelp;
+  /** How this subtree represents itself one level up. Present on top-level
+   *  subtrees (assembled into root -h by defineRoot); omitted on nested
+   *  branches, whose parent representation is the branch's own children list. */
+  rootEntry?: RootEntry;
+  /** Opt into editor slash-command exposure (see SlashSpec). */
+  slash?: SlashSpec;
   children: (LeafDef | BranchDef)[];
 }
 
@@ -43,12 +68,14 @@ export interface RootDef {
 export function defineLeaf(opts: {
   name: string;
   help: LeafHelp;
+  slash?: SlashSpec;
   run: (input: Record<string, unknown>) => Promise<Record<string, unknown> | void>;
 }): LeafDef {
   return {
     kind: 'leaf',
     name: opts.name,
     help: opts.help,
+    slash: opts.slash,
     run: opts.run,
   };
 }
@@ -56,16 +83,62 @@ export function defineLeaf(opts: {
 export function defineBranch(opts: {
   name: string;
   help: BranchHelp;
+  rootEntry?: RootEntry;
+  slash?: SlashSpec;
   children: (LeafDef | BranchDef)[];
 }): BranchDef {
-  return { kind: 'branch', name: opts.name, help: opts.help, children: opts.children };
+  return {
+    kind: 'branch',
+    name: opts.name,
+    help: opts.help,
+    rootEntry: opts.rootEntry,
+    slash: opts.slash,
+    children: opts.children,
+  };
 }
 
+/** Walk the whole tree and collect every node's SlashSpec (depth-first). Used
+ *  by the bootstrap to discover which commands opted into slash exposure. */
+export function collectSlashSpecs(root: RootDef): SlashSpec[] {
+  const out: SlashSpec[] = [];
+  const visit = (node: BranchDef | LeafDef): void => {
+    if (node.slash !== undefined) out.push(node.slash);
+    if (node.kind === 'branch') for (const c of node.children) visit(c);
+  };
+  for (const s of root.subtrees) visit(s);
+  return out;
+}
+
+/** Assemble root -h from the subtrees themselves. Root owns only the tagline
+ *  and globals; every subtree's concept line, selection rubric, and dynamic
+ *  block come from its own RootEntry. A subtree without a rootEntry does not
+ *  appear in root -h — declaring the parent-level representation is how a
+ *  subtree opts into being listed. */
 export function defineRoot(opts: {
-  help: RootHelp;
+  tagline: string;
+  globals: { name: string; desc: string }[];
   subtrees: BranchDef[];
 }): RootDef {
-  return { kind: 'root', help: opts.help, subtrees: opts.subtrees };
+  // Each listed subtree becomes one <name> block at root, assembled straight
+  // from its RootEntry. Root composes nothing and hardcodes nothing: add a
+  // subtree with a rootEntry and it surfaces; its concept, rubric, state tag,
+  // and dynamic block all travel with it.
+  const commands = opts.subtrees
+    .filter((s) => s.rootEntry !== undefined)
+    .map((s) => ({
+      name: s.name,
+      concept: s.rootEntry!.concept,
+      desc: s.rootEntry!.desc,
+      useWhen: s.rootEntry!.useWhen,
+      dynamicState: s.rootEntry!.dynamicState,
+    }));
+
+  const help: RootHelp = {
+    tagline: opts.tagline,
+    commands,
+    globals: opts.globals,
+  };
+  return { kind: 'root', help, subtrees: opts.subtrees };
 }
 
 // ---------------------------------------------------------------------------
@@ -82,13 +155,15 @@ function childNames(node: AnyNode): string[] {
 }
 
 /** Walk argv tokens to the deepest matched node.
- *  Returns { node, remaining } where remaining are unconsumed tokens.
+ *  Returns { node, path, remaining } where path is the sequence of matched node
+ *  names from root (excluding root itself) and remaining are unconsumed tokens.
  *  -h / --help tokens are NOT consumed here — the caller checks for them. */
-function walk(
+export function walk(
   root: RootDef,
   tokens: string[],
-): { node: AnyNode; remaining: string[] } {
+): { node: AnyNode; path: string[]; remaining: string[] } {
   let current: AnyNode = root;
+  const path: string[] = [];
   let i = 0;
   while (i < tokens.length) {
     const token = tokens[i];
@@ -98,18 +173,20 @@ function walk(
       const nextNode: BranchDef | undefined = current.subtrees.find((s) => s.name === token);
       if (nextNode === undefined) break;
       current = nextNode;
+      path.push(nextNode.name);
       i++;
     } else if (current.kind === 'branch') {
       const nextNode: LeafDef | BranchDef | undefined = current.children.find((c) => c.name === token);
       if (nextNode === undefined) break;
       current = nextNode;
+      path.push(nextNode.name);
       i++;
     } else {
       // leaf — cannot descend further
       break;
     }
   }
-  return { node: current, remaining: tokens.slice(i) };
+  return { node: current, path, remaining: tokens.slice(i) };
 }
 
 function renderNode(node: AnyNode): string {
@@ -123,16 +200,13 @@ function helpRequested(remaining: string[]): boolean {
 }
 
 /** Build a structured unknown-path error. Names valid children of the deepest
- *  matched node and names the entry command per the spec. No fuzzy matching. */
-function unknownPathError(node: AnyNode, bad: string): CrtrError {
+ *  matched node and names the entry command per the spec. The entry command is
+ *  the full path to the matched node (not just its local name), so the recovery
+ *  hint is a command that actually exists. No fuzzy matching. */
+export function unknownPathError(node: AnyNode, path: string[], bad: string): CrtrError {
   const valid = childNames(node);
   const validStr = valid.length > 0 ? valid.join(', ') : '(none)';
-  const entryCmd =
-    node.kind === 'root'
-      ? 'crtr -h'
-      : node.kind === 'branch'
-      ? `crtr ${node.name} -h`
-      : 'crtr -h';
+  const entryCmd = path.length > 0 ? `crtr ${path.join(' ')} -h` : 'crtr -h';
   return new CrtrError(
     'unknown_path',
     `unknown subcommand: ${bad}`,
@@ -354,7 +428,7 @@ export async function runCli(root: RootDef, argv: string[]): Promise<void> {
     process.exit(ExitCode.SUCCESS);
   }
 
-  const { node, remaining } = walk(root, tokens);
+  const { node, path, remaining } = walk(root, tokens);
 
   try {
     // Help anywhere in remaining tokens → print node help and exit
@@ -366,7 +440,7 @@ export async function runCli(root: RootDef, argv: string[]): Promise<void> {
     // Bare branch or bare root (no -h, but no leaf selected) → help surface
     if (node.kind === 'root' || node.kind === 'branch') {
       if (remaining.length > 0) {
-        throw unknownPathError(node, remaining[0]);
+        throw unknownPathError(node, path, remaining[0]);
       }
       process.stdout.write(renderNode(node) + '\n');
       process.exit(ExitCode.SUCCESS);
