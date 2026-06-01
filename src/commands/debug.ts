@@ -1,14 +1,14 @@
-// `crtr agent debug` leaf — reproduce-first root-cause workflow.
+// `crtr mode debug` leaf — reproduce-first root-cause workflow.
 //
 // Running it spawns a reproduction-only agent in a sibling tmux pane (the same
-// spawn + job-handle shape as `crtr agent new prompt`) and returns a job handle
+// spawn + job-handle shape as `crtr agent new`) and returns a job handle
 // plus a follow_up. The orchestrator-side methodology lives in FLOW_DEBUG_GUIDE
-// (the leaf's help.guide), loaded via `crtr agent debug -h` after the repro
+// (the leaf's help.guide), loaded via `crtr mode debug -h` after the repro
 // agent returns. Methodology stays in the CLI guide field, like PLAN_NEW_GUIDE;
 // no builtin skill.
 export const FLOW_DEBUG_GUIDE = `## Debug workflow — reproduce first
 
-Audience: the agent that ran \`crtr agent debug\`. A reproduction agent is
+Audience: the agent that ran \`crtr mode debug\`. A reproduction agent is
 already spawned in a sibling pane. It writes ONE failing integration test and
 never fixes anything. You do everything after: gate on the repro, root-cause,
 fix, verify against that same test.
@@ -86,7 +86,7 @@ function assertTmux(): void {
   if (!isInTmux()) {
     throw new InputError({
       error: 'not_in_tmux',
-      message: 'crtr agent debug requires tmux (TMUX env var not set).',
+      message: 'crtr mode debug requires tmux (TMUX env var not set).',
       next: 'Run inside a tmux session.',
     });
   }
@@ -96,7 +96,7 @@ export function registerDebug(): LeafDef {
   return defineLeaf({
     name: 'debug',
     help: {
-      name: 'agent debug',
+      name: 'mode debug',
       summary:
         'reproduce-first root-cause workflow: spawns a reproduction agent, then you root-cause and fix',
       guide: FLOW_DEBUG_GUIDE,
@@ -143,6 +143,19 @@ export function registerDebug(): LeafDef {
         'On completion, result writes atomically to result.json.',
       ],
     },
+    slash: {
+      name: 'debug',
+      description: 'Debug mode — reproduce-first root-cause investigation.',
+      argumentHint: '<symptom or failing test>',
+      body: `You are entering **debug mode**: a reproduce-first, root-cause investigation.
+
+1. Run \`crtr mode debug -h\` to load the debugging workflow and output schema.
+2. Follow it — reproduce the failure first, then isolate the root cause before proposing a fix.
+
+The issue: $ARGUMENTS
+
+If no issue was given, ask the user for the symptom or failing test before starting.`,
+    },
     run: async (input) => {
       assertTmux();
       const stepsToReproduce = input['steps_to_reproduce'] as string;
@@ -184,7 +197,7 @@ export function registerDebug(): LeafDef {
 
       return {
         job_id: jobId,
-        follow_up: `Await the reproduction agent: crtr job read result ${jobId} --wait. Then run \`crtr agent debug -h\` and follow the workflow from Phase 1.`,
+        follow_up: `Await the reproduction agent: crtr job read result ${jobId} --wait. Then run \`crtr mode debug -h\` and follow the workflow from Phase 1.`,
       };
     },
   });

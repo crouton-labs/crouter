@@ -1,4 +1,4 @@
-// `crtr agent spec` subtree — spec new / show / list handlers.
+// `crtr mode spec` subtree — spec new / show / list handlers.
 export const SPEC_NEW_GUIDE = `## Spec workflow
 
 Build and save a design + requirements spec: a document describing what to
@@ -81,9 +81,9 @@ Required sections:
 
 ### Phase 5: Save
 
-Run \`crtr agent spec new\`:
+Run \`crtr mode spec new\`:
 
-  echo '<spec markdown>' | crtr agent spec new <kebab-case-name>
+  echo '<spec markdown>' | crtr mode spec new <kebab-case-name>
 
 - NAME: short kebab-case slug. Nested names become subdirectories
   (e.g. \`auth/refresh-tokens\`).
@@ -97,7 +97,7 @@ Output: \`{path, follow_up}\`. The \`follow_up\` field names the exact next call
 After the reviewer approves the spec, your turn ends. Do not summarize in chat.
 For a human gate, optionally run \`crtr human review\` on the spec for anchored
 comments and \`crtr human approve\` to gate the handoff — this complements, not
-replaces, \`crtr agent new reviewer\`.
+replaces, \`crtr mode reviewer\`.
 If the user is ready to plan, ask once whether to hand off; if yes, follow the
 \`follow_up\` instructions from the save output.`;
 
@@ -110,7 +110,7 @@ export function registerSpec(): BranchDef {
   const specNew = defineLeaf({
     name: 'new',
     help: {
-      name: 'agent spec new',
+      name: 'mode spec new',
       summary: 'draft a specification artifact from intent',
       guide: SPEC_NEW_GUIDE,
       params: [
@@ -139,7 +139,7 @@ export function registerSpec(): BranchDef {
           name: 'follow_up',
           type: 'string',
           required: true,
-          constraint: 'Recommended next call (planner spawn via `crtr agent new planner`).',
+          constraint: 'Recommended next call (planner spawn via `crtr mode planner`).',
         },
       ],
       outputKind: 'object',
@@ -152,10 +152,10 @@ export function registerSpec(): BranchDef {
       const { path, oversize, lineCount } = saveArtifact('specs', name, body);
 
       let follow_up =
-        `Plan it: crtr agent new planner ${path} (returns {job_id}), then crtr job read result <job_id> --wait.`;
+        `Plan it: crtr mode planner ${path} (returns {job_id}), then crtr job read result <job_id> --wait.`;
 
       follow_up +=
-        ` Optional human gate before planning (complements, does not replace \`crtr agent new reviewer\`): crtr human review --file ${path} for anchored comments, then gate with crtr human approve --title "Approve this spec?".`;
+        ` Optional human gate before planning (complements, does not replace \`crtr mode reviewer\`): crtr human review --file ${path} for anchored comments, then gate with crtr human approve --title "Approve this spec?".`;
 
       if (oversize) {
         follow_up +=
@@ -169,7 +169,7 @@ export function registerSpec(): BranchDef {
   const specShow = defineLeaf({
     name: 'show',
     help: {
-      name: 'agent spec show',
+      name: 'mode spec show',
       summary: 'read a spec artifact by name',
       params: [
         {
@@ -213,7 +213,7 @@ export function registerSpec(): BranchDef {
   const specList = defineLeaf({
     name: 'list',
     help: {
-      name: 'agent spec list',
+      name: 'mode spec list',
       summary: 'paginated list of spec artifacts, sorted ascending by name',
       params: [
         {
@@ -286,7 +286,7 @@ export function registerSpec(): BranchDef {
   return defineBranch({
     name: 'spec',
     help: {
-      name: 'agent spec',
+      name: 'mode spec',
       summary: 'create and read specification artifacts',
       model: 'Lifecycle: draft -> approved. Approved specs drive plan creation.',
       children: [
@@ -294,6 +294,19 @@ export function registerSpec(): BranchDef {
         { name: 'show', desc: 'read a spec by name', useWhen: 'reasoning about an existing spec' },
         { name: 'list', desc: 'enumerate specs', useWhen: 'discovering what specs exist' },
       ],
+    },
+    slash: {
+      name: 'spec',
+      description: 'Spec mode — turn intent into a specification artifact (spec-driven workflow).',
+      argumentHint: '[what to spec]',
+      body: `You are entering **spec mode**: turn intent into a written specification artifact.
+
+1. Run \`crtr mode spec new -h\` to load the spec-authoring workflow and output schema.
+2. Follow that workflow to draft the spec, then save it by piping the markdown to \`crtr mode spec new <name>\` on stdin.
+
+The request: $ARGUMENTS
+
+If no request was given, ask the user what to spec before starting.`,
     },
     children: [specNew, specShow, specList],
   });

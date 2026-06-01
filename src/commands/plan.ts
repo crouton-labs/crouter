@@ -1,4 +1,4 @@
-// `crtr agent plan` subtree — plan new / show / list handlers.
+// `crtr mode plan` subtree — plan new / show / list handlers.
 export const PLAN_NEW_GUIDE = `## Planning workflow
 
 Build and save an implementation plan: a map another agent can execute without
@@ -74,9 +74,9 @@ parallelism to unlock.
 
 ### Phase 5: Save
 
-Run \`crtr agent plan new\`:
+Run \`crtr mode plan new\`:
 
-  echo '<plan markdown>' | crtr agent plan new <kebab-case-name> [--spec <spec-name>]
+  echo '<plan markdown>' | crtr mode plan new <kebab-case-name> [--spec <spec-name>]
 
 - NAME: short kebab-case slug. Nested names become subdirectories
   (e.g. \`auth/jwt-refresh\`).
@@ -99,9 +99,9 @@ are under-decomposed.
 After the reviewer approves the plan, your turn ends. Do not summarize in chat.
 For a human gate, optionally put the plan in front of a person with \`crtr
 human review\` (anchored comments) and gate the handoff with \`crtr human
-approve\`. This complements — it does not replace — \`crtr agent new reviewer\`.
+approve\`. This complements — it does not replace — \`crtr mode reviewer\`.
 If the user is ready to build, ask once whether to hand off; if yes, run:
-\`crtr agent new implementer\` with the plan path.`;
+\`crtr mode implementer\` with the plan path.`;
 
 export const PLAN_SHOW_GUIDE = '';
 
@@ -114,7 +114,7 @@ export function registerPlan(): BranchDef {
   const planNew = defineLeaf({
     name: 'new',
     help: {
-      name: 'agent plan new',
+      name: 'mode plan new',
       summary: 'draft a plan from intent and optional spec alignment',
       guide: PLAN_NEW_GUIDE,
       params: [
@@ -150,7 +150,7 @@ export function registerPlan(): BranchDef {
           name: 'follow_up',
           type: 'string',
           required: true,
-          constraint: 'Recommended next call (reviewer spawn via `crtr agent new reviewer`).',
+          constraint: 'Recommended next call (reviewer spawn via `crtr mode reviewer`).',
         },
       ],
       outputKind: 'object',
@@ -170,7 +170,7 @@ export function registerPlan(): BranchDef {
       const { path, oversize, lineCount } = saveArtifact('plans', name, body, meta);
 
       let follow_up =
-        `Review it: crtr agent new reviewer ${path} --kind plan (returns {job_id}), then crtr job read result <job_id> --wait.`;
+        `Review it: crtr mode reviewer ${path} --kind plan (returns {job_id}), then crtr job read result <job_id> --wait.`;
 
       follow_up +=
         ` Optional human gate (complements, does not replace the agent reviewer): crtr human review --file ${path} for anchored comments, then gate handoff with crtr human approve --title "Approve this plan?".`;
@@ -187,7 +187,7 @@ export function registerPlan(): BranchDef {
   const planShow = defineLeaf({
     name: 'show',
     help: {
-      name: 'agent plan show',
+      name: 'mode plan show',
       summary: 'read a plan artifact by name',
       params: [
         {
@@ -237,7 +237,7 @@ export function registerPlan(): BranchDef {
   const planList = defineLeaf({
     name: 'list',
     help: {
-      name: 'agent plan list',
+      name: 'mode plan list',
       summary: 'paginated list of plan artifacts, sorted ascending by name',
       params: [
         {
@@ -310,7 +310,7 @@ export function registerPlan(): BranchDef {
   return defineBranch({
     name: 'plan',
     help: {
-      name: 'agent plan',
+      name: 'mode plan',
       summary: 'create and read plan artifacts',
       model: 'Lifecycle: draft -> active -> handed-off.',
       children: [
@@ -318,6 +318,19 @@ export function registerPlan(): BranchDef {
         { name: 'show', desc: 'read a plan by name', useWhen: 'reasoning about an existing plan' },
         { name: 'list', desc: 'enumerate plans', useWhen: 'discovering what plans exist' },
       ],
+    },
+    slash: {
+      name: 'plan',
+      description: 'Plan mode — decompose intent (and an optional spec) into an executable plan.',
+      argumentHint: '[what to plan]',
+      body: `You are entering **plan mode**: decompose work into an executable plan.
+
+1. Run \`crtr mode plan new -h\` to load the planning workflow and output schema.
+2. Follow it to draft the plan, then save by piping the markdown to \`crtr mode plan new <name>\` on stdin (pass \`--spec <path>\` if an approved spec exists).
+
+The request: $ARGUMENTS
+
+If no request was given, ask the user what to plan before starting.`,
     },
     children: [planNew, planShow, planList],
   });
