@@ -114,6 +114,8 @@ const humanAsk = defineLeaf({
   help: {
     name: 'human ask',
     summary: 'put a humanloop decision deck in front of a person; returns a job handle immediately. Humans respond on human time (often >10 min) — never block on the result.',
+    guide:
+      'The deck body is directive-flavored markdown rendered by termrender (panels, columns, trees, callouts, mermaid) — see `termrender doc -h` for the directive set before authoring one.',
     params: [
       { kind: 'context-file', name: 'deck', required: true, constraint: 'Contains a humanloop deck. Validated before any job is created.', shape: DECK_SCHEMA_HINT },
       { kind: 'flag', name: 'wait', type: 'bool', required: false, constraint: 'Accepted for symmetry with the job contract; the kickoff never blocks.' },
@@ -164,6 +166,8 @@ const humanApprove = defineLeaf({
   help: {
     name: 'human approve',
     summary: 'a Yes/No approval gate; returns a job handle immediately. Humans respond on human time (often >10 min) — never block on the result.',
+    guide:
+      'The body is directive-flavored markdown rendered by termrender (panels, columns, trees, callouts, mermaid) — see `termrender doc -h` for the directive set before authoring one.',
     params: [
       { kind: 'positional', name: 'title', type: 'string', required: true, constraint: 'The question shown to the human.' },
       { kind: 'flag', name: 'subtitle', type: 'string', required: false, constraint: 'Optional one-line context.' },
@@ -212,6 +216,8 @@ const humanReview = defineLeaf({
   help: {
     name: 'human review',
     summary: 'open a .md in a read-only review editor for anchored comments; returns a job handle immediately. Humans respond on human time (often >10 min) — never block on the result.',
+    guide:
+      'The .md you point at is directive-flavored markdown rendered by termrender (panels, columns, trees, callouts, mermaid) — see `termrender doc -h` for the directive set before authoring one.',
     params: [
       { kind: 'positional', name: 'file', type: 'path', required: true, constraint: 'Absolute path to an existing .md file.' },
       { kind: 'flag', name: 'output', type: 'path', required: false, constraint: 'Where the FeedbackResult JSON is written. Default: <dir>/feedback.json.' },
@@ -270,6 +276,8 @@ const humanNotify = defineLeaf({
   help: {
     name: 'human notify',
     summary: 'show a fire-and-forget acknowledgement; creates no job',
+    guide:
+      'The body is directive-flavored markdown rendered by termrender (panels, columns, trees, callouts, mermaid) — see `termrender doc -h` for the directive set before authoring one.',
     params: [
       { kind: 'positional', name: 'title', type: 'string', required: true, constraint: 'The notification headline.' },
       { kind: 'flag', name: 'body', type: 'string', required: false, constraint: 'Optional markdown body.' },
@@ -324,7 +332,7 @@ const humanShow = defineLeaf({
     name: 'human show',
     summary: 'put a file live on screen in a tmux pane via humanloop display',
     guide:
-      'The pane always watches the file and live-updates on every save — a displayed doc is a live view by definition, so point it at a file something keeps rewriting (a status board, a running summary) and it stays current.',
+      'The pane always watches the file and live-updates on every save — a displayed doc is a live view by definition, so point it at a file something keeps rewriting (a status board, a running summary) and it stays current. The file is directive-flavored markdown rendered by termrender (panels, columns, trees, callouts, mermaid) — see `termrender doc -h` for the directive set before authoring one.',
     params: [
       { kind: 'positional', name: 'path', type: 'path', required: true, constraint: 'Path to the file to render.' },
       { kind: 'flag', name: 'window', type: 'enum', choices: ['auto', 'split', 'new'], required: false, default: 'auto', constraint: 'Placement. Default auto.' },
