@@ -7,7 +7,9 @@ import assert from 'node:assert/strict';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir, homedir as nodeHomedir } from 'node:os';
 import { join } from 'node:path';
-import { parseSkillQualifier } from '../resolver.js';
+import { parseSkillQualifier, resolveSkill } from '../resolver.js';
+import { resetScopeCache } from '../scope.js';
+import { CrtrError } from '../errors.js';
 import { InputError } from '../io.js';
 import { readConfig } from '../config.js';
 import { SCHEMA_VERSION } from '../../types.js';
@@ -140,4 +142,92 @@ describe('config migration: skill keys colon → slash', () => {
   });
 
 
+});
+
+// ---------------------------------------------------------------------------
+// resolveSkill — leaf-name fallback
+// ---------------------------------------------------------------------------
+
+describe('resolveSkill leaf-name fallback', () => {
+  let testHomeDir: string;
+  let origHome: string | undefined;
+
+  function writePluginSkill(plugin: string, skillPath: string) {
+    const root = join(testHomeDir, '.crouter', 'plugins', plugin);
+    mkdirSync(join(root, '.crouter-plugin'), { recursive: true });
+    writeFileSync(
+      join(root, '.crouter-plugin', 'plugin.json'),
+      JSON.stringify({ name: plugin, version: '0.0.1' }),
+      'utf8',
+    );
+    const skillDir = join(root, 'skills', ...skillPath.split('/'));
+    mkdirSync(skillDir, { recursive: true });
+    writeFileSync(
+      join(skillDir, 'SKILL.md'),
+      `---\nname: ${skillPath.split('/').pop()}\n---\nbody`,
+      'utf8',
+    );
+  }
+
+  before(() => {
+    testHomeDir = join(tmpdir(), `crtr-leaf-test-${Date.now()}`);
+    mkdirSync(testHomeDir, { recursive: true });
+    origHome = process.env['HOME'];
+    process.env['HOME'] = testHomeDir;
+    resetScopeCache();
+    // Unique leaf: only one plugin has it, reached via nested path.
+    writePluginSkill('ai', 'interface/cli-design');
+    // Colliding leaf: two plugins both expose `dup` at different paths.
+    writePluginSkill('pa', 'x/dup');
+    writePluginSkill('pb', 'y/dup');
+  });
+
+  after(() => {
+    if (origHome === undefined) delete process.env['HOME'];
+    else process.env['HOME'] = origHome;
+    resetScopeCache();
+    rmSync(testHomeDir, { recursive: true, force: true });
+  });
+
+  test('bare leaf name resolves to the nested skill', () => {
+    const s = resolveSkill('cli-design');
+    assert.equal(s.name, 'interface/cli-design');
+    assert.equal(s.plugin, 'ai');
+  });
+
+  test('full path still resolves directly', () => {
+    const s = resolveSkill('ai/interface/cli-design');
+    assert.equal(s.name, 'interface/cli-design');
+    assert.equal(s.plugin, 'ai');
+  });
+
+  test('colliding leaf name throws ambiguous listing full paths', () => {
+    assert.throws(
+      () => resolveSkill('dup'),
+      (e: unknown) => {
+        assert.ok(e instanceof CrtrError, 'should be CrtrError');
+        assert.equal(e.code, 'ambiguous');
+        assert.match(e.message, /pa\/x\/dup/);
+        assert.match(e.message, /pb\/y\/dup/);
+        return true;
+      },
+    );
+  });
+
+  test('colliding leaf is resolvable via full path', () => {
+    const s = resolveSkill('pb/y/dup');
+    assert.equal(s.plugin, 'pb');
+    assert.equal(s.name, 'y/dup');
+  });
+
+  test('unknown leaf still throws not_found', () => {
+    assert.throws(
+      () => resolveSkill('no-such-leaf-xyz'),
+      (e: unknown) => {
+        assert.ok(e instanceof CrtrError);
+        assert.equal(e.code, 'not_found');
+        return true;
+      },
+    );
+  });
 });

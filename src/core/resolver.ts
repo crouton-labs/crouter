@@ -297,11 +297,64 @@ export function resolveSkill(
   const direct = findSkillMatches(skillName, pluginQualifier, effectiveScope, effectivePluginFilter);
   if (direct.length > 0) return pickMatch(direct, skillName, pluginQualifier);
 
+  // Leaf-name fallback: the caller supplied only the final path segment
+  // (e.g. "cli-design" for "ai/interface/cli-design"). A direct path lookup
+  // missed because the skill lives under a nested path. Match by last segment.
+  const byLeaf = findSkillsByLeaf(skillName, pluginQualifier, effectiveScope, effectivePluginFilter);
+  if (byLeaf.length === 1) return byLeaf[0];
+  if (byLeaf.length > 1) {
+    throw ambiguous(formatLeafAmbiguousMessage(skillName, byLeaf), {
+      skill: skillName,
+      candidates: byLeaf.map((m) => ({
+        id: formatSkillId(m),
+        plugin: m.plugin,
+        scope: m.scope,
+        path: m.path,
+      })),
+      next: 'Multiple skills share this leaf name. Re-run with one of the full paths in candidates.',
+    });
+  }
+
   throw notFound(formatNotFoundMessage(rawName, skillName, pluginQualifier), {
     skill: skillName,
     plugin: pluginQualifier,
     scope: parsed.scope,
   });
+}
+
+/** Canonical, unambiguous identifier for a skill. Scope-root skills are
+ *  qualified by scope; plugin skills by plugin name. */
+function formatSkillId(s: Skill): string {
+  return s.plugin === SCOPE_SKILL_PLUGIN ? `${s.scope}/${s.name}` : `${s.plugin}/${s.name}`;
+}
+
+/** Match skills whose final path segment equals `leaf`. Only meaningful when
+ *  `leaf` is a bare segment (no slash) — a slashed query can never equal a
+ *  single segment, so this returns empty and the caller falls through. */
+function findSkillsByLeaf(
+  leaf: string,
+  pluginQualifier: string | undefined,
+  scope: Scope | undefined,
+  pluginFilter: string | undefined,
+): Skill[] {
+  if (leaf.includes('/')) return [];
+  let all: Skill[];
+  try {
+    all = scope ? listAllSkills(scope) : listAllSkills();
+  } catch {
+    return [];
+  }
+  return all.filter((s) => {
+    if ((s.name.split('/').pop() ?? s.name) !== leaf) return false;
+    if (pluginQualifier && s.plugin !== pluginQualifier) return false;
+    if (pluginFilter && s.plugin !== pluginFilter) return false;
+    return true;
+  });
+}
+
+function formatLeafAmbiguousMessage(leaf: string, matches: Skill[]): string {
+  const ids = matches.map(formatSkillId).join(', ');
+  return `ambiguous skill: ${leaf} matches multiple skills: ${ids}`;
 }
 
 function findSkillMatches(
@@ -408,7 +461,7 @@ function formatNotFoundMessage(
       .slice(0, 3);
     lines.push(`       did you mean: ${formatted.join(', ')}`);
   } else {
-    lines.push('       run `crtr skill list` or `crtr skill search <query>` to discover skills');
+    lines.push('       run `crtr skill find list` or `crtr skill find search <query>` to discover skills');
   }
   return lines.join('\n');
 }
