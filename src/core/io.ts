@@ -53,6 +53,35 @@ export function emitLine(obj: Record<string, unknown>): void {
   process.stdout.write(JSON.stringify(obj) + '\n');
 }
 
+/**
+ * Write to stdout and resolve true ONLY once the bytes are confirmed flushed to
+ * a connected reader. Resolves false if the consumer is gone (EPIPE) or the
+ * write fails. This is the reliable "the caller actually received it" signal:
+ * use it to gate side effects that must only happen on genuine delivery (e.g.
+ * acking a collected result). A killed process never resolves at all — also
+ * safe, since the gated side effect then never runs.
+ */
+export function writeStdout(s: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const onErr = (e: NodeJS.ErrnoException): void => {
+      if (e.code === 'EPIPE') finish(false);
+    };
+    const finish = (ok: boolean): void => {
+      if (settled) return;
+      settled = true;
+      process.stdout.off('error', onErr);
+      resolve(ok);
+    };
+    process.stdout.on('error', onErr);
+    try {
+      process.stdout.write(s, (err) => finish(err === null || err === undefined));
+    } catch {
+      finish(false);
+    }
+  });
+}
+
 // ---------------------------------------------------------------------------
 // stderr — diagnostics the agent MAY capture, never the result
 // ---------------------------------------------------------------------------

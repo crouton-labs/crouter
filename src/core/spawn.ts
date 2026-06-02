@@ -1,6 +1,6 @@
 // Tmux pane spawning machinery for crtr job subtree.
 //
-// Kept: spawnAgent (fire-and-forget new pane), spawnAndDetach (detach + kill originating pane),
+// Kept: spawnAgent (fire-and-forget new pane), spawnAndDetach (used by human.ts for detached panes),
 //       shellQuote, isInTmux, countPanesInCurrentWindow, findWindowWithSpace.
 //
 // Removed: createSession, submitToSession, awaitSession, waitForResult,
@@ -20,6 +20,34 @@
 // `job read result` sees a terminal result.json.
 
 import { spawnSync, spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+import { existsSync } from 'node:fs';
+
+// Path to the agent stop-hook extension loaded into every spawned pi agent
+// (`pi -e <path>`). Resolved relative to this module so it works from both the
+// compiled dist build and `tsx` dev runs.
+const STOPHOOK_PATH: string = (() => {
+  const here = dirname(fileURLToPath(import.meta.url)); // dist/core or src/core
+  const candidates = [
+    join(here, '..', 'pi-extensions', 'agent-stophook.js'), // dist build
+    join(here, '..', 'pi-extensions', 'agent-stophook.ts'), // tsx dev
+  ];
+  return candidates.find((p) => existsSync(p)) ?? candidates[0];
+})();
+
+// Path to the parent-side inbox watcher loaded into every spawned pi agent
+// (`pi -e <path>`). Lets a spawned agent that itself spawns children receive
+// their completions pushed into its live session (R3/R6). Resolved the same way
+// as STOPHOOK_PATH so it works from both the dist build and tsx dev runs.
+const INBOX_WATCHER_PATH: string = (() => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const candidates = [
+    join(here, '..', 'pi-extensions', 'agent-inbox-watcher.js'), // dist build
+    join(here, '..', 'pi-extensions', 'agent-inbox-watcher.ts'), // tsx dev
+  ];
+  return candidates.find((p) => existsSync(p)) ?? candidates[0];
+})();
 
 export interface SpawnAgentOptions {
   /** First user message for the new agent session. */
@@ -39,6 +67,10 @@ export interface SpawnAgentOptions {
   model?: string;
   /** Tool allow-list passed to pi via `--tools`. */
   tools?: string[];
+  /** Extra environment variables to inject into the pane alongside CRTR_JOB_ID. */
+  env?: Record<string, string>;
+  /** Job lifecycle; injected as CRTR_JOB_LIFECYCLE for the stop-hook. */
+  lifecycle?: 'worker' | 'persistent';
 }
 
 export interface SpawnAgentResult {
@@ -174,6 +206,11 @@ export function buildAgentCommand(
 ): string {
   if (kind === 'pi') {
     const parts: string[] = ['pi'];
+    // Stop-hook: auto-submit the agent's final message + push live telemetry.
+    parts.push('-e', shellQuote(STOPHOOK_PATH));
+    // Inbox watcher: push child-completion notices into this agent's session if
+    // it spawns its own children (R3/R6).
+    parts.push('-e', shellQuote(INBOX_WATCHER_PATH));
     if (opts.name !== undefined && opts.name !== '') {
       parts.push('-n', shellQuote(opts.name));
     }
@@ -210,163 +247,7 @@ export function buildAgentCommand(
   return parts.join(' ');
 }
 
-// ---------------------------------------------------------------------------
-// Headless (print-mode) execution
-//
-// "Headless" runs the agent CLI in non-interactive print mode (`-p`) as a child
-// process with no tmux pane. The agent's stdout IS the result — no `crtr job
-// submit` needed. This is the default for `crtr agent new`.
-// ---------------------------------------------------------------------------
 
-export interface AgentPrintArgv {
-  cmd: string;
-  args: string[];
-}
-
-/**
- * Argv for a non-interactive print-mode run.
- *
- *   claude: `claude [-n <name>] [--resume <id> --fork-session] -p \
- *            --dangerously-skip-permissions <prompt>`
- *   pi:     `pi [-n <name>] [--fork <id>] -p <prompt>`
- *
- * Returned as a cmd + args array so callers can spawn without a shell.
- */
-export function buildAgentPrintArgv(
-  opts: AgentCommandOptions,
-  kind: AgentKind = detectAgentKind(),
-): AgentPrintArgv {
-  if (kind === 'pi') {
-    const args: string[] = [];
-    if (opts.name !== undefined && opts.name !== '') args.push('-n', opts.name);
-    if (opts.fork !== undefined) args.push('--fork', opts.fork.sessionId);
-    if (opts.model !== undefined && opts.model !== '') args.push('--model', normalizeModelForKind(opts.model, 'pi'));
-    if (opts.tools !== undefined && opts.tools.length > 0) args.push('--tools', opts.tools.join(','));
-    if (opts.systemPrompt !== undefined && opts.systemPrompt.trim() !== '') {
-      args.push('--append-system-prompt', opts.systemPrompt);
-    }
-    args.push('-p', opts.prompt);
-    return { cmd: 'pi', args };
-  }
-  const args: string[] = [];
-  if (opts.name !== undefined && opts.name !== '') args.push('-n', opts.name);
-  if (opts.fork !== undefined) args.push('--resume', opts.fork.sessionId, '--fork-session');
-  if (opts.model !== undefined && opts.model !== '') args.push('--model', opts.model);
-  if (opts.systemPrompt !== undefined && opts.systemPrompt.trim() !== '') {
-    args.push('--append-system-prompt', opts.systemPrompt);
-  }
-  args.push('-p', '--dangerously-skip-permissions', opts.prompt);
-  return { cmd: 'claude', args };
-}
-
-/** Same as buildAgentPrintArgv but rendered as a single shell-quoted string. */
-export function buildAgentPrintCommand(
-  opts: AgentCommandOptions,
-  kind: AgentKind = detectAgentKind(),
-): string {
-  const { cmd, args } = buildAgentPrintArgv(opts, kind);
-  return [cmd, ...args.map(shellQuote)].join(' ');
-}
-
-export interface HeadlessRunResult {
-  status: 'done' | 'failed';
-  /** Captured stdout on success; stdout+stderr (or an error message) on failure. */
-  output: string;
-  exitCode: number | null;
-}
-
-/**
- * Run the agent headlessly and resolve once it exits. A blocking caller awaits
- * this. stdout is captured as the result; a non-zero exit yields status
- * 'failed' with the combined output.
- */
-export function runAgentHeadless(
-  opts: { prompt: string; name?: string; cwd: string; systemPrompt?: string; model?: string; tools?: string[] },
-): Promise<HeadlessRunResult> {
-  const { cmd, args } = buildAgentPrintArgv({
-    prompt: opts.prompt,
-    name: opts.name,
-    systemPrompt: opts.systemPrompt,
-    model: opts.model,
-    tools: opts.tools,
-  });
-  return new Promise((resolve) => {
-    let out = '';
-    let err = '';
-    let child;
-    try {
-      // stdin 'ignore' so the agent never blocks waiting for stdin EOF (the
-      // prompt is passed as an argv arg, not piped).
-      child = spawn(cmd, args, { cwd: opts.cwd, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
-    } catch (e) {
-      resolve({ status: 'failed', output: `failed to launch ${cmd}: ${String(e)}`, exitCode: null });
-      return;
-    }
-    child.stdout?.on('data', (d: Buffer) => { out += d.toString(); });
-    child.stderr?.on('data', (d: Buffer) => { err += d.toString(); });
-    child.on('error', (e: Error) => {
-      resolve({ status: 'failed', output: `failed to launch ${cmd}: ${String(e)}`, exitCode: null });
-    });
-    child.on('close', (code: number | null) => {
-      if (code === 0) {
-        resolve({ status: 'done', output: out.trim() !== '' ? out : '(agent produced no output)', exitCode: 0 });
-      } else {
-        const combined = `${out}${err}`.trim();
-        resolve({
-          status: 'failed',
-          output: combined !== '' ? combined : `agent exited with code ${code ?? 'null'}`,
-          exitCode: code,
-        });
-      }
-    });
-  });
-}
-
-export interface HeadlessDetachResult {
-  status: 'spawned' | 'spawn-failed';
-  pid?: number;
-  message: string;
-}
-
-/**
- * Launch a headless agent detached (background). Its print output is captured
- * and delivered to the job via `crtr job submit`; a non-zero exit marks the job
- * failed. Returns immediately with the wrapper pid (recorded for crash
- * detection). No tmux required.
- */
-export function spawnHeadlessDetached(
-  opts: { prompt: string; name?: string; cwd: string; jobId: string; systemPrompt?: string; model?: string; tools?: string[] },
-): HeadlessDetachResult {
-  const agentCmd = buildAgentPrintCommand({
-    prompt: opts.prompt,
-    name: opts.name,
-    systemPrompt: opts.systemPrompt,
-    model: opts.model,
-    tools: opts.tools,
-  });
-  const jid = shellQuote(opts.jobId);
-  // On failure, forward the captured stdout+stderr as the result body so the
-  // real cause (e.g. an auth error) is visible via `crtr job read result`/`logs`
-  // instead of being discarded behind a generic exit-code reason.
-  const wrapper =
-    `out="$(${agentCmd} 2>&1)"; ec=$?; ` +
-    `if [ "$ec" -eq 0 ]; then ` +
-    `if [ -z "$out" ]; then out='(agent produced no output)'; fi; ` +
-    `printf '%s' "$out" | crtr job submit ${jid}; ` +
-    `else printf '%s' "$out" | crtr job submit ${jid} --status failed --reason "agent exited with code $ec"; fi`;
-  try {
-    const child = spawn('sh', ['-c', wrapper], {
-      cwd: opts.cwd,
-      env: process.env,
-      detached: true,
-      stdio: 'ignore',
-    });
-    child.unref();
-    return { status: 'spawned', pid: child.pid, message: `headless agent started (pid ${child.pid ?? 'unknown'})` };
-  } catch (e) {
-    return { status: 'spawn-failed', message: `failed to launch headless agent: ${String(e)}` };
-  }
-}
 
 export function countPanesInCurrentWindow(): number {
   const result = spawnSync('tmux', ['list-panes', '-F', '#{pane_id}'], {
@@ -506,9 +387,9 @@ export function findWindowWithSpace(maxPanesPerWindow: number): string | null {
  * so the caller can return normally before the pane dies. No-op outside tmux
  * or when TMUX_PANE is unset.
  *
- * Used by `crtr job submit` (kill_pane=true) so a reviewer agent can self-close
- * its pane after delivering its verdict, and by `spawnAndDetach` for handoff
- * self-kill.
+ * Used by `crtr job submit` (kill_pane=true) so an agent can self-close
+ * its pane after delivering its verdict, and by `spawnAndDetach` when
+ * a detached pane needs to kill its origin after handoff.
  */
 export function scheduleKillCurrentPane(delaySeconds: number): boolean {
   const currentPane = process.env.TMUX_PANE;
@@ -671,6 +552,8 @@ interface PlaceResult {
 function placeInSubagentSession(opts: {
   fullCmd: string;
   jobId?: string;
+  lifecycle?: string;
+  env?: Record<string, string>;
   cwd: string;
   maxPanes: number;
 }): PlaceResult {
@@ -682,7 +565,17 @@ function placeInSubagentSession(opts: {
     return { status: 'not-in-tmux', message: 'requires tmux (TMUX_PANE not set)' };
   }
   const session = subagentSessionName(origin.pane);
-  const envArgs = opts.jobId !== undefined ? ['-e', `CRTR_JOB_ID=${opts.jobId}`] : [];
+  const envMap: Record<string, string> = {};
+  if (opts.jobId !== undefined) envMap['CRTR_JOB_ID'] = opts.jobId;
+  if (opts.lifecycle !== undefined) envMap['CRTR_JOB_LIFECYCLE'] = opts.lifecycle;
+  // Home tmux session + originating (parent) pane. The agent stop-hook uses these
+  // to detect when its pane has been relocated out of its home session (e.g.
+  // swap-pane'd onto the parent's slot by a UI) and to restore the parent there
+  // before the agent exits, so it never closes someone else's pane slot.
+  envMap['CRTR_AGENT_SESSION'] = session;
+  envMap['CRTR_ROOT_PANE'] = origin.pane;
+  if (opts.env !== undefined) Object.assign(envMap, opts.env);
+  const envArgs = Object.entries(envMap).flatMap(([k, v]) => ['-e', `${k}=${v}`]);
   const exists = spawnSync('tmux', ['has-session', '-t', session], { encoding: 'utf8' }).status === 0;
 
   let paneId: string;
@@ -741,6 +634,30 @@ function placeInSubagentSession(opts: {
 }
 
 /**
+ * Pull `targetPane` out of its current session/window into the caller's window
+ * as a horizontal split alongside `callerPane`, then tidy the layout.
+ *
+ * Wraps `tmux join-pane -h -s <targetPane> -t <callerPane>` followed by
+ * `tmux select-layout -t <callerPane> even-horizontal`. Returns `{ ok, message }`
+ * so the command layer stays thin and the tmux specifics are unit-testable.
+ */
+export function joinPane(
+  targetPane: string,
+  callerPane: string,
+): { ok: boolean; message: string } {
+  const join = spawnSync('tmux', ['join-pane', '-h', '-s', targetPane, '-t', callerPane], {
+    encoding: 'utf8',
+  });
+  if (join.status !== 0) {
+    const msg = join.stderr.trim() || 'tmux join-pane failed';
+    return { ok: false, message: msg };
+  }
+  // Normalise the layout so both panes split evenly.
+  spawnSync('tmux', ['select-layout', '-t', callerPane, 'even-horizontal'], { encoding: 'utf8' });
+  return { ok: true, message: `joined pane ${targetPane} into window of ${callerPane}` };
+}
+
+/**
  * Async sibling spawn. Launches an interactive agent (claude or pi, per
  * detectAgentKind) in the dedicated subagent session, progressively filling
  * windows up to `maxPanesPerWindow` before creating a new window. Returns
@@ -770,6 +687,8 @@ export function spawnAgent(opts: SpawnAgentOptions): SpawnAgentResult {
   const placed = placeInSubagentSession({
     fullCmd,
     jobId: opts.jobId,
+    lifecycle: opts.lifecycle,
+    env: opts.env,
     cwd: opts.cwd,
     maxPanes: opts.maxPanesPerWindow,
   });

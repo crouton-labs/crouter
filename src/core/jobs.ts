@@ -33,6 +33,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { notFound, general } from './errors.js';
+import { appendNodeEvent, resolveNodeIdInSession } from './inbox.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -41,9 +42,14 @@ import { notFound, general } from './errors.js';
 // 'closed' = the worker's tmux pane went away before any result was submitted.
 // It is terminal but distinct from 'failed' (a worker that ran and reported an
 // error) — we simply don't know the outcome, so we don't claim it failed.
-type TerminalStatus = 'done' | 'failed' | 'canceled' | 'closed';
+// 'superseded' = a stepped-down agent whose last-stop submit records this
+// status (forward:false, superseded:true set by promotion).
+type TerminalStatus = 'done' | 'failed' | 'canceled' | 'closed' | 'superseded';
 type JobState = 'live' | TerminalStatus;
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+
+/** How a completion notice should be delivered into a live pi parent session. */
+type DeliveryHint = 'steer' | 'followUp';
 
 interface JobMeta {
   job_id: string;
@@ -53,6 +59,35 @@ interface JobMeta {
   pane_id?: string;
   cwd: string;
   status: JobState;
+  // Completion routing (R1). Persisted so ANY terminal-transition code path can
+  // notify the parent without depending on the child's runtime env.
+  report_to?: string[];
+  session_id?: string;
+  /** cwd NAMESPACE the session graph + inboxes live under (the spawner's cwd),
+   *  which can differ from `cwd` (the child's working dir) when --cwd is used.
+   *  Delivery must target this namespace so the parent's watcher (reading the
+   *  same namespace) sees the notice (R1 cwd-identity). */
+  session_cwd?: string;
+  /** Display name + title carried in the completion notice. */
+  name?: string;
+  title?: string;
+  /** Per-job delivery preference for the notice (R5). Default followUp. */
+  delivery?: DeliveryHint;
+  /** Set once the report_to parents have been notified (idempotency guard). */
+  notified?: boolean;
+  /** Set once a terminal result has been collected out-of-band (e.g. via
+   *  `job read result --wait`). Idempotency guard for the `collected` tombstone
+   *  written to the report_to inbox so the push watcher suppresses its notice. */
+  collected?: boolean;
+  // --- Phase 1: lifecycle fields ---
+  /** 'worker' (ephemeral, finalizes on stop) | 'persistent' (stays live). Absent ⇒ 'worker'. */
+  lifecycle?: 'worker' | 'persistent';
+  /** True when this job roots its session graph. */
+  root?: boolean;
+  /** Absent/true ⇒ forward completion to report_to; false ⇒ suppress. */
+  forward?: boolean;
+  /** Set when this job was promoted away (stepped down). */
+  superseded?: boolean;
 }
 
 interface LogEvent {
@@ -219,7 +254,7 @@ const LEVEL_RANK: Record<LogLevel, number> = {
  */
 export function createJob(
   kind: string,
-  opts: { cwd: string; pid?: number },
+  opts: { cwd: string; pid?: number; lifecycle?: 'worker' | 'persistent'; root?: boolean; forward?: boolean },
 ): { jobId: string; dir: string } {
   ensureJobsRoot();
   const jobId = generateJobId();
@@ -233,12 +268,150 @@ export function createJob(
     cwd: opts.cwd,
     status: 'live',
   };
-  if (opts.pid !== undefined) {
-    meta.pid = opts.pid;
-  }
+  if (opts.pid !== undefined) meta.pid = opts.pid;
+  if (opts.lifecycle !== undefined) meta.lifecycle = opts.lifecycle;
+  if (opts.root !== undefined) meta.root = opts.root;
+  if (opts.forward !== undefined) meta.forward = opts.forward;
 
   writeMeta(jobId, meta);
   return { jobId, dir };
+}
+
+/**
+ * Record the completion-routing metadata for a job (R1): the node refs it
+ * reports to, the session it belongs to, and the display name/title/delivery
+ * hint carried in the completion notice. Written after createJob by the spawn
+ * path (agent.ts) and human job creators. Merges over existing meta.
+ */
+export function recordJobReportTo(
+  jobId: string,
+  opts: {
+    reportTo?: string[];
+    sessionId?: string;
+    sessionCwd?: string;
+    name?: string;
+    title?: string;
+    delivery?: DeliveryHint;
+  },
+): void {
+  const meta = readMeta(jobId);
+  if (opts.reportTo !== undefined) meta.report_to = opts.reportTo;
+  if (opts.sessionId !== undefined && opts.sessionId !== '') meta.session_id = opts.sessionId;
+  if (opts.sessionCwd !== undefined && opts.sessionCwd !== '') meta.session_cwd = opts.sessionCwd;
+  if (opts.name !== undefined && opts.name !== '') meta.name = opts.name;
+  if (opts.title !== undefined && opts.title !== '') meta.title = opts.title;
+  if (opts.delivery !== undefined) meta.delivery = opts.delivery;
+  writeMeta(jobId, meta);
+}
+
+/**
+ * Merge partial lifecycle flags into an existing job's meta.json.
+ * Used by promotion (Phase 5) and `--persistent` wiring.
+ */
+export function recordJobFlags(
+  jobId: string,
+  partial: { lifecycle?: 'worker' | 'persistent'; root?: boolean; forward?: boolean; superseded?: boolean },
+): void {
+  const meta = readMeta(jobId);
+  if (partial.lifecycle !== undefined) meta.lifecycle = partial.lifecycle;
+  if (partial.root !== undefined) meta.root = partial.root;
+  if (partial.forward !== undefined) meta.forward = partial.forward;
+  if (partial.superseded !== undefined) meta.superseded = partial.superseded;
+  writeMeta(jobId, meta);
+}
+
+/**
+ * Deliver a `completed` event to each report_to parent recorded in meta (R2).
+ * Best-effort and idempotent: returns true if at least one notice was written,
+ * letting the caller set `meta.notified` in the SAME meta write so a later
+ * terminal transition (e.g. `_fail` after a `submit`) does not double-notify.
+ *
+ * Host-agnostic: it only appends to the durable inbox JSONL. The live push into
+ * a pi parent session is the watcher extension's job (R3); claude parents pull
+ * via `crtr agent inbox` (R7).
+ */
+function notifyReportTo(meta: JobMeta, status: TerminalStatus): boolean {
+  if (meta.notified === true) return false;
+  const sessionId = meta.session_id;
+  const targets = meta.report_to ?? [];
+  if (sessionId === undefined || sessionId === '' || targets.length === 0) return false;
+
+  const data: Record<string, unknown> = { status, delivery: meta.delivery ?? 'followUp' };
+  if (meta.name !== undefined && meta.name !== '') data['name'] = meta.name;
+  if (meta.title !== undefined && meta.title !== '') data['title'] = meta.title;
+
+  // Inbox lives under the SESSION's cwd namespace (the spawner's cwd), which may
+  // differ from meta.cwd (the child's working dir) when spawned with --cwd.
+  const inboxCwd = meta.session_cwd ?? meta.cwd;
+  let delivered = false;
+  for (const ref of targets) {
+    try {
+      // Default report_to refs are already node ids (parent job id / pane node);
+      // resolveNodeIdInSession handles name/index refs and falls back to the raw
+      // ref when nothing matches.
+      const nodeId = resolveNodeIdInSession(sessionId, ref, inboxCwd) ?? ref;
+      appendNodeEvent(sessionId, nodeId, { from: meta.job_id, event: 'completed', data }, inboxCwd);
+      delivered = true;
+    } catch {
+      /* best-effort per-target */
+    }
+  }
+  return delivered;
+}
+
+/**
+ * Append a `collected` tombstone to the report_to inbox(es) so the parent's push
+ * watcher suppresses (or cancels) the corresponding `completed` notice — the
+ * out-of-band pull path (`job read result --wait`) and the push path thus share
+ * one consumption signal and the orchestrator is told exactly once.
+ *
+ * Idempotent via `meta.collected`: only the first terminal collection writes the
+ * tombstone. Mirrors notifyReportTo's routing (same session, same cwd namespace,
+ * same resolved nodes). Best-effort; never throws.
+ *
+ * CONTRACT: call this ONLY once the result has been delivered to a live caller
+ * (the `job read result` command calls it after the result bytes flush to a
+ * connected stdout). Never call it from a pure read or speculatively — a
+ * canceled/abandoned `--wait` must leave NO tombstone so the push watcher still
+ * delivers the notice (bias-to-deliver; losing a completion is worse than a
+ * redundant notice).
+ */
+export function markCollected(jobId: string): void {
+  let meta: JobMeta;
+  try {
+    meta = readMeta(jobId);
+  } catch {
+    return;
+  }
+  if (meta.collected === true) return;
+  const sessionId = meta.session_id;
+  const targets = meta.report_to ?? [];
+  if (sessionId === undefined || sessionId === '' || targets.length === 0) return;
+
+  const inboxCwd = meta.session_cwd ?? meta.cwd;
+  let delivered = false;
+  for (const ref of targets) {
+    try {
+      const nodeId = resolveNodeIdInSession(sessionId, ref, inboxCwd) ?? ref;
+      appendNodeEvent(
+        sessionId,
+        nodeId,
+        { from: meta.job_id, event: 'collected', data: { job_id: meta.job_id } },
+        inboxCwd,
+      );
+      delivered = true;
+    } catch {
+      /* best-effort per-target */
+    }
+  }
+  if (delivered) {
+    meta.collected = true;
+    try {
+      writeMeta(jobId, meta);
+    } catch {
+      /* best-effort idempotency guard */
+    }
+  }
 }
 
 /**
@@ -308,6 +481,7 @@ export function writeResult(
 
   const meta = readMeta(jobId);
   meta.status = terminalStatus;
+  if (meta.forward !== false && notifyReportTo(meta, terminalStatus)) meta.notified = true;
   writeMeta(jobId, meta);
 }
 
@@ -326,8 +500,13 @@ export function writeMarkdownResult(
     throw notFound(`job not found: ${jobId}`, { job_id: jobId });
   }
 
+  // Phase 2.3: a superseded job's natural-stop submit records 'superseded', not 'done'.
+  const meta = readMeta(jobId);
+  const effectiveStatus: TerminalStatus =
+    terminalStatus === 'done' && meta.superseded === true ? 'superseded' : terminalStatus;
+
   const fm: MarkdownResultFrontmatter = {
-    status: terminalStatus,
+    status: effectiveStatus,
     written_at: new Date().toISOString(),
   };
   if (reason !== undefined && reason !== '') {
@@ -339,8 +518,8 @@ export function writeMarkdownResult(
   writeFileSync(tmp, content, 'utf8');
   renameSync(tmp, resultMdPath(jobId));
 
-  const meta = readMeta(jobId);
-  meta.status = terminalStatus;
+  meta.status = effectiveStatus;
+  if (meta.forward !== false && notifyReportTo(meta, effectiveStatus)) meta.notified = true;
   writeMeta(jobId, meta);
 }
 
@@ -418,7 +597,7 @@ function parseMarkdownResult(raw: string): { frontmatter: MarkdownResultFrontmat
  *   - Closed:        pane vanished with no result → status 'closed'
  */
 export interface ReadResultResponse {
-  status: 'done' | 'failed' | 'canceled' | 'closed' | 'timeout';
+  status: 'done' | 'failed' | 'canceled' | 'closed' | 'superseded' | 'timeout';
   result?: object;
   result_md?: string;
   reason?: string;
@@ -447,6 +626,11 @@ export function readResult(
     return { status: parsed.status, result: parsed.result };
   }
 
+  // NOTE: readResult is PURE — it must never write the `collected` tombstone.
+  // The ack is owned by the COMMAND layer (`job read result`), gated on the
+  // result bytes actually being delivered to a live caller. A read that resolves
+  // for an abandoned/canceled `--wait` (orphaned subprocess) must NOT suppress
+  // the push notice; see markCollected and the command's delivery gate.
   const existing = existingResultPath(jobId);
   if (existing !== null) {
     return Promise.resolve(parseAt(existing));
@@ -652,6 +836,89 @@ export function readLog(
   return results;
 }
 
+// ---------------------------------------------------------------------------
+// Telemetry sidecar
+// ---------------------------------------------------------------------------
+
+export interface TelemetryRec {
+  tokens_in?: number;
+  tokens_out?: number;
+  cost_usd?: number;
+  model?: string;
+  host_session_id?: string;
+  updated_at: string;
+}
+
+function telemetryPath(jobId: string): string {
+  return join(jobDir(jobId), 'telemetry.json');
+}
+
+/**
+ * Write (merge) a telemetry patch into <job_dir>/telemetry.json.
+ * Shallow-merges only the defined keys in `patch` over any existing record,
+ * stamps `updated_at`, then writes tmp+rename. Throws `notFound` when the
+ * job directory does not exist.
+ */
+export function writeTelemetry(
+  jobId: string,
+  patch: Omit<TelemetryRec, 'updated_at'>,
+): void {
+  const dir = jobDir(jobId);
+  if (!existsSync(dir)) {
+    throw notFound(`job not found: ${jobId}`, { job_id: jobId });
+  }
+
+  let existing: Partial<TelemetryRec> = {};
+  const tp = telemetryPath(jobId);
+  if (existsSync(tp)) {
+    try {
+      existing = JSON.parse(readFileSync(tp, 'utf8')) as Partial<TelemetryRec>;
+    } catch { /* treat parse failure as absent */ }
+  }
+
+  // Only defined (non-undefined) keys from patch overwrite existing values.
+  const definedPatch = Object.fromEntries(
+    Object.entries(patch).filter(([, v]) => v !== undefined),
+  );
+
+  const merged: TelemetryRec = {
+    ...existing,
+    ...definedPatch,
+    updated_at: new Date().toISOString(),
+  };
+
+  const tmp = join(dir, '.telemetry.tmp');
+  writeFileSync(tmp, JSON.stringify(merged, null, 2), 'utf8');
+  renameSync(tmp, tp);
+}
+
+/**
+ * Read <job_dir>/telemetry.json. Returns null when the file is absent or
+ * unparseable — never throws on a missing/corrupt sidecar.
+ */
+export function readTelemetry(jobId: string): TelemetryRec | null {
+  const tp = telemetryPath(jobId);
+  if (!existsSync(tp)) return null;
+  try {
+    return JSON.parse(readFileSync(tp, 'utf8')) as TelemetryRec;
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Live panes — exported alias reused by sessions + reaper
+// ---------------------------------------------------------------------------
+
+/**
+ * Set of every tmux pane id across all sessions. Empty when no tmux server is
+ * running. Exported so the session module and job-list reap hook share one
+ * `tmux list-panes -a` query instead of each issuing their own.
+ */
+export function livePanes(): Set<string> {
+  return allTmuxPaneIds();
+}
+
 /**
  * Best-effort cancel: send SIGTERM to the recorded pid (if any), mark meta
  * canceled. Success means the signal was delivered, not that execution stopped.
@@ -678,6 +945,7 @@ export function cancelJob(jobId: string): { canceled: boolean } {
   }
 
   meta.status = 'canceled';
+  if (meta.forward !== false && notifyReportTo(meta, 'canceled')) meta.notified = true;
   writeMeta(jobId, meta);
 
   return { canceled: signaled };

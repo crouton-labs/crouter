@@ -7,11 +7,16 @@ import assert from 'node:assert/strict';
 import {
   detectAgentKind,
   buildAgentCommand,
-  buildAgentPrintArgv,
-  buildAgentPrintCommand,
   normalizeModelForKind,
   subagentSessionName,
 } from '../spawn.js';
+
+// crtr `-e`-injects pi extensions (the stop-hook + the inbox watcher) into
+// every spawned pi agent. Their absolute paths are machine-specific, so strip
+// the `-e '<path>'` flags before asserting the rest of the command.
+function stripExtensions(cmd: string): string {
+  return cmd.replace(/ -e '[^']*'/g, '');
+}
 
 const origPi = process.env['PI_CODING_AGENT'];
 
@@ -64,18 +69,18 @@ describe('buildAgentCommand: claude', () => {
 describe('buildAgentCommand: pi', () => {
   test('fresh prompt has no skip-permissions flag (pi has no permission popups)', () => {
     const cmd = buildAgentCommand({ prompt: 'do the thing', name: 'worker-1' }, 'pi');
-    assert.equal(cmd, "pi -n 'worker-1' 'do the thing'");
+    assert.equal(stripExtensions(cmd), "pi -n 'worker-1' 'do the thing'");
     assert.ok(!cmd.includes('--dangerously-skip-permissions'));
   });
 
   test('fork uses --fork <id>', () => {
     const cmd = buildAgentCommand({ prompt: 'p', fork: { sessionId: 'abc-123' } }, 'pi');
-    assert.equal(cmd, "pi --fork 'abc-123' 'p'");
+    assert.equal(stripExtensions(cmd), "pi --fork 'abc-123' 'p'");
   });
 
   test('single-quotes in the prompt are escaped safely', () => {
     const cmd = buildAgentCommand({ prompt: "it's fine" }, 'pi');
-    assert.equal(cmd, "pi 'it'\\''s fine'");
+    assert.equal(stripExtensions(cmd), "pi 'it'\\''s fine'");
   });
 });
 
@@ -86,7 +91,7 @@ describe('buildAgentCommand: subagent persona (systemPrompt/model/tools)', () =>
       'pi',
     );
     assert.equal(
-      cmd,
+      stripExtensions(cmd),
       "pi -n 'scout' --model 'anthropic/haiku' --tools 'read,grep' --append-system-prompt 'You are a scout.' 'task'",
     );
   });
@@ -103,25 +108,7 @@ describe('buildAgentCommand: subagent persona (systemPrompt/model/tools)', () =>
 
   test('omitted persona fields add no flags', () => {
     const cmd = buildAgentCommand({ prompt: 'task' }, 'pi');
-    assert.equal(cmd, "pi 'task'");
-  });
-});
-
-describe('buildAgentPrintArgv: subagent persona', () => {
-  test('pi threads model/tools/system prompt as discrete args', () => {
-    const { args } = buildAgentPrintArgv(
-      { prompt: 'task', systemPrompt: 'persona', model: 'haiku', tools: ['read', 'bash'] },
-      'pi',
-    );
-    assert.deepEqual(args, ['--model', 'anthropic/haiku', '--tools', 'read,bash', '--append-system-prompt', 'persona', '-p', 'task']);
-  });
-
-  test('claude threads model/system prompt but not tools', () => {
-    const { args } = buildAgentPrintArgv(
-      { prompt: 'task', systemPrompt: 'persona', model: 'sonnet', tools: ['read'] },
-      'claude',
-    );
-    assert.deepEqual(args, ['--model', 'sonnet', '--append-system-prompt', 'persona', '-p', '--dangerously-skip-permissions', 'task']);
+    assert.equal(stripExtensions(cmd), "pi 'task'");
   });
 });
 
@@ -157,29 +144,4 @@ describe('buildAgentCommand: defaults to detected kind', () => {
   });
 });
 
-describe('buildAgentPrintArgv (headless print mode)', () => {
-  test('pi uses -p and no skip-permissions flag', () => {
-    const { cmd, args } = buildAgentPrintArgv({ prompt: 'do it', name: 'w1' }, 'pi');
-    assert.equal(cmd, 'pi');
-    assert.deepEqual(args, ['-n', 'w1', '-p', 'do it']);
-    assert.ok(!args.includes('--dangerously-skip-permissions'));
-  });
 
-  test('claude uses -p plus --dangerously-skip-permissions', () => {
-    const { cmd, args } = buildAgentPrintArgv({ prompt: 'do it' }, 'claude');
-    assert.equal(cmd, 'claude');
-    assert.deepEqual(args, ['-p', '--dangerously-skip-permissions', 'do it']);
-  });
-
-  test('argv passes the prompt as a discrete arg (no shell quoting)', () => {
-    const { args } = buildAgentPrintArgv({ prompt: "it's $weird" }, 'pi');
-    assert.equal(args[args.length - 1], "it's $weird");
-  });
-});
-
-describe('buildAgentPrintCommand (shell string)', () => {
-  test('pi prints with -p and shell-quotes the prompt', () => {
-    const cmd = buildAgentPrintCommand({ prompt: "it's fine" }, 'pi');
-    assert.equal(cmd, "pi '-p' 'it'\\''s fine'");
-  });
-});

@@ -1,4 +1,4 @@
-// Tests for the job subtree (monitoring) and agent/mode spawn leaves argv
+// Tests for the job subtree (monitoring) and the agent spawn leaves argv
 // migration. Exercises parseArgv against each leaf's param schema directly —
 // no subprocess, no tmux, no filesystem side-effects from the handler.
 //
@@ -19,23 +19,6 @@ const startPromptParams: InputParam[] = [
 ];
 
 const startForkParams: InputParam[] = [
-  { kind: 'flag', name: 'cwd', type: 'path', required: false, constraint: '' },
-];
-
-const startPlannerParams: InputParam[] = [
-  { kind: 'positional', name: 'spec_path', type: 'path', required: true, constraint: '' },
-  { kind: 'flag', name: 'cwd', type: 'path', required: false, constraint: '' },
-];
-
-const startImplementerParams: InputParam[] = [
-  { kind: 'positional', name: 'plan_path', type: 'path', required: true, constraint: '' },
-  { kind: 'flag', name: 'cwd', type: 'path', required: false, constraint: '' },
-];
-
-const startReviewerParams: InputParam[] = [
-  { kind: 'positional', name: 'artifact_path', type: 'path', required: true, constraint: '' },
-  { kind: 'flag', name: 'kind', type: 'enum', choices: ['plan', 'spec'], required: true, constraint: '' },
-  { kind: 'flag', name: 'spec-path', type: 'path', required: false, constraint: '' },
   { kind: 'flag', name: 'cwd', type: 'path', required: false, constraint: '' },
 ];
 
@@ -69,8 +52,9 @@ const readLogsParams: InputParam[] = [
 // everything parseArgv can see without needing stdin.
 const submitParams: InputParam[] = [
   { kind: 'positional', name: 'job_id', type: 'string', required: true, constraint: '' },
-  { kind: 'flag', name: 'status', type: 'enum', choices: ['done', 'failed'], required: false, default: 'done', constraint: '' },
+  { kind: 'flag', name: 'status', type: 'enum', choices: ['done', 'failed', 'superseded'], required: false, default: 'done', constraint: '' },
   { kind: 'flag', name: 'reason', type: 'string', required: false, constraint: '' },
+  { kind: 'flag', name: 'no-forward', type: 'bool', required: false, constraint: '' },
   { kind: 'flag', name: 'kill-pane', type: 'bool', required: false, constraint: '' },
 ];
 
@@ -129,87 +113,6 @@ describe('agent fork', () => {
       () => parseArgv(startForkParams, ['extra-pos']),
       (err: Error) => { assert.match(err.message, /takes no positional/); return true; },
     );
-  });
-});
-
-// ---------------------------------------------------------------------------
-// mode planner (formerly job start planner)
-// ---------------------------------------------------------------------------
-
-describe('mode planner', () => {
-  test('positional spec_path required', async () => {
-    await assert.rejects(
-      () => parseArgv(startPlannerParams, []),
-      (err: Error) => { assert.match(err.message, /required parameter is missing/); return true; },
-    );
-  });
-
-  test('positional parsed as spec_path (camelCase: specPath? no — underscore stays as-is)', async () => {
-    const result = await parseArgv(startPlannerParams, ['/tmp/spec.md']);
-    // flagNameToKey converts kebab to camel; underscores are unaffected
-    assert.equal(result['spec_path'], '/tmp/spec.md');
-  });
-
-  test('--cwd optional', async () => {
-    const result = await parseArgv(startPlannerParams, ['/tmp/spec.md', '--cwd', '/src']);
-    assert.equal(result['cwd'], '/src');
-    assert.equal(result['spec_path'], '/tmp/spec.md');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// mode implementer (formerly job start implementer)
-// ---------------------------------------------------------------------------
-
-describe('mode implementer', () => {
-  test('positional plan_path required', async () => {
-    await assert.rejects(
-      () => parseArgv(startImplementerParams, []),
-      (err: Error) => { assert.match(err.message, /required parameter is missing/); return true; },
-    );
-  });
-
-  test('positional parsed', async () => {
-    const result = await parseArgv(startImplementerParams, ['/tmp/plan.md']);
-    assert.equal(result['plan_path'], '/tmp/plan.md');
-  });
-});
-
-// ---------------------------------------------------------------------------
-// mode reviewer (formerly job start reviewer)
-// ---------------------------------------------------------------------------
-
-describe('mode reviewer', () => {
-  test('positional + --kind required', async () => {
-    await assert.rejects(
-      () => parseArgv(startReviewerParams, ['/tmp/artifact.md']),
-      (err: Error) => { assert.match(err.message, /required parameter is missing/); return true; },
-    );
-  });
-
-  test('valid kind: plan', async () => {
-    const result = await parseArgv(startReviewerParams, ['/tmp/artifact.md', '--kind', 'plan']);
-    assert.equal(result['artifact_path'], '/tmp/artifact.md');
-    assert.equal(result['kind'], 'plan');
-  });
-
-  test('valid kind: spec', async () => {
-    const result = await parseArgv(startReviewerParams, ['/tmp/artifact.md', '--kind', 'spec']);
-    assert.equal(result['kind'], 'spec');
-  });
-
-  test('invalid kind throws invalid_type', async () => {
-    await assert.rejects(
-      () => parseArgv(startReviewerParams, ['/tmp/artifact.md', '--kind', 'bad']),
-      (err: Error) => { assert.match(err.message, /must be one of/); return true; },
-    );
-  });
-
-  test('--spec-path optional, becomes specPath', async () => {
-    const result = await parseArgv(startReviewerParams, [
-      '/tmp/artifact.md', '--kind', 'plan', '--spec-path', '/tmp/spec.md',
-    ]);
-    assert.equal(result['specPath'], '/tmp/spec.md');
   });
 });
 
@@ -391,6 +294,21 @@ describe('job submit', () => {
       () => parseArgv(submitParams, ['job-abc', '--context-file', '/tmp/anything']),
       (err: Error) => { assert.match(err.message, /unknown flag: --context-file/); return true; },
     );
+  });
+
+  test('--status superseded parsed (Phase 2)', async () => {
+    const result = await parseArgv(submitParams, ['job-abc', '--status', 'superseded']);
+    assert.equal(result['status'], 'superseded');
+  });
+
+  test('--no-forward presence = true, noForward key (Phase 2)', async () => {
+    const result = await parseArgv(submitParams, ['job-abc', '--no-forward']);
+    assert.equal(result['noForward'], true);
+  });
+
+  test('--no-forward default is false (Phase 2)', async () => {
+    const result = await parseArgv(submitParams, ['job-abc']);
+    assert.equal(result['noForward'], false);
   });
 });
 

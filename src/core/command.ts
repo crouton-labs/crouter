@@ -370,7 +370,10 @@ export async function parseArgv(
         tokens.join(' '), undefined,
         'Use --flag for parameters; only one positional allowed.');
     }
-    if (positionalParam === undefined) {
+    // A bare positional is accepted when the leaf declares a positional param,
+    // OR when it declares a stdin param (the positional supplies the stdin
+    // value as an ergonomic alternative to piping). Otherwise it's an error.
+    if (positionalParam === undefined && stdinParam === undefined) {
       throw parseArgvError('bad_invocation',
         `this leaf takes no positional arguments: ${token}`,
         token, undefined,
@@ -385,16 +388,22 @@ export async function parseArgv(
     result[flagNameToKey(positionalParam.name)] = positionalValue;
   }
 
-  // Read stdin if declared
+  // Resolve stdin if declared. A positional token (when there's no dedicated
+  // positional param to claim it) satisfies the stdin param directly, so
+  // `crtr agent new "Say hi"` works as well as piping on stdin.
   if (stdinParam !== undefined) {
-    const raw = await readStdinRaw();
-    if (raw.trim() === '' && stdinParam.required) {
-      throw parseArgvError('missing_parameter',
-        `stdin is required for this leaf`,
-        '', stdinParam.name,
-        'Pipe the required content on stdin.');
+    if (positionalValue !== undefined && positionalParam === undefined) {
+      result[flagNameToKey(stdinParam.name)] = positionalValue;
+    } else {
+      const raw = await readStdinRaw();
+      if (raw.trim() === '' && stdinParam.required) {
+        throw parseArgvError('missing_parameter',
+          `stdin is required for this leaf`,
+          '', stdinParam.name,
+          'Pipe the required content on stdin, or pass it as a positional argument.');
+      }
+      result[flagNameToKey(stdinParam.name)] = raw;
     }
-    result[flagNameToKey(stdinParam.name)] = raw;
   }
 
   // Validate required params

@@ -2,7 +2,6 @@
 
 import { defineRoot, runCli } from './core/command.js';
 import { registerAgent } from './commands/agent.js';
-import { registerMode } from './commands/mode.js';
 import { registerSkill } from './commands/skill.js';
 import { registerJob } from './commands/job.js';
 import { registerPkg } from './commands/pkg.js';
@@ -23,7 +22,6 @@ const root = defineRoot({
   ],
   subtrees: [
     registerAgent(),
-    registerMode(),
     registerSkill(),
     registerPkg(),
     registerJob(),

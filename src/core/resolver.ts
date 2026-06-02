@@ -17,6 +17,7 @@ import {
   listDirs,
   pathExists,
   readText,
+  readTextIfExists,
   walkFiles,
 } from './fs-utils.js';
 import { readMarketplaceManifest, readPluginManifest } from './manifest.js';
@@ -610,6 +611,138 @@ export function findMarketplaceByName(
     if (found) return found;
   }
   return null;
+}
+
+export interface CategoryResolution {
+  id: string;
+  plugin: string | undefined;
+  scope: Scope | undefined;
+  dir: string;
+  indexPath: string | undefined;
+  skills: Skill[];
+}
+
+export function resolveCategory(
+  name: string,
+  opts: SkillResolutionOpts = {},
+): CategoryResolution | null {
+  const parsed = parseSkillQualifier(name);
+  if (parsed.segments.length === 0) return null;
+
+  const effectiveScope: Scope | undefined = opts.scope ?? parsed.scope;
+
+  let pluginQualifier: string | undefined;
+  let subpath: string | undefined;
+
+  if (opts.pluginFilter !== undefined) {
+    pluginQualifier = opts.pluginFilter;
+    const sub = parsed.segments.join('/');
+    subpath = sub || undefined;
+  } else if (parsed.segments.length > 1) {
+    const maybePlugin = parsed.segments[0];
+    const pluginMatch =
+      findPluginByName(maybePlugin, effectiveScope) ??
+      (effectiveScope === undefined ? null : findPluginByName(maybePlugin));
+    if (pluginMatch !== null) {
+      pluginQualifier = maybePlugin;
+      subpath = parsed.segments.slice(1).join('/');
+    } else {
+      pluginQualifier = undefined;
+      subpath = parsed.segments.join('/');
+    }
+  } else {
+    const maybePlugin = parsed.segments[0];
+    const pluginMatch =
+      findPluginByName(maybePlugin, effectiveScope) ??
+      (effectiveScope === undefined ? null : findPluginByName(maybePlugin));
+    if (pluginMatch !== null) {
+      pluginQualifier = maybePlugin;
+      subpath = undefined;
+    } else {
+      pluginQualifier = undefined;
+      subpath = maybePlugin;
+    }
+  }
+
+  let skills: Skill[];
+  let dir: string;
+  let id: string;
+  let resolvedScope: Scope | undefined;
+
+  if (pluginQualifier !== undefined) {
+    const plugin =
+      findPluginByName(pluginQualifier, effectiveScope) ??
+      (effectiveScope === undefined ? null : findPluginByName(pluginQualifier));
+    if (!plugin) return null;
+
+    resolvedScope = plugin.scope;
+    const allPluginSkills = listSkillsInPlugin(plugin);
+
+    if (subpath === undefined) {
+      skills = allPluginSkills;
+      dir = join(plugin.root, SKILLS_DIR);
+      id = pluginQualifier;
+    } else {
+      skills = allPluginSkills.filter((s) => s.name.startsWith(subpath! + '/'));
+      dir = join(plugin.root, SKILLS_DIR, ...subpath.split('/'));
+      id = `${pluginQualifier}/${subpath}`;
+    }
+  } else if (subpath !== undefined) {
+    const scope = effectiveScope ?? 'user';
+    resolvedScope = scope;
+    const skillsRoot = scopeSkillsDir(scope);
+    if (!skillsRoot) return null;
+    const allScopeSkills = listScopeRootSkills(scope);
+    skills = allScopeSkills.filter((s) => s.name.startsWith(subpath! + '/'));
+    dir = join(skillsRoot, ...subpath.split('/'));
+    id = `${scope}/${subpath}`;
+  } else {
+    return null;
+  }
+
+  if (skills.length === 0) return null;
+
+  const indexMd = join(dir, 'index.md');
+  const indexPath = pathExists(indexMd) ? indexMd : undefined;
+
+  return { id, plugin: pluginQualifier, scope: resolvedScope, dir, indexPath, skills };
+}
+
+export function buildCategoryIndex(cat: CategoryResolution): string {
+  const lines: string[] = [];
+  lines.push(`# ${cat.id} — ${cat.skills.length} skills`);
+  lines.push('');
+
+  if (cat.indexPath !== undefined) {
+    const authored = readTextIfExists(cat.indexPath);
+    if (authored !== null) {
+      const { body } = parseFrontmatter(authored);
+      const trimmed = body.trim();
+      if (trimmed.length > 0) {
+        lines.push(trimmed);
+        lines.push('');
+      }
+    }
+  }
+
+  lines.push('## Skills');
+  const sorted = [...cat.skills].sort((a, b) => a.name.localeCompare(b.name));
+  for (const skill of sorted) {
+    const fullId =
+      skill.plugin === SCOPE_SKILL_PLUGIN
+        ? `${skill.scope}/${skill.name}`
+        : `${skill.plugin}/${skill.name}`;
+    const desc = skill.frontmatter.description ?? '(no description)';
+    lines.push(`- \`${fullId}\` — ${desc}`);
+  }
+  lines.push('');
+  lines.push(
+    `Read one with \`crtr skill read <full-id>\`. Narrow with \`crtr skill find list --plugin ${
+      cat.plugin ?? cat.id
+    }\`.`,
+  );
+
+  return lines.join('\n');
 }
 
 export function scopeRootsLabel(): string {

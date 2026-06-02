@@ -151,6 +151,28 @@ describe('parseArgv: positional', () => {
 });
 
 // ---------------------------------------------------------------------------
+// parseArgv — stdin satisfied by a positional argument
+// ---------------------------------------------------------------------------
+
+describe('parseArgv: stdin-as-positional', () => {
+  const params: InputParam[] = [
+    { kind: 'stdin', name: 'prompt', required: true, constraint: 'Task.' },
+    { kind: 'flag', name: 'agent', type: 'string', required: false, default: 'general', constraint: '' },
+  ];
+
+  test('a positional token satisfies a stdin param', async () => {
+    const result = await parseArgv(params, ['--agent', 'general', 'Say hi']);
+    assert.equal(result['prompt'], 'Say hi');
+    assert.equal(result['agent'], 'general');
+  });
+
+  test('positional-as-stdin works with the positional before flags', async () => {
+    const result = await parseArgv(params, ['Say hi', '--agent', 'general']);
+    assert.equal(result['prompt'], 'Say hi');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // parseArgv — context-file
 // ---------------------------------------------------------------------------
 
