@@ -63,6 +63,24 @@ export function writeGoal(nodeId: string, text: string): void {
   writeFileSync(goalPath(nodeId), body + '\n', 'utf8');
 }
 
+/** Write the goal ONLY if the node has none yet. This is how a bare root (no
+ *  spawn prompt) acquires its mandate: the first real user message becomes the
+ *  goal. Returns true when it wrote one, false when a goal already existed or
+ *  the text was empty. Guarded so a later message never clobbers the mandate. */
+export function captureGoalIfAbsent(nodeId: string, text: string): boolean {
+  const existing = readGoal(nodeId);
+  if (existing !== null && existing.trim() !== '') return false;
+  const body = text.trim();
+  if (body === '') return false;
+  writeGoal(nodeId, body);
+  return true;
+}
+
+/** Sentinel opening the fresh-revive kickoff message (see buildReviveKickoff).
+ *  The goal-capture extension skips any input starting with this so a kickoff
+ *  prompt is never mistaken for a user's first mandate. */
+export const REVIVE_KICKOFF_SENTINEL = 'You have been revived fresh after a context refresh';
+
 /** The yield-message file — a short note `crtr node yield` records for the next
  *  revive ("on wake, do X"). Consumed (deleted) when the revive reads it. */
 export function yieldMessagePath(nodeId: string): string {
@@ -138,7 +156,7 @@ export function buildReviveKickoff(meta: NodeMeta): string {
   const yieldMsg = consumeYieldMessage(nodeId);
 
   const parts: string[] = [
-    'You have been revived fresh after a context refresh — your previous in-memory ' +
+    `${REVIVE_KICKOFF_SENTINEL} — your previous in-memory ` +
       'context is gone, by design. Everything below was just read from disk; it is your ' +
       'full bearings. Rebuild from it and continue toward your goal.',
   ];
