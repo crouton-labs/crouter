@@ -22,7 +22,7 @@ import { join } from 'node:path';
 
 import { crtrHome, getNode, updateNode } from '../canvas/index.js';
 import type { NodeMeta } from '../canvas/index.js';
-import { selectWindow, switchClient, windowAlive, currentTmux, paneOfWindow, swapPaneInPlace, windowOfPane, openShellWindow, closeWindow, ensureSession, nodeSession } from './tmux.js';
+import { selectWindow, switchClient, windowAlive, currentTmux, paneOfWindow, swapPaneInPlace, windowOfPane } from './tmux.js';
 
 // ---------------------------------------------------------------------------
 // Focus pointer
@@ -117,6 +117,7 @@ export function focusNode(nodeId: string): { focused: boolean; session: string |
 export function focusNodeInPlace(
   nodeId: string,
   callerPane?: string,
+  callerNodeId?: string,
 ): { focused: boolean; session: string | null; inPlace: boolean } {
   const meta = getNode(nodeId);
 
@@ -162,63 +163,13 @@ export function focusNodeInPlace(
     try { updateNode(nodeId, { window: callerWindow }); } catch { /* best-effort */ }
     // The caller is the node running this focus (its pi process owns callerPane).
     // Its pane moved to the target's old window, so re-point its window there.
-    const callerNodeId = process.env['CRTR_NODE_ID'];
-    if (callerNodeId !== undefined && callerNodeId.trim() !== '' && callerNodeId !== nodeId) {
-      try { updateNode(callerNodeId, { window }); } catch { /* best-effort */ }
+    // Prefer an explicit id (the `node cycle` tmux binding runs outside any pi,
+    // so CRTR_NODE_ID is unset there) and fall back to the env for `node focus`.
+    const cnid = callerNodeId ?? process.env['CRTR_NODE_ID'];
+    if (cnid !== undefined && cnid.trim() !== '' && cnid !== nodeId) {
+      try { updateNode(cnid, { window }); } catch { /* best-effort */ }
     }
   }
 
   return { focused: ok, session, inPlace: true };
-}
-
-// ---------------------------------------------------------------------------
-// Demote — detach the agent in the caller's pane to the background
-// ---------------------------------------------------------------------------
-
-/** Send a node's running pi OUT of the caller's pane and into a window in the
- *  shared global session, leaving a fresh shell where it was — the pane
- *  "becomes a terminal" and the agent keeps running, detached, in the
- *  background. The inverse of `focusNodeInPlace`; reversible via `node focus`.
- *
- *  Mechanism: open a shell window in the global session, then swap that shell
- *  pane INTO the caller's pane — tmux exchanges the two panes, so the node's pi
- *  pane lands in the shell's window (global session) and the shell lands in the
- *  caller's pane. The node's meta is re-pointed to the new window so the daemon
- *  keeps supervising it.
- *
- *  Best-effort; `demoted:false` when not in tmux or any tmux step fails. */
-export function demoteNode(
-  nodeId: string,
-  callerPane?: string,
-): { demoted: boolean; session: string | null; window: string | null } {
-  const meta = getNode(nodeId);
-  if (meta === null) return { demoted: false, session: null, window: null };
-
-  const pane = callerPane ?? process.env['TMUX_PANE'] ?? currentTmux()?.pane;
-  if (pane === undefined || pane === '') {
-    return { demoted: false, session: meta.tmux_session ?? null, window: meta.window ?? null };
-  }
-
-  const session = nodeSession();
-  ensureSession(session, meta.cwd);
-
-  const shell = openShellWindow({ session, name: meta.name, cwd: meta.cwd });
-  if (shell === null) return { demoted: false, session, window: meta.window ?? null };
-
-  // Swap the fresh shell into the caller's pane; the node's pi pane is exchanged
-  // out into the shell's window (now living in the global session).
-  const ok = swapPaneInPlace(shell.pane, pane);
-  if (!ok) {
-    closeWindow(shell.window);
-    return { demoted: false, session, window: meta.window ?? null };
-  }
-
-  // The node's pi now occupies the shell window; re-point its meta there so
-  // liveness checks resolve the right window.
-  try { updateNode(nodeId, { tmux_session: session, window: shell.window }); } catch { /* best-effort */ }
-
-  // The caller pane reverted to a terminal — if this node held focus, clear it.
-  if (getFocus() === nodeId) setFocus('');
-
-  return { demoted: true, session, window: shell.window };
 }

@@ -11,13 +11,16 @@ import { spawnChild, bootRoot } from '../core/runtime/spawn.js';
 import { promote, requestYield } from '../core/runtime/promote.js';
 import { writeYieldMessage } from '../core/runtime/kickoff.js';
 import { reviveNode } from '../core/runtime/revive.js';
-import { focusNodeInPlace, demoteNode } from '../core/runtime/presence.js';
+import { focusNodeInPlace } from '../core/runtime/presence.js';
+import { demoteNode } from '../core/runtime/demote.js';
 import { windowAlive, windowOfPane, currentTmux } from '../core/runtime/tmux.js';
 import { appendInbox, type InboxTier } from '../core/feed/inbox.js';
 import { availableKinds } from '../core/personas/index.js';
 import {
   getNode,
   listNodes,
+  subscribe,
+  unsubscribe,
   subscriptionsOf,
   subscribersOf,
   type Mode,
@@ -55,7 +58,7 @@ const nodeNew = defineLeaf({
       { name: 'window', type: 'string', required: false, constraint: 'tmux window id of the background window.' },
       { name: 'session', type: 'string', required: true, constraint: 'The shared crtr tmux session the node was placed in.' },
       { name: 'status', type: 'string', required: true, constraint: 'Always "active" on spawn.' },
-      { name: 'follow_up', type: 'string', required: true, constraint: 'A notification to the caller about the spawn: the child runs independently and its finish wakes you automatically, so treat it as fire-and-forget. Read it, then act.' },
+      { name: 'follow_up', type: 'string', required: true, constraint: 'Decision road sign for the caller: the child runs independently and its finish wakes you on its own, so never wait or poll on it — either pick up other work now or end your turn. Read it, then act.' },
     ],
     outputKind: 'object',
     effects: [
@@ -83,7 +86,7 @@ const nodeNew = defineLeaf({
       session: res.session,
       status: res.node.status,
       follow_up:
-        "Notification only — you're auto-subscribed, so the child's finish wakes you automatically; treat it as fire-and-forget. Carry on with other independent work now, or stop and end your turn. On wake: `crtr feed read`.",
+        "Do not wait or poll on this child — there is no result to await and stopping will not strand you. You're auto-subscribed, so its finish wakes you on its own. Two moves only: pick up other independent work right now, or stop and end your turn — the wake brings you back. Sitting idle to watch it is wasted; pick one and act.",
     };
   },
   render: (r) =>
@@ -212,46 +215,139 @@ function nodeByWindow(win: string): string | undefined {
   return undefined;
 }
 
+/** The live node occupying a tmux pane (pane → window → node), or undefined.
+ *  Defaults to $TMUX_PANE / the caller's current pane when `pane` is omitted —
+ *  shared by `node demote` and `node cycle`, both of which act on "the agent in
+ *  front of you". */
+function nodeInPane(pane?: string): string | undefined {
+  const resolvePane = pane ?? process.env['TMUX_PANE'] ?? currentTmux()?.pane;
+  const win = resolvePane !== undefined && resolvePane !== '' ? windowOfPane(resolvePane) : null;
+  return win !== null ? nodeByWindow(win) : undefined;
+}
+
 const nodeDemote = defineLeaf({
   name: 'demote',
   help: {
     name: 'node demote',
-    summary: 'detach the agent in your current pane to the background — swap a fresh terminal into its place and relocate its running pi to a window in the shared crtr session (the inverse of focus; reattach later with `node focus`)',
+    summary: 'finish the agent in your current pane and recycle the pane — push its last message as a final report to everyone waiting on it, mark it done, then boot a fresh crtr root in the same pane',
     params: [
-      { kind: 'flag', name: 'node', type: 'string', required: false, constraint: 'Node to demote. Defaults to the node occupying --pane (or your current pane).' },
-      { kind: 'flag', name: 'pane', type: 'string', required: false, constraint: 'tmux pane id to demote out of. Defaults to $TMUX_PANE / your current pane. The Alt+C menu passes this for you.' },
+      { kind: 'flag', name: 'node', type: 'string', required: false, constraint: 'Node to finish. Defaults to the node occupying --pane (or your current pane).' },
+      { kind: 'flag', name: 'pane', type: 'string', required: false, constraint: 'tmux pane id to recycle. Defaults to $TMUX_PANE / your current pane. The Alt+C menu passes this for you.' },
     ],
     output: [
-      { name: 'demoted', type: 'boolean', required: true, constraint: 'True when the agent was swapped out to the background.' },
-      { name: 'node_id', type: 'string', required: false, constraint: 'The demoted node.' },
-      { name: 'session', type: 'string', required: false, constraint: 'The shared session the agent now lives in.' },
-      { name: 'window', type: 'string', required: false, constraint: 'The agent\'s new background window id.' },
+      { name: 'demoted', type: 'boolean', required: true, constraint: 'True when the pane was recycled into a fresh root.' },
+      { name: 'node_id', type: 'string', required: false, constraint: 'The finished node.' },
+      { name: 'finalized', type: 'boolean', required: false, constraint: 'True when a final report was pushed to its subscribers.' },
+      { name: 'delivered', type: 'number', required: false, constraint: 'How many subscribers/managers received the final report.' },
+      { name: 'new_root', type: 'string', required: false, constraint: 'The fresh root node booted into the pane.' },
     ],
     outputKind: 'object',
-    effects: ['Swaps a fresh shell into the caller pane (tmux swap-pane) and relocates the node\'s pi window into the shared crtr session.', 'Clears the focus pointer if the demoted node held it. The pi keeps running — nothing is killed.'],
+    effects: ['Pushes a final report from the node (fans out to all subscribers) and marks it done.', 'Kills the agent\'s pi and respawns a fresh resident root in the same tmux pane.'],
   },
   run: async (input) => {
     const pane = (input['pane'] as string | undefined) ?? process.env['TMUX_PANE'];
     let id = input['node'] as string | undefined;
     if (id === undefined || id === '') {
       // Derive the node from the pane: which node's window holds it?
-      const resolvePane = pane ?? currentTmux()?.pane;
-      const win = resolvePane !== undefined ? windowOfPane(resolvePane) : null;
-      id = win !== null ? nodeByWindow(win) : undefined;
+      id = nodeInPane(pane);
     }
     if (id === undefined || id === '') {
-      throw new InputError({ error: 'no_node', message: 'no node found in this pane to demote', next: 'Pass --node <id>, or run from inside a focused node\'s pane.' });
+      throw new InputError({ error: 'no_node', message: 'no node found in this pane to finish', next: 'Pass --node <id>, or run from inside the agent\'s pane.' });
     }
     if (getNode(id) === null) {
       throw new InputError({ error: 'not_found', message: `no node: ${id}`, next: 'List nodes with `crtr node inspect list`.' });
     }
-    const res = demoteNode(id, pane);
-    return { demoted: res.demoted, node_id: id, session: res.session ?? undefined, window: res.window ?? undefined };
+    const res = await demoteNode(id, pane);
+    return { demoted: res.demoted, node_id: id, finalized: res.finalized, delivered: res.delivered.length, new_root: res.newRoot ?? undefined };
   },
   render: (r) =>
     r['demoted'] === true
-      ? `<demoted id="${r['node_id']}" session="${r['session'] ?? ''}"/>`
+      ? `<demoted id="${r['node_id']}" finalized="${r['finalized']}" delivered="${r['delivered']}" new_root="${r['new_root'] ?? ''}"/>`
       : `<demote-failed id="${r['node_id'] ?? ''}">not in tmux, or no agent in this pane</demote-failed>`,
+});
+
+// ---------------------------------------------------------------------------
+// node cycle — DFS-walk the canvas one window at a time (Alt+] / Alt+[)
+// ---------------------------------------------------------------------------
+
+/** Every live node in DFS pre-order across the whole forest. The spawn tree is
+ *  the `parent` field; children inherit their parent's row order (created), so
+ *  the walk descends into a node's children before moving to its siblings —
+ *  exactly "next in pre-order is your first child". Roots are live nodes with no
+ *  live parent (a done/dead parent orphans its live children up to the top).
+ *  Cycle-safe: a final pass appends any node a cycle kept from being reached. */
+function liveDfsOrder(): string[] {
+  const rows = listNodes({ status: ['active', 'idle'] }); // ORDER BY created
+  const liveIds = new Set(rows.map((r) => r.node_id));
+  const childrenOf = new Map<string, string[]>();
+  for (const r of rows) {
+    const p = r.parent;
+    if (p != null && liveIds.has(p)) {
+      const arr = childrenOf.get(p) ?? [];
+      arr.push(r.node_id);
+      childrenOf.set(p, arr);
+    }
+  }
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const visit = (id: string): void => {
+    if (seen.has(id)) return;
+    seen.add(id);
+    out.push(id);
+    for (const c of childrenOf.get(id) ?? []) visit(c);
+  };
+  for (const r of rows) if (r.parent == null || !liveIds.has(r.parent)) visit(r.node_id);
+  for (const r of rows) visit(r.node_id); // stragglers (parent cycles)
+  return out;
+}
+
+const nodeCycle = defineLeaf({
+  name: 'cycle',
+  help: {
+    name: 'node cycle',
+    summary:
+      'focus the next/previous live node in DFS pre-order — the canvas walked one window at a time, descending into a node\'s children before its siblings (bound to Alt+] forward / Alt+[ back)',
+    params: [
+      { kind: 'flag', name: 'dir', type: 'enum', choices: ['next', 'prev'], required: false, default: 'next', constraint: 'Direction along the pre-order: next (Alt+], rightward/deeper into children) or prev (Alt+[, back). Wraps at the ends.' },
+      { kind: 'flag', name: 'pane', type: 'string', required: false, constraint: 'tmux pane to cycle FROM. Defaults to $TMUX_PANE / your current pane. The Alt+] / Alt+[ bindings pass this for you.' },
+    ],
+    output: [
+      { name: 'focused', type: 'boolean', required: true, constraint: 'True when the neighbor was brought into view.' },
+      { name: 'node_id', type: 'string', required: false, constraint: 'The node now in front of you.' },
+      { name: 'name', type: 'string', required: false, constraint: 'Its display name.' },
+      { name: 'from', type: 'string', required: false, constraint: 'The node you cycled away from.' },
+    ],
+    outputKind: 'object',
+    effects: ['Swaps the neighbor\'s pane into the caller pane (like `node focus`); the node you were viewing drops to the background.', 'Revives the neighbor first if its window was released.'],
+  },
+  run: async (input) => {
+    const pane = (input['pane'] as string | undefined) ?? process.env['TMUX_PANE'] ?? currentTmux()?.pane ?? undefined;
+    const dir = ((input['dir'] as string | undefined) ?? 'next') as 'next' | 'prev';
+
+    const fromId = nodeInPane(pane);
+    if (fromId === undefined) return { focused: false };
+
+    const order = liveDfsOrder();
+    const i = order.indexOf(fromId);
+    if (i === -1 || order.length < 2) return { focused: false, node_id: fromId, from: fromId };
+
+    const step = dir === 'next' ? 1 : -1;
+    const targetId = order[(i + step + order.length) % order.length] as string;
+    const target = getNode(targetId);
+    if (target === null) return { focused: false, from: fromId };
+
+    // A live node may have had its window released — revive (resume) so there is
+    // a window to swap in, mirroring `node focus`.
+    if (!windowAlive(target.tmux_session, target.window)) {
+      try { reviveNode(targetId, { resume: true }); } catch { /* fall through */ }
+    }
+    const res = focusNodeInPlace(targetId, pane, fromId);
+    return { focused: res.focused, node_id: targetId, name: target.name, from: fromId };
+  },
+  render: (r) =>
+    r['focused'] === true
+      ? `<cycled to="${r['node_id']}" name="${r['name'] ?? ''}" from="${r['from'] ?? ''}"/>`
+      : `<cycle-noop>no other live node to focus</cycle-noop>`,
 });
 
 // ---------------------------------------------------------------------------
@@ -331,6 +427,80 @@ const nodeMsg = defineLeaf({
 });
 
 // ---------------------------------------------------------------------------
+// node subscribe / unsubscribe — wire the subscribes_to spine between any pair
+// ---------------------------------------------------------------------------
+
+/** Resolve the subscriber: explicit --subscriber wins, else the calling node. */
+function resolveSubscriber(input: Record<string, unknown>): string {
+  const sub = (input['subscriber'] as string | undefined) ?? process.env['CRTR_NODE_ID'];
+  if (sub === undefined || sub === '') {
+    throw new InputError({ error: 'no_subscriber', message: 'no subscriber (set CRTR_NODE_ID or pass --subscriber)', field: 'subscriber', next: 'Run from inside a node, or pass --subscriber <id>.' });
+  }
+  return sub;
+}
+
+const nodeSubscribe = defineLeaf({
+  name: 'subscribe',
+  help: {
+    name: 'node subscribe',
+    summary: 'wire a subscribes_to edge so one node receives another\'s pushes — the subscriber can be you (default) or, with --subscriber, ANY node, to ANY publisher. Re-running flips an existing edge\'s active/passive mode.',
+    params: [
+      { kind: 'positional', name: 'publisher', required: true, constraint: 'The node to subscribe TO — whose pushes get delivered to the subscriber.' },
+      { kind: 'flag', name: 'subscriber', type: 'string', required: false, constraint: 'Who receives the pushes. Defaults to the calling node (CRTR_NODE_ID). Pass any node id to wire a third party.' },
+      { kind: 'flag', name: 'passive', type: 'bool', required: false, constraint: 'Passive subscription: pushes ACCUMULATE without waking the subscriber, then auto-inject as timestamped XML pre-text on its next message. Omit for an active (wake-on-push) subscription.' },
+    ],
+    output: [
+      { name: 'subscribed', type: 'boolean', required: true, constraint: 'True when the edge was created/updated.' },
+      { name: 'subscriber', type: 'string', required: true, constraint: 'The receiving node.' },
+      { name: 'publisher', type: 'string', required: true, constraint: 'The node being subscribed to.' },
+      { name: 'mode', type: 'string', required: true, constraint: '"active" (wakes on push) or "passive" (accumulates, no wake).' },
+    ],
+    outputKind: 'object',
+    effects: ['Upserts a subscribes_to edge in canvas.db (active flag set from --passive).', 'Passive edges never wake the subscriber and do not hold it alive (excluded from the stop-guard).'],
+  },
+  run: async (input) => {
+    const publisher = input['publisher'] as string;
+    const subscriber = resolveSubscriber(input);
+    const passive = input['passive'] === true;
+    if (subscriber === publisher) {
+      throw new InputError({ error: 'self_subscribe', message: 'a node cannot subscribe to itself', next: 'Pick a different publisher.' });
+    }
+    if (getNode(subscriber) === null) throw new InputError({ error: 'not_found', message: `no node: ${subscriber}`, field: 'subscriber', next: 'List nodes with `crtr node inspect list`.' });
+    if (getNode(publisher) === null) throw new InputError({ error: 'not_found', message: `no node: ${publisher}`, field: 'publisher', next: 'List nodes with `crtr node inspect list`.' });
+    subscribe(subscriber, publisher, !passive);
+    return { subscribed: true, subscriber, publisher, mode: passive ? 'passive' : 'active' };
+  },
+  render: (r) =>
+    `<subscribed subscriber="${r['subscriber']}" publisher="${r['publisher']}" mode="${r['mode']}"/>`,
+});
+
+const nodeUnsubscribe = defineLeaf({
+  name: 'unsubscribe',
+  help: {
+    name: 'node unsubscribe',
+    summary: 'drop a subscribes_to edge — the subscriber (you by default, or any node via --subscriber) stops receiving the publisher\'s pushes.',
+    params: [
+      { kind: 'positional', name: 'publisher', required: true, constraint: 'The node to stop subscribing to.' },
+      { kind: 'flag', name: 'subscriber', type: 'string', required: false, constraint: 'Who to detach. Defaults to the calling node (CRTR_NODE_ID).' },
+    ],
+    output: [
+      { name: 'unsubscribed', type: 'boolean', required: true, constraint: 'True when the edge was removed (idempotent — also true if none existed).' },
+      { name: 'subscriber', type: 'string', required: true, constraint: 'The detached node.' },
+      { name: 'publisher', type: 'string', required: true, constraint: 'The node it stopped subscribing to.' },
+    ],
+    outputKind: 'object',
+    effects: ['Deletes the subscribes_to edge from canvas.db.'],
+  },
+  run: async (input) => {
+    const publisher = input['publisher'] as string;
+    const subscriber = resolveSubscriber(input);
+    unsubscribe(subscriber, publisher);
+    return { unsubscribed: true, subscriber, publisher };
+  },
+  render: (r) => `<unsubscribed subscriber="${r['subscriber']}" publisher="${r['publisher']}"/>`,
+});
+
+// ---------------------------------------------------------------------------
 // node promote — become a resident orchestrator (terminal → resident polymorph)
 // ---------------------------------------------------------------------------
 
@@ -348,6 +518,8 @@ const nodePromote = defineLeaf({
       { name: 'kind', type: 'string', required: true, constraint: 'The kind it now orchestrates as.' },
       { name: 'mode', type: 'string', required: true, constraint: 'Now "orchestrator".' },
       { name: 'roadmap_written', type: 'boolean', required: true, constraint: 'True if a roadmap scaffold was seeded by this call.' },
+      { name: 'roadmap_path', type: 'string', required: true, constraint: 'Absolute path to your roadmap doc (context/roadmap.md) — edit it to author your plan.' },
+      { name: 'goal_path', type: 'string', required: true, constraint: 'Absolute path to your goal doc (context/initial-prompt.md) — the mandate you were spawned with.' },
       { name: 'guidance', type: 'string', required: true, constraint: 'Instructions for your new role — read and act on them this turn.' },
     ],
     outputKind: 'object',
@@ -359,7 +531,7 @@ const nodePromote = defineLeaf({
     const kind = input['kind'] as string | undefined;
     if (kind !== undefined) assertKind(kind);
     const res = promote(id, kind !== undefined ? { kind } : {});
-    return { node_id: res.meta.node_id, kind: res.meta.kind, mode: res.meta.mode, roadmap_written: res.roadmapWritten, guidance: res.guidance };
+    return { node_id: res.meta.node_id, kind: res.meta.kind, mode: res.meta.mode, roadmap_written: res.roadmapWritten, roadmap_path: res.roadmapPath, goal_path: res.goalPath, guidance: res.guidance };
   },
 });
 
@@ -414,16 +586,19 @@ export function registerNode(): BranchDef {
         'HOW: `crtr node new "<task>" --kind <kind>` returns a node id immediately and runs the worker in a background window. Match the kind to the work (see `node new -h`). You are woken when a child finishes; absorb what your children reported with `crtr feed read` (coalesced pointers — dereference the report paths that matter, don\'t act on a one-line summary). Integrate, then either delegate the next units or finish.\n\n' +
         'FINISH: a worker ends its own work with `crtr push final "<result>"` (writes the canonical result, marks done, closes the window) — stopping without it is not finishing. For a job too big for one context window, `node promote` to a resident orchestrator (holds a roadmap, delegates phases); when context fills, `node yield` to refresh against that roadmap.',
       children: [
-        { name: 'new', desc: 'spawn a terminal worker as a background window', useWhen: 'delegating a self-contained unit of work' },
+        { name: 'new', desc: 'spawn a terminal worker as a background window', useWhen: 'delegating a self-contained unit of work', tier: 'important' },
         { name: 'inspect', desc: 'read the graph (list nodes / show one)', useWhen: 'surveying the canvas or inspecting a node' },
         { name: 'focus', desc: 'bring a node window forefront', useWhen: 'jumping to a node to watch or steer it' },
-        { name: 'demote', desc: 'detach the agent in your pane to the background', useWhen: 'parking the agent in front of you and getting your terminal back (Alt+C → d)' },
+        { name: 'cycle', desc: 'DFS-walk to the next/prev live node in place', useWhen: 'sweeping the canvas one window at a time (Alt+] forward / Alt+[ back)' },
+        { name: 'demote', desc: 'finish the agent in your pane + recycle it into a fresh root', useWhen: 'wrapping up the agent in front of you and starting fresh (Alt+C → d)' },
         { name: 'session', desc: 'open a fresh root in its own tmux session', useWhen: 'starting a new top-level session from inside a node' },
         { name: 'msg', desc: 'direct-message any node at a wake tier', useWhen: 'steering or pinging a specific node (wakes it)' },
-        { name: 'promote', desc: 'become a resident orchestrator of a chosen kind', useWhen: 'your task is bigger than one context window and you must delegate + persist' },
+        { name: 'subscribe', desc: 'wire a subscribes_to edge between any pair (active or --passive)', useWhen: 'making a node (you or another) receive another node\'s pushes' },
+        { name: 'unsubscribe', desc: 'drop a subscribes_to edge', useWhen: 'detaching a subscriber from a publisher' },
+        { name: 'promote', desc: 'become a resident orchestrator of a chosen kind', useWhen: 'your task is bigger than one context window and you must delegate + persist', tier: 'important' },
         { name: 'yield', desc: 'refresh your context against your roadmap', useWhen: 'your context window is filling up' },
       ],
     },
-    children: [nodeNew, nodeInspect, nodeFocus, nodeDemote, nodeSession, nodeMsg, nodePromote, nodeYield],
+    children: [nodeNew, nodeInspect, nodeFocus, nodeCycle, nodeDemote, nodeSession, nodeMsg, nodeSubscribe, nodeUnsubscribe, nodePromote, nodeYield],
   });
 }

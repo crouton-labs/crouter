@@ -123,25 +123,6 @@ export function openNodeWindow(opts: OpenWindowOpts): string | null {
   return r.ok ? r.stdout : null;
 }
 
-/** Open a background window running a plain login shell (no pi) and return its
- *  window + pane ids. Used by demote: the agent's pi is swapped OUT into this
- *  window's slot and the shell is swapped INTO the caller's pane. `-a` keeps it
- *  off index 0 (reserved for a dashboard), `-d` keeps it from stealing focus. */
-export function openShellWindow(opts: { session: string; name: string; cwd: string }):
-  { window: string; pane: string } | null {
-  const r = tmux([
-    'new-window', '-d', '-a', '-P',
-    '-F', '#{window_id}\t#{pane_id}',
-    '-t', `${opts.session}:`,
-    '-n', opts.name,
-    '-c', opts.cwd,
-  ]);
-  if (!r.ok) return null;
-  const [window, pane] = r.stdout.split('\t');
-  if (window === undefined || pane === undefined) return null;
-  return { window, pane };
-}
-
 /** Bring a node's window forefront. Switches client across roots when needed. */
 export function focusWindow(session: string, window: string): boolean {
   const here = currentTmux();
@@ -171,6 +152,16 @@ export function paneOfWindow(session: string, window: string): string | null {
 export function windowOfPane(pane: string): string | null {
   const r = tmux(['display-message', '-p', '-t', pane, '#{window_id}']);
   return r.ok && r.stdout !== '' ? r.stdout : null;
+}
+
+/** The session + window a pane currently lives in. Used by demote to place the
+ *  recycled root's meta on the pane it respawns into. Null if tmux fails. */
+export function paneLocation(pane: string): { session: string; window: string } | null {
+  const r = tmux(['display-message', '-p', '-t', pane, '#{session_name}\t#{window_id}']);
+  if (!r.ok) return null;
+  const [session, window] = r.stdout.split('\t');
+  if (session === undefined || session === '' || window === undefined || window === '') return null;
+  return { session, window };
 }
 
 /** Swap `targetPane` into `callerPane`'s layout slot, IN PLACE. `-d` keeps the
@@ -283,13 +274,53 @@ export function switchClient(session: string): boolean {
 /** Bind Alt+C to the crouter action menu. Best-effort; false if tmux fails. */
 export function installMenuBinding(): boolean {
   const sess = nodeSession();
-  return tmux([
+  const title = ' crtr ';
+  const items: Array<{ name: string; key: string; cmd: string }> = [
+    // Promote types `/promote` into the agent's pane rather than shelling out:
+    // the slash command delivers the orchestration guidance into the node's
+    // context, which a bare `run-shell` (output discarded) could not.
+    { name: 'promote to orchestrator',    key: 'o', cmd: `send-keys -t '#{pane_id}' '/promote' Enter` },
+    { name: 'finish agent + recycle pane', key: 'd', cmd: `run-shell "crtr node demote --pane '#{pane_id}'"` },
+    { name: 'browse background agents',    key: 'g', cmd: `switch-client -t ${sess}` },
+  ];
+  // tmux's -x sets the menu's LEFT edge. To sit the box INSIDE the pane's
+  // top-right corner, shift x left by the box width (longest line + tmux chrome:
+  // borders + padding + the right-aligned mnemonic-key column) via format math.
+  const boxW = Math.max(title.length, ...items.map((i) => i.name.length)) + 6;
+  // Fine-tune nudges off the pane's top-right corner: a hair further left and
+  // one row down so the box doesn't kiss the pane border.
+  const nudgeX = 1; // extra columns left
+  const nudgeY = 3; // rows down
+  const args = [
     'bind-key', '-n', 'M-c', 'display-menu',
-    '-T', '#[align=centre] crtr ',
-    // Anchor to the top-right of the pane it was called from (tmux clamps it
-    // back on-screen) rather than centring on the whole terminal.
-    '-x', '#{pane_right}', '-y', '#{pane_top}',
-    'detach agent \u2192 background', 'd', `run-shell "crtr node demote --pane '#{pane_id}'"`,
-    'browse background agents',       'g', `switch-client -t ${sess}`,
+    '-T', `#[align=centre]${title}`,
+    '-x', `#{e|-:#{pane_right},${boxW + nudgeX}}`,
+    '-y', `#{e|+:#{pane_top},${nudgeY}}`,
+  ];
+  for (const it of items) args.push(it.name, it.key, it.cmd);
+  return tmux(args).ok;
+}
+
+// ---------------------------------------------------------------------------
+// Nav bindings — Alt+] / Alt+[ DFS-walk the canvas one window at a time. Each
+// key shells out to `crtr node cycle`, passing the active pane so the walk is
+// relative to the agent in front of you; cycle then swaps the next/prev node
+// into that pane (like `node focus`). Output is discarded so the keypress never
+// pops a results view. Installed at root boot alongside the Alt+C menu.
+// ---------------------------------------------------------------------------
+
+/** Bind Alt+] (forward) and Alt+[ (back) to the DFS canvas walk. Best-effort;
+ *  false if either bind fails. NOTE: Alt+[ is only delivered cleanly when the
+ *  terminal/tmux disambiguate it from a raw CSI introducer (`extended-keys on`).
+ */
+export function installNavBindings(): boolean {
+  const next = tmux([
+    'bind-key', '-n', 'M-]', 'run-shell',
+    `crtr node cycle --dir next --pane '#{pane_id}' >/dev/null 2>&1`,
   ]).ok;
+  const prev = tmux([
+    'bind-key', '-n', 'M-[', 'run-shell',
+    `crtr node cycle --dir prev --pane '#{pane_id}' >/dev/null 2>&1`,
+  ]).ok;
+  return next && prev;
 }

@@ -20,6 +20,7 @@ import {
   inTmux,
   nodeSession,
   installMenuBinding,
+  installNavBindings,
 } from './tmux.js';
 import { updateNode, getNode, type NodeMeta, type Mode } from '../canvas/index.js';
 import { ensureDaemon } from '../../daemon/manage.js';
@@ -68,8 +69,12 @@ export function bootRoot(opts: BootRootOpts): NodeMeta {
   // Every node window — root or child — lives in the one shared session.
   const session = nodeSession();
   ensureSession(session, opts.cwd);
-  // Make the Alt+C action menu live on this server (idempotent, in-tmux only).
-  if (inTmux()) { try { installMenuBinding(); } catch { /* best-effort */ } }
+  // Make the Alt+C action menu + Alt+] / Alt+[ nav keys live on this server
+  // (idempotent, in-tmux only).
+  if (inTmux()) {
+    try { installMenuBinding(); } catch { /* best-effort */ }
+    try { installNavBindings(); } catch { /* best-effort */ }
+  }
 
   if (opts.placement === 'session') {
     updateNode(meta.node_id, { tmux_session: session });
