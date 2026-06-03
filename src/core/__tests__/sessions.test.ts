@@ -33,7 +33,7 @@ import {
   findNode,
   ensureRootJob,
   rootNodeId as getSessionRootNodeId,
-  promoteRoot,
+  insertCoordinator,
 } from '../sessions.js';
 import {
   createJob,
@@ -1187,11 +1187,11 @@ describe('ensureRootJob', () => {
 });
 
 // ---------------------------------------------------------------------------
-// promoteRoot — Phase 5 atomic promotion
+// insertCoordinator — coordination handoff (no root move)
 // ---------------------------------------------------------------------------
 
-describe('promoteRoot', () => {
-  test('promotes B to root: root_node_id becomes B, reports_to re-pointed, handoff_to added, spawned_by intact', () => {
+describe('insertCoordinator', () => {
+  test('interposes B: root stays A, children re-point to B, B reports to A, handoff_to + spawned_by intact', () => {
     const sid = mintSessionId();
     // Set up: session with A as root, two children X and Y reporting to A.
     const aJobId = createJob('pi-root', { cwd: tmpHome, lifecycle: 'persistent', root: true, forward: false }).jobId;
@@ -1205,21 +1205,21 @@ describe('promoteRoot', () => {
     appendAgent(sid, tmpHome, { job_id: xJobId, node_id: xJobId, parent: aJobId, report_to: [aJobId], subscribes_to: [], name: 'worker-x', agent: 'general', pane_id: '%p2', cwd: tmpHome, created, title: 'x task', host_session_id: null, status: 'running' });
     appendAgent(sid, tmpHome, { job_id: yJobId, node_id: yJobId, parent: aJobId, report_to: [aJobId], subscribes_to: [], name: 'worker-y', agent: 'general', pane_id: '%p3', cwd: tmpHome, created, title: 'y task', host_session_id: null, status: 'running' });
 
-    const bJobId = createJob('general', { cwd: tmpHome, lifecycle: 'persistent', root: true, forward: false }).jobId;
-    const { rePointedChildren } = promoteRoot(sid, tmpHome, {
-      newRoot: { job_id: bJobId, pane_id: '%p4', cwd: tmpHome, name: 'new-root', agent: 'general', host_session_id: null },
+    const bJobId = createJob('general', { cwd: tmpHome, lifecycle: 'persistent', root: false, forward: true }).jobId;
+    const { rePointedChildren } = insertCoordinator(sid, tmpHome, {
+      newRoot: { job_id: bJobId, pane_id: '%p4', cwd: tmpHome, name: 'coordinator', agent: 'general', host_session_id: null },
       oldRootJobId: aJobId,
     });
 
     const view = loadSessionView(sid, tmpHome);
     assert.ok(view !== null);
 
-    // root_node_id becomes B.
-    assert.equal(view.root_node_id, bJobId, 'root_node_id should be B');
+    // root_node_id stays A — the session root never moves.
+    assert.equal(view.root_node_id, aJobId, 'root_node_id should stay A');
 
-    // All reports_to *→A edges become *→B.
+    // Children's reports_to *→A become *→B; B itself now reports_to A.
     const reportsToA = view.edges.filter((e) => e.type === 'reports_to' && e.to === aJobId);
-    assert.equal(reportsToA.length, 0, 'no reports_to edges should still target A');
+    assert.deepEqual(reportsToA.map((e) => e.from), [bJobId], 'only B should still report to A (children re-pointed)');
     const reportsToB = view.edges.filter((e) => e.type === 'reports_to' && e.to === bJobId);
     assert.equal(reportsToB.length, 2, 'both children should now report to B');
     assert.ok(reportsToB.some((e) => e.from === xJobId), 'X reports to B');
@@ -1242,8 +1242,10 @@ describe('promoteRoot', () => {
     assert.deepEqual(xView?.report_to, [bJobId], 'X.report_to now targets B');
     const yView = view.agents.find((a) => a.job_id === yJobId);
     assert.deepEqual(yView?.report_to, [bJobId], 'Y.report_to now targets B');
+    const bView = view.agents.find((a) => a.job_id === bJobId);
+    assert.deepEqual(bView?.report_to, [aJobId], 'B.report_to targets A (children → B → A)');
 
-    // rePointedChildren lists both X and Y.
+    // rePointedChildren lists both X and Y (B is excluded — it is not re-pointed).
     assert.equal(rePointedChildren.length, 2, 'two children re-pointed');
     const childIds = rePointedChildren.map((c) => c.jobId).sort();
     assert.deepEqual(childIds, [xJobId, yJobId].sort(), 'correct child job ids returned');
@@ -1252,28 +1254,30 @@ describe('promoteRoot', () => {
     }
   });
 
-  test('promoteRoot with no children: root_node_id becomes B, handoff_to added, no reports_to to re-point', () => {
+  test('insertCoordinator with no children: root stays A, B reports to A, handoff_to added, nothing to re-point', () => {
     const sid = mintSessionId();
     const aJobId = createJob('pi-root', { cwd: tmpHome, lifecycle: 'persistent', root: true, forward: false }).jobId;
     ensureSession({ sessionId: sid, rootPane: '%q1', tmuxSession: 'crtr-agents-%q1', cwd: tmpHome, rootNodeId: aJobId });
 
-    const bJobId = createJob('general', { cwd: tmpHome, lifecycle: 'persistent', root: true, forward: false }).jobId;
-    const { rePointedChildren } = promoteRoot(sid, tmpHome, {
-      newRoot: { job_id: bJobId, pane_id: '%q2', cwd: tmpHome, name: 'new-root-solo', agent: 'general', host_session_id: null },
+    const bJobId = createJob('general', { cwd: tmpHome, lifecycle: 'persistent', root: false, forward: true }).jobId;
+    const { rePointedChildren } = insertCoordinator(sid, tmpHome, {
+      newRoot: { job_id: bJobId, pane_id: '%q2', cwd: tmpHome, name: 'coordinator-solo', agent: 'general', host_session_id: null },
       oldRootJobId: aJobId,
     });
 
     assert.equal(rePointedChildren.length, 0, 'no children to re-point');
     const view = loadSessionView(sid, tmpHome);
     assert.ok(view !== null);
-    assert.equal(view.root_node_id, bJobId);
+    assert.equal(view.root_node_id, aJobId, 'root stays A');
+    const bView = view.agents.find((a) => a.job_id === bJobId);
+    assert.deepEqual(bView?.report_to, [aJobId], 'B reports to A');
     const handoff = view.edges.find((e) => e.type === 'handoff_to' && e.from === aJobId && e.to === bJobId);
     assert.ok(handoff !== undefined, 'handoff_to A→B exists even with no children');
   });
 
-  test('promoteRoot throws when session does not exist', () => {
+  test('insertCoordinator throws when session does not exist', () => {
     assert.throws(
-      () => promoteRoot('nonexistent-session', tmpHome, {
+      () => insertCoordinator('nonexistent-session', tmpHome, {
         newRoot: { job_id: 'b-job', pane_id: '%z1', cwd: tmpHome, name: 'B', agent: 'general', host_session_id: null },
         oldRootJobId: 'a-job',
       }),

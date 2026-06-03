@@ -1,7 +1,7 @@
 import { defineLeaf } from '../../core/command.js';
 import { InputError } from '../../core/io.js';
 import { resolveScopeArg } from '../../core/scope.js';
-import { createJob, appendEvent, recordJobPane, recordJobReportTo, recordJobFlags, livePanes } from '../../core/jobs.js';
+import { createJob, appendEvent, recordJobPane, recordJobReportTo, livePanes } from '../../core/jobs.js';
 import { spawnAgent, detectAgentKind, subagentSessionName } from '../../core/spawn.js';
 import { agentNewPrompt } from '../../prompts/agent.js';
 import { resolveSubagent, subagentId } from '../../core/subagents.js';
@@ -17,7 +17,7 @@ import {
   findSessionByRootPane,
   ensureRootJob,
   rootNodeId as getSessionRootNodeId,
-  promoteRoot,
+  insertCoordinator,
 } from '../../core/sessions.js';
 import type { Scope, Subagent } from '../../types.js';
 import {
@@ -52,12 +52,11 @@ export const newPrompt = defineLeaf({
       { kind: 'flag', name: 'subscribe-to', type: 'string', required: false, constraint: 'Comma-separated node refs this agent should be considered subscribed to. Stored as graph edges for watchers/dispatchers.' },
       { kind: 'flag', name: 'steer-on-complete', type: 'bool', required: false, constraint: 'Deliver this worker\'s completion as a steer (interrupts the parent\'s current turn) rather than the default follow-up. Only affects a pi parent; claude parents pull regardless.' },
       { kind: 'flag', name: 'persistent', type: 'bool', required: false, constraint: 'Spawn a persistent agent that stays live across turns (never auto-finalizes). Persistent agents can spawn more persistent peers (swarm). A persistent spawn still has a report_to but never delivers a completed event.' },
-      { kind: 'flag', name: 'parent', type: 'bool', required: false, constraint: 'Promote the spawned agent B to be the new root of this session, inverting the parent/child relationship. B becomes persistent+root; all existing children re-point their report_to to B; A (the caller) steps down (lifecycle:worker, forward:false, superseded:true) so its next natural stop writes a superseded result with no forwarding. Requires CRTR_JOB_ID to be set (job-backed caller). Edge case: if A is a pi-root node (no stop-hook), A last-message capture is unavailable — A\'s result will be empty (closed) when pane-death reaping runs. No auto-focus; use `crtr agent focus <B> --replace` to hand off.' },
+      { kind: 'flag', name: 'parent', type: 'bool', required: false, constraint: 'Hand off coordination to a freshly-spawned persistent agent B by interposing it between you (A) and your current reportees: every agent that reports to A re-points to report to B, and B itself reports to A (net topology: children → B → A). The session root never moves (no root_node_id change) and you are NOT superseded — you remain the session\'s live anchor. Requires CRTR_JOB_ID (job-backed caller). No auto-focus; use `crtr agent focus <B> --new` to bring B alongside. --report-to / --persistent are ignored (B is always a persistent coordinator reporting to A).' },
     ],
-    // NOTE: --parent is mutually exclusive with --report-to and --persistent
-    // (--parent implies persistent+root). Mutual-exclusion is not enforced by
-    // the parser; the run() handler branches early and ignores the normal
-    // routing when --parent is set.
+    // NOTE: --parent ignores --report-to and --persistent — B is always a
+    // persistent coordinator that reports to the caller (A). Not enforced by
+    // the parser; the run() handler branches early and sets B's routing itself.
     output: [
       { name: 'job_id', type: 'string', required: true, constraint: 'Use with `crtr job read status|logs|result` and `crtr job cancel`.' },
       { name: 'session_id', type: 'string', required: true, constraint: 'Graph session this agent was registered into (new if caller had none, inherited if present).' },
@@ -72,7 +71,7 @@ export const newPrompt = defineLeaf({
       'Registers the agent in a session graph (~/.crouter/<mangled-cwd>/sessions/<session_id>/session.json) for focus and listing.',
       'Requires tmux (TMUX env var must be set); errors not_in_tmux outside tmux.',
       'With --persistent: agent stays live across turns and never auto-finalizes. Persistent peers form a swarm. No completed event is ever delivered to report_to parents.',
-      'With --parent: spawns B as the new persistent root of this session (promotion/inversion). All existing children of A re-point to B. A steps down on its next natural stop (superseded status, no forwarding). Requires CRTR_JOB_ID (job-backed caller). Not supported from a top-level pi session without root-init, or from claude without a crtr session.',
+      'With --parent: spawns B as a persistent coordinator interposed between the caller (A) and A\'s reportees (children → B → A). Re-points every reports_to *→A to *→B; root_node_id is unchanged and A is not superseded. Requires CRTR_JOB_ID (job-backed caller). Not supported from a top-level pi session without root-init, or from claude without a crtr session.',
     ],
   },
   run: async (input) => {
@@ -190,21 +189,22 @@ export const newPrompt = defineLeaf({
       try { reapSupersededSessions(rootPane, piSessionId, livePanes(), sessionCwd); } catch { /* best-effort */ }
     }
 
-    // --parent: spawn B as the new persistent root, then atomically promote.
-    // A (the caller, whose CRTR_JOB_ID we asserted above) steps down.
+    // --parent: spawn B as a persistent coordinator and interpose it between A
+    // (the caller, whose CRTR_JOB_ID we asserted above) and A's reportees.
+    // The session root is NOT moved and A is NOT superseded.
     if (parentFlag) {
       const aJobId = process.env['CRTR_JOB_ID']!; // asserted at the top of run()
       const steerOnComplete = input['steerOnComplete'] === true;
 
-      // Create B as persistent, root:true, forward:false.
+      // Create B as a persistent coordinator (NOT root) that reports to A.
       const { jobId: bJobId } = createJob(
         sub !== undefined ? 'subagent' : 'general',
-        { cwd: workCwd, lifecycle: 'persistent', root: true, forward: false },
+        { cwd: workCwd, lifecycle: 'persistent', root: false, forward: true },
       );
 
-      // Wire up B's meta routing (report_to empty — root forwards to no one).
+      // Wire up B's meta routing: B reports to A (children → B → A).
       recordJobReportTo(bJobId, {
-        reportTo: [],
+        reportTo: [aJobId],
         sessionId,
         sessionCwd,
         name,
@@ -225,10 +225,10 @@ export const newPrompt = defineLeaf({
         env: {
           CRTR_SESSION_ID: sessionId,
           CRTR_SESSION_CWD: sessionCwd,
-          // B is the new root; its own job id becomes the parent for B's children.
+          // B's own job id becomes the parent for B's children (they report to B).
           CRTR_PARENT_JOB_ID: bJobId,
-          // B is a root node — it reports to no one.
-          CRTR_REPORT_TO: '',
+          // B reports up to A.
+          CRTR_REPORT_TO: aJobId,
           CRTR_JOB_LIFECYCLE: 'persistent',
         },
       });
@@ -242,12 +242,13 @@ export const newPrompt = defineLeaf({
 
       const bPaneId = bResult.paneId ?? 'unknown';
       if (bResult.paneId !== undefined) recordJobPane(bJobId, bResult.paneId);
-      appendEvent(bJobId, { level: 'info', event: 'worker_started', message: `pane ${bPaneId} spawned (unfocused, --parent promotion)` });
+      appendEvent(bJobId, { level: 'info', event: 'worker_started', message: `pane ${bPaneId} spawned (unfocused, --parent coordination handoff)` });
 
-      // Atomically: append B, set root_node_id=B, re-point reports_to *→A to
-      // *→B, update agents[].report_to, add handoff_to A→B (single lock section
-      // so no child can report to the wrong root mid-promotion).
-      const { rePointedChildren } = promoteRoot(sessionId, sessionCwd, {
+      // Atomically: append B (reports to A), re-point reports_to *→A to *→B,
+      // update agents[].report_to, add handoff_to A→B (single lock section so
+      // no child can report to a half-updated target mid-handoff). The session
+      // root is NOT moved.
+      const { rePointedChildren } = insertCoordinator(sessionId, sessionCwd, {
         newRoot: {
           job_id: bJobId,
           pane_id: bPaneId,
@@ -260,7 +261,8 @@ export const newPrompt = defineLeaf({
         oldRootJobId: aJobId,
       });
 
-      // Step 5.2: sync job-layer routing for each re-pointed child.
+      // Sync job-layer routing for each re-pointed child so meta.report_to
+      // matches the graph (children now report to B).
       for (const { jobId: childId, newReportTo } of rePointedChildren) {
         try {
           recordJobReportTo(childId, { reportTo: newReportTo });
@@ -269,21 +271,17 @@ export const newPrompt = defineLeaf({
         }
       }
 
-      // Flip A to step down: next natural stop → superseded result, no forwarding.
-      recordJobFlags(aJobId, { lifecycle: 'worker', forward: false, superseded: true, root: false });
-
-      // Re-publish CRTR_PARENT_JOB_ID=B into A's env so A's future spawns
-      // attach under B rather than A (best-effort; A may not spawn again).
+      // Re-publish CRTR_PARENT_JOB_ID=B into A's env so A's FUTURE spawns also
+      // attach under B (B is the coordinator now). A keeps its root + lifecycle
+      // and is NOT superseded — it remains the session's live anchor.
       process.env['CRTR_PARENT_JOB_ID'] = bJobId;
 
       const follow_up =
-        `--parent promotion complete. B (job_id: ${bJobId}) is now the root of session ${sessionId}.\n` +
-        `This agent (A, job_id: ${aJobId}) will step down on its next natural stop — \n` +
-        `its last message lands in its own result (status: superseded) with no forwarding.\n` +
-        `You may keep working in A or hand off via \`crtr agent focus ${bJobId} --replace\`.\n` +
-        `B runs unfocused in pane ${bPaneId}.\n` +
-        `Note: if A is a pi-root node (no stop-hook installed), A last-message capture ` +
-        `is unavailable — A's result will be empty (status: closed) when pane-death reaping runs.`;
+        `Coordination handed off. B (job_id: ${bJobId}) is now the coordinator: everything that ` +
+        `reported to you (A, job_id: ${aJobId}) now reports to B, and B reports back to you.\n` +
+        `You remain the session root and stay live — nothing was superseded.\n` +
+        `B runs unfocused in pane ${bPaneId}; bring it alongside with \`crtr agent focus ${bJobId} --new\`.\n` +
+        `Your future \`crtr agent new\` spawns now attach under B as well.`;
 
       return { job_id: bJobId, session_id: sessionId, agent: agentId, name, follow_up };
     }
@@ -366,12 +364,14 @@ export const newPrompt = defineLeaf({
     });
 
     const follow_up =
-      `Worker spawned (non-blocking). Under pi its completion auto-injects into\n` +
-      `your session — keep working; you'll get a notice when it finishes, then\n` +
-      `fetch the body with \`crtr job read result ${jobId}\` if needed. (Under claude,\n` +
-      `pull it: \`crtr job read result ${jobId} --wait\`.) Look in on it with\n` +
-      `\`crtr agent focus ${jobId} --new\` (side-by-side) or \`--replace\` (hand off your\n` +
-      `pane). You own collection \u2014 don't relay these to the user.`;
+      `Worker spawned (non-blocking). It can take up to ~20 min to finish,\n` +
+      `depending on difficulty. Under pi its completion auto-injects into your\n` +
+      `session, so don't poll: if you have other work, keep going; if you're\n` +
+      `blocked on this result, end your turn now and the completion notice will\n` +
+      `wake you. Then fetch the body with \`crtr job read result ${jobId}\` if needed.\n` +
+      `(Under claude, pull it: \`crtr job read result ${jobId} --wait\`.) Look in on it\n` +
+      `with \`crtr agent focus ${jobId} --new\` (side-by-side) or \`--replace\` (hand off\n` +
+      `your pane). You own collection \u2014 don't relay these to the user.`;
 
     return { job_id: jobId, session_id: sessionId, agent: agentId, name, follow_up };
   },

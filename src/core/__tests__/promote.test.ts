@@ -1,4 +1,4 @@
-// Tests for Phase 5 promotion: promoteRoot + job-layer routing sync + A step-down + not_rootable.
+// Tests for the coordination handoff: insertCoordinator + job-layer routing sync + not_rootable.
 //
 // Run with: node --import tsx/esm --test src/core/__tests__/promote.test.ts
 
@@ -15,7 +15,7 @@ import {
   loadSessionView,
   sessionsRoot,
   sessionDir,
-  promoteRoot,
+  insertCoordinator,
   appendNodeEvent,
   readNodeInbox,
 } from '../sessions.js';
@@ -128,11 +128,11 @@ function setupSession(opts: {
 }
 
 // ---------------------------------------------------------------------------
-// promoteRoot + recordJobReportTo: children's meta.report_to targets B
+// insertCoordinator + recordJobReportTo: children's meta.report_to targets B
 // ---------------------------------------------------------------------------
 
-describe('promoteRoot + job-layer routing sync', () => {
-  test("children's meta.report_to updated to B after promoteRoot + recordJobReportTo", () => {
+describe('insertCoordinator + job-layer routing sync', () => {
+  test("children's meta.report_to updated to B after insertCoordinator + recordJobReportTo", () => {
     const { jobId: xJobId } = createJob('general', { cwd: tmpHome });
     const { jobId: yJobId } = createJob('general', { cwd: tmpHome });
     const { sid, aJobId } = setupSession({
@@ -146,10 +146,10 @@ describe('promoteRoot + job-layer routing sync', () => {
     recordJobReportTo(xJobId, { reportTo: [aJobId], sessionId: sid, sessionCwd: tmpHome, name: 'worker-x', title: 'x task' });
     recordJobReportTo(yJobId, { reportTo: [aJobId], sessionId: sid, sessionCwd: tmpHome, name: 'worker-y', title: 'y task' });
 
-    const { jobId: bJobId } = createJob('general', { cwd: tmpHome, lifecycle: 'persistent', root: true, forward: false });
+    const { jobId: bJobId } = createJob('general', { cwd: tmpHome, lifecycle: 'persistent', root: false, forward: true });
 
-    const { rePointedChildren } = promoteRoot(sid, tmpHome, {
-      newRoot: { job_id: bJobId, pane_id: '%cx3', cwd: tmpHome, name: 'new-root', agent: 'general', host_session_id: null },
+    const { rePointedChildren } = insertCoordinator(sid, tmpHome, {
+      newRoot: { job_id: bJobId, pane_id: '%cx3', cwd: tmpHome, name: 'coordinator', agent: 'general', host_session_id: null },
       oldRootJobId: aJobId,
     });
 
@@ -158,17 +158,22 @@ describe('promoteRoot + job-layer routing sync', () => {
       recordJobReportTo(childId, { reportTo: newReportTo });
     }
 
-    // Verify graph edges point to B.
+    // Verify the session root is UNCHANGED (A stays root — B is interposed, not promoted).
     const view = loadSessionView(sid, tmpHome);
     assert.ok(view !== null);
-    assert.equal(view.root_node_id, bJobId);
+    assert.equal(view.root_node_id, aJobId, 'root_node_id must stay A — insertCoordinator never moves the root');
+    // Children re-point onto B.
     for (const agent of view.agents.filter((a) => a.job_id === xJobId || a.job_id === yJobId)) {
       assert.deepEqual(agent.report_to, [bJobId], `${agent.name}.report_to should target B`);
     }
+    // B itself reports up to A (net topology: children → B → A).
+    const bAgent = view.agents.find((a) => a.job_id === bJobId);
+    assert.ok(bAgent !== undefined, 'B should be in the session');
+    assert.deepEqual(bAgent.report_to, [aJobId], 'B.report_to should target A');
 
     // Verify job meta.report_to now targets B (job-layer routing synced).
     // We verify indirectly: jobStatus returns live (no terminal), and the
-    // rePointedChildren returned by promoteRoot had the correct newReportTo.
+    // rePointedChildren returned by insertCoordinator had the correct newReportTo.
     assert.equal(rePointedChildren.length, 2, 'two children re-pointed');
     for (const { newReportTo } of rePointedChildren) {
       assert.deepEqual(newReportTo, [bJobId], 'newReportTo is [B]');

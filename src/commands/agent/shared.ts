@@ -3,6 +3,7 @@ import { InputError } from '../../core/io.js';
 import { isInTmux } from '../../core/spawn.js';
 import { readConfig } from '../../core/config.js';
 import { listSubagents, subagentId } from '../../core/subagents.js';
+import { currentSessionContext, loadSessionView } from '../../core/sessions.js';
 import type { Subagent } from '../../types.js';
 
 export const DEFAULT_KILL_SECS = 2;
@@ -172,4 +173,61 @@ export function buildSubagentCatalog(): string | null {
 
   // count includes the built-in general agent alongside the defined ones.
   return stateBlock('subagents', { count: agents.length + 1 }, lines.join('\n'));
+}
+
+/** The caller's own standing in the session graph, as a self-named `<you>`
+ *  element. Surfaces CRTR_JOB_ID (who you are) and whether you are the session
+ *  ROOT, then states the parent/child invariant outright so a spawn never reads
+ *  as "I must create a parent". Soft-fails to null off a session (or on any
+ *  throw) so `agent -h` stays clean in a bare shell. Renders only at
+ *  `crtr agent -h`, never in the always-loaded root block. */
+export function buildAgentSelfContext(): string | null {
+  try {
+    const jobId = process.env['CRTR_JOB_ID']?.trim();
+    const tmux = process.env['TMUX']?.trim();
+    const envLine = `env: CRTR_JOB_ID=${jobId && jobId !== '' ? jobId : '(unset)'} · TMUX=${tmux && tmux !== '' ? tmux : '(unset)'}`;
+    const { sessionId } = currentSessionContext();
+
+    // Not job-backed: no node, no parent to create, --parent unavailable.
+    if (jobId === undefined || jobId === '') {
+      return stateBlock(
+        'you',
+        { role: 'unrooted' },
+        envLine + '\n' +
+          'No CRTR_JOB_ID in this environment, so you are not a job-backed node: you have ' +
+          'no parent and never need to create one. `--parent` is unavailable here (it errors ' +
+          'not_rootable). Plain `crtr agent new` still works and spawns top-level children. ' +
+          'Under pi the inbox-watcher extension runs `crtr agent root-init` at session_start ' +
+          'to bootstrap a persistent root job — once that has run, this block names your job id.',
+      );
+    }
+
+    const sessionCwd = process.env['CRTR_SESSION_CWD'] && process.env['CRTR_SESSION_CWD'] !== ''
+      ? process.env['CRTR_SESSION_CWD']
+      : undefined;
+    const view = sessionId !== null ? loadSessionView(sessionId, sessionCwd) : null;
+    const isRoot = view !== null && view.root_node_id === jobId;
+    const role = isRoot ? 'root' : 'worker';
+
+    const lines = [
+      envLine,
+      `You are CRTR_JOB_ID ${jobId}${sessionId !== null ? `, ${isRoot ? 'the ROOT' : 'a worker'} node of session ${sessionId}` : ''}.`,
+      'Every `crtr agent new` attaches the spawn UNDERNEATH you as a child (its report_to points back at you); ' +
+        'you stay exactly where you are. A normal spawn never creates, needs, or becomes a parent above you — ' +
+        'there is nothing to be anxious about.',
+      '`--parent` is a coordination handoff, NOT a root move: it spawns a child B, re-points everything that ' +
+        'currently reports to you onto B, and B reports back to you (children→B→A). You keep your root and stay ' +
+        'live; nothing is superseded. Reach for it only to interpose a coordinator — never just to "spawn an agent".',
+    ];
+    if (isRoot) {
+      lines.push(
+        'As root you are persistent: you are NOT killed when a turn ends (the stop hook keeps you live so children ' +
+          'keep a stable report-to target); you are reaped only when your tmux pane closes.',
+      );
+    }
+
+    return stateBlock('you', { job_id: jobId, role }, lines.join('\n'));
+  } catch {
+    return null;
+  }
 }

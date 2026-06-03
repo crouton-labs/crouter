@@ -1060,34 +1060,42 @@ export function findNode(
 }
 
 // ---------------------------------------------------------------------------
-// Promotion (Phase 5)
+// Coordination handoff
 // ---------------------------------------------------------------------------
 
 /**
- * Atomically promote a new root (B) into the session, stepping down the old
- * root (A). All mutations happen under a SINGLE `withSessionLock` so a child
- * spawned mid-promotion cannot report to the wrong root.
+ * Atomically interpose a freshly-spawned coordinator (B) between A and the
+ * reportees that currently report to A — WITHOUT moving the session root.
+ * All mutations happen under a SINGLE `withSessionLock` so a child spawned
+ * mid-handoff cannot report to a half-updated target.
+ *
+ * The old promote-to-root semantics are gone: they mutated `root_node_id`
+ * (and superseded A), which collided with B's own session and dangled the
+ * root at a dead pane the moment B exited. A session's root is now immutable
+ * for its life — it is the owning pi process and the live lifecycle anchor.
  *
  * Under the lock:
  *  1. Append B's node (`kind:'agent'`, job-backed) and add B to `agents[]`
- *     with `parent = oldRootJobId` (A literally ran the spawn — provenance).
+ *     with `parent = oldRootJobId` and `report_to = [A]` — so B's own
+ *     completions still flow up to A. B is a normal coordinator node, NOT root.
  *  2. Add `spawned_by B→A` edge (immutable provenance).
- *  3. Set `record.root_node_id = B`.
- *  4. Re-point every `reports_to X→A` edge to `X→B` and update each
- *     affected agent's `report_to` array A→B. `spawned_by` / other edge
- *     types are left intact.
- *  5. Add `handoff_to A→B` edge (records the promotion).
+ *  3. Re-point every `reports_to X→A` edge (X≠B) to `X→B` and update each
+ *     affected agent's `report_to` A→B. Net topology: children → B → A.
+ *     `root_node_id` and all other edge types are left untouched.
+ *  4. Add `handoff_to A→B` edge (records the coordination handoff).
  *
  * Returns `{ rePointedChildren }` — the list of children whose `report_to`
  * was updated (jobId + new array). The caller MUST call `recordJobReportTo`
- * for each to keep the job-layer routing in sync with the graph (Step 5.2).
+ * for each to keep the job-layer routing in sync with the graph.
  *
  * @param sessionId  Session to mutate.
  * @param cwd        Session namespace cwd (same as the spawner's sessionCwd).
  * @param opts.newRoot  B's job data needed to append the node + agent record.
- * @param opts.oldRootJobId  A's job id (current root being stepped down).
+ *                      (Field name is legacy; B is a coordinator, not a root.)
+ * @param opts.oldRootJobId  A's job id — the node B reports to and whose
+ *                           reportees B adopts.
  */
-export function promoteRoot(
+export function insertCoordinator(
   sessionId: string,
   cwd: string | undefined,
   opts: {
@@ -1144,8 +1152,8 @@ export function promoteRoot(
       record.agents.push({
         job_id: bJobId,
         node_id: bJobId,
-        parent: aJobId,     // A literally ran the spawn — provenance
-        report_to: [],      // B is the new root: forwards to no one
+        parent: aJobId,        // A literally ran the spawn — provenance
+        report_to: [aJobId],   // B reports up to A — children re-point onto B (children→B→A)
         subscribes_to: [],
         name: opts.newRoot.name,
         agent: opts.newRoot.agent,
@@ -1161,11 +1169,11 @@ export function promoteRoot(
     // 2. Add spawned_by B→A edge (B was spawned by A; provenance, immutable).
     addEdge(record, 'spawned_by', bJobId, aJobId, created);
 
-    // 3. Promote B to root.
-    record.root_node_id = bJobId;
-
-    // 4. Re-point every reports_to X→A edge to X→B.
-    //    Also update each affected agent's in-memory report_to array A→B.
+    // 3. Re-point every reports_to X→A edge (X≠B) to X→B, and update each
+    //    affected agent's in-memory report_to array A→B. root_node_id is left
+    //    UNTOUCHED: the session root never moves — B is interposed as a
+    //    coordinator, not promoted to root. B's own report_to→A is excluded
+    //    from the re-point (edge.from !== bJobId) so B keeps reporting to A.
     //    spawned_by / subscribes_to / handoff_to edges are left intact.
     record.edges ??= [];
     const rePointedChildren: Array<{ jobId: string; newReportTo: string[] }> = [];
@@ -1173,7 +1181,7 @@ export function promoteRoot(
     const seenEdgeIds = new Set<string>();
 
     for (const edge of record.edges) {
-      if (edge.type === 'reports_to' && edge.to === aJobId) {
+      if (edge.type === 'reports_to' && edge.to === aJobId && edge.from !== bJobId) {
         // Re-point to B (deduplicate in case the array already has both variants).
         const newId = edgeId('reports_to', edge.from, bJobId);
         if (!seenEdgeIds.has(newId)) {
@@ -1197,7 +1205,7 @@ export function promoteRoot(
     }
     record.edges = newEdges;
 
-    // 5. Add handoff_to A→B (records the promotion without losing that A preceded B).
+    // 4. Add handoff_to A→B (records the coordination handoff A→B).
     addEdge(record, 'handoff_to', aJobId, bJobId, created);
 
     const tmp = join(dir, '.session.tmp');

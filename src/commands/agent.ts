@@ -17,7 +17,7 @@
 
 import { defineBranch } from '../core/command.js';
 import type { BranchDef } from '../core/command.js';
-import { buildSubagentCatalog } from './agent/shared.js';
+import { buildSubagentCatalog, buildAgentSelfContext } from './agent/shared.js';
 import { newPrompt, rootInitLeaf, newFork } from './agent/spawn.js';
 import { focusLeaf } from './agent/focus.js';
 import { notifyLeaf, inboxLeaf } from './agent/inbox.js';
@@ -44,7 +44,12 @@ export function registerAgent(): BranchDef {
       summary: 'spawn agent workers and manage subagent personas',
       model:
         '`crtr agent new` spawns a worker (general-purpose by default, or a defined persona via `--agent <id>`); `crtr agent fork` carries the current session context to a new pane; `crtr agent focus` moves a running agent pane into the caller\'s view (--new splits, --replace hands off); `crtr agent notify`/`crtr agent inbox` deliver and read events between graph nodes (completion notices to subscribers/report-to targets); `crtr agent session` is the render model + live feed (show/list/watch); `crtr agent subagent` manages persona definitions. A session is a graph of nodes (root job + agent workers) and edges; root_node_id identifies the session root. Spawned workers register as jobs — monitor and collect at `crtr job`.',
-      dynamicState: buildSubagentCatalog,
+      // The defined-subagents catalog is intentionally NOT re-emitted here: it
+      // already renders verbatim in `crtr -h` (via rootEntry.dynamicState).
+      // `crtr agent new -h` points to `crtr agent subagent list` for the live list.
+      // Instead, surface the caller's OWN standing (job id + root/worker role)
+      // so a spawn never reads as "I must create a parent".
+      dynamicState: buildAgentSelfContext,
       children: [
         { name: 'new', desc: 'spawn a worker — general-purpose by default, or a defined subagent via --agent', useWhen: 'delegating any self-contained task (the main spawn command)' },
         { name: 'root-init', desc: 'bootstrap the persistent root job for this pi session (idempotent)', useWhen: 'called automatically by the standing extension at session_start; agents need not call it directly' },
