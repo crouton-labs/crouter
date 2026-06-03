@@ -20,13 +20,18 @@ import { loadKernel, loadPersona } from '../personas/index.js';
 import { resolveSkill } from '../resolver.js';
 import { readText } from '../fs-utils.js';
 import { parseFrontmatter } from '../frontmatter.js';
-import { hasRoadmap, seedRoadmap, readRoadmap } from './roadmap.js';
+import { hasRoadmap, seedRoadmap, readRoadmap, roadmapPath } from './roadmap.js';
+import { readGoal, goalPath } from './kickoff.js';
 
 export interface PromoteResult {
   meta: NodeMeta;
   /** Orchestration guidance to surface into the node's current context now. */
   guidance: string;
   roadmapWritten: boolean;
+  /** Absolute path to the node's roadmap doc (context/roadmap.md). */
+  roadmapPath: string;
+  /** Absolute path to the node's goal doc (context/initial-prompt.md). */
+  goalPath: string;
 }
 
 /** Load a skill's body text by name, or null if it can't be resolved. Used to
@@ -53,6 +58,8 @@ function orchestrationGuidance(nodeId: string, kind: string): string {
       : undefined;
   const skillBody = roadmapSkill ? loadSkillBody(roadmapSkill) : null;
   const roadmap = readRoadmap(nodeId) ?? '(no roadmap yet)';
+  const rmPath = roadmapPath(nodeId);
+  const goal = readGoal(nodeId);
 
   const parts: string[] = [
     `You are now a RESIDENT ${kind.toUpperCase()} ORCHESTRATOR. Your scarce resource is your own context window.`,
@@ -60,12 +67,15 @@ function orchestrationGuidance(nodeId: string, kind: string): string {
     '',
     kernel,
   ];
+  if (goal !== null && goal.trim() !== '') {
+    parts.push('', `--- Your goal (${goalPath(nodeId)}) ---`, '', goal.trim());
+  }
   if (skillBody) {
     parts.push('', `--- How to shape a ${kind} roadmap (skill: ${roadmapSkill}) ---`, '', skillBody);
   }
   parts.push(
     '',
-    'Your roadmap scaffold (`context/roadmap.md`) — author it now: state the goal, exit criteria, scope assumptions, and the phase skeleton, using the approach above:',
+    `Your roadmap scaffold (\`${rmPath}\`) — author it now: state the goal, exit criteria, and the phase skeleton, using the approach above. Current contents:`,
     '',
     roadmap,
     '',
@@ -92,16 +102,25 @@ export function promote(nodeId: string, opts: { kind?: string } = {}): PromoteRe
   // the live process's children too.
   const { launch } = buildLaunchSpec(targetKind, 'orchestrator');
 
-  // Seed a roadmap scaffold if absent so the file exists for a refresh. The
-  // node fills in the goal/body next, guided by the kind skill dumped below.
+  // Seed a barebones roadmap scaffold if absent so the file exists for a
+  // refresh. Pre-fill its Goal from the node's goal doc when present (set at
+  // spawn, or captured from the first user message); the node fleshes out the
+  // body next, guided by the kind skill dumped below.
   let roadmapWritten = false;
   if (!hasRoadmap(nodeId)) {
-    seedRoadmap(nodeId);
+    const goal = readGoal(nodeId);
+    seedRoadmap(nodeId, goal !== null && goal.trim() !== '' ? { goal: goal.trim() } : {});
     roadmapWritten = true;
   }
 
   const meta = updateNode(nodeId, { kind: targetKind, lifecycle: 'resident', mode: 'orchestrator', launch });
-  return { meta, guidance: orchestrationGuidance(nodeId, targetKind), roadmapWritten };
+  return {
+    meta,
+    guidance: orchestrationGuidance(nodeId, targetKind),
+    roadmapWritten,
+    roadmapPath: roadmapPath(nodeId),
+    goalPath: goalPath(nodeId),
+  };
 }
 
 export interface YieldResult {
