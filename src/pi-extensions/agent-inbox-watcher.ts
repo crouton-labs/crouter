@@ -269,10 +269,19 @@ export default function agentInboxWatcher(pi: PiLike): () => void {
   };
   pi.on('session_start', (_event: any, ctx: any): void => {
     captureCtx(_event, ctx);
-    // Bootstrap the persistent root job for this pi conversation so
-    // CRTR_SESSION_ID, CRTR_JOB_ID, CRTR_SESSION_CWD are set in process.env
-    // before any `crtr agent new` calls. pi's bash tool spreads live
-    // process.env at exec time, so children inherit these race-free.
+    // Bootstrap the persistent root job ONLY for a true top-level pi
+    // conversation. A spawned agent already inherits CRTR_SESSION_ID/
+    // CRTR_JOB_ID from its spawn and is a node in its SPAWNER's session;
+    // re-rooting it here would (1) mint a redundant per-agent session and
+    // (2) repoint CRTR_JOB_ID/CRTR_SESSION_ID off the job its completions are
+    // delivered to, so this watcher would tail the wrong inbox and silently
+    // drop every notice meant for it (defeating resolveTarget's own
+    // spawned-agent branch). Skip whenever an inherited crtr session is present.
+    const inherited = process.env['CRTR_SESSION_ID'];
+    if (inherited && inherited.trim() !== '') return;
+    // Bootstrap so CRTR_SESSION_ID, CRTR_JOB_ID, CRTR_SESSION_CWD are set in
+    // process.env before any `crtr agent new` calls. pi's bash tool spreads
+    // live process.env at exec time, so children inherit these race-free.
     // This is an eagerness optimization; `crtr agent new` self-heals when
     // CRTR_PI_SESSION_ID is set but this block hasn't run yet.
     const piId = process.env['CRTR_PI_SESSION_ID'];
