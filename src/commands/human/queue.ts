@@ -1,19 +1,26 @@
 import { defineLeaf } from '../../core/command.js';
+import { InputError } from '../../core/io.js';
 import { pushFinal } from '../../core/feed/feed.js';
-import { interactionsRoot } from '../../core/artifact.js';
+import { interactionsRoot, interactionDir } from '../../core/artifact.js';
 import { paginate } from '../../core/pagination.js';
+import { getNode, setStatus, updateNode, subscribersOf } from '../../core/canvas/index.js';
+import { appendInbox } from '../../core/feed/inbox.js';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   inbox,
   scanInbox,
   parseDeck,
   deckPath,
+  responsePath,
+  isResolved,
+  atomicWriteJson,
   ask,
   launchReview,
   readJson,
 } from '@crouton-kit/humanloop';
 import type { InboxItem, Deck, ResolutionEnvelope, FeedbackResult } from '@crouton-kit/humanloop';
-import type { RunRecord } from './shared.js';
+import { killPane, type RunRecord } from './shared.js';
 
 // ---------------------------------------------------------------------------
 // inbox (human-invoked, blocking)
@@ -86,6 +93,98 @@ export const humanList = defineLeaf({
 
     return { items: page.items, next_cursor: page.next_cursor, total: page.total };
   },
+});
+
+// ---------------------------------------------------------------------------
+// cancel — retract a pending ask/approve/review
+// ---------------------------------------------------------------------------
+
+export const humanCancel = defineLeaf({
+  name: 'cancel',
+  help: {
+    name: 'human cancel',
+    summary:
+      'retract a pending ask/approve/review you posed — kills its TUI pane, drops it from the human queue, and retires the node. Reach for this the moment a question goes stale (you answered it yourself, the situation changed) so a human is not left resolving a prompt whose answer no longer matters',
+    guide:
+      'Pass the job_id returned by `human ask`/`approve`/`review`. Best-effort and idempotent: if the human already answered, or it was already canceled, it reports canceled:false with reason "already_resolved" and changes nothing. Subscribers (you and the asking node) get an inbox note that no answer is coming, so nobody waits on it. A blocking `human review` caller unblocks with status "closed" when its pane is killed.',
+    params: [
+      { kind: 'positional', name: 'job_id', type: 'string', required: true, constraint: 'Node id of the interaction to cancel — the job_id returned by ask/approve/review.' },
+      { kind: 'flag', name: 'reason', type: 'string', required: false, constraint: 'Optional short note delivered to subscribers explaining why it was retracted.' },
+    ],
+    output: [
+      { name: 'canceled', type: 'boolean', required: true, constraint: 'True when the interaction was retracted; false when there was nothing live to cancel (already answered/canceled).' },
+      { name: 'job_id', type: 'string', required: true, constraint: 'The interaction node id.' },
+      { name: 'reason', type: 'string', required: false, constraint: 'Why nothing was canceled (e.g. "already_resolved"), present when canceled is false.' },
+    ],
+    outputKind: 'object',
+    effects: [
+      "Kills the detached TUI pane (if any) so the prompt leaves the human's screen.",
+      'Writes a canceled response.json so the interaction drops out of `human list`/`inbox`.',
+      'Marks the node done and notifies its subscribers that no answer is coming.',
+    ],
+  },
+  run: async (input) => {
+    const jobId = input['job_id'] as string;
+    const reason = input['reason'] as string | undefined;
+
+    const node = getNode(jobId);
+    if (node === null) {
+      throw new InputError({
+        error: 'not_found',
+        message: `no interaction node: ${jobId}`,
+        field: 'job_id',
+        next: 'Pass the job_id from human ask/approve/review, or list pending with `crtr human list`.',
+      });
+    }
+
+    // Resolve the interaction dir from the node's RECORDED cwd: interaction dirs
+    // are keyed by the asking process's cwd, which may differ from the caller's.
+    const idir = interactionDir(jobId, node.cwd);
+
+    // Nothing live to cancel: the human already answered, or it was retired.
+    if (node.status === 'done' || node.status === 'dead' || isResolved(idir)) {
+      return { canceled: false, job_id: jobId, reason: 'already_resolved' };
+    }
+
+    // (1) Kill the detached TUI pane so the prompt leaves the human's screen and
+    //     any blocking `human review` caller unblocks (pane death → 'closed').
+    const rc = readJson<RunRecord>(join(idir, 'run.json'));
+    if (rc?.pane_id !== undefined) killPane(rc.pane_id);
+
+    // (2) Drop it from the human queue: a response.json marks the dir resolved,
+    //     so scanInbox (human list/inbox) skips it.
+    if (existsSync(idir)) {
+      atomicWriteJson(responsePath(idir), {
+        canceled: true,
+        canceledAt: new Date().toISOString(),
+        ...(reason !== undefined && reason !== '' ? { reason } : {}),
+      });
+    }
+
+    // (3) Retire the node and tell its subscribers no answer is coming. We do
+    //     NOT push a -final.md report: a blocking `human review` caller must see
+    //     the pane-death 'closed', not a phantom 'done' result.
+    setStatus(jobId, 'done');
+    updateNode(jobId, { intent: 'done' });
+    const caller = process.env['CRTR_NODE_ID'] ?? 'human';
+    const note = reason !== undefined && reason !== '' ? ` — ${reason}` : '';
+    for (const sub of subscribersOf(jobId)) {
+      if (sub.node_id === caller) continue; // don't ping whoever issued the cancel
+      appendInbox(sub.node_id, {
+        from: caller,
+        tier: 'normal',
+        kind: 'message',
+        label: `human interaction ${jobId} canceled — no answer is coming${note}`,
+        data: { body: `The human interaction ${jobId} was canceled${note}. No response will arrive.` },
+      });
+    }
+
+    return { canceled: true, job_id: jobId };
+  },
+  render: (r) =>
+    r['canceled'] === true
+      ? `<canceled job_id="${r['job_id']}"/>`
+      : `<cancel-noop job_id="${r['job_id']}">${r['reason'] ?? 'nothing to cancel'}</cancel-noop>`,
 });
 
 // ---------------------------------------------------------------------------

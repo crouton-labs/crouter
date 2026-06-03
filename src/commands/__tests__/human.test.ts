@@ -4,14 +4,17 @@
 // These tests exercise the leaf param schemas via parseArgv (framework) and
 // spot-check the leaf definitions directly — no subprocess spawning, no tmux.
 
-import { test, describe } from 'node:test';
+import { test, describe, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { parseArgv } from '../../core/command.js';
 import type { InputParam } from '../../core/help.js';
+import { humanCancel } from '../human/queue.js';
+import { createNode, getNode, closeDb } from '../../core/canvas/index.js';
+import type { NodeMeta } from '../../core/canvas/index.js';
 
 // ---------------------------------------------------------------------------
 // Helper: write a temp JSON file and return its path.
@@ -223,6 +226,95 @@ describe('human ask: params', () => {
     const path = tmpJson(deck);
     const result = await parseArgv(params, ['--context-file', path, '--wait']);
     assert.equal(result['wait'], true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// human cancel — positional job_id + optional --reason
+// ---------------------------------------------------------------------------
+
+describe('human cancel: params', () => {
+  const params: InputParam[] = [
+    { kind: 'positional', name: 'job_id', type: 'string', required: true, constraint: 'Interaction node id.' },
+    { kind: 'flag', name: 'reason', type: 'string', required: false, constraint: 'Why it was retracted.' },
+  ];
+
+  test('parses positional job_id', async () => {
+    const result = await parseArgv(params, ['abc-1234']);
+    assert.equal(result['job_id'], 'abc-1234');
+  });
+
+  test('parses job_id + --reason', async () => {
+    const result = await parseArgv(params, ['abc-1234', '--reason', 'answered myself']);
+    assert.equal(result['job_id'], 'abc-1234');
+    assert.equal(result['reason'], 'answered myself');
+  });
+
+  test('missing job_id throws missing_parameter', async () => {
+    await assert.rejects(
+      () => parseArgv(params, []),
+      (err: Error) => { assert.match(err.message, /required parameter is missing/); return true; },
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// human cancel — run behavior (canvas-backed)
+// ---------------------------------------------------------------------------
+
+describe('human cancel: behavior', () => {
+  let home: string;
+
+  function humanNode(id: string, over: Partial<NodeMeta> = {}): NodeMeta {
+    return {
+      node_id: id,
+      name: 'human-ask',
+      created: new Date().toISOString(),
+      cwd: join(tmpdir(), `crtr-cancel-cwd-${randomBytes(3).toString('hex')}`),
+      kind: 'human',
+      mode: 'base',
+      lifecycle: 'terminal',
+      status: 'active',
+      ...over,
+    };
+  }
+
+  before(() => {
+    home = mkdtempSync(join(tmpdir(), 'crtr-cancel-home-'));
+    process.env['CRTR_HOME'] = home;
+  });
+
+  beforeEach(() => {
+    closeDb();
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  after(() => {
+    closeDb();
+    rmSync(home, { recursive: true, force: true });
+    delete process.env['CRTR_HOME'];
+  });
+
+  test('unknown node throws not_found', async () => {
+    await assert.rejects(
+      () => humanCancel.run({ job_id: 'no-such-node' }),
+      (err: Error) => { assert.match(err.message, /no interaction node/); return true; },
+    );
+  });
+
+  test('already-done node returns canceled:false / already_resolved', async () => {
+    createNode(humanNode('done-1', { status: 'done' }));
+    const r = await humanCancel.run({ job_id: 'done-1' }) as Record<string, unknown>;
+    assert.equal(r['canceled'], false);
+    assert.equal(r['reason'], 'already_resolved');
+  });
+
+  test('live node with no pane → retires the node (status done)', async () => {
+    createNode(humanNode('live-1', { status: 'active' }));
+    const r = await humanCancel.run({ job_id: 'live-1' }) as Record<string, unknown>;
+    assert.equal(r['canceled'], true);
+    assert.equal(r['job_id'], 'live-1');
+    assert.equal(getNode('live-1')?.status, 'done');
   });
 });
 

@@ -15,7 +15,7 @@
 import { defineBranch } from '../core/command.js';
 import type { BranchDef } from '../core/command.js';
 import { humanAsk, humanApprove, humanReview, humanNotify, humanShow } from './human/prompts.js';
-import { humanInbox, humanList, humanRun } from './human/queue.js';
+import { humanInbox, humanList, humanCancel, humanRun } from './human/queue.js';
 
 export function registerHuman(): BranchDef {
   return defineBranch({
@@ -23,7 +23,7 @@ export function registerHuman(): BranchDef {
     rootEntry: {
       concept:
         'human-in-the-loop decisions, document review, and live display: ask puts a structured choice to a person, approve gates a handoff on a Yes/No sign-off, review collects anchored comments on a plan or spec, notify informs without blocking, show puts a file live on screen',
-      desc: 'ask, approve, review, notify, show, inbox, list',
+      desc: 'ask, approve, review, notify, show, cancel, inbox, list',
       useWhen:
         'you have a question for the user or want their feedback — always reach for human instead of guessing or assuming when a person can decide',
     },
@@ -38,6 +38,7 @@ export function registerHuman(): BranchDef {
         { name: 'review', desc: 'anchored-comment review of a .md', useWhen: 'a human should comment on a plan or spec' },
         { name: 'notify', desc: 'fire-and-forget acknowledgement', useWhen: 'informing a person without blocking' },
         { name: 'show', desc: 'put a file live on screen', useWhen: 'displaying a doc while a human comments' },
+        { name: 'cancel', desc: 'retract a pending ask/approve/review', useWhen: 'a question went stale before the human answered' },
         { name: 'inbox', desc: 'interactively drain pending interactions', useWhen: 'a human clears the queue at their terminal' },
         { name: 'list', desc: 'enumerate pending interactions', useWhen: 'discovering what is blocked on a human' },
       ],
@@ -50,6 +51,7 @@ export function registerHuman(): BranchDef {
       humanShow,
       humanInbox,
       humanList,
+      humanCancel,
       humanRun,
     ],
   });

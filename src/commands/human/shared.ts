@@ -2,6 +2,7 @@ import { readConfig } from '../../core/config.js';
 import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { atomicWriteJson, readJson } from '@crouton-kit/humanloop';
 import { countPanesInCurrentWindow, spawnAndDetach, shellQuote } from '../../core/spawn.js';
 import { reportsDir } from '../../core/canvas/paths.js';
 
@@ -18,6 +19,8 @@ export interface RunRecord {
   approve_iid?: string;
   file?: string;
   output?: string;
+  /** tmux pane id of the detached TUI, recorded so `human cancel` can kill it. */
+  pane_id?: string;
 }
 
 export function resolveMaxPanes(): number {
@@ -70,11 +73,25 @@ export function spawnHumanJob(
   if (spawn.status !== 'spawned') {
     return { spawned: false, follow_up: followUpDrain(jobId) };
   }
+  // Record the pane id on run.json so `human cancel` can later kill the TUI.
+  // run.json was already written by the caller; merge the pane id in place.
+  if (spawn.paneId !== undefined) {
+    const rcPath = join(idir, 'run.json');
+    const rc = readJson<RunRecord>(rcPath);
+    if (rc !== null) atomicWriteJson(rcPath, { ...rc, pane_id: spawn.paneId });
+  }
   return {
     spawned: true,
     follow_up: followUpResult(jobId),
     ...(spawn.paneId !== undefined ? { paneId: spawn.paneId } : {}),
   };
+}
+
+/** Best-effort kill of a detached TUI pane. No-op (and never throws) when the
+ *  pane is already gone or tmux is unavailable — `human cancel` is best-effort. */
+export function killPane(paneId: string): boolean {
+  const r = spawnSync('tmux', ['kill-pane', '-t', paneId], { encoding: 'utf8' });
+  return r.status === 0;
 }
 
 /** True when a tmux pane is still alive. */
