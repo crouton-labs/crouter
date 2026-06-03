@@ -6,7 +6,7 @@
 // edge cases.
 
 import { renderRoot, renderBranch, renderLeafArgv } from './help.js';
-import type { RootHelp, RootEntry, BranchHelp, LeafHelp, InputParam, FlagParam } from './help.js';
+import type { RootHelp, RootCommand, RootEntry, BranchHelp, LeafHelp, InputParam, FlagParam } from './help.js';
 import { readStdinRaw, emit, handle, setJsonOutput, isJsonOutput } from './io.js';
 import { renderResult } from './render.js';
 import { CrtrError } from './errors.js';
@@ -87,6 +87,13 @@ export function defineLeaf(opts: {
   };
 }
 
+/** Number of a node's own non-hidden subcommands (direct children). Leaves and
+ *  childless branches return 0. */
+function visibleSubCount(def: LeafDef | BranchDef): number {
+  if (def.kind !== 'branch') return 0;
+  return def.help.children.filter((c) => (c.tier ?? 'normal') !== 'hidden').length;
+}
+
 export function defineBranch(opts: {
   name: string;
   help: BranchHelp;
@@ -94,6 +101,17 @@ export function defineBranch(opts: {
   slash?: SlashSpec;
   children: (LeafDef | BranchDef)[];
 }): BranchDef {
+  // Enrich each help-child entry with the count of its own non-hidden
+  // subcommands so renderBranch can show "[+N subcommands]" when a branch child
+  // is listed without expanding it. Match help entries to child defs by name;
+  // entries without a matching def (or whose def has no subcommands) stay bare.
+  for (const hc of opts.help.children) {
+    const childDef = opts.children.find((c) => c.name === hc.name);
+    if (childDef !== undefined) {
+      const n = visibleSubCount(childDef);
+      if (n > 0) hc.subCount = n;
+    }
+  }
   return {
     kind: 'branch',
     name: opts.name,
@@ -130,15 +148,29 @@ export function defineRoot(opts: {
   // from its RootEntry. Root composes nothing and hardcodes nothing: add a
   // subtree with a rootEntry and it surfaces; its concept, rubric, state tag,
   // and dynamic block all travel with it.
-  const commands = opts.subtrees
+  const commands: RootCommand[] = opts.subtrees
     .filter((s) => s.rootEntry !== undefined)
-    .map((s) => ({
-      name: s.name,
-      concept: s.rootEntry!.concept,
-      desc: s.rootEntry!.desc,
-      useWhen: s.rootEntry!.useWhen,
-      dynamicState: s.rootEntry!.dynamicState,
-    }));
+    .map((s) => {
+      // Promote this subtree's common/important children into root, and count
+      // how many other (non-hidden) direct subcommands stay behind `<name> -h`.
+      const visible = s.help.children.filter((c) => (c.tier ?? 'normal') !== 'hidden');
+      const promoted = visible
+        .filter((c) => c.tier === 'common' || c.tier === 'important')
+        .map((c) => ({
+          path: `${s.name} ${c.name}`,
+          // important carries its shortform desc; common shows the bare path.
+          desc: c.tier === 'important' ? c.desc : undefined,
+        }));
+      return {
+        name: s.name,
+        concept: s.rootEntry!.concept,
+        desc: s.rootEntry!.desc,
+        useWhen: s.rootEntry!.useWhen,
+        dynamicState: s.rootEntry!.dynamicState,
+        subcommands: promoted.length > 0 ? promoted : undefined,
+        otherSubcommandCount: visible.length - promoted.length,
+      };
+    });
 
   const help: RootHelp = {
     tagline: opts.tagline,

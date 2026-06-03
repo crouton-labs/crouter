@@ -66,6 +66,35 @@ export interface ContextFileParam {
 
 export type InputParam = PositionalParam | FlagParam | StdinParam | ContextFileParam;
 
+// ---------------------------------------------------------------------------
+// Subcommand visibility tier
+// ---------------------------------------------------------------------------
+
+/** How prominently a subcommand surfaces in ancestor (parent / root) -h
+ *  listings. Set per child in the parent branch's `help.children`. Default
+ *  'normal'.
+ *   - hidden    — never listed anywhere, not even in this branch's own -h.
+ *                 You must already know it exists to invoke it.
+ *   - normal    — listed in this branch's own -h only (the default).
+ *   - common    — ALSO promoted into the parent's -h, as a bare qualified name.
+ *   - important — ALSO promoted into the parent's -h, name + shortform desc. */
+export type SubTier = 'hidden' | 'normal' | 'common' | 'important';
+
+/** One child entry in a branch's -h listing. `desc`/`useWhen` are the shortform
+ *  copy shown there; `tier` governs promotion into ancestor listings. */
+export interface BranchChild {
+  name: string;
+  desc: string;
+  useWhen: string;
+  /** Visibility tier in ancestor listings (see SubTier). Default 'normal'. */
+  tier?: SubTier;
+  /** Computed at define time (defineBranch): how many non-hidden subcommands
+   *  this child itself owns. Drives the "[+N subcommands]" affordance shown when
+   *  a branch child is listed without expanding its own subcommands. Absent for
+   *  leaves and childless branches. Do not author by hand. */
+  subCount?: number;
+}
+
 /** A subtree's self-description at the parent (root) level. Each subtree owns
  *  the content that represents it one level up: its vocabulary line, its
  *  selection rubric, and any bounded block it contributes to the parent's -h.
@@ -95,14 +124,26 @@ export interface RootHelp {
    *  root, carrying the subtree's concept, selection rubric, and any nested
    *  runtime-state block. Assembled from subtrees' RootEntry by defineRoot;
    *  root hardcodes none of it. */
-  commands: {
-    name: string;
-    concept: string;
-    desc: string;
-    useWhen: string;
-    dynamicState?: () => string | null;
-  }[];
+  commands: RootCommand[];
   globals: { name: string; desc: string }[];
+}
+
+/** A single command block at root. Most fields come from the subtree's
+ *  RootEntry; `subcommands`/`otherSubcommandCount` are computed by defineRoot
+ *  from the subtree's children tiers. */
+export interface RootCommand {
+  name: string;
+  concept: string;
+  desc: string;
+  useWhen: string;
+  dynamicState?: () => string | null;
+  /** Promoted subcommands surfaced inline under this command at root, in
+   *  declaration order. `desc` is present only for 'important' tier; 'common'
+   *  tier carries the bare qualified path. */
+  subcommands?: { path: string; desc?: string }[];
+  /** How many of this command's other (non-hidden, not-promoted) direct
+   *  subcommands are not shown. Drives the "[+N (other) subcommands]" line. */
+  otherSubcommandCount?: number;
 }
 
 export interface BranchHelp {
@@ -114,7 +155,7 @@ export interface BranchHelp {
    *  it with stateBlock), e.g. `<skills count="42">…</skills>`. Renderer
    *  soft-fails to omission if this returns null or throws. */
   dynamicState?: () => string | null;
-  children: { name: string; desc: string; useWhen: string }[];
+  children: BranchChild[];
 }
 
 export interface LeafHelp {
@@ -196,6 +237,34 @@ const CAPABILITY_DISCOVERY =
   'do not guess or assume it is unsupported — run `-h` on the relevant command ' +
   '(append it anywhere along the path) to read the contract before acting.';
 
+/** Lines for a command's subcommand affordance at root: any promoted
+ *  (common/important) subcommands, then a remainder line naming how many other
+ *  subcommands exist behind `crtr <name> -h`. Returns [] when the command has
+ *  no listable subcommands at all. */
+function rootSubcommandLines(c: RootCommand): string[] {
+  const promoted = c.subcommands ?? [];
+  const other = c.otherSubcommandCount ?? 0;
+  if (promoted.length === 0 && other === 0) return [];
+
+  const out: string[] = [];
+  if (promoted.length > 0) {
+    const labelW = maxLen(promoted.map((s) => s.path));
+    for (const s of promoted) {
+      // important → padded name + shortform desc; common → bare name.
+      out.push(
+        s.desc !== undefined && s.desc !== ''
+          ? `  ${pad(s.path, labelW)}  ${s.desc}`
+          : `  ${s.path}`,
+      );
+    }
+  }
+  if (other > 0) {
+    const word = promoted.length > 0 ? 'other subcommand' : 'subcommand';
+    out.push(`  [+${other} ${word}${other === 1 ? '' : 's'} — \`crtr ${c.name} -h\`]`);
+  }
+  return out;
+}
+
 export function renderRoot(h: RootHelp): string {
   const lines: string[] = [];
 
@@ -215,6 +284,10 @@ export function renderRoot(h: RootHelp): string {
     lines.push(`<command name="${c.name}">`);
     lines.push(c.concept);
     lines.push(`use when ${c.useWhen}`);
+    // The command's subcommand surface: promoted (common/important) children
+    // inline, plus a "[+N other subcommands]" pointer to its own -h. Sits
+    // between the selection rubric and any live state block.
+    for (const l of rootSubcommandLines(c)) lines.push(l);
     // dynamicState returns a complete self-named element (e.g.
     // <skills count="42">…</skills>) — emit it as-is, nested in the command.
     const state = evalDynamic(c.dynamicState);
@@ -266,10 +339,18 @@ export function renderBranch(h: BranchHelp): string {
   lines.push('');
   lines.push('Branches');
 
-  const nameW = maxLen(h.children.map((c) => c.name));
-  const descW = maxLen(h.children.map((c) => c.desc));
-  for (const c of h.children) {
-    lines.push(`  ${pad(c.name, nameW)}  ${pad(c.desc, descW)}  | use when ${c.useWhen}`);
+  // 'hidden' children never appear in any listing — drop them here.
+  const visible = h.children.filter((c) => (c.tier ?? 'normal') !== 'hidden');
+  const nameW = maxLen(visible.map((c) => c.name));
+  const descW = maxLen(visible.map((c) => c.desc));
+  for (const c of visible) {
+    let line = `  ${pad(c.name, nameW)}  ${pad(c.desc, descW)}  | use when ${c.useWhen}`;
+    // A branch child is listed without its own subcommands expanded — flag how
+    // many it has so the agent knows there is more depth behind `<child> -h`.
+    if (c.subCount !== undefined && c.subCount > 0) {
+      line += `  [+${c.subCount} subcommand${c.subCount === 1 ? '' : 's'}]`;
+    }
+    lines.push(line);
   }
 
   return lines.join('\n');
