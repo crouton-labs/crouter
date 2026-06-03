@@ -260,7 +260,7 @@ describe('renderLeafArgv: help format', () => {
 
   test('contains Output section', () => {
     const out = renderLeafArgv(help);
-    assert.ok(out.includes('Output (stdout, JSON)'));
+    assert.ok(out.includes('Output (fields carried in the rendered result)'));
   });
 
   test('contains Effects section', () => {

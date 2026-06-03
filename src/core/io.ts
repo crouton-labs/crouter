@@ -1,10 +1,26 @@
-// The agent-facing I/O contract. Flags and positional args on input; one JSON
-// object on stdout (JSONL for streams); structured errors; stderr is
-// diagnostics only and never carries the result. The stdout value is the next
-// caller's stdin. See cli-design SKILL.md / reference.md.
+// The agent-facing I/O contract. Flags and positional args on input; stdout is
+// agent-ready markdown/XML the caller acts on directly (the result rendered FOR
+// the model, not data it parses); structured errors; stderr is diagnostics only
+// and never carries the result. The raw JSON object is available behind the
+// `--json` global for tooling. See cli-design SKILL.md / reference.md.
 
 import { CrtrError } from './errors.js';
 import { ExitCode, type ExitCodeValue } from '../types.js';
+import { renderError } from './render.js';
+
+// ---------------------------------------------------------------------------
+// output mode — prose (default) vs raw JSON (--json global, for tooling)
+// ---------------------------------------------------------------------------
+
+let jsonOutput = false;
+/** Set by the dispatcher when `--json` is present anywhere in argv. */
+export function setJsonOutput(v: boolean): void {
+  jsonOutput = v;
+}
+/** True when the caller asked for raw JSON instead of rendered prose. */
+export function isJsonOutput(): boolean {
+  return jsonOutput;
+}
 
 /** Structured error payload. `error` is a stable code the agent branches on;
  *  `next` is the recovery road sign. */
@@ -43,7 +59,8 @@ export async function readStdinRaw(): Promise<string> {
 // stdout — the result, nothing else
 // ---------------------------------------------------------------------------
 
-/** Single-shot response: one JSON object. The whole response is one value. */
+/** Raw-JSON mirror of a single-shot response (the `--json` escape hatch). The
+ *  default path renders the result as prose instead — see render.ts. */
 export function emit(obj: Record<string, unknown>): void {
   process.stdout.write(JSON.stringify(obj, null, 2) + '\n');
 }
@@ -116,7 +133,11 @@ function payloadOf(e: CrtrError): ErrorPayload {
  *  raw traces never reach the agent. Exits non-zero either way. */
 export function handle(e: unknown): never {
   if (e instanceof CrtrError) {
-    process.stdout.write(JSON.stringify(payloadOf(e), null, 2) + '\n');
+    const payload = payloadOf(e);
+    const out = jsonOutput
+      ? JSON.stringify(payload, null, 2)
+      : renderError(payload);
+    process.stdout.write(out + '\n');
     process.exit(e.exitCode);
   }
   const err = e as Error;

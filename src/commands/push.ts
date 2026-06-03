@@ -77,6 +77,16 @@ function makeTierLeaf(tier: Tier): LeafDef {
       const result = await push(nodeId, { kind: tier, body });
       return { report_path: result.reportPath, delivered_to: result.deliveredTo, status: tier === 'final' ? 'done' : 'active' };
     },
+    render: (r) => {
+      const n = Array.isArray(r['delivered_to']) ? (r['delivered_to'] as unknown[]).length : 0;
+      const line =
+        tier === 'final'
+          ? 'Result recorded — node finished; its window closes on next stop. Nothing more to do here.'
+          : tier === 'urgent'
+            ? `Urgent report fanned to ${n} subscriber(s) — they are force-woken.`
+            : `Progress report fanned to ${n} subscriber(s).`;
+      return `<pushed tier="${tier}" status="${r['status']}" delivered="${n}">\n${line}\nreport: ${r['report_path']}\n</pushed>`;
+    },
   });
 }
 
@@ -117,6 +127,13 @@ const feedReadLeaf = defineLeaf({
       entries: entries as unknown as Record<string, unknown>[],
       cursor: newCursor,
     };
+  },
+  render: (r) => {
+    const n = Array.isArray(r['entries']) ? (r['entries'] as unknown[]).length : 0;
+    const digest = typeof r['digest'] === 'string' && (r['digest'] as string).trim() !== ''
+      ? (r['digest'] as string)
+      : 'Inbox empty — nothing new from your subscriptions.';
+    return `<feed node="${r['node_id']}" unread="${n}">\n${digest}\n</feed>`;
   },
 });
 

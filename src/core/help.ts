@@ -184,7 +184,8 @@ function pad(s: string, width: number): string {
 // ---------------------------------------------------------------------------
 
 const IO_CONTRACT =
-  'I/O contract: flags and positional args on input, JSON on stdout (JSONL for streams).\n' +
+  'I/O contract: flags and positional args on input; stdout is agent-ready markdown/XML you\n' +
+  'act on directly — read it as a continuation of your prompt, don\'t parse it as data.\n' +
   'Exit 0 on success, non-zero on failure. Schemas appear at leaf -h.';
 
 // Behavioral instruction (not a schema) — engrained in the appended system
@@ -336,9 +337,9 @@ export function renderLeafArgv(h: LeafHelp): string {
 
   lines.push('');
 
-  const outputLabel =
-    h.outputKind === 'jsonl' ? 'Output (stdout, JSONL)' : 'Output (stdout, JSON)';
-  lines.push(outputLabel);
+  // The result is rendered as instruction-shaped XML+markdown; these fields are
+  // the information it carries, in order, not a literal JSON shape.
+  lines.push('Output (fields carried in the rendered result)');
   const outNameW = maxLen(h.output.map((f) => f.name));
   for (const f of h.output) {
     lines.push(`  ${pad(f.name, outNameW)}  ${f.type}. ${f.constraint}`);

@@ -7,7 +7,8 @@
 
 import { renderRoot, renderBranch, renderLeafArgv } from './help.js';
 import type { RootHelp, RootEntry, BranchHelp, LeafHelp, InputParam, FlagParam } from './help.js';
-import { readStdinRaw, emit, handle } from './io.js';
+import { readStdinRaw, emit, handle, setJsonOutput, isJsonOutput } from './io.js';
+import { renderResult } from './render.js';
 import { CrtrError } from './errors.js';
 import { ExitCode } from '../types.js';
 import { readFileSync } from 'node:fs';
@@ -40,6 +41,10 @@ export interface LeafDef {
   /** Opt into editor slash-command exposure (see SlashSpec). */
   slash?: SlashSpec;
   run: (input: Record<string, unknown>) => Promise<Record<string, unknown> | void>;
+  /** Optional bespoke renderer: turn the result into instruction-shaped
+   *  XML+markdown the agent acts on. Omit to fall back to the schema-driven
+   *  generic renderer. Ignored when `--json` is set. */
+  render?: (result: Record<string, unknown>) => string;
 }
 
 export interface BranchDef {
@@ -70,6 +75,7 @@ export function defineLeaf(opts: {
   help: LeafHelp;
   slash?: SlashSpec;
   run: (input: Record<string, unknown>) => Promise<Record<string, unknown> | void>;
+  render?: (result: Record<string, unknown>) => string;
 }): LeafDef {
   return {
     kind: 'leaf',
@@ -77,6 +83,7 @@ export function defineLeaf(opts: {
     help: opts.help,
     slash: opts.slash,
     run: opts.run,
+    render: opts.render,
   };
 }
 
@@ -390,7 +397,7 @@ export async function parseArgv(
 
   // Resolve stdin if declared. A positional token (when there's no dedicated
   // positional param to claim it) satisfies the stdin param directly, so
-  // `crtr agent new "Say hi"` works as well as piping on stdin.
+  // `crtr node new "Say hi"` works as well as piping on stdin.
   if (stdinParam !== undefined) {
     if (positionalValue !== undefined && positionalParam === undefined) {
       result[flagNameToKey(stdinParam.name)] = positionalValue;
@@ -428,8 +435,14 @@ export async function parseArgv(
 }
 
 export async function runCli(root: RootDef, argv: string[]): Promise<void> {
-  // argv is process.argv — strip node binary + script path
-  const tokens = argv.slice(2);
+  // argv is process.argv — strip node binary + script path. `--json` is a
+  // global: pull it out anywhere it appears so the rest of argv parses against
+  // the leaf schema unchanged, and switch stdout from rendered prose to raw
+  // JSON. It is intentionally undocumented — the default prose output is the
+  // agent contract; --json exists only for programmatic/tooling consumers.
+  const rawTokens = argv.slice(2);
+  const tokens = rawTokens.filter((t) => t !== '--json');
+  if (tokens.length !== rawTokens.length) setJsonOutput(true);
 
   // Bare root invocation or -h at root
   if (tokens.length === 0 || (tokens.length === 1 && (tokens[0] === '-h' || tokens[0] === '--help'))) {
@@ -461,7 +474,12 @@ export async function runCli(root: RootDef, argv: string[]): Promise<void> {
 
     const result = await node.run(input);
     if (result !== undefined && result !== null) {
-      emit(result);
+      if (isJsonOutput()) {
+        emit(result);
+      } else {
+        const text = node.render !== undefined ? node.render(result) : renderResult(result, node.help);
+        process.stdout.write(text + '\n');
+      }
     }
     // JSONL leaves call emitLine themselves and return void
   } catch (e) {
