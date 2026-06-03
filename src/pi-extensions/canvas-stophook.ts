@@ -156,31 +156,50 @@ function extractText(msg: any): string {
 }
 
 // ---------------------------------------------------------------------------
-// Context-size steering bands — first nudge at 100k input tokens, then one
-// every 50k thereafter (150k, 200k, 250k, …). Unbounded: a long-lived node
-// keeps getting reminded as it grows.
+// Context-size steering bands — mode-specific schedules that ESCALATE in tone
+// as input context grows. The first band is a gentle "consider it"; a later
+// band turns firm. Past the last explicit band the firmest nudge repeats every
+// 50k, so a long-lived node keeps getting reminded.
+//
+//   orchestrator: 130k gentle (consider yielding) → 150k+ firm (do it now)
+//   base worker:  130k suggest promote → 160k+ suggest promote (+ "ignore if
+//                 nearly done")
 // ---------------------------------------------------------------------------
 
-const STEER_FLOOR = 100_000;
 const STEER_STEP = 50_000;
+const ORCH_BANDS = [130_000, 150_000];   // gentle, then firm (firm repeats +50k)
+const WORKER_BANDS = [130_000, 160_000]; // suggest, then suggest+ignore (repeats +50k)
 
-/** The highest band boundary at or below `tokens` (100k, 150k, 200k, …), or
- *  null below the floor. */
-function steerBand(tokens: number): number | null {
-  if (tokens < STEER_FLOOR) return null;
-  return STEER_FLOOR + Math.floor((tokens - STEER_FLOOR) / STEER_STEP) * STEER_STEP;
+/** The highest band threshold at or below `tokens` for `mode`. Below the first
+ *  band → null. At/past the last listed band, bands continue every STEER_STEP
+ *  (so the firmest nudge keeps recurring). */
+function steerBand(tokens: number, mode: string): number | null {
+  const bands = mode === 'orchestrator' ? ORCH_BANDS : WORKER_BANDS;
+  const first = bands[0]!;
+  const last = bands[bands.length - 1]!;
+  if (tokens < first) return null;
+  if (tokens >= last) return last + Math.floor((tokens - last) / STEER_STEP) * STEER_STEP;
+  let chosen = first;
+  for (const b of bands) if (tokens >= b) chosen = b;
+  return chosen;
 }
 
-/** The nudge text for a crossed band, specialized to the node's mode. An
- *  orchestrator is steered to checkpoint its roadmap and yield; a non-
- *  orchestrator (base worker) is steered to PROMOTE itself — become a resident
- *  orchestrator — when work remains, or finish if it's nearly done. */
+/** The nudge text for a crossed band, specialized to the node's mode + how far
+ *  along the escalation it is. An orchestrator is steered to checkpoint its
+ *  roadmap and yield (gently first, then firmly); a non-orchestrator (base
+ *  worker) is steered to PROMOTE itself — become a resident orchestrator — when
+ *  work remains, with an "ignore if nearly done" once it's deeper in. */
 function steerNote(at: number, mode: string): string {
   const k = Math.round(at / 1000);
   if (mode === 'orchestrator') {
+    if (at < 150_000) {
+      return `Context ~${k}k and growing. When you reach a good stopping point, consider updating context/roadmap.md and running \`crtr node yield\` to refresh against it — no rush yet.`;
+    }
     return `Context ~${k}k. Update context/roadmap.md so a fresh revive can continue, delegate any outstanding work, then \`crtr node yield\` to refresh.`;
   }
-  return `Context ~${k}k and climbing. If more work remains than this context can finish, \`crtr node promote\` to become a resident orchestrator (seeds a roadmap, lets you delegate and \`crtr node yield\` to refresh). If you're nearly done, finish with \`crtr push final\`.`;
+  const suggest = `If much more work remains than this context can finish, consider \`crtr node promote\` to become a resident orchestrator (seeds a roadmap, lets you delegate and \`crtr node yield\` to refresh).`;
+  if (at < 160_000) return `Context ~${k}k. ${suggest}`;
+  return `Context ~${k}k. ${suggest} If you're nearly done, ignore this suggestion and finish with \`crtr push final\`.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -209,9 +228,9 @@ export function registerCanvasStophook(pi: PiLike): void {
   let model = '';
 
   // Context-size steering. As input context grows we nudge the node once per
-  // band (100k, then every 50k). The nudge depends on the node's CURRENT mode,
-  // read at fire time since a base worker can promote mid-session: an
-  // orchestrator checkpoints + yields; a base worker is steered to promote.
+  // band on an escalating, mode-specific schedule (see steerBand/steerNote).
+  // Mode is read at fire time since a base worker can promote mid-session: an
+  // orchestrator is steered to checkpoint + yield; a base worker to promote.
   const firedBands = new Set<number>();
 
   // ---------------------------------------------------------------------------
@@ -275,10 +294,10 @@ export function registerCanvasStophook(pi: PiLike): void {
     // Context-size steering: fire the current band once, with mode-specific
     // guidance (mode is read live — a worker may have promoted since launch).
     try {
-      const at = steerBand(totalIn);
+      const mode = getNode(nodeId)?.mode ?? 'base';
+      const at = steerBand(totalIn, mode);
       if (at !== null && !firedBands.has(at)) {
         firedBands.add(at);
-        const mode = getNode(nodeId)?.mode ?? 'base';
         pi.sendUserMessage(`[crtr] ${steerNote(at, mode)}`, { deliverAs: 'followUp' });
       }
     } catch {

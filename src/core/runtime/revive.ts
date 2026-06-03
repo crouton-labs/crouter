@@ -20,8 +20,8 @@ import {
   openNodeWindow,
   piCommand,
   respawnPane,
+  nodeSession,
 } from './tmux.js';
-import { rootSessionName } from './spawn.js';
 
 // ---------------------------------------------------------------------------
 // Return type
@@ -54,11 +54,10 @@ export function reviveNode(
     throw new Error(`reviveNode: unknown node ${nodeId}`);
   }
 
-  // The node lives in its root's tmux session. Prefer the stored session name;
-  // fall back to deriving it from the parent (or the node itself for roots).
-  const session =
-    meta.tmux_session ??
-    rootSessionName((meta.parent ?? meta.node_id) as string);
+  // The node lives in the shared global session. Prefer its stored session
+  // (an inline root tracks its own real terminal session); fall back to the
+  // shared node session.
+  const session = meta.tmux_session ?? nodeSession();
 
   ensureSession(session, meta.cwd);
 
@@ -114,9 +113,7 @@ export function reviveInPlace(nodeId: string, pane: string): ReviveResult {
     throw new Error(`reviveInPlace: unknown node ${nodeId}`);
   }
 
-  const session =
-    meta.tmux_session ??
-    rootSessionName((meta.parent ?? meta.node_id) as string);
+  const session = meta.tmux_session ?? nodeSession();
 
   // Fresh re-exec: same recipe as a no-resume reviveNode, with the kickoff so
   // the node rebuilds its bearings from disk.

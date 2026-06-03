@@ -18,14 +18,13 @@ import {
   piCommand,
   currentTmux,
   inTmux,
+  nodeSession,
+  installMenuBinding,
 } from './tmux.js';
 import { updateNode, getNode, type NodeMeta, type Mode } from '../canvas/index.js';
 import { ensureDaemon } from '../../daemon/manage.js';
 
-/** A root's tmux session name — its home; every descendant is a window in it. */
-export function rootSessionName(rootId: string): string {
-  return `crtr-${rootId.replace(/[^a-zA-Z0-9]/g, '').slice(0, 12)}`;
-}
+// All node windows live in one shared session — see `nodeSession()` in tmux.js.
 
 // ---------------------------------------------------------------------------
 // bootRoot — the front door
@@ -66,10 +65,13 @@ export function bootRoot(opts: BootRootOpts): NodeMeta {
   // mandate (bare `crtr` has none — writeGoal no-ops on empty).
   if (opts.prompt !== undefined) writeGoal(meta.node_id, opts.prompt);
 
-  const session = rootSessionName(meta.node_id);
+  // Every node window — root or child — lives in the one shared session.
+  const session = nodeSession();
+  ensureSession(session, opts.cwd);
+  // Make the Alt+C action menu live on this server (idempotent, in-tmux only).
+  if (inTmux()) { try { installMenuBinding(); } catch { /* best-effort */ } }
 
   if (opts.placement === 'session') {
-    ensureSession(session, opts.cwd);
     updateNode(meta.node_id, { tmux_session: session });
     const withSession = getNode(meta.node_id) as NodeMeta;
     const inv = buildPiArgv(withSession, { prompt: opts.prompt });
@@ -85,14 +87,16 @@ export function bootRoot(opts: BootRootOpts): NodeMeta {
     return getNode(meta.node_id) as NodeMeta;
   }
 
-  // inline: the root adopts the current tmux session (if any) as its home, so
-  // children spawn as windows alongside it. Then exec pi in this terminal.
+  // inline: the root's pi takes over THIS terminal, so its own window stays
+  // where the user is (its tmux_session tracks that real pane so supervision
+  // sees it alive). But its children spawn into the shared global session via
+  // CRTR_ROOT_SESSION — they never clutter the user's working session.
   const here = currentTmux();
   const adopted = here?.session ?? session;
   updateNode(meta.node_id, { tmux_session: adopted, window: here?.window ?? null });
   const withSession = getNode(meta.node_id) as NodeMeta;
   const inv = buildPiArgv(withSession, { prompt: opts.prompt });
-  const env = { ...process.env, ...inv.env, CRTR_ROOT_SESSION: adopted, [FRONT_DOOR_ENV]: '1' } as NodeJS.ProcessEnv;
+  const env = { ...process.env, ...inv.env, CRTR_ROOT_SESSION: session, [FRONT_DOOR_ENV]: '1' } as NodeJS.ProcessEnv;
   const r = spawnSync('pi', inv.argv, { stdio: 'inherit', env });
   process.exit(r.status ?? 0);
 }
@@ -142,13 +146,11 @@ export function spawnChild(opts: SpawnChildOpts): SpawnChildResult {
   // Persist the task as the child's goal for a fresh revive to re-read.
   writeGoal(meta.node_id, opts.prompt);
 
-  // Resolve the root session: inherited from env, else derive + create one.
+  // Children always land in the shared global session: inherited from the
+  // parent's CRTR_ROOT_SESSION, else the default node session.
   let session = process.env['CRTR_ROOT_SESSION'];
-  if (session === undefined || session === '') {
-    const here = inTmux() ? currentTmux() : null;
-    session = here?.session ?? rootSessionName(parent);
-    ensureSession(session, opts.cwd);
-  }
+  if (session === undefined || session === '') session = nodeSession();
+  ensureSession(session, opts.cwd);
 
   const inv = buildPiArgv(meta, { prompt: opts.prompt });
   const env = { ...inv.env, CRTR_ROOT_SESSION: session };

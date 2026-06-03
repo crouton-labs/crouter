@@ -32,6 +32,15 @@ export function inTmux(): boolean {
   return process.env['TMUX'] !== undefined && process.env['TMUX'] !== '';
 }
 
+/** The single, shared tmux session that ALL canvas node windows live in.
+ *  Overridable with CRTR_NODE_SESSION (default `crtr`). Every root and every
+ *  child opens a window here rather than cluttering the user's own working
+ *  session — switch to it to browse the whole live graph, ignore it otherwise. */
+export function nodeSession(): string {
+  const v = process.env['CRTR_NODE_SESSION'];
+  return v !== undefined && v !== '' ? v : 'crtr';
+}
+
 export interface TmuxLocation {
   session: string;
   window: string;
@@ -112,6 +121,25 @@ export function openNodeWindow(opts: OpenWindowOpts): string | null {
     opts.command,
   ]);
   return r.ok ? r.stdout : null;
+}
+
+/** Open a background window running a plain login shell (no pi) and return its
+ *  window + pane ids. Used by demote: the agent's pi is swapped OUT into this
+ *  window's slot and the shell is swapped INTO the caller's pane. `-a` keeps it
+ *  off index 0 (reserved for a dashboard), `-d` keeps it from stealing focus. */
+export function openShellWindow(opts: { session: string; name: string; cwd: string }):
+  { window: string; pane: string } | null {
+  const r = tmux([
+    'new-window', '-d', '-a', '-P',
+    '-F', '#{window_id}\t#{pane_id}',
+    '-t', `${opts.session}:`,
+    '-n', opts.name,
+    '-c', opts.cwd,
+  ]);
+  if (!r.ok) return null;
+  const [window, pane] = r.stdout.split('\t');
+  if (window === undefined || pane === undefined) return null;
+  return { window, pane };
 }
 
 /** Bring a node's window forefront. Switches client across roots when needed. */
@@ -243,4 +271,25 @@ export function selectWindow(session: string, window: string): boolean {
  *  responsible for following up with selectWindow to land on the right window. */
 export function switchClient(session: string): boolean {
   return tmux(['switch-client', '-t', session]).ok;
+}
+
+// ---------------------------------------------------------------------------
+// Prefix menu — Alt+C opens a which-key-style tmux display-menu of crouter
+// actions. Installed on the running server at root boot; idempotent (a re-bind
+// overwrites the previous one). Items shell out to `crtr`, passing the active
+// pane so an action targets the agent currently in front of you.
+// ---------------------------------------------------------------------------
+
+/** Bind Alt+C to the crouter action menu. Best-effort; false if tmux fails. */
+export function installMenuBinding(): boolean {
+  const sess = nodeSession();
+  return tmux([
+    'bind-key', '-n', 'M-c', 'display-menu',
+    '-T', '#[align=centre] crtr ',
+    // Anchor to the top-right of the pane it was called from (tmux clamps it
+    // back on-screen) rather than centring on the whole terminal.
+    '-x', '#{pane_right}', '-y', '#{pane_top}',
+    'detach agent \u2192 background', 'd', `run-shell "crtr node demote --pane '#{pane_id}'"`,
+    'browse background agents',       'g', `switch-client -t ${sess}`,
+  ]).ok;
 }

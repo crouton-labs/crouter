@@ -11,8 +11,8 @@ import { spawnChild, bootRoot } from '../core/runtime/spawn.js';
 import { promote, requestYield } from '../core/runtime/promote.js';
 import { writeYieldMessage } from '../core/runtime/kickoff.js';
 import { reviveNode } from '../core/runtime/revive.js';
-import { focusNodeInPlace } from '../core/runtime/presence.js';
-import { windowAlive } from '../core/runtime/tmux.js';
+import { focusNodeInPlace, demoteNode } from '../core/runtime/presence.js';
+import { windowAlive, windowOfPane, currentTmux } from '../core/runtime/tmux.js';
 import { appendInbox, type InboxTier } from '../core/feed/inbox.js';
 import { availableKinds } from '../core/personas/index.js';
 import {
@@ -53,7 +53,7 @@ const nodeNew = defineLeaf({
       { name: 'node_id', type: 'string', required: true, constraint: 'The new node id.' },
       { name: 'name', type: 'string', required: true, constraint: 'Display name.' },
       { name: 'window', type: 'string', required: false, constraint: 'tmux window id of the background window.' },
-      { name: 'session', type: 'string', required: true, constraint: 'Root tmux session the node was placed in.' },
+      { name: 'session', type: 'string', required: true, constraint: 'The shared crtr tmux session the node was placed in.' },
       { name: 'status', type: 'string', required: true, constraint: 'Always "active" on spawn.' },
       { name: 'follow_up', type: 'string', required: true, constraint: 'A notification to the caller about the spawn: the child runs independently and its finish wakes you automatically, so treat it as fire-and-forget. Read it, then act.' },
     ],
@@ -200,6 +200,61 @@ const nodeFocus = defineLeaf({
 });
 
 // ---------------------------------------------------------------------------
+// node demote — detach the agent in your pane to the background session
+// ---------------------------------------------------------------------------
+
+/** First live node whose window id is `win` (each node owns one window). The
+ *  queryable row projection omits `window`, so resolve full meta per candidate. */
+function nodeByWindow(win: string): string | undefined {
+  for (const row of listNodes({ status: ['active', 'idle'] })) {
+    if (getNode(row.node_id)?.window === win) return row.node_id;
+  }
+  return undefined;
+}
+
+const nodeDemote = defineLeaf({
+  name: 'demote',
+  help: {
+    name: 'node demote',
+    summary: 'detach the agent in your current pane to the background — swap a fresh terminal into its place and relocate its running pi to a window in the shared crtr session (the inverse of focus; reattach later with `node focus`)',
+    params: [
+      { kind: 'flag', name: 'node', type: 'string', required: false, constraint: 'Node to demote. Defaults to the node occupying --pane (or your current pane).' },
+      { kind: 'flag', name: 'pane', type: 'string', required: false, constraint: 'tmux pane id to demote out of. Defaults to $TMUX_PANE / your current pane. The Alt+C menu passes this for you.' },
+    ],
+    output: [
+      { name: 'demoted', type: 'boolean', required: true, constraint: 'True when the agent was swapped out to the background.' },
+      { name: 'node_id', type: 'string', required: false, constraint: 'The demoted node.' },
+      { name: 'session', type: 'string', required: false, constraint: 'The shared session the agent now lives in.' },
+      { name: 'window', type: 'string', required: false, constraint: 'The agent\'s new background window id.' },
+    ],
+    outputKind: 'object',
+    effects: ['Swaps a fresh shell into the caller pane (tmux swap-pane) and relocates the node\'s pi window into the shared crtr session.', 'Clears the focus pointer if the demoted node held it. The pi keeps running — nothing is killed.'],
+  },
+  run: async (input) => {
+    const pane = (input['pane'] as string | undefined) ?? process.env['TMUX_PANE'];
+    let id = input['node'] as string | undefined;
+    if (id === undefined || id === '') {
+      // Derive the node from the pane: which node's window holds it?
+      const resolvePane = pane ?? currentTmux()?.pane;
+      const win = resolvePane !== undefined ? windowOfPane(resolvePane) : null;
+      id = win !== null ? nodeByWindow(win) : undefined;
+    }
+    if (id === undefined || id === '') {
+      throw new InputError({ error: 'no_node', message: 'no node found in this pane to demote', next: 'Pass --node <id>, or run from inside a focused node\'s pane.' });
+    }
+    if (getNode(id) === null) {
+      throw new InputError({ error: 'not_found', message: `no node: ${id}`, next: 'List nodes with `crtr node inspect list`.' });
+    }
+    const res = demoteNode(id, pane);
+    return { demoted: res.demoted, node_id: id, session: res.session ?? undefined, window: res.window ?? undefined };
+  },
+  render: (r) =>
+    r['demoted'] === true
+      ? `<demoted id="${r['node_id']}" session="${r['session'] ?? ''}"/>`
+      : `<demote-failed id="${r['node_id'] ?? ''}">not in tmux, or no agent in this pane</demote-failed>`,
+});
+
+// ---------------------------------------------------------------------------
 // node session — boot a NEW root in its own tmux session (the explicit form)
 // ---------------------------------------------------------------------------
 
@@ -207,7 +262,7 @@ const nodeSession = defineLeaf({
   name: 'session',
   help: {
     name: 'node session',
-    summary: 'start a fresh root node in its own tmux session and switch to it (use from inside a node to start a new root without taking your pane)',
+    summary: 'start a fresh root node as its own window in the shared crtr session (use from inside a node to start a new root without taking your pane)',
     params: [
       { kind: 'stdin', name: 'prompt', required: false, constraint: 'Optional starter prompt; a root needs none.' },
       { kind: 'flag', name: 'kind', type: 'string', required: false, default: 'general', constraint: 'Persona kind for the root.' },
@@ -216,11 +271,11 @@ const nodeSession = defineLeaf({
     ],
     output: [
       { name: 'node_id', type: 'string', required: true, constraint: 'The root node id.' },
-      { name: 'session', type: 'string', required: true, constraint: 'The dedicated tmux session created for this root.' },
+      { name: 'session', type: 'string', required: true, constraint: 'The shared crtr tmux session this root\'s window was placed in.' },
       { name: 'window', type: 'string', required: false, constraint: 'The root node\'s window id.' },
     ],
     outputKind: 'object',
-    effects: ['Creates a detached tmux session and runs pi in it as a resident root node.'],
+    effects: ['Opens a detached window in the shared crtr session and runs pi in it as a resident root node.'],
   },
   run: async (input) => {
     const prompt = input['prompt'] as string | undefined;
@@ -283,9 +338,9 @@ const nodePromote = defineLeaf({
   name: 'promote',
   help: {
     name: 'node promote',
-    summary: 'promote yourself to a resident orchestrator of a chosen kind — flips to that kind\'s orchestrator persona on next revive, dumps its orchestration + roadmap-shaping guidance now, and seeds a roadmap scaffold for you to author',
+    summary: 'promote yourself to a resident orchestrator — do this when your task outgrows one context window (many phases to delegate and persist across refreshes); not for work that fits one window, and not merely because you spawned a child',
     params: [
-      { kind: 'flag', name: 'kind', type: 'string', required: false, constraint: 'Specialize as this kind of orchestrator: developer (own feature delivery), review, spec, design, plan, explore, general. Defaults to your current kind. Promoting from a generic kind? CHOOSE a concrete one — it picks the orchestrator persona you revive into and the roadmap-shaping skill dumped now.' },
+      { kind: 'flag', name: 'kind', type: 'string', required: false, constraint: 'Specialize as this kind of orchestrator: developer (own feature delivery), review, spec, design, plan, explore, general. Defaults to your current kind. Promoting from a generic kind? CHOOSE a concrete one — it sets the orchestrator persona you revive into.' },
       { kind: 'flag', name: 'node', type: 'string', required: false, constraint: 'Node to promote. Defaults to the caller (CRTR_NODE_ID).' },
     ],
     output: [
@@ -293,7 +348,7 @@ const nodePromote = defineLeaf({
       { name: 'kind', type: 'string', required: true, constraint: 'The kind it now orchestrates as.' },
       { name: 'mode', type: 'string', required: true, constraint: 'Now "orchestrator".' },
       { name: 'roadmap_written', type: 'boolean', required: true, constraint: 'True if a roadmap scaffold was seeded by this call.' },
-      { name: 'guidance', type: 'string', required: true, constraint: 'Kind-specific orchestration + roadmap-shaping guidance and your roadmap scaffold — read it, then AUTHOR your roadmap (goal, exit criteria, phases) this turn before delegating.' },
+      { name: 'guidance', type: 'string', required: true, constraint: 'Instructions for your new role — read and act on them this turn.' },
     ],
     outputKind: 'object',
     effects: ['Flips lifecycle→resident, mode→orchestrator, kind→chosen; rewrites the launch spec to that kind\'s orchestrator persona; seeds context/roadmap.md scaffold if absent.'],
@@ -362,12 +417,13 @@ export function registerNode(): BranchDef {
         { name: 'new', desc: 'spawn a terminal worker as a background window', useWhen: 'delegating a self-contained unit of work' },
         { name: 'inspect', desc: 'read the graph (list nodes / show one)', useWhen: 'surveying the canvas or inspecting a node' },
         { name: 'focus', desc: 'bring a node window forefront', useWhen: 'jumping to a node to watch or steer it' },
+        { name: 'demote', desc: 'detach the agent in your pane to the background', useWhen: 'parking the agent in front of you and getting your terminal back (Alt+C → d)' },
         { name: 'session', desc: 'open a fresh root in its own tmux session', useWhen: 'starting a new top-level session from inside a node' },
         { name: 'msg', desc: 'direct-message any node at a wake tier', useWhen: 'steering or pinging a specific node (wakes it)' },
         { name: 'promote', desc: 'become a resident orchestrator of a chosen kind', useWhen: 'your task is bigger than one context window and you must delegate + persist' },
         { name: 'yield', desc: 'refresh your context against your roadmap', useWhen: 'your context window is filling up' },
       ],
     },
-    children: [nodeNew, nodeInspect, nodeFocus, nodeSession, nodeMsg, nodePromote, nodeYield],
+    children: [nodeNew, nodeInspect, nodeFocus, nodeDemote, nodeSession, nodeMsg, nodePromote, nodeYield],
   });
 }

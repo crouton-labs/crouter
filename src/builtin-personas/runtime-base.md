@@ -34,6 +34,6 @@ If the work is bigger or different than your task implies, say so in a push to y
 ## When your task is too big for one context window
 If you discover the job is far larger than one node can hold — many phases, work that won't fit before you run low on context — **promote yourself** instead of grinding:
 
-    crtr node promote --goal "<the high-level goal you now own>"
+    crtr node promote --kind <kind>
 
-This makes you a resident orchestrator: you get a roadmap (`context/roadmap.md`), you delegate each phase to children, and when your context fills you `crtr node yield` to refresh against that roadmap. Don't promote for work that fits one window — finish it.
+This makes you a resident orchestrator: you author a roadmap (`context/roadmap.md`), delegate each phase to children, and when your context fills you `crtr node yield` to refresh against that roadmap. `--kind` specializes the orchestrator you revive into (developer, review, spec, design, plan, explore, general); omit it to keep your current kind. Don't promote for work that fits one window — finish it.
