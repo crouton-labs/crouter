@@ -32,14 +32,23 @@ function resolveExtension(name: string): string {
 export const CANVAS_STOPHOOK_PATH = resolveExtension('canvas-stophook');
 export const CANVAS_INBOX_WATCHER_PATH = resolveExtension('canvas-inbox-watcher');
 export const CANVAS_NAV_PATH = resolveExtension('canvas-nav');
+export const CANVAS_GOAL_CAPTURE_PATH = resolveExtension('canvas-goal-capture');
+export const CANVAS_PASSIVE_CONTEXT_PATH = resolveExtension('canvas-passive-context');
+export const CANVAS_COMMANDS_PATH = resolveExtension('canvas-commands');
 
 /** The canvas extensions every node loads, in order: stophook (routing +
  *  telemetry + session-id capture), inbox-watcher (wake), nav (in-editor
- *  graph chrome). All self-gate on CRTR_NODE_ID. */
+ *  graph chrome), goal-capture (persist the first user message as the goal),
+ *  passive-context (drain passive backlog as pre-text on the next message),
+ *  commands (the /promote slash-command). All self-gate on CRTR_NODE_ID.
+ *  goal-capture precedes passive-context so it reads the raw user text. */
 export const CANVAS_EXTENSIONS = [
   CANVAS_STOPHOOK_PATH,
   CANVAS_INBOX_WATCHER_PATH,
   CANVAS_NAV_PATH,
+  CANVAS_GOAL_CAPTURE_PATH,
+  CANVAS_PASSIVE_CONTEXT_PATH,
+  CANVAS_COMMANDS_PATH,
 ];
 
 /** Bare model aliases resolve to the anthropic provider under pi (avoids the
@@ -83,6 +92,14 @@ export interface PiInvocation {
   env: Record<string, string>;
 }
 
+/** The pi session display name — the editor label in the top-left. Shows the
+ *  node's name plus its current mode so base vs orchestrator reads at a glance
+ *  (e.g. `developer (orchestrator)`). Recomputed from `meta.mode` on every
+ *  revive, so a base→orchestrator polymorph updates the label. */
+export function editorLabel(meta: NodeMeta): string {
+  return `${meta.name} (${meta.mode})`;
+}
+
 /** Construct the pi invocation for a node.
  *  - fresh start: pass `prompt` (the node's first user message), no resume.
  *  - revive idle/done: pass `resumeSessionId` to `--resume` (keeps conversation).
@@ -97,7 +114,7 @@ export function buildPiArgv(
   for (const ext of spec?.extensions ?? CANVAS_EXTENSIONS) {
     argv.push('-e', ext);
   }
-  argv.push('-n', meta.name);
+  argv.push('-n', editorLabel(meta));
   if (opts.resumeSessionId !== undefined) argv.push('--resume', opts.resumeSessionId);
   if (spec?.model !== undefined) argv.push('--model', spec.model);
   if (spec?.tools !== undefined && spec.tools.length > 0) argv.push('--tools', spec.tools.join(','));
