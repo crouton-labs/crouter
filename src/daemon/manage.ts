@@ -1,6 +1,6 @@
 // Daemon management helpers — importable without the full command tree.
 //
-// spawnDaemon() is the low-level spawn call shared by `crtr daemon start` and
+// spawnDaemon() is the low-level spawn call shared by `crtr canvas daemon start` and
 // ensureDaemon(). ensureDaemon() is the silent "start if not running" front-
 // door helper called by the canvas runtime before spawning child nodes.
 

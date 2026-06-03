@@ -1,18 +1,13 @@
 #!/usr/bin/env node
 
 import { defineRoot, runCli } from './core/command.js';
-import { registerAgent } from './commands/agent.js';
 import { registerSkill } from './commands/skill.js';
-import { registerJob } from './commands/job.js';
 import { registerPkg } from './commands/pkg.js';
 import { registerHuman } from './commands/human.js';
 import { registerSys } from './commands/sys.js';
 import { registerPush, registerFeed } from './commands/push.js';
 import { registerNode } from './commands/node.js';
-import { registerDaemon } from './commands/daemon.js';
-import { registerRevive } from './commands/revive.js';
-import { registerDashboard } from './commands/dashboard.js';
-import { registerAttention } from './commands/attention.js';
+import { registerCanvas } from './commands/canvas.js';
 import { maybeBootRoot } from './core/runtime/front-door.js';
 import { maybeAutoUpdate } from './core/auto-update.js';
 import { ensureBootSkill, ensureOfficialMarketplace, ensureProjectScope, ensureSlashCommands } from './core/bootstrap.js';
@@ -28,19 +23,14 @@ const root = defineRoot({
     { name: '-h', desc: 'print help for any node — append to any subcommand path' },
   ],
   subtrees: [
-    registerAgent(),
     registerSkill(),
     registerPkg(),
-    registerJob(),
     registerHuman(),
     registerSys(),
+    registerNode(),
     registerPush(),
     registerFeed(),
-    registerNode(),
-    registerDaemon(),
-    registerRevive(),
-    registerDashboard(),
-    registerAttention(),
+    registerCanvas(),
   ],
 });
 

@@ -58,12 +58,24 @@ function parseRootArgs(tokens: string[]): {
   return { cwd, prompt, name, kind };
 }
 
+/** Env marker set on every pi the front door boots. Its presence means we are
+ *  already inside a front-door-booted root, so a nested front-door launch must
+ *  be refused — otherwise a removed/renamed subcommand that a child pi re-runs
+ *  (e.g. `crtr node -h`) fork-bombs pi until the machine must be rebooted. */
+export const FRONT_DOOR_ENV = 'CRTR_FRONT_DOOR';
+
 /** If this invocation is a front-door (root) launch, boot it and never return.
- *  Returns false when it's a recognized subcommand / help (let the dispatcher
- *  handle it). */
+ *  Returns false when it's a recognized subcommand / help / unknown token (let
+ *  the dispatcher handle it — for unknown tokens it errors cleanly). */
 export function maybeBootRoot(root: RootDef, argv: string[]): boolean {
   const tokens = argv.slice(2);
   const first = tokens[0];
+
+  // Recursion guard: never boot a root from inside a front-door-booted pi.
+  // This is the hard backstop against fork bombs — even a future footgun where
+  // a child re-invokes a removed subcommand cannot loop, because the second
+  // boot is refused and falls through to the dispatcher.
+  if (process.env[FRONT_DOOR_ENV]) return false;
 
   // `crtr -h` / `crtr --help` / `crtr --version` → dispatcher (root help).
   if (first === '-h' || first === '--help' || first === '--version' || first === '-v') {
@@ -73,8 +85,22 @@ export function maybeBootRoot(root: RootDef, argv: string[]): boolean {
   const subtreeNames = new Set(root.subtrees.map((s) => s.name));
   if (first !== undefined && subtreeNames.has(first)) return false;
 
-  // Otherwise: bare `crtr` or `crtr [dir] [prompt]` → boot a resident root
-  // inline (exec pi in this terminal). Does not return.
+  // The front door boots pi ONLY on an unambiguous "live here" signal:
+  //   • bare `crtr`                  (no tokens)
+  //   • `crtr <dir> [prompt]`        (first positional is an existing dir)
+  //   • `crtr "multi word prompt"`   (first token contains whitespace)
+  // Anything else — a bare word like `job`, or a leading flag — is treated as a
+  // mistyped/removed subcommand and handed to the dispatcher, which errors with
+  // "unknown subcommand: <token>". Booting pi for such tokens is what let the
+  // renamed `agent`/`job` subcommands fork-bomb the front door.
+  if (first !== undefined) {
+    const looksLikePrompt = /\s/.test(first);
+    const looksLikeDir = !first.startsWith('-') && isDir(resolvePath(first));
+    if (!looksLikePrompt && !looksLikeDir) return false;
+  }
+
+  // Unambiguous front-door launch → boot a resident root inline (exec pi in
+  // this terminal). Does not return.
   const args = parseRootArgs(tokens);
   bootRoot({ ...args, placement: 'inline' });
   return true;

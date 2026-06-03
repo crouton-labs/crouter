@@ -1,13 +1,13 @@
-// `crtr dashboard` — canvas-wide visibility surface.
+// `crtr canvas dashboard` — canvas-wide visibility surface.
 //
 // Renders the subscription sub-DAG as an ASCII tree, optionally scoped to a
 // single root.  A human operator pastes the output into a terminal or pipes it
 // to a renderer; a machine consumer reads the structured `rows` array.
 //
-// Shape mirrors registerNode(): export registerDashboard(): BranchDef.
+// Exported as a leaf; `crtr canvas` (canvas.ts) mounts it.
 
-import { defineBranch, defineLeaf } from '../core/command.js';
-import type { BranchDef } from '../core/command.js';
+import { defineLeaf } from '../core/command.js';
+import type { LeafDef } from '../core/command.js';
 import { InputError } from '../core/io.js';
 import { getNode, listNodes } from '../core/canvas/index.js';
 import { renderTree, renderForest, dashboardRows, dashboardRowsAll } from '../core/canvas/render.js';
@@ -16,10 +16,10 @@ import { renderTree, renderForest, dashboardRows, dashboardRowsAll } from '../co
 // dashboard show — the main leaf
 // ---------------------------------------------------------------------------
 
-const dashboardShow = defineLeaf({
-  name: 'show',
+export const dashboardLeaf: LeafDef = defineLeaf({
+  name: 'dashboard',
   help: {
-    name: 'dashboard show',
+    name: 'canvas dashboard',
     summary: 'render the canvas as an ASCII subscription tree — scoped to a root or the full forest',
     params: [
       {
@@ -48,7 +48,7 @@ const dashboardShow = defineLeaf({
         throw new InputError({
           error: 'not_found',
           message: `no node: ${rootId}`,
-          next: 'List nodes with `crtr node list` to find a valid id.',
+          next: 'List nodes with `crtr node inspect list` to find a valid id.',
         });
       }
       const rows = dashboardRows(rootId);
@@ -70,27 +70,4 @@ const dashboardShow = defineLeaf({
   },
 });
 
-// ---------------------------------------------------------------------------
-// Export
-// ---------------------------------------------------------------------------
 
-export function registerDashboard(): BranchDef {
-  return defineBranch({
-    name: 'dashboard',
-    rootEntry: {
-      concept: 'a rendered view of the canvas subscription sub-DAG rooted at a node',
-      desc: 'render the live canvas as an ASCII tree with status, context size, and pending asks',
-      useWhen: 'surveying the canvas at a glance or feeding structured node state to a renderer',
-    },
-    help: {
-      name: 'dashboard',
-      summary: 'render the canvas subscription tree',
-      model:
-        'The dashboard walks the `subscribes_to` edges downward from a root (or from all roots) and renders each node as one line: status glyph, name, kind/mode, context token count, and a pending-asks flag (⚑N) when there are unresolved human asks. The `rows` array carries the same data in machine-readable form.',
-      children: [
-        { name: 'show', desc: 'render the canvas tree (full forest or scoped to --root)', useWhen: 'inspecting the canvas at a glance' },
-      ],
-    },
-    children: [dashboardShow],
-  });
-}

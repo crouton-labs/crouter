@@ -1,4 +1,4 @@
-// `crtr daemon` — thin supervisor daemon management.
+// `crtr canvas daemon` — thin supervisor daemon management.
 //
 // The daemon (crtrd) polls active+idle nodes and handles window exit:
 //   • crash (window gone, no intent) → mark 'dead'
@@ -8,6 +8,7 @@
 
 import { defineLeaf, defineBranch } from '../core/command.js';
 import type { BranchDef } from '../core/command.js';
+
 import { InputError } from '../core/io.js';
 import { spawnDaemon } from '../daemon/manage.js';
 import { isDaemonRunning, readPidfile, isPidAlive } from '../daemon/crtrd.js';
@@ -19,7 +20,7 @@ import { isDaemonRunning, readPidfile, isPidAlive } from '../daemon/crtrd.js';
 const daemonStart = defineLeaf({
   name: 'start',
   help: {
-    name: 'daemon start',
+    name: 'canvas daemon start',
     summary: 'start the crtrd supervisor daemon in the background (no-op if already running)',
     params: [],
     output: [
@@ -46,7 +47,7 @@ const daemonStart = defineLeaf({
 const daemonStatus = defineLeaf({
   name: 'status',
   help: {
-    name: 'daemon status',
+    name: 'canvas daemon status',
     summary: 'check whether the crtrd supervisor daemon is currently running',
     params: [],
     output: [
@@ -72,7 +73,7 @@ const daemonStatus = defineLeaf({
 const daemonStop = defineLeaf({
   name: 'stop',
   help: {
-    name: 'daemon stop',
+    name: 'canvas daemon stop',
     summary: 'send SIGTERM to the crtrd supervisor daemon',
     params: [],
     output: [
@@ -101,19 +102,13 @@ const daemonStop = defineLeaf({
 });
 
 // ---------------------------------------------------------------------------
-// registerDaemon
+// Export — mounted under `crtr canvas`
 // ---------------------------------------------------------------------------
 
-export function registerDaemon(): BranchDef {
-  return defineBranch({
+export const daemonBranch: BranchDef = defineBranch({
     name: 'daemon',
-    rootEntry: {
-      concept: 'the background supervisor that watches node window exit and auto-revives nodes',
-      desc: 'start, check, and stop the crtrd supervisor daemon',
-      useWhen: 'managing the background daemon that keeps canvas nodes alive',
-    },
     help: {
-      name: 'daemon',
+      name: 'canvas daemon',
       summary: 'manage the crtrd canvas supervisor daemon',
       model:
         'crtrd is a thin background daemon that polls active+idle nodes and acts on window exit: crashed windows become dead; refresh-yield windows get a fresh respawn. It holds no orchestration logic — just process supervision.',
@@ -124,5 +119,4 @@ export function registerDaemon(): BranchDef {
       ],
     },
     children: [daemonStart, daemonStatus, daemonStop],
-  });
-}
+});

@@ -2,14 +2,16 @@
 // a running pi process on the canvas. Composes canvas (birth + spine), persona
 // (resolve), launch (pi argv), and tmux (placement).
 //
-//   bootRoot   — a user-opened entry point (bare `crtr` / `crtr session new`).
+//   bootRoot   — a user-opened entry point (bare `crtr`).
 //                Resident. Runs pi in the foreground (inline) or its own session.
-//   spawnChild — a background worker spawned by a live node (`crtr agent new`).
+//   spawnChild — a background worker spawned by a live node (`crtr node new`).
 //                Terminal. Opens a non-focus-stealing window under the root.
 
 import { spawnSync } from 'node:child_process';
+import { FRONT_DOOR_ENV } from './front-door.js';
 import { spawnNode, currentNodeContext, nodeEnv } from './nodes.js';
 import { buildLaunchSpec, buildPiArgv } from './launch.js';
+import { writeGoal } from './kickoff.js';
 import {
   ensureSession,
   openNodeWindow,
@@ -60,6 +62,10 @@ export function bootRoot(opts: BootRootOpts): NodeMeta {
     launch,
   });
 
+  // Persist the spawning prompt as the goal so a fresh revive can re-read its
+  // mandate (bare `crtr` has none — writeGoal no-ops on empty).
+  if (opts.prompt !== undefined) writeGoal(meta.node_id, opts.prompt);
+
   const session = rootSessionName(meta.node_id);
 
   if (opts.placement === 'session') {
@@ -67,7 +73,7 @@ export function bootRoot(opts: BootRootOpts): NodeMeta {
     updateNode(meta.node_id, { tmux_session: session });
     const withSession = getNode(meta.node_id) as NodeMeta;
     const inv = buildPiArgv(withSession, { prompt: opts.prompt });
-    const env = { ...inv.env, CRTR_ROOT_SESSION: session };
+    const env = { ...inv.env, CRTR_ROOT_SESSION: session, [FRONT_DOOR_ENV]: '1' };
     const win = openNodeWindow({
       session,
       name: meta.name,
@@ -86,7 +92,7 @@ export function bootRoot(opts: BootRootOpts): NodeMeta {
   updateNode(meta.node_id, { tmux_session: adopted, window: here?.window ?? null });
   const withSession = getNode(meta.node_id) as NodeMeta;
   const inv = buildPiArgv(withSession, { prompt: opts.prompt });
-  const env = { ...process.env, ...inv.env, CRTR_ROOT_SESSION: adopted } as NodeJS.ProcessEnv;
+  const env = { ...process.env, ...inv.env, CRTR_ROOT_SESSION: adopted, [FRONT_DOOR_ENV]: '1' } as NodeJS.ProcessEnv;
   const r = spawnSync('pi', inv.argv, { stdio: 'inherit', env });
   process.exit(r.status ?? 0);
 }
@@ -132,6 +138,9 @@ export function spawnChild(opts: SpawnChildOpts): SpawnChildResult {
     parent,
     launch,
   });
+
+  // Persist the task as the child's goal for a fresh revive to re-read.
+  writeGoal(meta.node_id, opts.prompt);
 
   // Resolve the root session: inherited from env, else derive + create one.
   let session = process.env['CRTR_ROOT_SESSION'];

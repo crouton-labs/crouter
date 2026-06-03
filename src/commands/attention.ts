@@ -1,4 +1,4 @@
-// `crtr attention` — aggregate pending human asks across the canvas.
+// `crtr canvas attention` — aggregate pending human asks across the canvas.
 //
 // Pending asks are stored per-cwd by humanloop. This subtree surfaces two
 // views:
@@ -10,7 +10,7 @@
 //   --view <id>   → pendingAsksForView(id)     (sub-DAG from root)
 //   (neither)     → asksAcrossCanvas()         (whole canvas)
 //
-// Shape mirrors registerNode(): export registerAttention(): BranchDef.
+// Exported as a branch; `crtr canvas` (canvas.ts) mounts it.
 
 import { defineBranch, defineLeaf } from '../core/command.js';
 import type { BranchDef } from '../core/command.js';
@@ -29,7 +29,7 @@ import {
 const attentionCount = defineLeaf({
   name: 'count',
   help: {
-    name: 'attention count',
+    name: 'canvas attention count',
     // stdout.count is parsed directly by the nav chrome — keep the contract.
     summary: 'return the number of pending human asks; stdout.count is machine-parseable',
     params: [
@@ -72,7 +72,7 @@ const attentionCount = defineLeaf({
         throw new InputError({
           error: 'not_found',
           message: `no node: ${nodeId}`,
-          next: 'List nodes with `crtr node list`.',
+          next: 'List nodes with `crtr node inspect list`.',
         });
       }
       return { count: countAsks(nodeId) };
@@ -83,7 +83,7 @@ const attentionCount = defineLeaf({
         throw new InputError({
           error: 'not_found',
           message: `no node: ${viewId}`,
-          next: 'List nodes with `crtr node list`.',
+          next: 'List nodes with `crtr node inspect list`.',
         });
       }
       const items = pendingAsksForView(viewId);
@@ -105,7 +105,7 @@ const attentionCount = defineLeaf({
 const attentionList = defineLeaf({
   name: 'list',
   help: {
-    name: 'attention list',
+    name: 'canvas attention list',
     summary: 'list nodes with pending human asks, grouped by cwd, oldest first',
     params: [
       {
@@ -137,7 +137,7 @@ const attentionList = defineLeaf({
         throw new InputError({
           error: 'not_found',
           message: `no node: ${viewId}`,
-          next: 'List nodes with `crtr node list`.',
+          next: 'List nodes with `crtr node inspect list`.',
         });
       }
       items = pendingAsksForView(viewId);
@@ -151,19 +151,13 @@ const attentionList = defineLeaf({
 });
 
 // ---------------------------------------------------------------------------
-// Export
+// Export — mounted under `crtr canvas`
 // ---------------------------------------------------------------------------
 
-export function registerAttention(): BranchDef {
-  return defineBranch({
+export const attentionBranch: BranchDef = defineBranch({
     name: 'attention',
-    rootEntry: {
-      concept: 'pending human "asks" aggregated across the nodes in a view',
-      desc: 'count and list pending human asks across the canvas or a node sub-DAG',
-      useWhen: 'checking whether any agent is blocked waiting for a human decision',
-    },
     help: {
-      name: 'attention',
+      name: 'canvas attention',
       summary: 'aggregate pending human asks across the canvas',
       model:
         'Human asks are stored per-cwd by humanloop. `count` returns a single integer (stdout.count is parsed by nav chrome); `list` returns itemised entries. Scope with --node (one node) or --view (sub-DAG) — default is canvas-wide.',
@@ -173,5 +167,4 @@ export function registerAttention(): BranchDef {
       ],
     },
     children: [attentionCount, attentionList],
-  });
-}
+});

@@ -1,0 +1,1 @@
+- Any new path that boots a pi process (root or child) **must** set `CRTR_FRONT_DOOR=1` in the child's env — omitting it means a child that re-invokes a removed/renamed subcommand bypasses the recursion guard in `front-door.ts` and fork-bombs pi. See `spawn.ts` lines 76 and 95 for the two existing call sites that set it.
