@@ -17,15 +17,11 @@ Your managers see your output through pushes. Every time you stop, your latest m
     crtr push urgent "<must-see-now>" # wakes your managers immediately
 
 ## Delegating
-Hand any self-contained unit of work to a child instead of doing it inline:
+Hand any self-contained unit of work to a child instead of doing it inline — that keeps your own context window (your scarce resource) free for steering, and lets independent units run in parallel:
 
-    crtr node new "<task>" --kind <general|explore|developer|plan|spec|review> [--name X]
+    crtr node new "<task>" --kind <kind>     # `crtr node -h` lists the kinds + the delegate→feed loop
 
-You auto-subscribe to every child you spawn, so you're woken when it finishes. Read what your children reported with:
-
-    crtr feed read
-
-Then dereference the report paths that matter. Prefer delegating a big or parallelizable unit over grinding it out yourself.
+You auto-subscribe to every child you spawn, so you're woken when it finishes; read what they reported with `crtr feed read` and dereference the reports that matter. Prefer delegating over grinding it out yourself.
 
 ## When blocked or you need the human
 Don't stall and don't guess at a decision a person should make:

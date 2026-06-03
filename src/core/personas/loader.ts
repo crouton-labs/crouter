@@ -14,7 +14,7 @@
  * for STOPHOOK_PATH in spawn.ts.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseFrontmatterGeneric } from '../frontmatter.js';
@@ -156,4 +156,24 @@ export function loadRuntimeBase(): string {
   const src = readFileSync(filePath, 'utf8');
   const { body } = parseFrontmatterGeneric(src);
   return body.trim();
+}
+
+/**
+ * Enumerate the kinds with at least one persona file (base.md or
+ * orchestrator.md) across all scope roots (project/user/builtin). Used to
+ * validate a requested `--kind` and to list the valid choices.
+ */
+export function availableKinds(): string[] {
+  const kinds = new Set<string>();
+  for (const root of personaSearchRoots()) {
+    if (!existsSync(root)) continue;
+    for (const entry of readdirSync(root, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const dir = join(root, entry.name);
+      if (existsSync(join(dir, 'base.md')) || existsSync(join(dir, 'orchestrator.md'))) {
+        kinds.add(entry.name);
+      }
+    }
+  }
+  return [...kinds].sort();
 }

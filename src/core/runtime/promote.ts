@@ -2,10 +2,11 @@
 //
 // Two stages (the pi-mode-switch pattern):
 //   1. Promotion → guidance dump (mid-turn, ephemeral). This call flips the
-//      node's mode/lifecycle, REWRITES its launch spec to the orchestrator
-//      persona (so the next revive comes back as an orchestrator), seeds the
-//      roadmap, and RETURNS the orchestration guidance — which enters the
-//      current context so the node can write its roadmap before any refresh.
+//      node's mode/lifecycle and (optionally) its KIND, REWRITES its launch
+//      spec to that kind's orchestrator persona (so the next revive comes back
+//      as that orchestrator), seeds a roadmap scaffold, and RETURNS kind-
+//      specific orchestration + roadmap-shaping guidance — which enters the
+//      current context so the node can author its roadmap before any refresh.
 //   2. Refresh → persona swap (permanent). On the next fresh revive the node
 //      starts with the orchestrator system prompt baked in (because the launch
 //      spec now says orchestrator). The guidance dump bridges until then.
@@ -15,8 +16,11 @@
 
 import { getNode, updateNode, hasActiveLiveSubscription, type NodeMeta } from '../canvas/index.js';
 import { buildLaunchSpec } from './launch.js';
-import { loadKernel } from '../personas/index.js';
-import { hasRoadmap, seedRoadmap, readRoadmap, logProgress } from './roadmap.js';
+import { loadKernel, loadPersona } from '../personas/index.js';
+import { resolveSkill } from '../resolver.js';
+import { readText } from '../fs-utils.js';
+import { parseFrontmatter } from '../frontmatter.js';
+import { hasRoadmap, seedRoadmap, readRoadmap } from './roadmap.js';
 
 export interface PromoteResult {
   meta: NodeMeta;
@@ -25,52 +29,79 @@ export interface PromoteResult {
   roadmapWritten: boolean;
 }
 
-/** Build the mid-turn guidance dump: how to orchestrate, plus the node's
- *  current roadmap so it can extend it immediately. */
-function orchestrationGuidance(nodeId: string): string {
+/** Load a skill's body text by name, or null if it can't be resolved. Used to
+ *  inline a kind's roadmap-shaping skill into the promotion guidance dump. */
+function loadSkillBody(name: string): string | null {
+  try {
+    const skill = resolveSkill(name, {});
+    return parseFrontmatter(readText(skill.path)).body.trim();
+  } catch {
+    return null;
+  }
+}
+
+/** Build the mid-turn guidance dump, specialized to the node's (possibly
+ *  just-chosen) kind: the shared kernel + that kind's roadmap-shaping skill
+ *  (auto-loaded now, before the persona swap bakes in on revive) + the roadmap
+ *  scaffold the node must author. No goal is assumed — writing it is step one. */
+function orchestrationGuidance(nodeId: string, kind: string): string {
   const kernel = loadKernel();
-  const roadmap = readRoadmap(nodeId) ?? '(no roadmap yet — seed it now)';
-  return [
-    'You are now a RESIDENT ORCHESTRATOR. Your scarce resource is your own context window.',
+  const orch = loadPersona(kind, 'orchestrator');
+  const roadmapSkill =
+    typeof orch?.frontmatter?.['roadmapSkill'] === 'string'
+      ? (orch.frontmatter['roadmapSkill'] as string)
+      : undefined;
+  const skillBody = roadmapSkill ? loadSkillBody(roadmapSkill) : null;
+  const roadmap = readRoadmap(nodeId) ?? '(no roadmap yet)';
+
+  const parts: string[] = [
+    `You are now a RESIDENT ${kind.toUpperCase()} ORCHESTRATOR. Your scarce resource is your own context window.`,
     'Your job is to manage context and delegate — not to do the goal yourself.',
     '',
     kernel,
+  ];
+  if (skillBody) {
+    parts.push('', `--- How to shape a ${kind} roadmap (skill: ${roadmapSkill}) ---`, '', skillBody);
+  }
+  parts.push(
     '',
-    'Maintain `context/roadmap.md` as the source of truth for your plan. Your current roadmap:',
+    'Your roadmap scaffold (`context/roadmap.md`) — author it now: state the goal, exit criteria, scope assumptions, and the phase skeleton, using the approach above:',
     '',
     roadmap,
     '',
-    'Next: refine the roadmap (scope assumptions, phases), then delegate each unit with `crtr node new`.',
-    'When your context fills, run `crtr node yield` to refresh against this roadmap.',
-  ].join('\n');
+    'Then delegate each phase with `crtr node new --kind <kind>`. When your context fills, run `crtr node yield` to refresh against this roadmap.',
+  );
+  return parts.join('\n');
 }
 
-/** Promote a node to resident orchestrator. Idempotent: re-promoting just
- *  returns fresh guidance. Seeds a roadmap (mandatory for a manager) — uses
- *  `goal` when provided; otherwise a stub the node must fill in. */
-export function promote(
-  nodeId: string,
-  opts: { goal?: string; exitCriteria?: string } = {},
-): PromoteResult {
+/** Promote a node to resident orchestrator, optionally specializing its kind
+ *  (e.g. a `general` worker becoming a `developer.orchestrator`). Idempotent:
+ *  re-promoting just rewrites the spec + returns fresh guidance. Seeds a
+ *  roadmap SCAFFOLD if absent (a boss with no map is a failure mode) — no goal
+ *  is forced here; authoring the goal + roadmap is the node's next act. */
+export function promote(nodeId: string, opts: { kind?: string } = {}): PromoteResult {
   const node = getNode(nodeId);
   if (node === null) throw new Error(`unknown node: ${nodeId}`);
 
-  // Rewrite the launch spec to the orchestrator persona so the *next* revive
-  // comes back orchestrating (polymorph stage 2). nodeEnv reads meta.mode, so
-  // CRTR_MODE flips immediately for the live process's children too.
-  const { launch } = buildLaunchSpec(node.kind, 'orchestrator');
+  // The node may specialize as it promotes; default to its current kind.
+  const targetKind = opts.kind ?? node.kind;
 
-  // Seed the roadmap if absent (a boss with no map is a failure mode).
+  // Rewrite the launch spec to the target kind's orchestrator persona so the
+  // *next* revive comes back orchestrating in that kind (polymorph stage 2).
+  // nodeEnv reads meta.{kind,mode}, so CRTR_KIND/CRTR_MODE flip immediately for
+  // the live process's children too.
+  const { launch } = buildLaunchSpec(targetKind, 'orchestrator');
+
+  // Seed a roadmap scaffold if absent so the file exists for a refresh. The
+  // node fills in the goal/body next, guided by the kind skill dumped below.
   let roadmapWritten = false;
   if (!hasRoadmap(nodeId)) {
-    seedRoadmap(nodeId, opts.goal ?? '(state the high-level goal you are now owning)', opts.exitCriteria);
+    seedRoadmap(nodeId);
     roadmapWritten = true;
-  } else if (opts.goal !== undefined) {
-    logProgress(nodeId, `promotion goal: ${opts.goal}`);
   }
 
-  const meta = updateNode(nodeId, { lifecycle: 'resident', mode: 'orchestrator', launch });
-  return { meta, guidance: orchestrationGuidance(nodeId), roadmapWritten };
+  const meta = updateNode(nodeId, { kind: targetKind, lifecycle: 'resident', mode: 'orchestrator', launch });
+  return { meta, guidance: orchestrationGuidance(nodeId, targetKind), roadmapWritten };
 }
 
 export interface YieldResult {
@@ -83,19 +114,19 @@ export interface YieldResult {
 /** Request a refresh-yield: discard in-memory context and revive fresh against
  *  the roadmap. A *terminal* node that yields is choosing to persist — it
  *  promotes first (refresh-with-open-work is the canonical promotion trigger),
- *  so it comes back as an orchestrator. Sets intent='refresh'; the stophook
- *  shuts the process down on the next stop and the daemon revives it fresh. */
-export function requestYield(nodeId: string, opts: { goal?: string } = {}): YieldResult {
+ *  so it comes back as an orchestrator, optionally specializing its kind. Sets
+ *  intent='refresh'; the stophook shuts the process down on the next stop and
+ *  the daemon revives it fresh. */
+export function requestYield(nodeId: string, opts: { kind?: string } = {}): YieldResult {
   const node = getNode(nodeId);
   if (node === null) throw new Error(`unknown node: ${nodeId}`);
 
   let promoted = false;
   if (node.lifecycle === 'terminal') {
-    // Yielding with open work ⇒ must survive a context reset ⇒ promote.
-    promote(nodeId, opts.goal !== undefined ? { goal: opts.goal } : {});
+    // Yielding with open work ⇒ must survive a context reset ⇒ promote
+    // (optionally specializing the kind).
+    promote(nodeId, opts.kind !== undefined ? { kind: opts.kind } : {});
     promoted = true;
-  } else if (opts.goal !== undefined) {
-    logProgress(nodeId, `yield goal note: ${opts.goal}`);
   }
 
   // Mark the intent; the stophook enacts the shutdown, the daemon the revive.
