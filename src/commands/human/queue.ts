@@ -106,7 +106,7 @@ export const humanCancel = defineLeaf({
     summary:
       'retract a pending ask/approve/review you posed — kills its TUI pane, drops it from the human queue, and retires the node. Reach for this the moment a question goes stale (you answered it yourself, the situation changed) so a human is not left resolving a prompt whose answer no longer matters',
     guide:
-      'Pass the job_id returned by `human ask`/`approve`/`review`. Best-effort and idempotent: if the human already answered, or it was already canceled, it reports canceled:false with reason "already_resolved" and changes nothing. Subscribers (you and the asking node) get an inbox note that no answer is coming, so nobody waits on it. A blocking `human review` caller unblocks with status "closed" when its pane is killed.',
+      'Pass the job_id returned by `human ask`/`approve`/`review`. Best-effort and idempotent: if the human already answered, or it was already canceled, it reports canceled:false with reason "already_resolved" and changes nothing. The agent that posed the deck is almost always the one canceling it, so the caller is never messaged — only OTHER subscribers (e.g. the asking node when a human dismisses the prompt) get a quiet deferred note that no answer is coming. A blocking `human review` caller unblocks with status "closed" when its pane is killed.',
     params: [
       { kind: 'positional', name: 'job_id', type: 'string', required: true, constraint: 'Node id of the interaction to cancel — the job_id returned by ask/approve/review.' },
       { kind: 'flag', name: 'reason', type: 'string', required: false, constraint: 'Optional short note delivered to subscribers explaining why it was retracted.' },
@@ -120,7 +120,7 @@ export const humanCancel = defineLeaf({
     effects: [
       "Kills the detached TUI pane (if any) so the prompt leaves the human's screen.",
       'Writes a canceled response.json so the interaction drops out of `human list`/`inbox`.',
-      'Marks the node done and notifies its subscribers that no answer is coming.',
+      'Marks the node done and, only for subscribers other than the caller, drops a deferred note that no answer is coming.',
     ],
   },
   run: async (input) => {
@@ -161,18 +161,22 @@ export const humanCancel = defineLeaf({
       });
     }
 
-    // (3) Retire the node and tell its subscribers no answer is coming. We do
-    //     NOT push a -final.md report: a blocking `human review` caller must see
-    //     the pane-death 'closed', not a phantom 'done' result.
+    // (3) Retire the node. We do NOT push a -final.md report: a blocking
+    //     `human review` caller must see the pane-death 'closed', not a phantom
+    //     'done' result.
     setStatus(jobId, 'done');
     updateNode(jobId, { intent: 'done' });
+    // Almost always the asking agent cancels its OWN deck — it already knows, so
+    // never message the caller. Only a third-party cancel (a human, an
+    // orchestrator) leaves a genuinely-waiting asker uninformed; give them a
+    // quiet deferred note (informational, never nudges) so nobody waits forever.
     const caller = process.env['CRTR_NODE_ID'] ?? 'human';
     const note = reason !== undefined && reason !== '' ? ` — ${reason}` : '';
     for (const sub of subscribersOf(jobId)) {
       if (sub.node_id === caller) continue; // don't ping whoever issued the cancel
       appendInbox(sub.node_id, {
         from: caller,
-        tier: 'normal',
+        tier: 'deferred',
         kind: 'message',
         label: `human interaction ${jobId} canceled — no answer is coming${note}`,
         data: { body: `The human interaction ${jobId} was canceled${note}. No response will arrive.` },
