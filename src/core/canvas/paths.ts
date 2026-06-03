@@ -55,6 +55,13 @@ export function inboxPath(nodeId: string): string {
   return join(nodeDir(nodeId), 'inbox.jsonl');
 }
 
+/** Passive-subscription accumulator. Pushes from publishers this node subscribes
+ *  to PASSIVELY land here instead of inbox.jsonl — the inbox-watcher never polls
+ *  it, so they never wake the node. Drained as XML pre-text on the next message. */
+export function passivePath(nodeId: string): string {
+  return join(nodeDir(nodeId), 'passive.jsonl');
+}
+
 export function transcriptPath(nodeId: string): string {
   return join(nodeDir(nodeId), 'transcript.jsonl');
 }

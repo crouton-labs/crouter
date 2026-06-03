@@ -17,6 +17,7 @@ import {
   updateNode,
 } from '../canvas/index.js';
 import { appendInbox } from './inbox.js';
+import { appendPassive } from './passive.js';
 import type { InboxTier } from './inbox.js';
 
 // ---------------------------------------------------------------------------
@@ -119,20 +120,19 @@ export async function push(nodeId: string, opts: PushOpts): Promise<PushResult> 
   // (a) Write the report.
   const reportPath = writeReport(nodeId, kind, ts, body);
 
-  // (b) Fan out inbox pointers to every subscriber (active and passive both
-  //     receive the pointer; the daemon decides whether to wake active ones).
+  // (b) Fan out a pointer to every subscriber. Active subscribers get it on
+  //     inbox.jsonl (the inbox-watcher polls that → a wake). Passive subscribers
+  //     get it on passive.jsonl instead — the watcher never polls that, so they
+  //     are NOT woken; the pointer accumulates until the node is next messaged,
+  //     when canvas-passive-context drains it as XML pre-text.
   const subscribers = subscribersOf(nodeId);
   const deliveredTo: string[] = [];
 
   const label = firstLine(body);
   for (const sub of subscribers) {
-    appendInbox(sub.node_id, {
-      from,
-      tier: tierFor(kind),
-      kind,
-      ref: reportPath,
-      label,
-    });
+    const entry = { from, tier: tierFor(kind), kind, ref: reportPath, label };
+    if (sub.active) appendInbox(sub.node_id, entry);
+    else appendPassive(sub.node_id, entry);
     deliveredTo.push(sub.node_id);
   }
 
