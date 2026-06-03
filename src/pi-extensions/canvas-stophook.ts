@@ -19,8 +19,10 @@
 //     (c) Natural stop ('stop' | 'length') — auto-push the last assistant text
 //         as a routine feed update, then run the stop-guard:
 //           • 'reprompt' → pi.sendUserMessage so the node finishes or escalates.
-//           • 'allow'    → stay dormant; the inbox-watcher wakes it when a
-//                          subscribed worker delivers.
+//           • 'allow' (awaiting) → idle-release: free the tmux window and shut
+//                          down; the daemon watches the inbox and revives it
+//                          (resume) when a subscribed worker delivers.
+//           • 'allow' (attended root) → stay alive, dormant; the human wakes it.
 //
 // Plain TS-with-types — no imports from @earendil-works/* so this compiles inside
 // crouter's own tsc build without a dep on the pi packages.
@@ -28,9 +30,13 @@
 import { writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { getNode, jobDir, updateNode } from '../core/canvas/index.js';
+import { getNode, jobDir, updateNode, subscribersOf } from '../core/canvas/index.js';
 import { push } from '../core/feed/feed.js';
 import { evaluateStop } from '../core/runtime/stop-guard.js';
+import { reviveInPlace, reviveNode } from '../core/runtime/revive.js';
+import { resetRoot } from '../core/runtime/reset.js';
+import { focusNodeInPlace, getFocus } from '../core/runtime/presence.js';
+import { windowAlive } from '../core/runtime/tmux.js';
 
 // ---------------------------------------------------------------------------
 // Minimal PiLike interface (avoids hard dep on @earendil-works/*)
@@ -106,6 +112,39 @@ function lastAssistantMessage(messages: any[]): any | undefined {
   return undefined;
 }
 
+/** When a FOCUSED node is about to shut down (final or idle-release), bring its
+ *  manager into the visible pane it currently occupies so the view travels UP
+ *  the spine — instead of the visible window collapsing when this node's pi
+ *  exits in it. A no-op unless this node is the one the user is looking at.
+ *
+ *  This is the swap-back guard the one-window-per-node model dropped: in-place
+ *  focus (swap-pane) reintroduced shared pane slots, so a focused leaf that
+ *  exits must hand its slot back to its manager rather than take it down.
+ *  Best-effort throughout — never throws out of agent_end. */
+function restoreFocusToManager(nodeId: string): void {
+  try {
+    if (getFocus() !== nodeId) return; // not in view — nothing to restore
+    const meta = getNode(nodeId);
+    if (meta === null) return;
+    const managerId = meta.parent ?? subscribersOf(nodeId)[0]?.node_id ?? null;
+    if (managerId === null || managerId === nodeId) return;
+    const manager = getNode(managerId);
+    if (manager === null) return;
+    // Revive a dormant manager so there is a live pane to swap into view (it is
+    // about to be woken by this node's push anyway).
+    if (!windowAlive(manager.tmux_session, manager.window)) {
+      try { reviveNode(managerId, { resume: true }); } catch { return; }
+    }
+    // Swap the manager into THIS (focused, exiting) node's pane slot. focus reads
+    // the caller pane from $TMUX_PANE — this stophook runs inside the exiting
+    // node's pi, so that is the visible pane. When this node's pi then exits, its
+    // pane lives on in the manager's old (background) window and closes there.
+    focusNodeInPlace(managerId);
+  } catch {
+    /* best-effort; never throw out of agent_end */
+  }
+}
+
 /** Concatenate all {type:'text'} content blocks from an assistant message. */
 function extractText(msg: any): string {
   if (!msg || !Array.isArray(msg.content)) return '';
@@ -114,6 +153,34 @@ function extractText(msg: any): string {
     .map((c) => (c.text as string))
     .join('\n')
     .trim();
+}
+
+// ---------------------------------------------------------------------------
+// Context-size steering bands — first nudge at 100k input tokens, then one
+// every 50k thereafter (150k, 200k, 250k, …). Unbounded: a long-lived node
+// keeps getting reminded as it grows.
+// ---------------------------------------------------------------------------
+
+const STEER_FLOOR = 100_000;
+const STEER_STEP = 50_000;
+
+/** The highest band boundary at or below `tokens` (100k, 150k, 200k, …), or
+ *  null below the floor. */
+function steerBand(tokens: number): number | null {
+  if (tokens < STEER_FLOOR) return null;
+  return STEER_FLOOR + Math.floor((tokens - STEER_FLOOR) / STEER_STEP) * STEER_STEP;
+}
+
+/** The nudge text for a crossed band, specialized to the node's mode. An
+ *  orchestrator is steered to checkpoint its roadmap and yield; a non-
+ *  orchestrator (base worker) is steered to PROMOTE itself — become a resident
+ *  orchestrator — when work remains, or finish if it's nearly done. */
+function steerNote(at: number, mode: string): string {
+  const k = Math.round(at / 1000);
+  if (mode === 'orchestrator') {
+    return `Context ~${k}k. Update context/roadmap.md so a fresh revive can continue, delegate any outstanding work, then \`crtr node yield\` to refresh.`;
+  }
+  return `Context ~${k}k and climbing. If more work remains than this context can finish, \`crtr node promote\` to become a resident orchestrator (seeds a roadmap, lets you delegate and \`crtr node yield\` to refresh). If you're nearly done, finish with \`crtr push final\`.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -134,37 +201,6 @@ export function registerCanvasStophook(pi: PiLike): void {
 
   const jobDirPath = jobDir(nodeId);
 
-  // ---------------------------------------------------------------------------
-  // session_start — capture pi's session id once so `pi --resume <id>` works.
-  //
-  // pi exposes the session id via ctx.sessionManager.getSessionId() on every
-  // event context (ReadonlySessionManager from dist/core/extensions/types.d.ts).
-  // session_start fires early in the extension lifecycle, before any turns, so
-  // it's the earliest reliable place to read it. We guard on value change to
-  // avoid a spurious meta.json write on every reload.
-  // ---------------------------------------------------------------------------
-  let sessionIdCaptured = false; // fire-once guard
-
-  pi.on('session_start', (_event: any, ctx: any): void => {
-    if (sessionIdCaptured) return;
-    try {
-      const id: unknown = ctx?.sessionManager?.getSessionId?.();
-      if (typeof id !== 'string' || id === '') return;
-
-      // Only write when the value actually changed — avoids thrashing meta.json.
-      const existing = getNode(nodeId);
-      if (existing?.pi_session_id === id) {
-        sessionIdCaptured = true;
-        return;
-      }
-
-      updateNode(nodeId, { pi_session_id: id });
-      sessionIdCaptured = true;
-    } catch {
-      /* best-effort; never surface from an extension handler */
-    }
-  });
-
   // Running totals across all turns in this pi session. Both turn_end and
   // agent_end accumulate so tokens emitted in the final partial turn (if pi
   // fires agent_end without a preceding turn_end for it) are captured.
@@ -172,16 +208,52 @@ export function registerCanvasStophook(pi: PiLike): void {
   let totalOut = 0;
   let model = '';
 
-  // Context-size steering. As the node's input context grows we nudge it (once
-  // per band) to get its affairs in order and consider yielding. Resident
-  // orchestrators heed this to refresh; terminal workers auto-promote on yield.
-  // Bands are absolute for now (a fraction-of-window policy can replace them).
-  const STEER_BANDS: { at: number; note: string }[] = [
-    { at: 100_000, note: 'Context ~100k. Get your affairs in order: update context/roadmap.md, delegate outstanding work, and consider `crtr node yield` to refresh.' },
-    { at: 150_000, note: 'Context ~150k. You should wrap up or `crtr node yield` soon — update your roadmap so a fresh revive can continue.' },
-    { at: 200_000, note: 'Context ~200k. Yield now (`crtr node yield`) unless you are about to `crtr push final`.' },
-  ];
+  // Context-size steering. As input context grows we nudge the node once per
+  // band (100k, then every 50k). The nudge depends on the node's CURRENT mode,
+  // read at fire time since a base worker can promote mid-session: an
+  // orchestrator checkpoints + yields; a base worker is steered to promote.
   const firedBands = new Set<number>();
+
+  // ---------------------------------------------------------------------------
+  // session_start — capture pi's session id, and detect `/new`.
+  //
+  // pi exposes the session id via ctx.sessionManager.getSessionId() on every
+  // event context; session_start fires early, before any turns. We bind the
+  // FIRST session_start of this process as the boot (a fresh launch and a daemon
+  // revive are both new processes, so their first session_start is a boot, not
+  // a `/new`). A LATER session_start with a DIFFERENT id, in this same live
+  // process, can only mean the user ran `/new` — a brand-new conversation. For
+  // a root that means a brand-new graph: reset it (the `crtr`-again equivalent),
+  // then rebind. A reload reports the same id and is a no-op.
+  // ---------------------------------------------------------------------------
+  let boundSessionId: string | null = null;
+
+  pi.on('session_start', (_event: any, ctx: any): void => {
+    try {
+      const id: unknown = ctx?.sessionManager?.getSessionId?.();
+      if (typeof id !== 'string' || id === '') return;
+
+      if (boundSessionId === null) {
+        // Boot: bind this process to its session id.
+        boundSessionId = id;
+        const existing = getNode(nodeId);
+        if (existing?.pi_session_id !== id) updateNode(nodeId, { pi_session_id: id });
+        return;
+      }
+
+      if (id === boundSessionId) return; // reload of the same conversation
+
+      // A new session id in the same process = `/new`. Brand-new graph.
+      boundSessionId = id;
+      try { resetRoot(nodeId, id); } catch { /* best-effort */ }
+      // Clear in-memory context-steering so the fresh conversation starts clean.
+      totalIn = 0;
+      totalOut = 0;
+      firedBands.clear();
+    } catch {
+      /* best-effort; never surface from an extension handler */
+    }
+  });
 
   /** Absorb usage + model from any assistant message (turn or final batch). */
   const accumulate = (msg: any): void => {
@@ -200,12 +272,14 @@ export function registerCanvasStophook(pi: PiLike): void {
     // Fire-and-forget: flushTelemetry uses synchronous fs writes and never throws.
     flushTelemetry(jobDirPath, totalIn, totalOut, model);
 
-    // Context-size steering: fire the highest crossed band we haven't yet.
+    // Context-size steering: fire the current band once, with mode-specific
+    // guidance (mode is read live — a worker may have promoted since launch).
     try {
-      const band = [...STEER_BANDS].reverse().find((b) => totalIn >= b.at && !firedBands.has(b.at));
-      if (band !== undefined) {
-        firedBands.add(band.at);
-        pi.sendUserMessage(`[crtr] ${band.note}`, { deliverAs: 'followUp' });
+      const at = steerBand(totalIn);
+      if (at !== null && !firedBands.has(at)) {
+        firedBands.add(at);
+        const mode = getNode(nodeId)?.mode ?? 'base';
+        pi.sendUserMessage(`[crtr] ${steerNote(at, mode)}`, { deliverAs: 'followUp' });
       }
     } catch {
       /* steering is best-effort */
@@ -239,15 +313,41 @@ export function registerCanvasStophook(pi: PiLike): void {
         //     transitions node.status → 'done' synchronously. Shut down cleanly.
         const node = getNode(nodeId);
         if (node?.status === 'done') {
+          restoreFocusToManager(nodeId);
           try { ctx?.shutdown?.(); } catch { /* ignore */ }
           return;
         }
 
         // (b') Refresh-yield: the node ran `crtr node yield` this turn, setting
-        //     intent='refresh'. Shut the process down; the daemon sees the dead
-        //     window + intent=refresh and revives a FRESH pi against the context
-        //     dir (the node re-reads its roadmap). This is the only kill+revive.
+        //     intent='refresh'. Re-exec a FRESH pi IN PLACE in this same tmux
+        //     pane (respawn-pane -k) so the node re-reads its roadmap without
+        //     churning its window — critically, an interactive/foreground root
+        //     is never dropped to a shell, and no daemon round-trip is needed
+        //     (the old window-death detection silently failed whenever pi
+        //     exited into a persistent shell pane). Falls back to a clean
+        //     shutdown (daemon revives in a new window) only when we're not in
+        //     a tmux pane.
         if (node?.intent === 'refresh') {
+          // Notify subscribers BEFORE refreshing. A yield is a checkpoint, not a
+          // disappearance: the node keeps its identity and its subscription
+          // edges across the revive, so it still owes its parent a report. Emit
+          // one now (an `update`, not a `final` — the node isn't done) so a
+          // yield is never silent to whoever is watching.
+          try {
+            const yieldText = extractText(last);
+            const body = yieldText !== ''
+              ? `↻ Refreshing context (yield) — still working toward my goal.\n\n${yieldText}`
+              : '↻ Refreshing context (yield) — still working toward my goal.';
+            await push(nodeId, { kind: 'update', body });
+          } catch { /* notify is best-effort */ }
+
+          const pane = process.env['TMUX_PANE'];
+          if (pane !== undefined && pane.trim() !== '') {
+            try {
+              reviveInPlace(nodeId, pane);
+              return; // respawn-pane -k tears down this pi and starts the fresh one
+            } catch { /* fall through to plain shutdown */ }
+          }
           try { ctx?.shutdown?.(); } catch { /* ignore */ }
           return;
         }
@@ -271,12 +371,23 @@ export function registerCanvasStophook(pi: PiLike): void {
           return;
         }
 
-        // 'allow' (awaiting | attended | …) → genuinely dormant. Surface the
-        // last message as a routine feed checkpoint, then stay asleep; the
-        // inbox-watcher drives the next wake-up when a subscribed worker delivers.
+        // 'allow' — the node legitimately stopped. Surface the last assistant
+        // message as a routine feed checkpoint first.
         const text = extractText(last);
         if (text !== '') {
           await push(nodeId, { kind: 'update', body: text });
+        }
+
+        // Idle-release: a node awaiting its workers (reason 'awaiting') is holding
+        // a tmux window for nothing. Free it — mark it idle-released and shut pi
+        // down; the daemon watches its inbox and revives it (resume) the moment a
+        // subscribed worker delivers. An 'attended' root never releases: the human
+        // is its wake source, so we keep its window live and dormant.
+        if (decision.reason === 'awaiting') {
+          updateNode(nodeId, { intent: 'idle-release', status: 'idle' });
+          restoreFocusToManager(nodeId);
+          try { ctx?.shutdown?.(); } catch { /* ignore */ }
+          return;
         }
       } catch {
         /* agent_end handler must never throw out of the extension */

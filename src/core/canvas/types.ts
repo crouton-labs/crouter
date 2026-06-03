@@ -18,7 +18,7 @@ export type Lifecycle = 'terminal' | 'resident';
 export type Mode = 'base' | 'orchestrator';
 
 /** Why a node last stopped — drives the daemon's reap-vs-revive decision. */
-export type ExitIntent = 'done' | 'refresh' | null;
+export type ExitIntent = 'done' | 'refresh' | 'idle-release' | null;
 
 /** The two structural edges. `subscribes_to` is the load-bearing spine (flow,
  *  org chart, views, completion routing). `spawned_by` is audit only. */

@@ -20,9 +20,9 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { join } from 'node:path';
 
-import { crtrHome, getNode } from '../canvas/index.js';
+import { crtrHome, getNode, updateNode } from '../canvas/index.js';
 import type { NodeMeta } from '../canvas/index.js';
-import { selectWindow, switchClient, windowAlive } from './tmux.js';
+import { selectWindow, switchClient, windowAlive, currentTmux, paneOfWindow, swapPaneInPlace, windowOfPane } from './tmux.js';
 
 // ---------------------------------------------------------------------------
 // Focus pointer
@@ -105,4 +105,68 @@ export function focusNode(nodeId: string): { focused: boolean; session: string |
   const windowOk = selectWindow(session, window);
 
   return { focused: clientOk && windowOk, session };
+}
+
+/** Focus a node IN PLACE: bring its pane into the caller's current pane slot
+ *  (swap-pane) instead of navigating the client to the node's own window. This
+ *  is the default for `crtr node focus` and the nav-chrome spine jump — the
+ *  agent appears where you are.
+ *
+ *  Falls back to window focus when there is no caller pane (not inside tmux) or
+ *  the target pane can't be resolved. `inPlace` reports which path ran. */
+export function focusNodeInPlace(
+  nodeId: string,
+  callerPane?: string,
+): { focused: boolean; session: string | null; inPlace: boolean } {
+  const meta = getNode(nodeId);
+
+  // Always write the pointer so the dashboard reflects intent even on failure.
+  setFocus(nodeId);
+
+  if (meta === null || !nodeLive(meta)) {
+    return { focused: false, session: meta?.tmux_session ?? null, inPlace: false };
+  }
+
+  const session = meta.tmux_session as string;
+  const window = meta.window as string;
+  const pane = callerPane ?? process.env['TMUX_PANE'] ?? currentTmux()?.pane;
+
+  // No caller pane (not in tmux) — best we can do is bring the window forefront.
+  if (pane === undefined || pane === '') {
+    const ok = switchClient(session) && selectWindow(session, window);
+    return { focused: ok, session, inPlace: false };
+  }
+
+  const targetPane = paneOfWindow(session, window);
+  if (targetPane === null) {
+    const ok = switchClient(session) && selectWindow(session, window);
+    return { focused: ok, session, inPlace: false };
+  }
+  if (targetPane === pane) return { focused: true, session, inPlace: true }; // already here
+
+  // The window the caller's pane currently sits in — the slot the target's pane
+  // is about to be swapped INTO.
+  const callerWindow = windowOfPane(pane);
+
+  const ok = swapPaneInPlace(targetPane, pane);
+
+  // Keep the canvas window mapping in sync with the physical swap. swap-pane
+  // exchanges the two PANES between their windows (pane ids are stable, windows
+  // are slots): after the swap the target's pane occupies the caller's window
+  // and the caller's pane occupies the target's old window. Without this update
+  // meta.window goes stale, and a later paneOfWindow(session, meta.window)
+  // resolves the WRONG pane — the bug that made focusing back to a manager a
+  // no-op (it kept resolving the pane already in view) and made a focused node's
+  // exit collapse the visible window instead of its background one.
+  if (ok && callerWindow !== null && callerWindow !== window) {
+    try { updateNode(nodeId, { window: callerWindow }); } catch { /* best-effort */ }
+    // The caller is the node running this focus (its pi process owns callerPane).
+    // Its pane moved to the target's old window, so re-point its window there.
+    const callerNodeId = process.env['CRTR_NODE_ID'];
+    if (callerNodeId !== undefined && callerNodeId.trim() !== '' && callerNodeId !== nodeId) {
+      try { updateNode(callerNodeId, { window }); } catch { /* best-effort */ }
+    }
+  }
+
+  return { focused: ok, session, inPlace: true };
 }

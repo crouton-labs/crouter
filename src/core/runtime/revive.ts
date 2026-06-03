@@ -1,6 +1,6 @@
 // The revive primitive — restores a node to active status under a fresh tmux
 // window. Used by both the supervisor daemon (on crash/refresh detection) and
-// the explicit `crtr revive node` command.
+// the explicit `crtr canvas revive` command.
 //
 // A revive always opens a NEW window: the old one is gone (crashed, or the
 // node exited with intent=refresh). The node's persisted LaunchSpec and cwd
@@ -14,21 +14,14 @@ import {
   updateNode,
 } from '../canvas/index.js';
 import { buildPiArgv } from './launch.js';
+import { buildReviveKickoff } from './kickoff.js';
 import {
   ensureSession,
   openNodeWindow,
   piCommand,
+  respawnPane,
 } from './tmux.js';
 import { rootSessionName } from './spawn.js';
-
-/** Kickoff message for a FRESH revive — the node's in-memory context is gone,
- *  so it must rebuild situational awareness from disk before continuing. */
-const REVIVE_KICKOFF =
-  'You have been revived fresh after a context refresh — your previous in-memory ' +
-  'context is gone, by design. Rebuild your bearings from disk: read ' +
-  '`context/roadmap.md`, then run `crtr feed read` to absorb what your children ' +
-  'reported. Then continue the work toward your goal. If everything is done, ' +
-  '`crtr push final`.';
 
 // ---------------------------------------------------------------------------
 // Return type
@@ -80,7 +73,7 @@ export function reviveNode(
   const inv =
     resumeId !== undefined
       ? buildPiArgv(meta, { resumeSessionId: resumeId })
-      : buildPiArgv(meta, { prompt: REVIVE_KICKOFF });
+      : buildPiArgv(meta, { prompt: buildReviveKickoff(meta) });
 
   const env = { ...inv.env, CRTR_ROOT_SESSION: session };
 
@@ -100,4 +93,43 @@ export function reviveNode(
   });
 
   return { window, session, resumed: resumeId !== undefined };
+}
+
+// ---------------------------------------------------------------------------
+// reviveInPlace — refresh-yield without churning the window
+// ---------------------------------------------------------------------------
+
+/** Re-exec a node's pi FRESH in its EXISTING tmux pane (the refresh-yield
+ *  path). Unlike `reviveNode`, this opens no new window: the pane's current pi
+ *  is replaced in place via `respawn-pane -k`, so a foreground/interactive
+ *  session keeps its terminal and a background node keeps its window. Always
+ *  fresh (no resume) — the node re-reads its roadmap/context dir.
+ *
+ *  `pane` is the target pane id (the yielding node reads it from $TMUX_PANE).
+ *  Throws on unknown node or when the respawn could not be dispatched, so the
+ *  caller can fall back to a plain shutdown (daemon revives in a new window). */
+export function reviveInPlace(nodeId: string, pane: string): ReviveResult {
+  const meta = getNode(nodeId);
+  if (meta === null) {
+    throw new Error(`reviveInPlace: unknown node ${nodeId}`);
+  }
+
+  const session =
+    meta.tmux_session ??
+    rootSessionName((meta.parent ?? meta.node_id) as string);
+
+  // Fresh re-exec: same recipe as a no-resume reviveNode, with the kickoff so
+  // the node rebuilds its bearings from disk.
+  const inv = buildPiArgv(meta, { prompt: buildReviveKickoff(meta) });
+  const env = { ...inv.env, CRTR_ROOT_SESSION: session };
+
+  const ok = respawnPane({ pane, cwd: meta.cwd, env, command: piCommand(inv.argv) });
+  if (!ok) {
+    throw new Error(`reviveInPlace: respawn-pane dispatch failed for ${nodeId}`);
+  }
+
+  updateNode(nodeId, { status: 'active', intent: null, tmux_session: session });
+
+  // Window is unchanged (we re-execed in place); report the existing one.
+  return { window: meta.window ?? null, session, resumed: false };
 }

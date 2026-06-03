@@ -8,6 +8,9 @@
 //   • For each active|idle node: check whether its tmux window is still alive.
 //   • Window alive → healthy, skip.
 //   • Window gone + intent==='refresh' → fresh respawn (node asked to yield).
+//   • Window gone + intent==='idle-release' → node freed its own pane while
+//     dormant; clear the stale window ref and revive (resume) when its inbox
+//     gains an unseen entry.
 //   • Window gone + any other intent → crash: mark 'dead'.
 //   • Nodes with no tmux placement (inline roots) are skipped.
 //
@@ -29,10 +32,12 @@ import {
   listNodes,
   setStatus,
   getNode,
+  updateNode,
   type NodeRow,
 } from '../core/canvas/index.js';
 import { windowAlive } from '../core/runtime/tmux.js';
 import { reviveNode } from '../core/runtime/revive.js';
+import { readInboxSince, readCursor } from '../core/feed/inbox.js';
 
 const DEFAULT_INTERVAL_MS = 2000;
 
@@ -116,6 +121,11 @@ async function superviseTick(): Promise<void> {
         // fresh so it re-reads its roadmap/context dir.
         process.stderr.write(`[crtrd] revive ${row.node_id} (refresh-yield)\n`);
         reviveNode(row.node_id, { resume: false });
+      } else if (meta.intent === 'idle-release') {
+        // The node freed its own window on purpose while dormant. Drop the stale
+        // window ref and keep it 'idle'; the inbox-poll pass below revives it
+        // (resume) the moment a subscribed worker delivers.
+        updateNode(row.node_id, { window: null });
       } else {
         // Window vanished without the node completing or refreshing — a crash.
         process.stderr.write(
@@ -127,6 +137,32 @@ async function superviseTick(): Promise<void> {
       // One bad node must never kill the loop.
       process.stderr.write(
         `[crtrd] error supervising ${row.node_id}: ${(err as Error).message}\n`,
+      );
+    }
+  }
+
+  // Second pass: revive idle-released nodes whose inbox has unseen entries.
+  // The in-process inbox-watcher dies with pi, so the daemon owns wake-on-message
+  // for dormant nodes. readCursor is the cursor the watcher persisted before
+  // exit; any entry past it is undelivered work — resume the node to handle it.
+  for (const row of rows) {
+    try {
+      const meta = getNode(row.node_id);
+      if (meta === null) continue;
+      if (meta.status !== 'idle' || meta.intent !== 'idle-release') continue;
+      // If a window is somehow alive, the in-process watcher owns delivery.
+      if (meta.window != null && windowAlive(meta.tmux_session ?? '', meta.window)) {
+        continue;
+      }
+
+      const entries = readInboxSince(row.node_id, readCursor(row.node_id));
+      if (entries.length > 0) {
+        process.stderr.write(`[crtrd] revive ${row.node_id} (idle-release, inbox)\n`);
+        reviveNode(row.node_id, { resume: true });
+      }
+    } catch (err) {
+      process.stderr.write(
+        `[crtrd] error polling inbox ${row.node_id}: ${(err as Error).message}\n`,
       );
     }
   }

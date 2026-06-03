@@ -19,8 +19,11 @@
 //   • coalesce() renders the digest (pointer list, not job-status prose).
 //   • No crtr root-init or spawnSync bootstrap — the canvas runtime wires up the
 //     node before launching pi; CRTR_NODE_ID is always present when we activate.
-//   • Deliver-as decision is driven by InboxEntry.tier (urgent|critical → steer,
-//     normal|deferred → followUp) instead of a per-entry delivery field.
+//   • Deliver-as decision is driven by InboxEntry.tier (and kind): critical →
+//     true preempt (ctx.abort() the live turn, redeliver next tick), urgent →
+//     steer at the turn boundary, normal|deferred → followUp. A finished node
+//     (kind 'final') ALSO steers — a completion the subscriber may be blocked on
+//     must interrupt the current turn, not wait behind it as a follow-up.
 //
 // Double-notify prevention (copied from legacy watcher):
 //   A module-level `liveTimer` ensures that a /reload re-init clears the previous
@@ -98,7 +101,7 @@ export function registerCanvasInboxWatcher(pi: PiLike): () => void {
   /**
    * True when pi is not currently streaming a response.
    * When idle, sendUserMessage triggers a new turn immediately.
-   * When streaming, steer (interrupt) only on urgency, else follow up.
+   * When streaming, steer (interrupt) on urgency or a finished node, else follow up.
    */
   const isIdle = (): boolean => {
     try {
@@ -146,20 +149,34 @@ export function registerCanvasInboxWatcher(pi: PiLike): () => void {
 
     const digest = coalesce(batch);
 
-    // Tier drives delivery mode: critical/urgent entries interrupt the current
-    // turn (steer); normal/deferred entries wait for the next turn (followUp).
-    // (A purely-deferred idle batch was already held above and never reaches here.)
-    const anyUrgent = batch.some(
-      (e) => e.tier === 'urgent' || e.tier === 'critical',
-    );
+    // Tier (and kind) drive delivery mode. Critical is a TRUE preempt; urgent —
+    // and a finished node (kind 'final') — steers at the turn boundary;
+    // normal/deferred ride the next turn (followUp). (A purely-deferred idle
+    // batch was already held above and never reaches here.) A completion a
+    // subscriber is likely blocked on must not drain as a follow-up, so 'final'
+    // steers exactly like 'urgent'.
+    const anyCritical = batch.some((e) => e.tier === 'critical');
+    const steerMidStream =
+      anyCritical || batch.some((e) => e.tier === 'urgent' || e.kind === 'final');
 
     try {
       if (isIdle()) {
         // Idle → trigger a new turn immediately (sendUserMessage always triggers).
         pi.sendUserMessage(digest);
+      } else if (anyCritical) {
+        // Critical mid-stream → TRUE preempt. ctx.abort() cancels the live LLM
+        // stream right now (stopReason becomes 'aborted'; the stophook stays alive
+        // on that). We then re-buffer and let the next tick deliver via the idle
+        // path — by then the turn has torn down and sendUserMessage starts a fresh
+        // turn. Relying on the proven idle path (not steer-after-abort semantics)
+        // keeps this robust; if abort hasn't settled by the next tick we simply
+        // abort again and retry — idempotent and self-healing.
+        try { lastCtx?.abort?.(); } catch { /* abort is best-effort */ }
+        buffer = batch.concat(buffer);
       } else {
-        // Mid-stream → steer on urgency, else enqueue for the turn after this one.
-        pi.sendUserMessage(digest, { deliverAs: anyUrgent ? 'steer' : 'followUp' });
+        // Mid-stream → steer on urgency or a finished node, else enqueue for the
+        // turn after this one.
+        pi.sendUserMessage(digest, { deliverAs: steerMidStream ? 'steer' : 'followUp' });
       }
     } catch {
       // Re-queue on delivery failure so a transient error doesn't silently drop

@@ -8,7 +8,7 @@
 // root) or switch-client + select-window (across roots). done/dead nodes close
 // their window; reviving opens a fresh one.
 
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 
 // ---------------------------------------------------------------------------
 // Shell quoting + tmux invocation
@@ -127,6 +127,72 @@ export function focusWindow(session: string, window: string): boolean {
 /** Close a node's window (drop it from the UI). */
 export function closeWindow(window: string): boolean {
   return tmux(['kill-window', '-t', window]).ok;
+}
+
+/** The active pane id of a window. Node windows are single-pane, so this is the
+ *  node's pane. Returns null if the window is gone or tmux fails. */
+export function paneOfWindow(session: string, window: string): string | null {
+  const r = tmux(['display-message', '-p', '-t', `${session}:${window}`, '#{pane_id}']);
+  return r.ok && r.stdout !== '' ? r.stdout : null;
+}
+
+/** The window a pane currently lives in. Used after a swap-pane to learn which
+ *  slot the caller's pane occupied — pane ids are stable across swaps, windows
+ *  are not, so the node→window mapping must be re-derived from the pane. Returns
+ *  null if the pane is gone or tmux fails. */
+export function windowOfPane(pane: string): string | null {
+  const r = tmux(['display-message', '-p', '-t', pane, '#{window_id}']);
+  return r.ok && r.stdout !== '' ? r.stdout : null;
+}
+
+/** Swap `targetPane` into `callerPane`'s layout slot, IN PLACE. `-d` keeps the
+ *  caller's window active, so the target's pane appears where the caller is
+ *  rather than navigating the client off to the target's window. The caller's
+ *  old pane lives on in the target's former window — the move is reversible
+ *  (focusing back swaps it in again). Best-effort; never throws. */
+export function swapPaneInPlace(targetPane: string, callerPane: string): boolean {
+  if (targetPane === callerPane) return true;
+  return tmux(['swap-pane', '-d', '-s', targetPane, '-t', callerPane]).ok;
+}
+
+export interface RespawnPaneOpts {
+  /** Target pane id (e.g. `%3`) — the pane to re-exec in place. */
+  pane: string;
+  cwd: string;
+  env: Record<string, string>;
+  /** The full command to run in the pane (already a shell string). */
+  command: string;
+}
+
+/** Re-exec a command in an EXISTING pane, in place. `-k` kills the pane's
+ *  current process (e.g. a yielding pi) and starts `command` in the same pane
+ *  — the window/pane survives, so an interactive session is never dropped to a
+ *  shell and no window churns. Used by refresh-yield.
+ *
+ *  Spawned DETACHED (own process group, unref'd) so the request reaches the
+ *  tmux server even though killing the pane tears down the caller's own pi.
+ *  Returns true once the request was dispatched. */
+export function respawnPane(opts: RespawnPaneOpts): boolean {
+  try {
+    const child = spawn(
+      'tmux',
+      [
+        'respawn-pane',
+        '-k',
+        '-c',
+        opts.cwd,
+        ...envFlags(opts.env),
+        '-t',
+        opts.pane,
+        opts.command,
+      ],
+      { detached: true, stdio: 'ignore' },
+    );
+    child.unref();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------
