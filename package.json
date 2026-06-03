@@ -7,7 +7,8 @@
   "types": "dist/index.d.ts",
   "bin": {
     "crtr": "bin/crtr",
-    "crouter": "bin/crouter"
+    "crouter": "bin/crouter",
+    "crtrd": "bin/crtrd"
   },
   "exports": {
     ".": {
@@ -23,7 +24,7 @@
     "bin"
   ],
   "scripts": {
-    "build": "tsc && rm -rf dist/builtin-skills && cp -R src/builtin-skills dist/builtin-skills",
+    "build": "tsc && rm -rf dist/builtin-skills && cp -R src/builtin-skills dist/builtin-skills && rm -rf dist/builtin-personas && cp -R src/builtin-personas dist/builtin-personas",
     "dev": "tsx src/cli.ts",
     "link": "npm link",
     "prepublishOnly": "npm run build",

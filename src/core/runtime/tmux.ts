@@ -1,0 +1,180 @@
+// tmux placement — one window per active node.
+//
+//   session = a root        window = a node        window 0 = optional dashboard
+//
+// Background windows run but don't render — only the current window draws. That
+// is the "detached but switchable" model: nothing tiles, you never see a node's
+// UI unless you switch to it. Bring one forefront with select-window (within a
+// root) or switch-client + select-window (across roots). done/dead nodes close
+// their window; reviving opens a fresh one.
+
+import { spawnSync } from 'node:child_process';
+
+// ---------------------------------------------------------------------------
+// Shell quoting + tmux invocation
+// ---------------------------------------------------------------------------
+
+/** POSIX single-quote escaping for one shell word. */
+export function shellQuote(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
+
+function tmux(args: string[]): { ok: boolean; stdout: string; stderr: string } {
+  const r = spawnSync('tmux', args, { encoding: 'utf8' });
+  return {
+    ok: r.status === 0,
+    stdout: (r.stdout ?? '').trim(),
+    stderr: (r.stderr ?? '').trim(),
+  };
+}
+
+export function inTmux(): boolean {
+  return process.env['TMUX'] !== undefined && process.env['TMUX'] !== '';
+}
+
+export interface TmuxLocation {
+  session: string;
+  window: string;
+  pane: string;
+}
+
+/** Where the caller currently is, or null if not inside tmux. */
+export function currentTmux(): TmuxLocation | null {
+  if (!inTmux()) return null;
+  const r = tmux([
+    'display-message',
+    '-p',
+    '#{session_name}\t#{window_id}\t#{pane_id}',
+  ]);
+  if (!r.ok) return null;
+  const [session, window, pane] = r.stdout.split('\t');
+  return { session, window, pane };
+}
+
+// ---------------------------------------------------------------------------
+// Sessions + windows
+// ---------------------------------------------------------------------------
+
+export function sessionExists(name: string): boolean {
+  return tmux(['has-session', '-t', name]).ok;
+}
+
+/** Create a detached session rooted at `cwd` if it doesn't exist. The session
+ *  name is a root's tmux home; every node under that root is a window in it. */
+export function ensureSession(name: string, cwd: string): void {
+  if (sessionExists(name)) return;
+  tmux(['new-session', '-d', '-s', name, '-c', cwd]);
+}
+
+function envFlags(env: Record<string, string>): string[] {
+  const out: string[] = [];
+  for (const [k, v] of Object.entries(env)) out.push('-e', `${k}=${v}`);
+  return out;
+}
+
+export interface OpenWindowOpts {
+  session: string;
+  /** Window name (the node's display name). */
+  name: string;
+  cwd: string;
+  env: Record<string, string>;
+  /** The full command to run in the window (already a shell string). */
+  command: string;
+}
+
+/** Open a background window for a node and run `command` in it. `-d` keeps it
+ *  detached so it doesn't steal focus or become the current window. Returns the
+ *  new window id.
+ *
+ *  Target is `${session}:` (trailing colon = the session, no window index) plus
+ *  `-a` (insert after the current window) so tmux allocates the next free index.
+ *  Passing a bare session name resolves to the session's *active window*, which
+ *  makes new-window try to create AT that occupied index and fail with
+ *  "create window failed: index N in use" whenever the active window is not the
+ *  last one (common when base-index is 0 but the live window sits at index 1).
+ *  `-a` also keeps node windows off index 0, which is reserved for the optional
+ *  dashboard. */
+export function openNodeWindow(opts: OpenWindowOpts): string | null {
+  const r = tmux([
+    'new-window',
+    '-d',
+    '-a',
+    '-P',
+    '-F',
+    '#{window_id}',
+    '-t',
+    `${opts.session}:`,
+    '-n',
+    opts.name,
+    '-c',
+    opts.cwd,
+    ...envFlags(opts.env),
+    opts.command,
+  ]);
+  return r.ok ? r.stdout : null;
+}
+
+/** Bring a node's window forefront. Switches client across roots when needed. */
+export function focusWindow(session: string, window: string): boolean {
+  const here = currentTmux();
+  const sameRoot = here?.session === session;
+  if (!sameRoot) {
+    if (!tmux(['switch-client', '-t', session]).ok) return false;
+  }
+  return tmux(['select-window', '-t', window]).ok;
+}
+
+/** Close a node's window (drop it from the UI). */
+export function closeWindow(window: string): boolean {
+  return tmux(['kill-window', '-t', window]).ok;
+}
+
+// ---------------------------------------------------------------------------
+// pi command assembly
+// ---------------------------------------------------------------------------
+
+/** Turn a pi argv array into a single shell command string. */
+export function piCommand(argv: string[], binary = 'pi'): string {
+  return [binary, ...argv.map(shellQuote)].join(' ');
+}
+
+// ---------------------------------------------------------------------------
+// Window liveness helpers (used by the supervisor daemon)
+// ---------------------------------------------------------------------------
+
+/** List all window ids present in `session`. Returns [] if the session does
+ *  not exist or tmux fails for any reason. Each entry is the raw window id
+ *  string reported by tmux (e.g. `@1`, `@2`, …). */
+export function listWindowIds(session: string): string[] {
+  const r = tmux(['list-windows', '-t', session, '-F', '#{window_id}']);
+  if (!r.ok || r.stdout === '') return [];
+  return r.stdout.split('\n').filter((s) => s !== '');
+}
+
+/** True when both `session` and `window` are present (non-null/undefined) and
+ *  the window currently exists inside the session. False whenever either arg
+ *  is absent, the session is gone, or tmux does not know the window. */
+export function windowAlive(
+  session: string | null | undefined,
+  window: string | null | undefined,
+): boolean {
+  if (session == null || window == null) return false;
+  return listWindowIds(session).includes(window);
+}
+
+// ---------------------------------------------------------------------------
+// Focus helpers (used by the presence layer)
+// ---------------------------------------------------------------------------
+
+/** Activate a window within its session (same-session navigation). Equivalent
+ *  to `tmux select-window -t <session>:<window>`. Best-effort; never throws. */
+export function selectWindow(session: string, window: string): boolean {
+  return tmux(['select-window', '-t', `${session}:${window}`]).ok;
+}
+
+/** Switch the tmux client to a different session (cross-session focus). Runs
+ *  `tmux switch-client -t <session>`. Best-effort; never throws. The caller is
+ *  responsible for following up with selectWindow to land on the right window. */
+export function switchClient(session: string): boolean {
+  return tmux(['switch-client', '-t', session]).ok;
+}

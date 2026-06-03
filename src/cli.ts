@@ -7,6 +7,13 @@ import { registerJob } from './commands/job.js';
 import { registerPkg } from './commands/pkg.js';
 import { registerHuman } from './commands/human.js';
 import { registerSys } from './commands/sys.js';
+import { registerPush, registerFeed } from './commands/push.js';
+import { registerNode } from './commands/node.js';
+import { registerDaemon } from './commands/daemon.js';
+import { registerRevive } from './commands/revive.js';
+import { registerDashboard } from './commands/dashboard.js';
+import { registerAttention } from './commands/attention.js';
+import { maybeBootRoot } from './core/runtime/front-door.js';
 import { maybeAutoUpdate } from './core/auto-update.js';
 import { ensureBootSkill, ensureOfficialMarketplace, ensureProjectScope, ensureSlashCommands } from './core/bootstrap.js';
 
@@ -27,8 +34,22 @@ const root = defineRoot({
     registerJob(),
     registerHuman(),
     registerSys(),
+    registerPush(),
+    registerFeed(),
+    registerNode(),
+    registerDaemon(),
+    registerRevive(),
+    registerDashboard(),
+    registerAttention(),
   ],
 });
+
+// The front door: bare `crtr` (or `crtr [dir] ["prompt"]`) boots a resident
+// root node and execs pi in this terminal. Recognized subcommands fall through
+// to the normal dispatcher. Must run before anything that assumes a subcommand.
+if (maybeBootRoot(root, process.argv)) {
+  // bootRoot exec'd pi inline and exited; unreachable.
+}
 
 ensureOfficialMarketplace(process.argv);
 ensureBootSkill(process.argv);
