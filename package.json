@@ -24,11 +24,11 @@
     "bin"
   ],
   "scripts": {
-    "build": "tsc && rm -rf dist/builtin-skills && cp -R src/builtin-skills dist/builtin-skills && rm -rf dist/builtin-personas && cp -R src/builtin-personas dist/builtin-personas",
+    "build": "rm -rf dist && tsc && cp -R src/builtin-skills dist/builtin-skills && cp -R src/builtin-personas dist/builtin-personas",
     "dev": "tsx src/cli.ts",
     "link": "npm link",
     "prepublishOnly": "npm run build",
-    "test": "node --import tsx/esm --test 'src/core/__tests__/**/*.test.ts'"
+    "test": "node --import tsx/esm --test 'src/**/__tests__/**/*.test.ts'"
   },
   "repository": {
     "type": "git",
