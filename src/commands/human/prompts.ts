@@ -1,6 +1,6 @@
 import { defineLeaf } from '../../core/command.js';
 import { InputError } from '../../core/io.js';
-import { createJob, readResult as jobsReadResult } from '../../core/jobs.js';
+import { spawnNode } from '../../core/runtime/nodes.js';
 import { interactionDir } from '../../core/artifact.js';
 import { isInTmux, spawnAndDetach } from '../../core/spawn.js';
 import { mkdirSync, existsSync } from 'node:fs';
@@ -18,12 +18,17 @@ import type { Deck } from '@crouton-kit/humanloop';
 import {
   DECK_SCHEMA_HINT,
   type RunRecord,
-  recordHumanReportTo,
+  waitForFinalReport,
   spawnHumanJob,
   pickPlacement,
   runCmd,
   resolveMaxPanes,
 } from './shared.js';
+
+/** The asking node's id, or null when run from a bare shell (no parent to route to). */
+function askingNode(): string | null {
+  return process.env['CRTR_NODE_ID'] ?? null;
+}
 
 // ---------------------------------------------------------------------------
 // ask
@@ -41,13 +46,13 @@ export const humanAsk = defineLeaf({
       { kind: 'flag', name: 'wait', type: 'bool', required: false, constraint: 'Accepted for symmetry with the job contract; the kickoff never blocks.' },
     ],
     output: [
-      { name: 'job_id', type: 'string', required: true, constraint: 'Poll with `crtr job read result|status|logs`; cancel with `crtr job cancel`.' },
+      { name: 'job_id', type: 'string', required: true, constraint: 'Node id of this human interaction. Its answer is pushed to your inbox when the human responds.' },
       { name: 'dir', type: 'string', required: true, constraint: 'Interaction directory holding deck.json/run.json/response.json.' },
       { name: 'follow_up', type: 'string', required: true, constraint: 'A non-blocking status peek. The human may take minutes to hours — never block waiting on this.' },
     ],
     outputKind: 'object',
     effects: [
-      'Creates a kind:"human" job and writes deck.json/run.json to the interaction dir.',
+      'Creates a kind:"human" node under you and writes deck.json/run.json to the interaction dir.',
       'Spawns the decision TUI in a detached tmux pane (when in tmux).',
     ],
   },
@@ -65,13 +70,12 @@ export const humanAsk = defineLeaf({
     }
 
     const cwd = process.cwd();
-    const { jobId } = createJob('human', { cwd });
+    const jobId = spawnNode({ kind: 'human', parent: askingNode(), cwd, name: 'human-ask', lifecycle: 'terminal' }).node_id;
     const idir = interactionDir(jobId, cwd);
     mkdirSync(idir, { recursive: true });
     atomicWriteJson(deckPath(idir), deck);
     const rc: RunRecord = { mode: 'ask', job_id: jobId };
     atomicWriteJson(join(idir, 'run.json'), rc);
-    recordHumanReportTo(jobId, deck.title ?? 'human ask');
 
     const { follow_up } = spawnHumanJob(jobId, idir, cwd);
     return { job_id: jobId, dir: idir, follow_up };
@@ -95,13 +99,13 @@ export const humanApprove = defineLeaf({
       { kind: 'flag', name: 'body', type: 'string', required: false, constraint: 'Optional markdown body.' },
     ],
     output: [
-      { name: 'job_id', type: 'string', required: true, constraint: 'Poll with `crtr job read result`; result is {approved, …envelope}.' },
+      { name: 'job_id', type: 'string', required: true, constraint: 'Node id of this approval; the {approved, …envelope} result is pushed to your inbox when answered.' },
       { name: 'dir', type: 'string', required: true, constraint: 'Interaction directory.' },
       { name: 'follow_up', type: 'string', required: true, constraint: 'A non-blocking status peek. The human may take minutes to hours — never block waiting on this.' },
     ],
     outputKind: 'object',
     effects: [
-      'Creates a kind:"human" job and writes a Yes/No validation deck.',
+      'Creates a kind:"human" node under you and writes a Yes/No validation deck.',
       'Spawns the approval TUI in a detached tmux pane (when in tmux).',
     ],
   },
@@ -116,13 +120,12 @@ export const humanApprove = defineLeaf({
     });
 
     const cwd = process.cwd();
-    const { jobId } = createJob('human', { cwd });
+    const jobId = spawnNode({ kind: 'human', parent: askingNode(), cwd, name: 'human-approve', lifecycle: 'terminal' }).node_id;
     const idir = interactionDir(jobId, cwd);
     mkdirSync(idir, { recursive: true });
     atomicWriteJson(deckPath(idir), deck);
     const rc: RunRecord = { mode: 'approve', job_id: jobId, approve_iid: 'approve' };
     atomicWriteJson(join(idir, 'run.json'), rc);
-    recordHumanReportTo(jobId, title);
 
     const { follow_up } = spawnHumanJob(jobId, idir, cwd);
     return { job_id: jobId, dir: idir, follow_up };
@@ -145,7 +148,7 @@ export const humanReview = defineLeaf({
       { kind: 'flag', name: 'output', type: 'path', required: false, constraint: 'Where the FeedbackResult JSON is written. Default: <dir>/feedback.json.' },
     ],
     output: [
-      { name: 'job_id', type: 'string', required: true, constraint: 'The kind:"human" job backing this review. Cancel with `crtr job cancel`.' },
+      { name: 'job_id', type: 'string', required: true, constraint: 'Node id of the kind:"human" node backing this review.' },
       { name: 'output', type: 'string', required: true, constraint: 'Path the FeedbackResult JSON is autosaved to.' },
       { name: 'status', type: 'string', required: true, constraint: 'Terminal state once the call unblocks: done (submitted), failed, canceled, or closed (pane went away before submit).' },
       { name: 'result', type: 'object', required: false, constraint: 'The humanloop FeedbackResult (anchored comments). Present when status is done.' },
@@ -154,7 +157,7 @@ export const humanReview = defineLeaf({
     ],
     outputKind: 'object',
     effects: [
-      'Creates a kind:"human" job and writes run.json to the interaction dir.',
+      'Creates a kind:"human" node under you and writes run.json to the interaction dir.',
       'Spawns a read-only nvim/vim review session in a detached tmux pane (when in tmux).',
       'Blocks the calling process until the human submits, the pane closes, or the job is canceled.',
     ],
@@ -180,25 +183,24 @@ export const humanReview = defineLeaf({
     }
 
     const cwd = process.cwd();
-    const { jobId } = createJob('human', { cwd });
+    const jobId = spawnNode({ kind: 'human', parent: askingNode(), cwd, name: 'human-review', lifecycle: 'terminal' }).node_id;
     const idir = interactionDir(jobId, cwd);
     mkdirSync(idir, { recursive: true });
     const outputArg = input['output'] as string | undefined;
     const output = outputArg !== undefined ? outputArg : join(idir, 'feedback.json');
     const rc: RunRecord = { mode: 'review', job_id: jobId, file: abs, output };
     atomicWriteJson(join(idir, 'run.json'), rc);
-    recordHumanReportTo(jobId, `review ${abs}`);
 
-    const { spawned, follow_up } = spawnHumanJob(jobId, idir, cwd);
+    const { spawned, follow_up, paneId } = spawnHumanJob(jobId, idir, cwd);
     // Off-tmux: no pane to block on — fall back to the non-blocking handle the
     // way ask/approve do, so the review can still be drained from the inbox.
     if (!spawned) {
       return { job_id: jobId, output, status: 'live', follow_up };
     }
-    // In tmux: block until the human submits, the pane closes, or the job is
-    // canceled. Infinity = no timeout (the human owns the clock); the poll in
-    // readResult still reaps a dead pane, so this never hangs on a closed pane.
-    const r = await jobsReadResult(jobId, { waitMs: Infinity });
+    // In tmux: block until the human submits or the pane dies before submitting.
+    // No timeout (the human owns the clock); the pane-alive poll inside
+    // waitForFinalReport resolves 'closed' if the pane goes away first.
+    const r = await waitForFinalReport(jobId, paneId);
     const out: Record<string, unknown> = { job_id: jobId, output, status: r.status };
     if (r.result !== undefined) out['result'] = r.result;
     if (r.reason !== undefined) out['reason'] = r.reason;
@@ -228,7 +230,7 @@ export const humanNotify = defineLeaf({
     outputKind: 'object',
     effects: [
       'Writes a notify deck to the per-project interactions root.',
-      'Spawns the acknowledgement TUI in a detached tmux pane when in tmux. Creates no crtr job.',
+      'Spawns the acknowledgement TUI in a detached tmux pane when in tmux. Creates no node.',
     ],
   },
   run: async (input) => {
@@ -252,7 +254,6 @@ export const humanNotify = defineLeaf({
         cwd,
         placement: pickPlacement(),
         killAfterSeconds: 0,
-        failGuard: false,
       });
       shown = spawn.status === 'spawned';
     }

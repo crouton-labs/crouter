@@ -2,7 +2,6 @@ import { join } from 'node:path';
 import { renameSync } from 'node:fs';
 import { defineBranch, defineLeaf } from '../../core/command.js';
 import { notFound, usage, general } from '../../core/errors.js';
-import { createJob, appendEvent, writeResult } from '../../core/jobs.js';
 import { findPluginByName, listAllPlugins } from '../../core/resolver.js';
 import {
   pluginsDir,
@@ -226,8 +225,7 @@ const pluginUpdate = defineLeaf({
     ],
     output: [
       { name: 'updated', type: 'object[]', required: false, constraint: 'Present for single-plugin (blocking) path: [{name, updated, sha}].' },
-      { name: 'job_id', type: 'string', required: false, constraint: 'Present for all-plugins (async) path.' },
-      { name: 'follow_up', type: 'string', required: false, constraint: 'Instruction for retrieving async result.' },
+      { name: 'updated', type: 'object[]', required: true, constraint: 'One entry per plugin processed: {name, updated, sha}.' },
     ],
     outputKind: 'object',
     effects: ['Runs git pull in plugin directories. Updates version in config.json.'],
@@ -280,58 +278,42 @@ const pluginUpdate = defineLeaf({
       };
     }
 
-    // All plugins — async job (unbounded network, N repos)
+    // All plugins — run synchronously (each git pull is a sync spawn).
     const all = listAllPlugins();
     const targets = all
       .filter((p) => p.enabled && !p.sourceMarketplace && p.scope !== 'builtin')
       .map((p) => ({ name: p.name, scope: p.scope, root: p.root }));
 
-    const { jobId } = createJob('pkg-update', { cwd: process.cwd(), pid: process.pid });
-
-    // Fire-and-forget: run updates in background after returning job handle.
-    // Using setImmediate so the job handle is returned before the work starts.
-    setImmediate(() => {
-      void (async () => {
-        const results: Array<{ name: string; updated: boolean; sha: string }> = [];
-        for (const target of targets) {
-          appendEvent(jobId, { level: 'info', event: 'updating', message: `updating ${target.name}` });
-          const shaBefore = currentSha(target.root);
-          const res = pull(target.root);
-          if (res.status !== 0) {
-            appendEvent(jobId, { level: 'error', event: 'pull_failed', message: `git pull failed for "${target.name}": ${res.stderr.trim()}` });
-            results.push({ name: target.name, updated: false, sha: shaBefore !== null ? shaBefore : '' });
-            continue;
+    const results: Array<{ name: string; updated: boolean; sha: string }> = [];
+    for (const target of targets) {
+      const shaBefore = currentSha(target.root);
+      const res = pull(target.root);
+      if (res.status !== 0) {
+        results.push({ name: target.name, updated: false, sha: shaBefore !== null ? shaBefore : '' });
+        continue;
+      }
+      const shaAfter = currentSha(target.root);
+      const updated = shaBefore !== shaAfter;
+      const manifest = readPluginManifest(target.root);
+      if (manifest !== null) {
+        updateConfig(target.scope, (cfg) => {
+          const entry = cfg.plugins[target.name];
+          if (entry !== undefined) {
+            entry.version = manifest.version;
+          } else {
+            cfg.plugins[target.name] = { enabled: true, version: manifest.version };
           }
-          const shaAfter = currentSha(target.root);
-          const updated = shaBefore !== shaAfter;
-          const manifest = readPluginManifest(target.root);
-          if (manifest !== null) {
-            updateConfig(target.scope, (cfg) => {
-              const entry = cfg.plugins[target.name];
-              if (entry !== undefined) {
-                entry.version = manifest.version;
-              } else {
-                cfg.plugins[target.name] = { enabled: true, version: manifest.version };
-              }
-            });
-            updateState(target.scope, (s) => {
-              if (s.plugins[target.name] === undefined) {
-                s.plugins[target.name] = {};
-              }
-              s.plugins[target.name].last_updated = nowIso();
-            });
+        });
+        updateState(target.scope, (s) => {
+          if (s.plugins[target.name] === undefined) {
+            s.plugins[target.name] = {};
           }
-          results.push({ name: target.name, updated, sha: shaAfter !== null ? shaAfter : '' });
-          appendEvent(jobId, { level: 'info', event: 'updated', message: `${target.name} updated=${updated}` });
-        }
-        writeResult(jobId, { updated: results }, 'done');
-      })();
-    });
-
-    return {
-      job_id: jobId,
-      follow_up: `crtr job read result ${jobId} --wait`,
-    };
+          s.plugins[target.name].last_updated = nowIso();
+        });
+      }
+      results.push({ name: target.name, updated, sha: shaAfter !== null ? shaAfter : '' });
+    }
+    return { updated: results };
   },
 });
 

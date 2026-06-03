@@ -5,7 +5,7 @@
 // process inherits, and the spawn-time wiring of the subscription spine.
 //
 // Two ways a node is born:
-//   • root  — a user-opened entry point (bare `crtr` / `crtr session new`).
+//   • root  — a user-opened entry point (bare `crtr`).
 //             No parent; resident by default (it's a conversation you live in).
 //   • child — spawned by another node. Terminal until it must persist. On
 //             spawn the PARENT auto-subscribes (active) to the child, so it

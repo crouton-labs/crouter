@@ -2,7 +2,6 @@ import { join, isAbsolute } from 'node:path';
 import { renameSync } from 'node:fs';
 import { defineBranch, defineLeaf } from '../../core/command.js';
 import { notFound } from '../../core/errors.js';
-import { createJob, appendEvent, writeResult } from '../../core/jobs.js';
 import { listAllMarketplaces, findMarketplaceByName } from '../../core/resolver.js';
 import { resolveScopeArg, requireScopeRoot } from '../../core/scope.js';
 import { updateConfig, updateState, ensureScopeInitialized, readConfig } from '../../core/config.js';
@@ -178,8 +177,7 @@ const marketUpdate = defineLeaf({
     ],
     output: [
       { name: 'updated', type: 'object[]', required: false, constraint: 'Present for single (blocking) path: [{name, updated, sha}].' },
-      { name: 'job_id', type: 'string', required: false, constraint: 'Present for all (async) path.' },
-      { name: 'follow_up', type: 'string', required: false, constraint: 'Instruction for retrieving async result.' },
+      { name: 'updated', type: 'object[]', required: true, constraint: 'One entry per marketplace processed: {name, updated, sha}.' },
     ],
     outputKind: 'object',
     effects: ['Runs git pull in marketplace directories.'],
@@ -251,30 +249,11 @@ const marketUpdate = defineLeaf({
       return { updated: results };
     }
 
-    // All marketplaces — async job
+    // All marketplaces — run synchronously (the underlying git pulls are sync).
     const all = listAllMarketplaces();
     const targets = all.map((m) => ({ name: m.name, scope: m.scope, root: m.root }));
-
-    const { jobId } = createJob('pkg-market-update', { cwd: process.cwd(), pid: process.pid });
-
-    setImmediate(() => {
-      void (async () => {
-        appendEvent(jobId, { level: 'info', event: 'start', message: `updating ${targets.length} marketplace(s)` });
-        try {
-          const results = await doUpdate(targets);
-          writeResult(jobId, { updated: results }, 'done');
-        } catch (e) {
-          const msg = e instanceof Error ? e.message : String(e);
-          appendEvent(jobId, { level: 'error', event: 'failed', message: msg });
-          writeResult(jobId, { error: msg }, 'failed');
-        }
-      })();
-    });
-
-    return {
-      job_id: jobId,
-      follow_up: `crtr job read result ${jobId} --wait`,
-    };
+    const results = await doUpdate(targets);
+    return { updated: results };
   },
 });
 

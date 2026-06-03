@@ -1,7 +1,9 @@
 import { readConfig } from '../../core/config.js';
+import { spawnSync } from 'node:child_process';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { countPanesInCurrentWindow, spawnAndDetach, shellQuote } from '../../core/spawn.js';
-import { currentSessionContext, hostNodeIdFor, findSessionByRootPane, findSessionByPiSession, loadSessionView } from '../../core/sessions.js';
-import { recordJobPane, recordJobReportTo, appendEvent } from '../../core/jobs.js';
+import { reportsDir } from '../../core/canvas/paths.js';
 
 export const DECK_SCHEMA_HINT =
   'Deck must match the humanloop deck schema: {title?, ' +
@@ -30,90 +32,102 @@ export function runCmd(dir: string): string {
   return `CRTR_HUMAN_DIR=${shellQuote(dir)} crtr human _run`;
 }
 
-export function followUpResult(jobId: string): string {
-  return `crtr job read result ${jobId}`;
+export function followUpResult(_jobId: string): string {
+  return "The human's answer is delivered to your inbox when they respond — no need to poll.";
 }
 
-export function followUpDrain(jobId: string): string {
+export function followUpDrain(_jobId: string): string {
   return (
     'Not in tmux: a human must drain it — run `crtr human inbox` (or re-run ' +
-    `inside tmux). Then: crtr job read result ${jobId}`
+    'inside tmux). The answer then arrives in your inbox.'
   );
 }
 
 /**
- * Spawn the detached `_run` pane for a job-backed kickoff, record the pane for
- * cancellation, log the start, and return whether the pane spawned plus the
- * appropriate follow_up. Degrades to the inbox-drain follow_up (job still
- * created) when not in tmux / spawn fails — kickoffs are intentionally
- * non-fatal off-tmux.
+ * Spawn the detached `_run` pane that drives the humanloop TUI for this node.
+ * Returns whether the pane spawned, the follow_up text, and (when spawned) the
+ * tmux pane id so a blocking caller (review) can detect the pane dying before
+ * the human submits. Degrades to the inbox-drain follow_up when not in tmux /
+ * spawn fails — kickoffs are intentionally non-fatal off-tmux.
+ *
+ * Completion routing needs no bookkeeping here: the human node was created
+ * under the asking node as its parent (spawnNode auto-subscribes the parent),
+ * so the `pushFinal` the `_run` worker emits fans the answer straight into the
+ * asking node's inbox.
  */
-/**
- * Record completion routing for a human job (R1/R2) so its answer injects into
- * the pi parent that asked. Sets report_to to the spawning node when one exists:
- *   - inside a spawned agent: report_to=[parent job id], session=CRTR_SESSION_ID
- *   - top-level human pane:    report_to=[pane host node], session resolved by
- *     the originating tmux pane (only if a session already exists)
- * Absent any resolvable parent/session, routing is left empty (notification
- * skipped) per the spec.
- */
-export function recordHumanReportTo(jobId: string, title: string): void {
-  const { sessionId: envSession, parentJobId } = currentSessionContext();
-  const pane = process.env['TMUX_PANE'];
-  // The session lives under the spawner's cwd namespace (CRTR_SESSION_CWD when
-  // inside a spawned agent), else this process's cwd for a top-level pane.
-  // Recorded so delivery targets the same namespace the parent watcher reads.
-  const sessionCwd = process.env['CRTR_SESSION_CWD'] && process.env['CRTR_SESSION_CWD'] !== ''
-    ? process.env['CRTR_SESSION_CWD']
-    : process.cwd();
-  // The pi conversation that owns this top-level pane (injected by the
-  // inbox-watcher extension); identity follows the conversation, not the pane.
-  const piSessionId = process.env['CRTR_PI_SESSION_ID'] && process.env['CRTR_PI_SESSION_ID'] !== ''
-    ? process.env['CRTR_PI_SESSION_ID']
-    : null;
-  let sessionId: string | null = envSession;
-  let reportTo: string[] | undefined;
-  if (envSession !== null) {
-    // Spawned-agent context: report to the parent job node.
-    // Phase 4.4: drop hostPaneNodeId(pane) fallback — parentJobId is always
-    // set for a spawned agent (CRTR_PARENT_JOB_ID or CRTR_JOB_ID).
-    reportTo = [parentJobId ?? ''].filter((s) => s !== '');
-  } else {
-    // Top-level: bind to the pi conversation's session, falling back to a
-    // pane-keyed lookup when no pi id is available.
-    const found = (piSessionId !== null ? findSessionByPiSession(piSessionId, sessionCwd) : null)
-      ?? (pane !== undefined && pane !== '' ? findSessionByRootPane(pane, sessionCwd) : null);
-    if (found !== null) {
-      const view = loadSessionView(found, sessionCwd);
-      if (view !== null) {
-        sessionId = found;
-        // Phase 4.4: use root_node_id authoritatively; fall back to legacy hostNodeIdFor.
-      reportTo = [view.root_node_id ?? hostNodeIdFor(view)];
-      }
-    }
-  }
-  if (sessionId === null || reportTo === undefined || reportTo.length === 0) return;
-  recordJobReportTo(jobId, { reportTo, sessionId, sessionCwd, name: 'human', title });
-}
-
-export function spawnHumanJob(jobId: string, idir: string, cwd: string): { spawned: boolean; follow_up: string } {
+export function spawnHumanJob(
+  jobId: string,
+  idir: string,
+  cwd: string,
+): { spawned: boolean; follow_up: string; paneId?: string } {
   const spawn = spawnAndDetach({
     command: runCmd(idir),
     cwd,
     jobId,
     placement: pickPlacement(),
     killAfterSeconds: 0,
-    failGuard: true,
   });
   if (spawn.status !== 'spawned') {
     return { spawned: false, follow_up: followUpDrain(jobId) };
   }
-  if (spawn.paneId !== undefined) recordJobPane(jobId, spawn.paneId);
-  const paneLabel = spawn.paneId !== undefined ? spawn.paneId : 'unknown';
-  appendEvent(jobId, {
-    level: 'info',
-    event: 'worker_started',
-    message: `human pane ${paneLabel} spawned`,
+  return {
+    spawned: true,
+    follow_up: followUpResult(jobId),
+    ...(spawn.paneId !== undefined ? { paneId: spawn.paneId } : {}),
+  };
+}
+
+/** True when a tmux pane is still alive. */
+function paneAlive(paneId: string): boolean {
+  const r = spawnSync('tmux', ['display-message', '-p', '-t', paneId, '#{pane_id}'], {
+    encoding: 'utf8',
   });
-  return { spawned: true, follow_up: followUpResult(jobId) };
+  return r.status === 0 && r.stdout.trim() !== '';
+}
+
+export interface HumanResult {
+  status: string;
+  result?: unknown;
+  reason?: string;
+}
+
+/**
+ * Block until `nodeId` emits a `final` report (the human submitted) or — when a
+ * pane id is given — that pane dies before submitting (the human closed it).
+ * Polls once a second: this is a human-time operation, so a coarse poll is fine
+ * and sidesteps fs.watch directory-existence races. The `_run` worker writes
+ * the humanloop result as the report body (JSON), which we parse back out.
+ */
+export function waitForFinalReport(nodeId: string, paneId?: string): Promise<HumanResult> {
+  const dir = reportsDir(nodeId);
+  const findFinal = (): string | null => {
+    if (!existsSync(dir)) return null;
+    const files = readdirSync(dir).filter((f) => f.endsWith('-final.md')).sort();
+    return files.length > 0 ? join(dir, files[files.length - 1]!) : null;
+  };
+  const parse = (path: string): HumanResult => {
+    const body = readFileSync(path, 'utf8').replace(/^---[\s\S]*?---\n/, '').trim();
+    try {
+      return { status: 'done', result: JSON.parse(body) };
+    } catch {
+      return { status: 'done' };
+    }
+  };
+  const immediate = findFinal();
+  if (immediate !== null) return Promise.resolve(parse(immediate));
+  return new Promise((resolve) => {
+    const timer = setInterval(() => {
+      const p = findFinal();
+      if (p !== null) {
+        clearInterval(timer);
+        resolve(parse(p));
+        return;
+      }
+      if (paneId !== undefined && !paneAlive(paneId)) {
+        clearInterval(timer);
+        resolve({ status: 'closed', reason: 'review pane closed before submit' });
+      }
+    }, 1000);
+    if (typeof timer.unref === 'function') timer.unref();
+  });
 }

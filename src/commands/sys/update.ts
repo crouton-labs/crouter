@@ -1,7 +1,6 @@
 import { defineLeaf } from '../../core/command.js';
 import { updateState } from '../../core/config.js';
 import { projectScopeRoot } from '../../core/scope.js';
-import { createJob, appendEvent, writeResult } from '../../core/jobs.js';
 import { selfCheck, selfUpdate, contentCheck, contentUpdate } from '../../core/self-update.js';
 import { nowIso } from '../../core/fs-utils.js';
 import { readPackageVersion } from './shared.js';
@@ -17,8 +16,9 @@ export const sysUpdateLeaf = defineLeaf({
       { kind: 'flag', name: 'check', type: 'bool', required: false, constraint: 'Check for updates without applying them (bounded, blocking).' },
     ],
     output: [
-      { name: 'job_id', type: 'string', required: false, constraint: 'Present when applying updates. Poll with `crtr job read result JOB_ID --wait`.' },
-      { name: 'follow_up', type: 'string', required: false, constraint: 'Instruction for retrieving the job result.' },
+      { name: 'target', type: 'string', required: false, constraint: 'Present when applying updates: self | content | all.' },
+      { name: 'status', type: 'string', required: false, constraint: 'done | failed when applying updates.' },
+      { name: 'error', type: 'string', required: false, constraint: 'Failure message when status is failed.' },
       { name: 'updates', type: 'object[]', required: false, constraint: 'Present when --check. Each: {name, current, latest, up_to_date, unreachable, kind}.' },
       { name: 'up_to_date', type: 'boolean', required: false, constraint: 'Present when --check. True when all items are up to date.' },
     ],
@@ -85,44 +85,28 @@ export const sysUpdateLeaf = defineLeaf({
       return { updates: updates as unknown as Record<string, unknown>[], up_to_date };
     }
 
-    // Long-running apply path: create a job, run in background, return handle
-    const cwd = process.cwd();
-    const { jobId } = createJob('sys-update', { cwd, pid: process.pid });
-
-    // Run update asynchronously without awaiting in the main path
-    void (async () => {
-      try {
-        if (resolvedTarget === 'self' || resolvedTarget === 'all') {
-          appendEvent(jobId, { level: 'info', event: 'self-update:start', message: 'running npm install -g @crouton-kit/crouter@latest' });
-          selfUpdate();
-          const scopes: Scope[] = ['user'];
-          if (projectScopeRoot()) scopes.unshift('project');
-          for (const scope of scopes) {
-            updateState(scope, (s) => {
-              s.last_self_check = nowIso();
-            });
-          }
-          appendEvent(jobId, { level: 'info', event: 'self-update:done', message: 'crtr binary updated' });
+    // Apply path — run synchronously (selfUpdate/contentUpdate are sync spawns).
+    try {
+      if (resolvedTarget === 'self' || resolvedTarget === 'all') {
+        selfUpdate();
+        const scopes: Scope[] = ['user'];
+        if (projectScopeRoot()) scopes.unshift('project');
+        for (const scope of scopes) {
+          updateState(scope, (s) => {
+            s.last_self_check = nowIso();
+          });
         }
-
-        if (resolvedTarget === 'content' || resolvedTarget === 'all') {
-          appendEvent(jobId, { level: 'info', event: 'content-update:start', message: 'pulling updates for marketplaces and plugins' });
-          contentUpdate();
-          appendEvent(jobId, { level: 'info', event: 'content-update:done', message: 'content updates complete' });
-        }
-
-        writeResult(jobId, { target: resolvedTarget, status: 'done' }, 'done');
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        appendEvent(jobId, { level: 'error', event: 'update:error', message: msg });
-        writeResult(jobId, { error: msg }, 'failed');
       }
-    })();
 
-    return {
-      job_id: jobId,
-      follow_up: `crtr job read result ${jobId} --wait`,
-    };
+      if (resolvedTarget === 'content' || resolvedTarget === 'all') {
+        contentUpdate();
+      }
+
+      return { target: resolvedTarget, status: 'done' };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return { target: resolvedTarget, status: 'failed', error: msg };
+    }
   },
 });
 

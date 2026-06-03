@@ -1,5 +1,5 @@
 import { defineLeaf } from '../../core/command.js';
-import { writeResult } from '../../core/jobs.js';
+import { pushFinal } from '../../core/feed/feed.js';
 import { interactionsRoot } from '../../core/artifact.js';
 import { paginate } from '../../core/pagination.js';
 import { join } from 'node:path';
@@ -101,7 +101,7 @@ export const humanRun = defineLeaf({
     inputNote: 'Internal; invoked by the spawned pane via CRTR_HUMAN_DIR + run.json. Not for manual use.',
     output: [{ name: 'none', type: 'void', required: false, constraint: 'No stdout; writes the job result file directly.' }],
     outputKind: 'object',
-    effects: ['Runs the blocking humanloop call; for job-backed modes writes result.json via the job model.'],
+    effects: ['Runs the blocking humanloop call; for tracked modes pushes the result as the node\'s final report (fans out to the asking node\'s inbox).'],
   },
   run: async (): Promise<void> => {
     const dir = process.env['CRTR_HUMAN_DIR'];
@@ -118,19 +118,18 @@ export const humanRun = defineLeaf({
         const deck: Deck = parseDeck(deckPath(dir));
         const env: ResolutionEnvelope = await ask(deck, { dir });
         if (rc.mode === 'ask') {
-          writeResult(rc.job_id as string, env, 'done');
+          await pushFinal(rc.job_id as string, JSON.stringify(env));
         } else if (rc.mode === 'approve') {
           const sel = env.responses.find((r) => r.id === rc.approve_iid)?.selectedOptionId;
-          writeResult(
+          await pushFinal(
             rc.job_id as string,
-            {
+            JSON.stringify({
               approved: sel === 'yes',
               summary: env.summary,
               responses: env.responses,
               responsePath: env.responsePath,
               completedAt: env.completedAt,
-            },
-            'done',
+            }),
           );
         }
         // notify: no job — nothing to write
@@ -143,11 +142,11 @@ export const humanRun = defineLeaf({
           output: rc.output as string,
           noTmux: true,
         });
-        writeResult(rc.job_id as string, res, 'done');
+        await pushFinal(rc.job_id as string, JSON.stringify(res));
       }
     } catch (e) {
       if (rc.job_id !== undefined) {
-        writeResult(rc.job_id, { error: 'human_run_failed', message: String(e) }, 'failed');
+        await pushFinal(rc.job_id, JSON.stringify({ error: 'human_run_failed', message: String(e) }));
       }
     }
   },
