@@ -33,10 +33,11 @@ import { join } from 'node:path';
 import { getNode, jobDir, updateNode, subscribersOf } from '../core/canvas/index.js';
 import { push } from '../core/feed/feed.js';
 import { evaluateStop } from '../core/runtime/stop-guard.js';
+import { personaDrift, commitPersonaAck } from '../core/runtime/persona.js';
 import { reviveInPlace, reviveNode } from '../core/runtime/revive.js';
-import { resetRoot } from '../core/runtime/reset.js';
+import { handleNewSession, markCleanExitDone } from '../core/runtime/reset.js';
 import { focusNodeInPlace, getFocus } from '../core/runtime/presence.js';
-import { windowAlive } from '../core/runtime/tmux.js';
+import { windowAlive, paneLocation, currentTmux } from '../core/runtime/tmux.js';
 
 // ---------------------------------------------------------------------------
 // Minimal PiLike interface (avoids hard dep on @earendil-works/*)
@@ -124,6 +125,19 @@ function lastAssistantMessage(messages: any[]): any | undefined {
 function restoreFocusToManager(nodeId: string): void {
   try {
     if (getFocus() !== nodeId) return; // not in view — nothing to restore
+
+    // SAFETY: only hand the visible slot to the manager when THIS pane is still
+    // alive — i.e. an orderly in-pi exit (/quit, Ctrl-D), where pi emits
+    // session_shutdown and tmux closes the pane only AFTER pi exits. An EXTERNAL
+    // `kill-pane` (tmux `prefix + x`, the menu's Kill, etc.) also reaches pi as
+    // SIGHUP → session_shutdown(reason:'quit'), indistinguishable by reason — but
+    // tmux has ALREADY destroyed this pane. Reviving the manager and swap-pane'ing
+    // it INTO a pane that is mid-teardown churns the layout and takes the visible
+    // session down with it. If the pane is gone, skip the swap entirely; the
+    // daemon's window-gone pass then tears the node down cleanly.
+    const pane = process.env['TMUX_PANE'] ?? currentTmux()?.pane;
+    if (pane === undefined || pane === '' || paneLocation(pane) === null) return;
+
     const meta = getNode(nodeId);
     if (meta === null) return;
     const managerId = meta.parent ?? subscribersOf(nodeId)[0]?.node_id ?? null;
@@ -156,50 +170,103 @@ function extractText(msg: any): string {
 }
 
 // ---------------------------------------------------------------------------
-// Context-size steering bands — mode-specific schedules that ESCALATE in tone
-// as input context grows. The first band is a gentle "consider it"; a later
-// band turns firm. Past the last explicit band the firmest nudge repeats every
-// 50k, so a long-lived node keeps getting reminded.
+// Context-size steering bands — a single shared schedule of thresholds that
+// ESCALATE in tone as input context grows. The first band is a gentle
+// "consider it"; a later band turns firm. The schedule TIGHTENS as it climbs:
+// 130k, 150k, 170k, 185k, 200k, then every 10k (210k, 220k, …) so a long-lived
+// node keeps getting reminded, more often the deeper it goes.
 //
-//   orchestrator: 130k gentle (consider yielding) → 150k+ firm (do it now)
-//   base worker:  130k suggest promote → 160k+ suggest promote (+ "ignore if
-//                 nearly done")
+// The band schedule is shared across all node shapes; only the MESSAGE differs
+// (steerNote), keyed on MODE first, then LIFECYCLE — three reachable personas:
+//   orchestrator (terminal OR resident): HAS a roadmap (promotion / orchestrator
+//             birth seeds context/roadmap.md), so it is steered to checkpoint +
+//             yield — 130k gentle (consider yielding) → 150k firm (do it now) →
+//             185k+ pushy. Keyed on mode, NOT lifecycle: a terminal/orchestrator
+//             yields against its roadmap exactly like a resident one (the
+//             daemon's refresh-revive keys on intent='refresh', not lifecycle).
+//   resident/base (a root conversation): never promoted ⇒ NO roadmap on disk,
+//             so it is NOT told to checkpoint/yield against one. Instead: if the
+//             chat is outgrowing one window into a multi-phase job, promote;
+//             otherwise wrap up or start fresh. 130k gentle → 150k firm → 185k+
+//             pushy.
+//   terminal/base (a worker): 130k/150k suggest promote → 170k suggest promote
+//             (+ "ignore if nearly done") → 185k+ pushy.
+//
+// The promote/push-final guidance only makes sense for a terminal BASE worker. A
+// resident node finishes by yielding or being closed, not `push final`, so it is
+// never told to push final; only an ORCHESTRATOR (either lifecycle) has a roadmap
+// to yield against, so only it is steered at the roadmap.
 // ---------------------------------------------------------------------------
 
-const STEER_STEP = 50_000;
-const ORCH_BANDS = [130_000, 150_000];   // gentle, then firm (firm repeats +50k)
-const WORKER_BANDS = [130_000, 160_000]; // suggest, then suggest+ignore (repeats +50k)
+const STEER_STEP = 10_000;
+// Shared escalation schedule (both lifecycles). Tightens as it climbs:
+// 130k, 150k, 170k, 185k, 200k, then every 10k (210k, 220k, …).
+const BANDS = [130_000, 150_000, 170_000, 185_000, 200_000];
 
-/** The highest band threshold at or below `tokens` for `mode`. Below the first
- *  band → null. At/past the last listed band, bands continue every STEER_STEP
- *  (so the firmest nudge keeps recurring). */
-function steerBand(tokens: number, mode: string): number | null {
-  const bands = mode === 'orchestrator' ? ORCH_BANDS : WORKER_BANDS;
-  const first = bands[0]!;
-  const last = bands[bands.length - 1]!;
+/** The highest band threshold at or below `tokens`. Below the first band →
+ *  null. At/past the last listed band, bands continue every STEER_STEP (so the
+ *  firmest nudge keeps recurring). */
+function steerBand(tokens: number): number | null {
+  const first = BANDS[0]!;
+  const last = BANDS[BANDS.length - 1]!;
   if (tokens < first) return null;
   if (tokens >= last) return last + Math.floor((tokens - last) / STEER_STEP) * STEER_STEP;
   let chosen = first;
-  for (const b of bands) if (tokens >= b) chosen = b;
+  for (const b of BANDS) if (tokens >= b) chosen = b;
   return chosen;
 }
 
-/** The nudge text for a crossed band, specialized to the node's mode + how far
- *  along the escalation it is. An orchestrator is steered to checkpoint its
- *  roadmap and yield (gently first, then firmly); a non-orchestrator (base
- *  worker) is steered to PROMOTE itself — become a resident orchestrator — when
- *  work remains, with an "ignore if nearly done" once it's deeper in. */
-function steerNote(at: number, mode: string): string {
+/** The nudge text for a crossed band, specialized to the node's (mode,
+ *  lifecycle) persona + how far along the escalation it is.
+ *
+ *  - orchestrator (terminal OR resident): checkpoint its roadmap and yield
+ *    (gently → firmly → pushy). It has a context/roadmap.md to yield against.
+ *  - resident/base (root conversation): never promoted, so NO roadmap exists —
+ *    steer it to PROMOTE if the chat is growing into a multi-phase job (which
+ *    seeds a roadmap), else wrap up / start fresh. Never points at roadmap.md or
+ *    a bare `node yield`, which for a roadmap-less root just drops context.
+ *  - terminal/base (worker): PROMOTE itself — become an orchestrator — when
+ *    work remains, with an "ignore if nearly done, finish with push final" once
+ *    it's deeper in.
+ *
+ *  At/past 185k every persona goes PUSHY: the context is long enough that
+ *  drifting further risks an overflow. */
+export function steerNote(at: number, lifecycle: string, mode: string): string {
   const k = Math.round(at / 1000);
+  const pushy = at >= 185_000;
+
+  // Keyed on MODE first: any orchestrator (terminal or resident) has a roadmap
+  // to checkpoint + yield against.
   if (mode === 'orchestrator') {
     if (at < 150_000) {
       return `Context ~${k}k and growing. When you reach a good stopping point, consider updating context/roadmap.md and running \`crtr node yield\` to refresh against it — no rush yet.`;
     }
-    return `Context ~${k}k. Update context/roadmap.md so a fresh revive can continue, delegate any outstanding work, then \`crtr node yield\` to refresh.`;
+    if (!pushy) {
+      return `Context ~${k}k. Update context/roadmap.md so a fresh revive can continue, delegate any outstanding work, then \`crtr node yield\` to refresh.`;
+    }
+    return `Context ~${k}k — this is getting long. Stop taking on new work now: checkpoint context/roadmap.md, hand off anything outstanding, and \`crtr node yield\` immediately to refresh before this context overflows.`;
   }
-  const suggest = `If much more work remains than this context can finish, consider \`crtr node promote\` to become a resident orchestrator (seeds a roadmap, lets you delegate and \`crtr node yield\` to refresh).`;
-  if (at < 160_000) return `Context ~${k}k. ${suggest}`;
-  return `Context ~${k}k. ${suggest} If you're nearly done, ignore this suggestion and finish with \`crtr push final\`.`;
+
+  if (lifecycle === 'resident') {
+    // resident/base — a root conversation. It has no roadmap (only promotion
+    // seeds one), so steer it toward promote-or-wrap-up, never at roadmap.md.
+    const grow = `If this is turning into a multi-phase job, \`crtr node promote\` to become a resident orchestrator (seeds a roadmap so you can delegate and \`crtr node yield\` to refresh).`;
+    if (at < 150_000) {
+      return `Context ~${k}k and growing. ${grow} Otherwise no rush — wrap up when you reach a good stopping point.`;
+    }
+    if (!pushy) {
+      return `Context ~${k}k. ${grow} If you're near done, just finish here; if there's more open-ended work, start a fresh \`crtr\` rather than letting this context grow.`;
+    }
+    return `Context ~${k}k — this is getting long. Wrap up now before this context overflows: finish what's in hand, or \`crtr node promote\` immediately if substantial work remains, otherwise continue in a fresh \`crtr\`.`;
+  }
+
+  // terminal — a worker.
+  const suggest = `If much more work remains than this context can finish, consider \`crtr node promote\` to become an orchestrator (seeds a roadmap, lets you delegate and \`crtr node yield\` to refresh).`;
+  if (at < 170_000) return `Context ~${k}k. ${suggest}`;
+  if (!pushy) {
+    return `Context ~${k}k. ${suggest} If you're nearly done, ignore this suggestion and finish with \`crtr push final\`.`;
+  }
+  return `Context ~${k}k — this is getting long. Wrap up now: \`crtr push final\` if you're close, otherwise \`crtr node promote\` immediately to continue as an orchestrator instead of overflowing this context.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -220,17 +287,21 @@ export function registerCanvasStophook(pi: PiLike): void {
 
   const jobDirPath = jobDir(nodeId);
 
-  // Running totals across all turns in this pi session. Both turn_end and
-  // agent_end accumulate so tokens emitted in the final partial turn (if pi
-  // fires agent_end without a preceding turn_end for it) are captured.
+  // Cumulative throughput across all turns in this pi session, for telemetry
+  // (job/telemetry.json) only — both turn_end and agent_end accumulate so tokens
+  // emitted in the final partial turn (if pi fires agent_end without a preceding
+  // turn_end for it) are captured. NOT used for context-size steering: that is a
+  // per-turn gauge (see contextTokens), not a running sum.
   let totalIn = 0;
   let totalOut = 0;
   let model = '';
 
   // Context-size steering. As input context grows we nudge the node once per
-  // band on an escalating, mode-specific schedule (see steerBand/steerNote).
-  // Mode is read at fire time since a base worker can promote mid-session: an
-  // orchestrator is steered to checkpoint + yield; a base worker to promote.
+  // band on an escalating, persona-specific schedule (see steerBand/steerNote).
+  // The node's (lifecycle, mode) persona is read at fire time, since a terminal
+  // worker can promote mid-session: a resident orchestrator is steered to
+  // checkpoint roadmap + yield; a resident base (root chat) to promote-or-wrap-
+  // up (it has no roadmap); a terminal worker to promote / push final.
   const firedBands = new Set<number>();
 
   // ---------------------------------------------------------------------------
@@ -253,18 +324,35 @@ export function registerCanvasStophook(pi: PiLike): void {
       if (typeof id !== 'string' || id === '') return;
 
       if (boundSessionId === null) {
-        // Boot: bind this process to its session id.
+        // Boot: bind this process to its session id, record our OS pid (the
+        // daemon's liveness signal for inline roots whose window outlives pi),
+        // and CONFIRM any pending refresh-yield. Reaching session_start proves a
+        // fresh pi actually booted, so it is now safe to clear intent='refresh'.
+        // reviveInPlace deliberately leaves intent set: the detached respawn it
+        // dispatches can't confirm itself (it kills the caller mid-flight), so a
+        // real boot is the only thing allowed to clear it — otherwise a failed
+        // respawn would look identical to a successful one.
         boundSessionId = id;
         const existing = getNode(nodeId);
-        if (existing?.pi_session_id !== id) updateNode(nodeId, { pi_session_id: id });
+        updateNode(nodeId, {
+          pi_pid: process.pid,
+          pi_session_id: id,
+          ...(existing?.intent === 'refresh' ? { intent: null } : {}),
+        });
         return;
       }
 
       if (id === boundSessionId) return; // reload of the same conversation
 
-      // A new session id in the same process = `/new`. Brand-new graph.
+      // A new session id in the same process = `/new`. Route it: a non-root
+      // child refreshes its session id; a ROOT in a tmux pane RELAUNCHES (parks
+      // the old root + boots a fresh node in this pane via respawn-pane -k,
+      // which tears down THIS pi); a root with no pane falls back to an in-place
+      // reset. The relaunch's detached respawn may kill this pi before the
+      // lines after the call run — that's fine (same as the refresh-yield path);
+      // do not rely on anything after handleNewSession.
       boundSessionId = id;
-      try { resetRoot(nodeId, id); } catch { /* best-effort */ }
+      try { handleNewSession(nodeId, id, process.env['TMUX_PANE']); } catch { /* best-effort */ }
       // Clear in-memory context-steering so the fresh conversation starts clean.
       totalIn = 0;
       totalOut = 0;
@@ -272,6 +360,25 @@ export function registerCanvasStophook(pi: PiLike): void {
     } catch {
       /* best-effort; never surface from an extension handler */
     }
+  });
+
+  // ---------------------------------------------------------------------------
+  // session_shutdown — clean exit → done.
+  //
+  // pi hands us a reason as a session tears down. Only 'quit' is a node-ending
+  // event we record (markCleanExitDone guards against clobbering a node
+  // agent_end already routed to done/refresh/idle-release). 'new' is owned by
+  // the session_start trigger above; reload/resume/fork keep the SAME node id on
+  // a swapped conversation. A true crash fires NO session_shutdown and falls
+  // through to the daemon's window-gone 'dead'.
+  //
+  // MUST stay synchronous (no await): the synchronous DatabaseSync write then
+  // lands within pi's awaited shutdown emit, before pi exits.
+  // ---------------------------------------------------------------------------
+  pi.on('session_shutdown', (event: any, _ctx: any): void => {
+    try {
+      if (markCleanExitDone(nodeId, event?.reason)) restoreFocusToManager(nodeId);
+    } catch { /* best-effort; never throw out of an extension handler */ }
   });
 
   /** Absorb usage + model from any assistant message (turn or final batch). */
@@ -286,22 +393,54 @@ export function registerCanvasStophook(pi: PiLike): void {
   // turn_end — live telemetry refresh.
   // event shape: { message: AssistantMessage, ... }
   // ---------------------------------------------------------------------------
-  pi.on('turn_end', (event: any): void => {
+  pi.on('turn_end', (event: any, ctx: any): void => {
     accumulate(event?.message);
     // Fire-and-forget: flushTelemetry uses synchronous fs writes and never throws.
     flushTelemetry(jobDirPath, totalIn, totalOut, model);
 
-    // Context-size steering: fire the current band once, with mode-specific
-    // guidance (mode is read live — a worker may have promoted since launch).
+    // Context-size steering: fire the current band once, with lifecycle-specific
+    // guidance (lifecycle is read live — a terminal worker may have promoted to
+    // resident since launch).
+    // Delivered as a STEER, not a followUp: guidance to become an orchestrator /
+    // delegate / yield must redirect the node at the turn boundary, not queue
+    // behind whatever it does next (where it rides along, easy to ignore).
+    // Gauge on the CURRENT context size via ctx.getContextUsage() — the exact
+    // figure pi's footer shows (same method). Never the cumulative totalIn: under
+    // prompt caching that never grows (input is a ~2-token uncached delta each
+    // turn), so the bands were unreachable and the nudge never fired.
+    //   .tokens is null/undefined only when pi can't know the size yet (no model,
+    //   or right after a compaction before the next reply) — we just skip steering
+    //   that turn and the next turn fires.
     try {
-      const mode = getNode(nodeId)?.mode ?? 'base';
-      const at = steerBand(totalIn, mode);
+      const node = getNode(nodeId);
+      const lifecycle = node?.lifecycle ?? 'terminal';
+      const mode = node?.mode ?? 'base';
+      const tokens = ctx.getContextUsage()?.tokens;
+      const at = typeof tokens === 'number' ? steerBand(tokens) : null;
       if (at !== null && !firedBands.has(at)) {
         firedBands.add(at);
-        pi.sendUserMessage(`[crtr] ${steerNote(at, mode)}`, { deliverAs: 'followUp' });
+        pi.sendUserMessage(`[crtr] ${steerNote(at, lifecycle, mode)}`, { deliverAs: 'steer' });
       }
     } catch {
       /* steering is best-effort */
+    }
+
+    // Persona-transition steering. When this node's mode or lifecycle changed
+    // since it was last GIVEN guidance (it ran `crtr node promote` / `node
+    // lifecycle` this turn, or a sibling/human flipped it while the node was
+    // active), inject the guidance for its NEW persona once, then commit the
+    // ack so the next turn sees no drift. This is the single delivery site for
+    // in-session transitions — state-changing commands never hand-emit guidance.
+    // Delivered as a STEER (like the context nudge): a persona change must
+    // redirect the node at the turn boundary, not queue behind its next action.
+    try {
+      const drift = personaDrift(nodeId);
+      if (drift !== null) {
+        pi.sendUserMessage(drift.guidance, { deliverAs: 'steer' });
+        commitPersonaAck(nodeId, drift.to);
+      }
+    } catch {
+      /* persona steering is best-effort */
     }
   });
 
