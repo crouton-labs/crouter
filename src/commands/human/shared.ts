@@ -87,9 +87,28 @@ export function spawnHumanJob(
   };
 }
 
-/** Best-effort kill of a detached TUI pane. No-op (and never throws) when the
- *  pane is already gone or tmux is unavailable — `human cancel` is best-effort. */
-export function killPane(paneId: string): boolean {
+/**
+ * Best-effort kill of a humanloop worker pane. SAFETY-CRITICAL: a malformed or
+ * empty `-t` target makes tmux fall back to the CALLER's current pane, so a bad
+ * paneId could kill the agent's own pi pane (and, if it is the last pane, the
+ * whole session). This refuses to kill anything that is not provably the worker:
+ *
+ *   1. paneId must be a real tmux pane id (`%<n>`) — never an empty/odd string.
+ *   2. The pane's start command must contain `verify` (the interaction dir, which
+ *      humanloop bakes into the worker's `CRTR_HUMAN_DIR=... crtr human _run`
+ *      launch). A shell (`zsh -l`) or the agent's pi never matches, so we can
+ *      only ever kill the exact worker we spawned for this job.
+ *
+ * Returns true only when a matching pane was found and killed. Never throws.
+ */
+export function killPane(paneId: string, verify: string): boolean {
+  if (!/^%\d+$/.test(paneId)) return false;
+  const probe = spawnSync('tmux', ['display-message', '-p', '-t', paneId, '#{pane_start_command}'], {
+    encoding: 'utf8',
+  });
+  // Pane is gone (status !== 0) → nothing to kill. Pane exists but its launch
+  // command doesn't carry our interaction dir → it is NOT our worker; refuse.
+  if (probe.status !== 0 || !probe.stdout.includes(verify)) return false;
   const r = spawnSync('tmux', ['kill-pane', '-t', paneId], { encoding: 'utf8' });
   return r.status === 0;
 }

@@ -148,8 +148,11 @@ export const humanCancel = defineLeaf({
 
     // (1) Kill the detached TUI pane so the prompt leaves the human's screen and
     //     any blocking `human review` caller unblocks (pane death → 'closed').
+    //     Pass `idir` so killPane only fires when the target pane is provably the
+    //     worker we spawned for THIS job (its launch command carries CRTR_HUMAN_DIR
+    //     =idir) — never the agent's own pane or a shell.
     const rc = readJson<RunRecord>(join(idir, 'run.json'));
-    if (rc?.pane_id !== undefined) killPane(rc.pane_id);
+    if (rc?.pane_id !== undefined && rc.pane_id !== '') killPane(rc.pane_id, idir);
 
     // (2) Drop it from the human queue: a response.json marks the dir resolved,
     //     so scanInbox (human list/inbox) skips it.
