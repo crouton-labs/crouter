@@ -66,7 +66,7 @@ test('resetRoot empties the root view, reaps descendants, and wipes working stat
 
   assert.equal(view('root').length, 2, 'precondition: root sees 2 descendants');
 
-  const res = resetRoot('root', 'new-sess');
+  const res = resetRoot('root', 'new-sess', '/abs/sessions/new.jsonl');
 
   assert.equal(res.reset, true);
   assert.deepEqual(res.detached, ['child'], 'root detaches its direct subscription');
@@ -76,9 +76,9 @@ test('resetRoot empties the root view, reaps descendants, and wipes working stat
   assert.equal(view('root').length, 0, 'root view is empty after reset');
   assert.equal(subscriptionsOf('root').length, 0, 'no outgoing edges remain');
 
-  // Descendants are dead (daemon will skip them).
-  assert.equal(getNode('child')?.status, 'dead');
-  assert.equal(getNode('grand')?.status, 'dead');
+  // Descendants are done (clean teardown, not a fault; daemon skips them).
+  assert.equal(getNode('child')?.status, 'done');
+  assert.equal(getNode('grand')?.status, 'done');
 
   // Working state wiped.
   assert.equal(existsSync(roadmapPath('root')), false, 'roadmap wiped');
@@ -91,6 +91,7 @@ test('resetRoot empties the root view, reaps descendants, and wipes working stat
   assert.equal(root?.status, 'active');
   assert.equal(root?.intent, null);
   assert.equal(root?.pi_session_id, 'new-sess');
+  assert.equal(root?.pi_session_file, '/abs/sessions/new.jsonl', 'session FILE rebound too');
   assert.ok(root?.launch, 'a fresh base launch spec was written');
 });
 
@@ -100,12 +101,13 @@ test('resetRoot on a non-root only refreshes the session id (no reap)', () => {
   subscribe('root', 'child', true);
   subscribe('child', 'root', false); // contrived: ensure child has an outgoing edge
 
-  const res = resetRoot('child', 'fresh');
+  const res = resetRoot('child', 'fresh', '/abs/sessions/fresh.jsonl');
 
   assert.equal(res.reset, false, 'a non-root is not a graph reset');
   assert.deepEqual(res.reaped, []);
   assert.deepEqual(res.detached, []);
   assert.equal(getNode('child')?.pi_session_id, 'fresh', 'session id still refreshed');
+  assert.equal(getNode('child')?.pi_session_file, '/abs/sessions/fresh.jsonl', 'session FILE refreshed too');
   assert.equal(getNode('child')?.status, 'active', 'child not reaped');
   // The root that subscribes to the child is untouched.
   assert.equal(getNode('root')?.status, 'active');
@@ -126,10 +128,10 @@ test('reaped descendants keep their meta on disk (orphaned, not deleted)', () =>
 
   resetRoot('root', 'new');
 
-  // The node record persists (we detach + mark dead, we don't delete the node).
+  // The node record persists (we detach + mark done, we don't delete the node).
   const child = getNode('child');
   assert.ok(child, 'child meta still on disk');
-  assert.equal(child?.status, 'dead');
+  assert.equal(child?.status, 'done');
   // It is just unreachable from the root.
   assert.equal(view('root').length, 0);
 });

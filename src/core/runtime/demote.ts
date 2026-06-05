@@ -15,7 +15,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { getNode, updateNode, type NodeMeta } from '../canvas/index.js';
+import { getNode, setPresence, type NodeMeta } from '../canvas/index.js';
 import { reportsDir } from '../canvas/paths.js';
 import { pushFinal } from '../feed/feed.js';
 import { spawnNode } from './nodes.js';
@@ -82,7 +82,7 @@ export async function demoteNode(nodeId: string, callerPane?: string): Promise<D
   } catch { /* recycle the pane even if the report failed */ }
 
   // The demoted node no longer holds a window — the pane is being reclaimed.
-  try { updateNode(nodeId, { window: null, tmux_session: null }); } catch { /* best-effort */ }
+  try { setPresence(nodeId, { window: null, tmux_session: null }); } catch { /* best-effort */ }
   if (getFocus() === nodeId) setFocus('');
 
   // 2 + 3. Recycle — boot a fresh resident root in the SAME pane.
@@ -98,7 +98,7 @@ export async function demoteNode(nodeId: string, callerPane?: string): Promise<D
     parent: null,
     launch,
   });
-  if (loc !== null) updateNode(root.node_id, { tmux_session: loc.session, window: loc.window });
+  if (loc !== null) setPresence(root.node_id, { tmux_session: loc.session, window: loc.window });
   const fresh = getNode(root.node_id) as NodeMeta;
   const inv = buildPiArgv(fresh);
   const env = { ...inv.env, CRTR_ROOT_SESSION: nodeSession(), [FRONT_DOOR_ENV]: '1' };

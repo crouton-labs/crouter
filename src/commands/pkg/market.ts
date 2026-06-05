@@ -4,14 +4,12 @@ import { marketInspectBranch } from './market-inspect.js';
 
 export const marketBranch = defineBranch({
   name: 'market',
+  description: 'manage marketplace sources and install from them',
+  whenToUse: 'using curated plugin collections instead of raw git URLs — register a marketplace, browse its index of plugins, then install them by name. Use `pkg plugin` instead when you already have a specific git URL or local plugin to install directly, or when inspecting and toggling plugins that are already installed',
   help: {
     name: 'pkg market',
     summary: 'manage and browse plugin marketplaces',
     model: 'Marketplaces are git repos containing a .crouter-marketplace/marketplace.json index of plugins.',
-    children: [
-      { name: 'manage', desc: 'add, remove, update, install', useWhen: 'changing marketplace or marketplace-sourced plugin state' },
-      { name: 'inspect', desc: 'list or browse marketplaces', useWhen: 'reading marketplace metadata' },
-    ],
   },
   children: [marketManageBranch, marketInspectBranch],
 });

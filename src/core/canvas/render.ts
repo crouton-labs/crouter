@@ -17,6 +17,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { getNode, listNodes, subscriptionsOf, view } from './canvas.js';
+import { fullName } from './labels.js';
 import { jobDir } from './paths.js';
 import { countAsks } from './attention.js';
 import type { NodeStatus } from './types.js';
@@ -26,10 +27,11 @@ import type { NodeStatus } from './types.js';
 // ---------------------------------------------------------------------------
 
 const STATUS_GLYPH: Record<NodeStatus, string> = {
-  active: '●',
-  idle:   '○',
-  done:   '✓',
-  dead:   '✗',
+  active:   '●',
+  idle:     '○',
+  done:     '✓',
+  dead:     '✗',
+  canceled: '⊘',
 };
 
 // ---------------------------------------------------------------------------
@@ -74,7 +76,7 @@ function nodeLine(nodeId: string, indent: string, connector: string): string {
   const asks = countAsks(nodeId);
   const askSuffix = asks > 0 ? ` ⚑${asks}` : '';
 
-  return `${indent}${connector}${glyph} ${node.name} [${node.kind}/${node.mode}] ctx ${ctx}${askSuffix}`;
+  return `${indent}${connector}${glyph} ${fullName(node)} [${node.kind}/${node.mode}] ctx ${ctx}${askSuffix}`;
 }
 
 /**
@@ -141,7 +143,7 @@ export function renderTree(rootId: string): string {
   const glyph = STATUS_GLYPH[node.status] ?? '?';
 
   const out: string[] = [];
-  out.push(`${glyph} ${node.name} [${node.kind}/${node.mode}] ctx ${ctx}${askSuffix}`);
+  out.push(`${glyph} ${fullName(node)} [${node.kind}/${node.mode}] ctx ${ctx}${askSuffix}`);
 
   // visited starts with root already rendered (walkTree doesn't re-emit root).
   const visited = new Set<string>([rootId]);
@@ -172,16 +174,27 @@ export function renderForest(): string {
   // a spawned_by edge + subscribe). Fall back to parent===null because querying
   // the full edge table would require opening the db here.
   //
-  // Fine to use parent===null: roots are created by `node session` / `node new`
+  // Fine to use parent===null: roots are created by bare `crtr` / `node new --root`
   // without a parent; non-roots always have a parent.
-  const roots = all.filter((n) => n.parent === null);
+  //
+  // Filter to LIVE roots: each `/new` parks a `done` root (option C relaunch)
+  // with parent===null, so an unfiltered forest would render every parked root
+  // as a sibling tree and clutter the dashboard. Showing only active|idle roots
+  // drops parked (`done`) roots and, as a bonus, stray `dead`/`canceled` roots.
+  // Parked roots stay reachable by id (inspect / revive / focus).
+  const roots = all.filter(
+    (n) => n.parent === null && (n.status === 'active' || n.status === 'idle'),
+  );
 
-  // If for some reason we have no parent===null nodes (unusual: e.g., all nodes
-  // were created by hand with a parent), fall back to all nodes.
-  const renderRoots = roots.length > 0 ? roots : all;
+  // No LIVE roots: render an empty/placeholder forest rather than resurrecting
+  // parked (`done`) / dead / canceled roots. The live-only filter is the intent;
+  // falling back to all-status roots would re-clutter the dashboard with the very
+  // parked trees the filter drops (e.g. a sole root `/quit`'d with no `/new`).
+  // Parked roots stay reachable by id (inspect / revive / focus).
+  if (roots.length === 0) return '(no live roots)';
 
   const parts: string[] = [];
-  for (const r of renderRoots) {
+  for (const r of roots) {
     parts.push(renderTree(r.node_id));
   }
   return parts.join('\n\n');
@@ -210,7 +223,7 @@ export function dashboardRows(rootId: string): DashboardRow[] {
     const tel = readNodeTelemetry(id);
     return [{
       node_id: id,
-      name: node.name,
+      name: fullName(node),
       status: node.status,
       kind: node.kind,
       mode: node.mode,
@@ -224,9 +237,12 @@ export function dashboardRows(rootId: string): DashboardRow[] {
 export function dashboardRowsAll(): DashboardRow[] {
   return listNodes().flatMap((row) => {
     const tel = readNodeTelemetry(row.node_id);
+    // listNodes() returns the db projection (no description); read the meta to
+    // get the full label. Falls back to the row name if the meta is gone.
+    const meta = getNode(row.node_id);
     return [{
       node_id: row.node_id,
-      name: row.name,
+      name: meta !== null ? fullName(meta) : row.name,
       status: row.status,
       kind: row.kind,
       mode: row.mode,

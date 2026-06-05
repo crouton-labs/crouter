@@ -102,6 +102,6 @@ export function maybeBootRoot(root: RootDef, argv: string[]): boolean {
   // Unambiguous front-door launch → boot a resident root inline (exec pi in
   // this terminal). Does not return.
   const args = parseRootArgs(tokens);
-  bootRoot({ ...args, placement: 'inline' });
+  bootRoot({ ...args });
   return true;
 }

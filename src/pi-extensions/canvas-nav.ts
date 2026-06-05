@@ -1,34 +1,32 @@
 // canvas-nav.ts — pi extension for pi-native canvas agent nodes.
 //
-// Renders a navigable "spine" of the node graph as chrome around the editor.
-// The editor itself is "you"; the three lanes are your neighbours, stacked so
-// the spine reads top→bottom (managers · peers · you · reports):
+// A BASE/GRAPH state machine drawn as chrome around the editor. The editor is
+// "you" (this node); the chrome shows your place in the canvas graph.
 //
-//   ABOVE EDITOR  crtr-asks      ⚑ N waiting                    (only when N > 0)
-//   ABOVE EDITOR  crtr-managers  ↑ managers  <name> ●  …   (or  ↑ (root))
-//   ABOVE EDITOR  crtr-siblings  ↔ peers     <name> ○  …        (omitted when none)
-//   ───────────── EDITOR (you) ─────────────
-//   BELOW EDITOR  crtr-reports   ↓ reports   <name> ○  …  · ctx <k>
+//   BASE  (default, passive) — a vertical stack: your manager above the editor,
+//         your live reports below it. Captures NO keys; typing is never touched.
 //
-// Navigation (only on an EMPTY editor, so composing is never disturbed):
-//   Alt+k → managers (up)      Alt+j → reports (down)
-//   Alt+h / Alt+l → peers (left / right)
-//   ↵ focus the selected node · esc clears the selection
-// Selection is shown by weight + a ▸ caret — NOT the status dot (which encodes
-// active ● / idle ○ / done ✓ / dead ✗) and not colour alone, so it reads under
-// NO_COLOR and on any background.
+//   GRAPH (modal, opt-in) — a NERDTree-style tree of your local graph (ancestry
+//         root → you → your subtree, with peers) drawn into one tall widget.
+//         While in GRAPH the extension consumes EVERY key and interprets it:
+//           j/k move · h/l fold · g/G top/bottom · ↵ focus · m focus manager ·
+//           e expand→tmux · x kill (y/n confirm) · esc back to BASE
+//         plus any user-defined graphBinds (additive; built-ins are reserved).
 //
-// INERT when CRTR_NODE_ID is absent (plain pi session or legacy job agent).
+// Enter/leave GRAPH with the `/graph` slash command, the `prefixKey` shortcut
+// (default alt+g, configurable), or the tmux alt+c menu's `g` item. Inside tmux
+// alt+c is a tmux display-menu (not a pi key), so prefix chords (m/e/1-9/custom)
+// are tmux menu items that route through `crtr canvas chord`.
 //
-// Refresh triggers:
-//   • session_start — initial paint once we have a ctx.ui handle
-//   • turn_end      — statuses may have changed during the turn
-//   • background timer (ASK_POLL_MS) — polls `crtr canvas attention count` and
-//     repaints whenever the count changes
+// Two selection signals, both NO_COLOR-safe:
+//   SELF row = reverse video (ESC[7m), full width — an attribute, not a color.
+//   CURSOR   = ▸ + bold on the row. Status stays on the colored dot.
 //
-// Double-timer prevention (copied from canvas-inbox-watcher):
-//   `liveTimer` is module-level. A /reload re-enters this factory and clears
-//   the previous interval before starting a new one — exactly one timer lives.
+// ⚑K pending-asks is PER-NODE, inline on each waiting node's own row (manager,
+// reports, tree rows; self shows a trailing ⚑ line in BASE). ⤳M direct-children
+// badge shows only on orchestrator rows.
+//
+// INERT when CRTR_NODE_ID is absent (a plain pi session or legacy job agent).
 //
 // Plain TS-with-types — no imports from @earendil-works/* so this compiles
 // inside crouter's own tsc build without a dep on the pi packages.
@@ -37,37 +35,33 @@ import { execFile, execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { getNode, subscribersOf, subscriptionsOf, jobDir } from '../core/canvas/index.js';
+import { getNode, subscribersOf, subscriptionsOf, jobDir, fullName } from '../core/canvas/index.js';
 import type { NodeMeta } from '../core/canvas/index.js';
+import { readConfig } from '../core/config.js';
+import type { CanvasNavConfig, CanvasBind } from '../types.js';
 
 // ---------------------------------------------------------------------------
-// Minimal PiLike interface (avoids hard dep on @earendil-works/*)
+// Minimal PiLike interface (avoids a hard dep on @earendil-works/*)
 //
-// Exact signatures sourced from:
-//   /opt/homebrew/lib/node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/types.d.ts
-//
-//   export type WidgetPlacement = "aboveEditor" | "belowEditor";
-//   export interface ExtensionWidgetOptions { placement?: WidgetPlacement; }
-//   setWidget(key: string, content: string[] | undefined, options?: ExtensionWidgetOptions): void;
+// Signatures sourced from pi-coding-agent's
+//   dist/core/extensions/types.d.ts (setWidget / onTerminalInput / getEditorText)
+//   docs/extensions.md (registerCommand / registerShortcut)
 // ---------------------------------------------------------------------------
 
 type PiEvents = 'session_start' | 'turn_end' | 'session_shutdown';
 
 interface ExtensionWidgetOptions {
-  /** Where the widget is rendered. "aboveEditor" | "belowEditor" */
   placement?: 'aboveEditor' | 'belowEditor';
 }
 
 interface UIContext {
   setWidget(key: string, content: string[] | undefined, options?: ExtensionWidgetOptions): void;
   /** Raw key tap that fires BEFORE the editor. Return {consume:true} to swallow
-   *  the key (so e.g. UP doesn't trigger pi's history recall). Returns unsub. */
+   *  the key. Returns an unsub. */
   onTerminalInput?(
     handler: (data: string) => { consume?: boolean; data?: string } | undefined,
   ): () => void;
-  /** Current editor buffer text — used to only hijack keys on an empty editor. */
   getEditorText?(): string;
-  /** Transient toast, used to report a failed focus. */
   notify?(message: string, type?: 'info' | 'warning' | 'error'): void;
 }
 
@@ -75,12 +69,25 @@ interface ExtensionCtx {
   ui: UIContext;
 }
 
+interface CommandCtx {
+  ui: UIContext;
+}
+
 interface PiLike {
   on(event: PiEvents, handler: (event: any, ctx: ExtensionCtx) => void | Promise<void>): void;
+  registerCommand?(
+    name: string,
+    options: { description?: string; handler: (args: string, ctx: CommandCtx) => void | Promise<void> },
+  ): void;
+  registerShortcut?(
+    shortcut: string,
+    options: { description?: string; handler: (ctx: CommandCtx) => void | Promise<void> },
+  ): void;
 }
 
 // ---------------------------------------------------------------------------
-// Module-level state — persist across /reload to prevent stacking
+// Module-level state — persists across /reload so guards don't stack and fold
+// state / current view survive a hot-swap.
 // ---------------------------------------------------------------------------
 
 /** The one live background timer. Cleared and replaced on every re-registration. */
@@ -90,29 +97,49 @@ let liveTimer: ReturnType<typeof setInterval> | undefined;
  *  exactly one key tap exists (mirrors the liveTimer double-guard). */
 let liveUnsub: (() => void) | undefined;
 
-/** Last-known ask count — cached across renders so the UI stays cheap. */
-let cachedAskCount = 0;
+/** Current view. Reset to 'base' on every session_start (incl. /reload). */
+type View = 'base' | 'graph';
+let view: View = 'base';
+
+/** Fold state — node ids whose children are hidden in GRAPH. Survives renders
+ *  AND BASE↔GRAPH toggles. Keyed by id so a topology change never corrupts it;
+ *  stale ids are harmless (ignored when absent). */
+const collapsed = new Set<string>();
+
+/** GRAPH cursor (a node id, not an index — indices shift as topology changes). */
+let cursorId: string | undefined;
+
+/** GRAPH viewport scroll offset (row index of the top visible row). */
+let scrollTop = 0;
+
+/** Transient y/n confirm gate inside GRAPH (kill / confirm-binds). */
+let pendingConfirm: { label: string; action: () => void } | undefined;
+
+/** Per-node pending-ask counts, refreshed by the timer; renders read this. */
+let asksMap: Record<string, number> = {};
 
 // ---------------------------------------------------------------------------
 // Tuning constants
 // ---------------------------------------------------------------------------
 
-const ASK_POLL_MS = 5_000;    // how often to shell out for ask count
-const RENDER_DEBOUNCE_MS = 150; // coalesce rapid turn_end bursts
+const ASK_POLL_MS = 5_000;
+const RENDER_DEBOUNCE_MS = 150;
+const VIEWPORT_MAX = 30;
+const VIEWPORT_FALLBACK_ROWS = 30;
 
 // ---------------------------------------------------------------------------
-// ANSI styling. pi wraps widget string[] lines in Text components that render
-// embedded escapes (the same path used internally for theme.fg(...)), and it
-// measures width with an ANSI-aware visibleWidth — so raw escapes are safe here
-// and need no pi-tui dependency. Selection uses theme-agnostic attributes
-// (bold/dim weight + a ▸ caret) so it pops on any terminal; status uses the
-// standard 8 colors on the dot, which read on both light and dark backgrounds.
+// ANSI styling. pi renders embedded escapes in widget lines and measures width
+// ANSI-aware, so raw escapes are safe and need no pi-tui dependency. Selection
+// uses theme-agnostic ATTRIBUTES (reverse / bold), never colour alone, so it
+// reads under NO_COLOR and on any background; status uses the standard 8 colors
+// on the dot only.
 // ---------------------------------------------------------------------------
 
 const ESC = '\x1b[';
 const RESET = `${ESC}0m`;
 const BOLD = `${ESC}1m`;
 const DIM = `${ESC}2m`;
+const REVERSE = `${ESC}7m`;
 const GREEN = `${ESC}32m`;
 const RED = `${ESC}31m`;
 const YELLOW = `${ESC}33m`;
@@ -127,13 +154,10 @@ function coloredGlyph(node: NodeMeta | null): string {
     case 'idle':   return `${GRAY}○${RESET}`;
     case 'done':   return `${CYAN}✓${RESET}`;
     case 'dead':   return `${RED}✗${RESET}`;
+    case 'canceled': return `${YELLOW}⊘${RESET}`;
     default:       return '?';
   }
 }
-
-// ---------------------------------------------------------------------------
-// ANSI-aware truncation — single-row, no pi-tui dep
-// ---------------------------------------------------------------------------
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 
@@ -145,7 +169,7 @@ function visibleWidth(s: string): number {
 /** Truncate to `max` VISIBLE columns: escape sequences are copied through
  *  verbatim (so a cut never lands mid-escape) and the result always ends in
  *  RESET, so a clipped style can't bleed into the editor below. */
-function truncate(s: string, max = 180): string {
+function truncate(s: string, max = fillWidth()): string {
   if (visibleWidth(s) <= max) return s;
   let out = '';
   let w = 0;
@@ -162,15 +186,35 @@ function truncate(s: string, max = 180): string {
   return `${out}…${RESET}`;
 }
 
+/** Visible columns available to ONE widget line — the cap for every line we
+ *  emit, and the width a full-width reverse-video SELF bar fills to.
+ *
+ *  pi does NOT clip widget lines; it WRAPS them. Each string line is wrapped in
+ *  a `Text(paddingX = 1)` inside a full-terminal-width container, so the usable
+ *  content width is `columns - 2` (a 1-col margin on each side). A line wider
+ *  than that wraps, and the overflow spills onto a second row as a stray
+ *  reverse-video block (the bug this guards against). Clamp to `columns - 2`. */
+function fillWidth(): number {
+  return Math.max(20, Math.min((process.stdout.columns ?? 80) - 2, 180));
+}
+
+/** Wrap `content` in a full-width reverse-video bar. REVERSE is re-asserted
+ *  after every embedded RESET so a colored cell (the status dot) doesn't punch
+ *  a hole in the bar; the visible width is padded out to `width`; the line
+ *  closes with a real RESET. */
+function reverseFill(content: string, width: number): string {
+  const clipped = truncate(content, width);
+  const reasserted = clipped.replace(/\x1b\[0m/g, `${RESET}${REVERSE}`);
+  const pad = Math.max(0, width - visibleWidth(clipped));
+  return `${REVERSE}${reasserted}${' '.repeat(pad)}${RESET}`;
+}
+
 // ---------------------------------------------------------------------------
 // Telemetry
 // ---------------------------------------------------------------------------
 
 interface Telemetry {
   tokens_in?: number;
-  tokens_out?: number;
-  model?: string;
-  updated_at?: string;
 }
 
 function readTelemetry(nodeId: string): Telemetry {
@@ -187,170 +231,176 @@ function fmtTokens(n: number): string {
   return n < 1_000 ? `${n}` : `${Math.round(n / 1_000)}k`;
 }
 
+function tokensCell(id: string): string {
+  return fmtTokens(readTelemetry(id).tokens_in ?? 0);
+}
+
+function shortId(id: string): string {
+  return id.slice(0, 8);
+}
+
 // ---------------------------------------------------------------------------
-// Ask count — shells out synchronously with a tight timeout so the timer
-// callback is cheap (< 2 s). Result is cached; the UI reads only the cache.
+// Per-node ask counts — ONE shell-out per poll. `crtr canvas attention map`
+// buckets a whole sub-DAG's pending asks by node in a single process, so the
+// timer stays cheap (< 2 s) regardless of how many nodes are visible. --json
+// gives a parseable {counts} blob (the default render is XML chrome).
 // ---------------------------------------------------------------------------
 
-function fetchAskCount(nodeId: string): number {
+function fetchAsksMap(rootId: string): Record<string, number> {
   try {
-    const raw = execFileSync('crtr', ['canvas', 'attention', 'count', '--node', nodeId], {
-      timeout: 2_000,
+    const raw = execFileSync('crtr', ['canvas', 'attention', 'map', '--view', rootId, '--json'], {
+      timeout: 2_500,
       encoding: 'utf8',
     });
-    const parsed = JSON.parse(raw.trim()) as { count?: unknown };
-    return typeof parsed.count === 'number' ? parsed.count : 0;
+    const parsed = JSON.parse(raw.trim()) as { counts?: Record<string, number> };
+    return parsed.counts ?? {};
   } catch {
-    return 0;
+    return {};
   }
 }
 
 // ---------------------------------------------------------------------------
-// Neighbors — the navigable spine around this node
+// Graph queries (dependency-free, straight off the canvas db)
 // ---------------------------------------------------------------------------
 
-interface Neighbor {
+/** First manager (by created) — the UP step for the ancestry spine. */
+function managerOf(id: string): string | undefined {
+  try { return subscribersOf(id)[0]?.node_id; } catch { return undefined; }
+}
+
+/** Live reports (active|idle) of a node — the DOWN set in BASE. */
+function liveReports(id: string): string[] {
+  try {
+    return subscriptionsOf(id)
+      .map((s) => s.node_id)
+      .filter((cid) => {
+        const st = getNode(cid)?.status;
+        return st === 'active' || st === 'idle';
+      });
+  } catch {
+    return [];
+  }
+}
+
+/** All direct children (edges) — used for the ⤳ badge and fold counts. */
+function childCount(id: string): number {
+  try { return subscriptionsOf(id).length; } catch { return 0; }
+}
+
+/** Climb first-manager edges from `self` to the ancestry root (cycle-guarded). */
+function climbRoot(self: string): string {
+  let cur = self;
+  const seen = new Set<string>([cur]);
+  for (;;) {
+    const mgr = managerOf(cur);
+    if (mgr === undefined || seen.has(mgr)) break;
+    seen.add(mgr);
+    cur = mgr;
+  }
+  return cur;
+}
+
+/** Space-joined ids of a node's subtree (cursor-relative {subtree} var). */
+function subtreeIds(root: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>([root]);
+  const q = subscriptionsOf(root).map((s) => s.node_id);
+  while (q.length > 0) {
+    const id = q.shift() as string;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+    for (const s of subscriptionsOf(id)) if (!seen.has(s.node_id)) q.push(s.node_id);
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Shared cell builders
+// ---------------------------------------------------------------------------
+
+/** ⤳M direct-children badge — only on orchestrator rows. */
+function childBadge(node: NodeMeta | null): string {
+  if (node === null || node.mode !== 'orchestrator') return '';
+  const m = childCount(node.node_id);
+  return m > 0 ? ` ${DIM}⤳${m}${RESET}` : '';
+}
+
+/** ⚑K pending-asks badge for a node, read from the cached map. */
+function askBadge(id: string): string {
+  const k = asksMap[id] ?? 0;
+  return k > 0 ? ` ${YELLOW}⚑${k}${RESET}` : '';
+}
+
+// ---------------------------------------------------------------------------
+// GRAPH model — flatten the local graph fold-aware. Rebuilt every render (cheap
+// sqlite reads) so a finished child / new spawn shows live; `collapsed` and the
+// cursor id are the only persisted state.
+// ---------------------------------------------------------------------------
+
+interface FlatRow {
   id: string;
-  name: string;
-  node: NodeMeta | null;
+  hasKids: boolean;
+  isSelf: boolean;
+  branch: string; // tree connector prefix drawn before the caret/dot
+  cycle: boolean; // a re-encountered id (back-ref), not recursed into
 }
 
-function toNeighbor(refId: string): Neighbor {
-  const node = getNode(refId);
-  return { id: refId, name: node?.name ?? refId.slice(0, 8), node };
-}
+function buildGraphModel(self: string): FlatRow[] {
+  const rootId = climbRoot(self);
+  const rows: FlatRow[] = [];
+  const visited = new Set<string>();
 
-/** Managers — who this node reports up to (the UP direction). */
-function managersOf(nodeId: string): Neighbor[] {
-  try {
-    return subscribersOf(nodeId).map((ref) => toNeighbor(ref.node_id));
-  } catch {
-    return [];
-  }
-}
-
-/** Live reports — children (the DOWN direction). Finished/dead workers fall
- *  off: a terminal agent that's done its job no longer needs a chrome slot. */
-function reportsOf(nodeId: string): Neighbor[] {
-  try {
-    return subscriptionsOf(nodeId)
-      .map((ref) => toNeighbor(ref.node_id))
-      .filter((n) => n.node?.status === 'active' || n.node?.status === 'idle');
-  } catch {
-    return [];
-  }
-}
-
-/** Peers — other live reports of this node's managers (the SIDE direction):
- *  nodes that share a manager with us, minus ourselves. Deduped across multiple
- *  managers; like reports, only active/idle peers earn a chrome slot. */
-function siblingsOf(nodeId: string): Neighbor[] {
-  try {
-    const seen = new Set<string>([nodeId]);
-    const out: Neighbor[] = [];
-    for (const mgr of subscribersOf(nodeId)) {
-      for (const ref of subscriptionsOf(mgr.node_id)) {
-        if (seen.has(ref.node_id)) continue;
-        seen.add(ref.node_id);
-        const nb = toNeighbor(ref.node_id);
-        if (nb.node?.status === 'active' || nb.node?.status === 'idle') out.push(nb);
-      }
+  const walk = (id: string, prefix: string, isRoot: boolean, isLast: boolean): void => {
+    if (visited.has(id)) {
+      const connector = isRoot ? '' : isLast ? '└─ ' : '├─ ';
+      rows.push({ id, hasKids: false, isSelf: id === self, branch: prefix + connector, cycle: true });
+      return;
     }
-    return out;
-  } catch {
-    return [];
+    visited.add(id);
+    const kids = subscriptionsOf(id).map((s) => s.node_id);
+    const connector = isRoot ? '' : isLast ? '└─ ' : '├─ ';
+    rows.push({ id, hasKids: kids.length > 0, isSelf: id === self, branch: prefix + connector, cycle: false });
+    if (collapsed.has(id)) return; // folded — don't descend
+    const childPrefix = isRoot ? '' : prefix + (isLast ? '   ' : '│  ');
+    for (let i = 0; i < kids.length; i++) walk(kids[i]!, childPrefix, false, i === kids.length - 1);
+  };
+
+  walk(rootId, '', true, true);
+  return rows;
+}
+
+/** Render one GRAPH row. SELF → reverse fill; CURSOR → ▸ + bold caret/name. */
+function renderGraphRow(r: FlatRow, isCursor: boolean): string {
+  if (r.cycle) {
+    const line = `${r.branch}  ${DIM}↺ ${shortId(r.id)}${RESET}`;
+    return r.isSelf ? reverseFill(line, fillWidth()) : truncate(line);
   }
+  const node = getNode(r.id);
+  const dot = coloredGlyph(node);
+  const rawName = node !== null ? fullName(node) : shortId(r.id);
+  const name = isCursor ? `${BOLD}${rawName}${RESET}` : rawName;
+  const kind = `${DIM}${node?.kind ?? ''}${RESET}`;
+  const tokens = `${DIM}${tokensCell(r.id)}${RESET}`;
+  const caret = isCursor ? `${BOLD}▸${RESET} ` : '  ';
+  const fold = r.hasKids && collapsed.has(r.id) ? ` ${DIM}[+${childCount(r.id)}]${RESET}` : '';
+  const line = `${r.branch}${caret}${dot} ${name} ${kind} ${tokens}${childBadge(node)}${fold}${askBadge(r.id)}`;
+  return r.isSelf ? reverseFill(line, fillWidth()) : truncate(line);
 }
+
+/** GRAPH viewport height, bounded by terminal rows (q3 fallback: a constant). */
+function viewportHeight(): number {
+  const rows = process.stdout.rows ?? VIEWPORT_FALLBACK_ROWS;
+  return Math.max(6, Math.min(rows - 6, VIEWPORT_MAX));
+}
+
+const GRAPH_HINT = `${DIM}jk move · hl fold · ↵ focus · e expand · x kill · m mgr · esc${RESET}`;
 
 // ---------------------------------------------------------------------------
-// Selection cursor — the spine is three lanes around this node:
-//   'up'   = managers  (Alt+k)        ↑ who I report to
-//   'side' = peers     (Alt+h / Alt+l) ↔ siblings sharing a manager
-//   'down' = reports   (Alt+j)        ↓ my children
-// `idx` indexes within the active lane; 'none' means nothing is selected and
-// the chrome renders calm (no caret, no focus hint).
-// ---------------------------------------------------------------------------
-
-type Lane = 'none' | 'up' | 'side' | 'down';
-interface Cursor {
-  lane: Lane;
-  idx: number;
-}
-
-const FOCUS_HINT = `${DIM}  ↵ focus · esc cancel${RESET}`;
-
-/** Dim, fixed-width lane label so the slot columns line up across rows. */
-function laneLabel(glyph: string, word: string): string {
-  return `${DIM}${glyph} ${word.padEnd(8)}${RESET}`;
-}
-
-/** One neighbor slot. Selection is carried by WEIGHT + a caret — never by the
- *  status dot (it already encodes active/idle/done/dead) and never by colour
- *  alone, so it reads under NO_COLOR and on any background:
- *    selected   → `▸ name ●`  bold, leading caret
- *    unselected → `  name ●`  dim, caret column reserved (no horizontal jitter)
- *  The trailing glyph stays status-colored in both states. */
-function slot(n: Neighbor, selected: boolean): string {
-  const glyph = coloredGlyph(n.node);
-  if (selected) return `${BOLD}▸ ${n.name}${RESET} ${glyph}`;
-  return `${DIM}  ${n.name}${RESET} ${glyph}`;
-}
-
-/** Join one lane's slots, marking the selected index and emitting the focus
- *  hint only when this lane actually holds the selection. */
-function laneSlots(neighbors: Neighbor[], selIdx: number): { body: string; hint: string } {
-  const body = neighbors.map((n, i) => slot(n, i === selIdx)).join('  ');
-  return { body, hint: selIdx >= 0 ? FOCUS_HINT : '' };
-}
-
-/** ↑ managers <slots>   (or  ↑ (root)  when this node reports to no one) */
-function buildManagersLines(managers: Neighbor[], cursor: Cursor): string[] {
-  if (managers.length === 0) return [`${DIM}↑ ${'(root)'.padEnd(8)}${RESET}`];
-  const selIdx = cursor.lane === 'up' ? cursor.idx : -1;
-  const { body, hint } = laneSlots(managers, selIdx);
-  return [truncate(`${laneLabel('↑', 'managers')} ${body}${hint}`)];
-}
-
-/** ↔ peers <slots>   (the whole row is omitted when this node has no peers) */
-function buildSiblingsLines(siblings: Neighbor[], cursor: Cursor): string[] | undefined {
-  if (siblings.length === 0) return undefined;
-  const selIdx = cursor.lane === 'side' ? cursor.idx : -1;
-  const { body, hint } = laneSlots(siblings, selIdx);
-  return [truncate(`${laneLabel('↔', 'peers')} ${body}${hint}`)];
-}
-
-/** ↓ reports <slots> · ctx <k>   (slots → (none) when this node has no reports) */
-function buildReportsLines(nodeId: string, reports: Neighbor[], cursor: Cursor): string[] {
-  const tel = readTelemetry(nodeId);
-  const ctx =
-    tel.tokens_in != null && tel.tokens_in > 0 ? `${DIM}· ctx ${fmtTokens(tel.tokens_in)}${RESET}` : '';
-  const label = laneLabel('↓', 'reports');
-
-  if (reports.length === 0) {
-    return [truncate(`${label} ${DIM}(none)${RESET}${ctx !== '' ? ` ${ctx}` : ''}`)];
-  }
-
-  const selIdx = cursor.lane === 'down' ? cursor.idx : -1;
-  const { body, hint } = laneSlots(reports, selIdx);
-  const tail = ctx !== '' ? ` ${ctx}` : '';
-  return [truncate(`${label} ${body}${tail}${hint}`)];
-}
-
-// ---------------------------------------------------------------------------
-// Key decoding — Alt+j / Alt+k reach us in different encodings depending on the
-// terminal's active keyboard protocol. pi enables the kitty / modifyOtherKeys
-// protocols, and a tmux with `extended-keys csi-u` then delivers a *modified*
-// key as a CSI-u sequence — NOT the legacy ESC-prefix form. Comparing against a
-// single literal ("\x1bj") silently fails on any such terminal, so we accept
-// every encoding:
-//
-//   legacy           ESC j                 "\x1bj"
-//   kitty / csi-u    ESC [ 106 ; 3 u       "\x1b[106;3u"     (mod 3 → alt)
-//   modifyOtherKeys  ESC [ 27 ; 3 ; 106 ~  "\x1b[27;3;106~"
-//
-// The CSI-u modifier value is `mod-1` as a bitmask (shift 1, alt 2, ctrl 4,
-// super 8, …); Alt-alone is bit 2 set with shift/ctrl/super/etc. all clear
-// (lock bits ignored). Mirrors pi-tui's own parseKey, kept dependency-free.
+// Key decoding — recognizers tolerant of legacy, kitty/CSI-u and
+// modifyOtherKeys encodings (pi enables the kitty / modifyOtherKeys protocols,
+// and tmux with `extended-keys csi-u` delivers modified keys as CSI-u, not the
+// legacy ESC-prefix form). Mirrors pi-tui's parseKey, kept dependency-free.
 // ---------------------------------------------------------------------------
 
 const CSI_U_RE = /^\x1b\[(\d+)(?::\d*)?(?::\d+)?(?:;(\d+))?(?::\d+)?u$/;
@@ -365,7 +415,7 @@ function isAltOnly(mod: number): boolean {
 /** Recognize Alt+<letter> across legacy, kitty/CSI-u and modifyOtherKeys. */
 function isAltKey(data: string, letter: string): boolean {
   const code = letter.charCodeAt(0);
-  if (data === `\x1b${letter}`) return true; // legacy ESC-prefix
+  if (data === `\x1b${letter}`) return true;
   const u = CSI_U_RE.exec(data);
   if (u !== null) {
     const mod = u[2] !== undefined ? parseInt(u[2], 10) - 1 : 0;
@@ -378,6 +428,22 @@ function isAltKey(data: string, letter: string): boolean {
   return false;
 }
 
+/** Recognize a PLAIN letter (no Alt) across the bare byte and kitty CSI-u
+ *  single-char form. Uppercase letters also match lowercase-code + Shift. */
+function isPlain(data: string, ch: string): boolean {
+  if (data === ch) return true;
+  const lower = ch.toLowerCase();
+  const needShift = ch !== lower;
+  const code = lower.charCodeAt(0);
+  const m = /^\x1b\[(\d+)(?:;(\d+))?u$/.exec(data);
+  if (m !== null) {
+    if (parseInt(m[1], 10) !== code) return false;
+    const mod = m[2] !== undefined ? parseInt(m[2], 10) - 1 : 0;
+    return needShift ? (mod & 1) !== 0 && (mod & ~1) === 0 : mod === 0;
+  }
+  return false;
+}
+
 /** Plain Enter across legacy and kitty (ESC [ 13 u). */
 function isEnterKey(data: string): boolean {
   return data === '\r' || data === '\n' || /^\x1b\[13(?:;1)?u$/.test(data);
@@ -386,6 +452,31 @@ function isEnterKey(data: string): boolean {
 /** Plain Escape across legacy and kitty (ESC [ 27 u). */
 function isEscKey(data: string): boolean {
   return data === '\x1b' || /^\x1b\[27(?:;1)?u$/.test(data);
+}
+
+/** Extract the bare letter of an `alt+<letter>` prefix spec (else undefined). */
+function altLetterOf(spec: string | undefined): string | undefined {
+  const m = /^alt\+([a-zA-Z])$/.exec(spec ?? '');
+  return m ? m[1]!.toLowerCase() : undefined;
+}
+
+// Built-in GRAPH keys are reserved; graphBinds may only ADD other keys.
+const RESERVED_GRAPH_KEYS = new Set(['j', 'k', 'h', 'l', 'g', 'G', 'm', 'e', 'x', 'y', 'n']);
+
+/** Split a `run` string argv-style and interpolate {id|self|name|manager|lane|
+ *  subtree}. A bare `{subtree}` token expands to several argv elements; every
+ *  other placeholder substitutes in place (kept as one element so a multi-word
+ *  name survives as a single argument under execFile). */
+function interpolateArgv(run: string, vars: Record<string, string>): string[] {
+  const out: string[] = [];
+  for (const tok of run.split(/\s+/).filter((t) => t !== '')) {
+    if (tok === '{subtree}') {
+      for (const part of (vars['subtree'] ?? '').split(/\s+/).filter((p) => p !== '')) out.push(part);
+      continue;
+    }
+    out.push(tok.replace(/\{(\w+)\}/g, (_, name: string) => vars[name] ?? ''));
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -404,59 +495,109 @@ export function registerCanvasNav(pi: PiLike): void {
 
   // Captured from session_start; used in every subsequent render.
   let ui: UIContext | undefined;
-
-  // Debounce flag — prevents stacked renders from rapid turn_end bursts.
   let renderScheduled = false;
 
-  // Spine cursor across the three lanes (see Lane / Cursor above): which lane
-  // is active ('none' = nothing selected, chrome calm) and the index within it.
-  // Driven by the key tap below.
-  let cursor: Cursor = { lane: 'none', idx: 0 };
+  // Cache config once (binds rarely change within a session; readConfig is sync
+  // and never throws). prefixKey drives the non-tmux GRAPH toggle shortcut.
+  let navConfig: CanvasNavConfig;
+  try { navConfig = readConfig('user').canvasNav; } catch { navConfig = { prefixBinds: {}, graphBinds: {} }; }
+  const prefixAltLetter = altLetterOf(navConfig.prefixKey);
 
   // -------------------------------------------------------------------------
-  // Core render — pushes all three widgets in one pass
+  // Renderers
   // -------------------------------------------------------------------------
-  // Re-clamp the cursor against the current lane's length (the graph may have
-  // shrunk since the last keypress); collapse to 'none' if the lane emptied.
-  const clampCursor = (managers: Neighbor[], siblings: Neighbor[], reports: Neighbor[]): void => {
-    if (cursor.lane === 'none') return;
-    const len =
-      cursor.lane === 'up' ? managers.length :
-      cursor.lane === 'side' ? siblings.length :
-      reports.length;
-    if (len === 0) { cursor = { lane: 'none', idx: 0 }; return; }
-    cursor.idx = Math.max(0, Math.min(len - 1, cursor.idx));
+
+  /** BASE: manager line above the editor, reports stack below it. */
+  const renderBase = (): void => {
+    if (ui === undefined) return;
+
+    const mgr = managerOf(nodeId);
+    if (mgr === undefined) {
+      // Root node: no manager → drop the widget rather than show "↑ (root)" chrome.
+      ui.setWidget('crtr-managers', undefined, { placement: 'aboveEditor' });
+    } else {
+      const mn = getNode(mgr);
+      const name = mn !== null ? fullName(mn) : shortId(mgr);
+      const mgrLine = truncate(
+        `↑ ${name} ${coloredGlyph(mn)} ${DIM}${mn?.kind ?? ''}${RESET} ${DIM}${tokensCell(mgr)}${RESET}${childBadge(mn)}${askBadge(mgr)}`,
+      );
+      ui.setWidget('crtr-managers', [mgrLine], { placement: 'aboveEditor' });
+    }
+
+    const reports = liveReports(nodeId);
+    const lines: string[] = [];
+    // Header + rows only when there ARE reports — skip the low-value "↓ reports (0)".
+    if (reports.length > 0) {
+      lines.push(`${BOLD}↓ reports (${reports.length})${RESET}`);
+      const nameW = Math.min(20, Math.max(...reports.map((id) => {
+        const n = getNode(id);
+        return (n !== null ? fullName(n) : shortId(id)).length;
+      })));
+      for (const id of reports) {
+        const n = getNode(id);
+        const name = (n !== null ? fullName(n) : shortId(id)).padEnd(nameW);
+        const kind = `${DIM}${(n?.kind ?? '').padEnd(6)}${RESET}`;
+        const tokens = `${DIM}${tokensCell(id).padStart(5)}${RESET}`;
+        lines.push(truncate(`  ${coloredGlyph(n)} ${name} ${kind} ${tokens}${childBadge(n)}${askBadge(id)}`));
+      }
+    }
+    // Self's own pending asks (no self row in BASE) → a trailing inline line.
+    const selfAsks = asksMap[nodeId] ?? 0;
+    if (selfAsks > 0) lines.push(`${YELLOW}⚑${selfAsks}${RESET}`);
+    // Nothing to show → drop the widget rather than render an empty bar.
+    ui.setWidget('crtr-base', lines.length > 0 ? lines : undefined, { placement: 'belowEditor' });
+
+    // Drop GRAPH chrome so nothing bleeds through.
+    ui.setWidget('crtr-graph', undefined, { placement: 'belowEditor' });
+  };
+
+  /** GRAPH: the fold-aware tree + a one-line hint/footer, viewport-bounded. */
+  const renderGraph = (): void => {
+    if (ui === undefined) return;
+
+    const rows = buildGraphModel(nodeId);
+
+    // Re-resolve the cursor id → row (it may have vanished under a fold or a
+    // close); clamp to nearest visible row.
+    let cursorIdx = rows.findIndex((r) => r.id === cursorId);
+    if (cursorIdx < 0) {
+      cursorIdx = rows.findIndex((r) => r.id === nodeId);
+      if (cursorIdx < 0) cursorIdx = 0;
+    }
+    cursorId = rows[cursorIdx]?.id ?? nodeId;
+
+    const viewportH = viewportHeight();
+    if (cursorIdx < scrollTop) scrollTop = cursorIdx;
+    if (cursorIdx >= scrollTop + viewportH) scrollTop = cursorIdx - viewportH + 1;
+    scrollTop = Math.max(0, Math.min(scrollTop, Math.max(0, rows.length - viewportH)));
+    const end = Math.min(rows.length, scrollTop + viewportH);
+
+    const lines: string[] = [];
+    if (scrollTop > 0) lines.push(`${DIM}  ↑ ${scrollTop} more${RESET}`);
+    for (let i = scrollTop; i < end; i++) lines.push(renderGraphRow(rows[i]!, i === cursorIdx));
+    if (end < rows.length) lines.push(`${DIM}  ↓ ${rows.length - end} more${RESET}`);
+
+    const hint = pendingConfirm !== undefined
+      ? `${YELLOW}${pendingConfirm.label} ${BOLD}y/n${RESET}`
+      : GRAPH_HINT;
+    lines.push(truncate(`${hint}  ${DIM}${cursorIdx + 1}/${rows.length}${RESET}`));
+
+    ui.setWidget('crtr-graph', lines, { placement: 'belowEditor' });
+    // Drop BASE chrome.
+    ui.setWidget('crtr-managers', undefined, { placement: 'aboveEditor' });
+    ui.setWidget('crtr-base', undefined, { placement: 'belowEditor' });
   };
 
   const render = (): void => {
     if (ui === undefined) return;
     try {
-      const managers = managersOf(nodeId);
-      const siblings = siblingsOf(nodeId);
-      const reports = reportsOf(nodeId);
-      clampCursor(managers, siblings, reports);
-
-      // ⚑ pending asks — top of the stack, omitted entirely when count is 0.
-      ui.setWidget(
-        'crtr-asks',
-        cachedAskCount > 0 ? [`${YELLOW}⚑ ${cachedAskCount} waiting${RESET}`] : undefined,
-        { placement: 'aboveEditor' },
-      );
-
-      // ↑ managers, then ↔ peers directly above the editor — the spine reads
-      // top→bottom: managers · peers · [you] · reports. setWidget(…, undefined)
-      // drops the peers row entirely when this node has none.
-      ui.setWidget('crtr-managers', buildManagersLines(managers, cursor), { placement: 'aboveEditor' });
-      ui.setWidget('crtr-siblings', buildSiblingsLines(siblings, cursor), { placement: 'aboveEditor' });
-
-      // ↓ reports row, below the editor.
-      ui.setWidget('crtr-reports', buildReportsLines(nodeId, reports, cursor), { placement: 'belowEditor' });
+      if (view === 'graph') renderGraph();
+      else renderBase();
     } catch {
       /* render is best-effort; never throw out of a handler */
     }
   };
 
-  // Debounced render: coalesces rapid event bursts into one paint.
   const scheduleRender = (): void => {
     if (renderScheduled) return;
     renderScheduled = true;
@@ -466,87 +607,183 @@ export function registerCanvasNav(pi: PiLike): void {
     }, RENDER_DEBOUNCE_MS);
   };
 
-  // Bring the selected node's window forefront. Reuses the `crtr node focus`
-  // CLI (which revives a dormant target first) via the same execFile pattern
-  // as the ask-count poll — keeps tmux/revive logic out of the extension.
-  const focusTarget = (id: string): void => {
+  // -------------------------------------------------------------------------
+  // Actions (all shell out; the extension stays tmux/revive-free)
+  // -------------------------------------------------------------------------
+
+  const shellCrtr = (argv: string[], onDone?: () => void): void => {
     try {
-      execFile('crtr', ['node', 'focus', id], (err): void => {
+      execFile('crtr', argv, (err): void => {
         if (err != null && ui?.notify != null) {
-          try { ui.notify(`focus failed: ${id.slice(0, 8)}`, 'error'); } catch { /* best-effort */ }
+          try { ui.notify(`crtr ${argv[0]} failed`, 'error'); } catch { /* best-effort */ }
         }
+        if (onDone !== undefined) { try { onDone(); } catch { /* best-effort */ } }
       });
     } catch {
       /* best-effort */
     }
   };
 
-  // Pre-editor key tap. Only acts on an EMPTY editor so message composition
-  // (multi-line cursor moves, history, submit) is never disturbed. Vim-style
-  // Alt+h/j/k/l walk the spine — Alt+k UP (managers), Alt+j DOWN (reports),
-  // Alt+h/Alt+l LEFT/RIGHT (peers) — so the bare arrow keys stay bound to pi's
-  // normal history recall and never conflict with canvas nav.
-  const handleKey = (data: string): { consume?: boolean; data?: string } | undefined => {
-    try {
-      if (ui === undefined) return undefined;
+  const focusTarget = (id: string): void => shellCrtr(['node', 'focus', id]);
 
-      let editorEmpty = true;
-      try { editorEmpty = (ui.getEditorText?.() ?? '').trim() === ''; } catch { editorEmpty = false; }
-      if (!editorEmpty) return undefined; // composing — leave every key alone
+  const enterGraph = (): void => {
+    view = 'graph';
+    pendingConfirm = undefined;
+    scrollTop = 0;
+    if (cursorId === undefined || getNode(cursorId) === null) cursorId = nodeId;
+    render();
+  };
+  const exitGraph = (): void => {
+    view = 'base';
+    pendingConfirm = undefined;
+    render();
+  };
+  const toggleGraph = (): void => {
+    if (view === 'graph') exitGraph();
+    else enterGraph();
+  };
 
-      // Alt+h/j/k/l walk the spine — recognized across legacy ESC-prefix,
-      // kitty/CSI-u and modifyOtherKeys encodings (see isAltKey above) so nav
-      // works regardless of the terminal's keyboard protocol.
-      const isUp = isAltKey(data, 'k');
-      const isDown = isAltKey(data, 'j');
-      const isLeft = isAltKey(data, 'h');
-      const isRight = isAltKey(data, 'l');
-      const isEnter = isEnterKey(data);
-      const isEsc = isEscKey(data);
+  /** Template vars for a graphBind, resolved against the CURSOR node. */
+  const graphVars = (cur: string): Record<string, string> => {
+    const cn = getNode(cur);
+    return {
+      id: cur,
+      self: nodeId,
+      lane: cur,
+      name: cn !== null ? fullName(cn) : cur,
+      manager: managerOf(cur) ?? '',
+      subtree: subtreeIds(cur).join(' '),
+    };
+  };
 
-      if (!isUp && !isDown && !isLeft && !isRight && !isEnter && !isEsc) {
-        // Any other key cancels an active selection, then passes through so the
-        // character lands in the editor as normal.
-        if (cursor.lane !== 'none') { cursor = { lane: 'none', idx: 0 }; render(); }
-        return undefined;
-      }
-
-      const managers = managersOf(nodeId);
-      const siblings = siblingsOf(nodeId);
-      const reports = reportsOf(nodeId);
-
-      // Move within (or hop into) a lane, cycling with wrap. Entering a lane
-      // lands on the first slot for forward motion, the last for backward.
-      const step = (lane: Exclude<Lane, 'none'>, count: number, dir: 1 | -1): void => {
-        if (count === 0) return;
-        if (cursor.lane !== lane) cursor = { lane, idx: dir === 1 ? 0 : count - 1 };
-        else cursor = { lane, idx: (cursor.idx + dir + count) % count };
-      };
-
-      if (isUp)    { step('up',   managers.length, +1); render(); return { consume: true }; }
-      if (isDown)  { step('down', reports.length,  +1); render(); return { consume: true }; }
-      if (isRight) { step('side', siblings.length, +1); render(); return { consume: true }; }
-      if (isLeft)  { step('side', siblings.length, -1); render(); return { consume: true }; }
-
-      if (isEsc) {
-        if (cursor.lane === 'none') return undefined;
-        cursor = { lane: 'none', idx: 0 };
+  // -------------------------------------------------------------------------
+  // GRAPH modal key handler — consumes EVERY key while in GRAPH.
+  // -------------------------------------------------------------------------
+  const handleGraphKey = (data: string): { consume?: boolean; data?: string } | undefined => {
+    // y/n confirm gate takes precedence over everything.
+    if (pendingConfirm !== undefined) {
+      if (isPlain(data, 'y')) {
+        const act = pendingConfirm.action;
+        pendingConfirm = undefined;
+        act();
         render();
         return { consume: true };
       }
-
-      // isEnter — focus the selected neighbor, if any; else normal submit.
-      if (cursor.lane === 'none') return undefined; // nothing selected → submit
-      const lane = cursor.lane === 'up' ? managers : cursor.lane === 'side' ? siblings : reports;
-      const target = lane[cursor.idx];
-      if (target !== undefined) focusTarget(target.id);
-      cursor = { lane: 'none', idx: 0 };
+      pendingConfirm = undefined; // any other key cancels
       render();
       return { consume: true };
+    }
+
+    // Let the prefix shortcut (alt+g) through so pi's registerShortcut can
+    // toggle us back to BASE; esc also exits, handled below.
+    if (prefixAltLetter !== undefined && isAltKey(data, prefixAltLetter)) return undefined;
+
+    if (isEscKey(data)) { exitGraph(); return { consume: true }; }
+
+    const rows = buildGraphModel(nodeId);
+    let idx = rows.findIndex((r) => r.id === cursorId);
+    if (idx < 0) idx = Math.max(0, rows.findIndex((r) => r.id === nodeId));
+    const cur = rows[idx];
+
+    if (isPlain(data, 'j')) { idx = Math.min(rows.length - 1, idx + 1); cursorId = rows[idx]?.id ?? cursorId; render(); return { consume: true }; }
+    if (isPlain(data, 'k')) { idx = Math.max(0, idx - 1); cursorId = rows[idx]?.id ?? cursorId; render(); return { consume: true }; }
+    if (isPlain(data, 'g')) { cursorId = rows[0]?.id ?? cursorId; render(); return { consume: true }; }
+    if (isPlain(data, 'G')) { cursorId = rows[rows.length - 1]?.id ?? cursorId; render(); return { consume: true }; }
+
+    if (isPlain(data, 'h')) {
+      if (cur !== undefined && cur.hasKids && !collapsed.has(cur.id)) {
+        collapsed.add(cur.id);
+      } else {
+        const p = managerOf(cursorId ?? nodeId);
+        if (p !== undefined && rows.some((r) => r.id === p)) cursorId = p;
+      }
+      render();
+      return { consume: true };
+    }
+    if (isPlain(data, 'l')) {
+      if (cur !== undefined && collapsed.has(cur.id)) {
+        collapsed.delete(cur.id);
+      } else if (cur !== undefined && cur.hasKids) {
+        const c = subscriptionsOf(cur.id)[0]?.node_id;
+        if (c !== undefined) cursorId = c;
+      }
+      render();
+      return { consume: true };
+    }
+
+    if (isEnterKey(data)) { if (cursorId !== undefined) focusTarget(cursorId); render(); return { consume: true }; }
+    if (isPlain(data, 'm')) { const mgr = managerOf(nodeId); if (mgr !== undefined) focusTarget(mgr); render(); return { consume: true }; }
+    if (isPlain(data, 'e')) { shellCrtr(['canvas', 'tmux-spread', nodeId]); return { consume: true }; }
+    if (isPlain(data, 'x')) {
+      const target = cursorId ?? nodeId;
+      const n = getNode(target);
+      const nm = n !== null ? fullName(n) : shortId(target);
+      pendingConfirm = { label: `kill ${nm}?`, action: () => shellCrtr(['node', 'close', '--node', target], render) };
+      render();
+      return { consume: true };
+    }
+
+    // Custom graphBinds — additive only (built-in keys reserved).
+    for (const [key, bind] of Object.entries(navConfig.graphBinds) as [string, CanvasBind][]) {
+      if (key.length !== 1 || RESERVED_GRAPH_KEYS.has(key)) continue;
+      if (!isPlain(data, key)) continue;
+      const target = cursorId ?? nodeId;
+      const argv = interpolateArgv(bind.run, graphVars(target));
+      if (argv.length === 0) return { consume: true };
+      if (bind.confirm === true) {
+        const n = getNode(target);
+        const nm = n !== null ? fullName(n) : shortId(target);
+        pendingConfirm = { label: `${bind.desc ?? bind.run} ${nm}?`, action: () => shellCrtr(argv, render) };
+      } else {
+        shellCrtr(argv, render);
+      }
+      render();
+      return { consume: true };
+    }
+
+    // Modal: swallow everything else so stray keys never reach the editor.
+    return { consume: true };
+  };
+
+  // Pre-editor key tap. BASE passes EVERY key through (composing is never
+  // disturbed); GRAPH is fully modal. One persistent tap (preserving the
+  // /reload single-unsub guard); its body branches on `view`.
+  const handleKey = (data: string): { consume?: boolean; data?: string } | undefined => {
+    try {
+      if (ui === undefined) return undefined;
+      if (view === 'base') return undefined;
+      return handleGraphKey(data);
     } catch {
       return undefined;
     }
   };
+
+  // -------------------------------------------------------------------------
+  // Slash command + shortcut to toggle GRAPH (registered once per load, like
+  // canvas-commands.ts; pi dedupes duplicate names on /reload).
+  // -------------------------------------------------------------------------
+  if (typeof pi.registerCommand === 'function') {
+    pi.registerCommand('graph', {
+      description: 'Toggle the canvas GRAPH view (NERDTree of your local graph)',
+      handler: async (_args, ctx): Promise<void> => {
+        if (ui === undefined) ui = ctx.ui;
+        toggleGraph();
+      },
+    });
+  }
+  if (typeof pi.registerShortcut === 'function' && navConfig.prefixKey !== undefined && navConfig.prefixKey !== '') {
+    try {
+      pi.registerShortcut(navConfig.prefixKey, {
+        description: 'Toggle the canvas GRAPH view',
+        handler: async (ctx): Promise<void> => {
+          if (ui === undefined) ui = ctx.ui;
+          toggleGraph();
+        },
+      });
+    } catch {
+      /* shortcut spec rejected by pi — /graph + the alt+c menu still work */
+    }
+  }
 
   // -------------------------------------------------------------------------
   // Event handlers
@@ -555,15 +792,24 @@ export function registerCanvasNav(pi: PiLike): void {
   pi.on('session_start', (_event: any, ctx: ExtensionCtx): void => {
     ui = ctx.ui;
 
-    // Register the spine-navigation key tap once. Double-guard against /reload
-    // stacking (mirrors liveTimer): clear any previous tap before adding ours.
+    // Fresh session / hot-swap: start in BASE and clear any legacy or
+    // inactive-view widgets so nothing stale bleeds through.
+    view = 'base';
+    pendingConfirm = undefined;
+    for (const key of ['crtr-asks', 'crtr-siblings', 'crtr-reports', 'crtr-graph']) {
+      try { ctx.ui.setWidget(key, undefined, { placement: 'belowEditor' }); } catch { /* ignore */ }
+      try { ctx.ui.setWidget(key, undefined, { placement: 'aboveEditor' }); } catch { /* ignore */ }
+    }
+
+    // Register the modal key tap once. Double-guard against /reload stacking
+    // (mirrors liveTimer): clear any previous tap before adding ours.
     if (liveUnsub !== undefined) { try { liveUnsub(); } catch { /* ignore */ } liveUnsub = undefined; }
     try {
       if (typeof ctx.ui.onTerminalInput === 'function') {
         liveUnsub = ctx.ui.onTerminalInput(handleKey);
       }
     } catch {
-      /* onTerminalInput unavailable (older pi / non-interactive) — chrome stays display-only */
+      /* onTerminalInput unavailable — chrome stays display-only */
     }
 
     scheduleRender();
@@ -574,16 +820,17 @@ export function registerCanvasNav(pi: PiLike): void {
   });
 
   // -------------------------------------------------------------------------
-  // Background timer — ask-count polling + periodic refresh
+  // Background timer — per-node ask polling (one shell-out) + periodic refresh
   // -------------------------------------------------------------------------
   if (liveTimer !== undefined) clearInterval(liveTimer);
 
   const timer = setInterval((): void => {
     try {
-      const fresh = fetchAskCount(nodeId);
-      // Only repaint when the count actually changed — avoids constant flicker.
-      if (fresh !== cachedAskCount) {
-        cachedAskCount = fresh;
+      const rootId = climbRoot(nodeId);
+      const fresh = fetchAsksMap(rootId);
+      // Repaint only when the map actually changed — avoids constant flicker.
+      if (JSON.stringify(fresh) !== JSON.stringify(asksMap)) {
+        asksMap = fresh;
         scheduleRender();
       }
     } catch {
@@ -591,12 +838,9 @@ export function registerCanvasNav(pi: PiLike): void {
     }
   }, ASK_POLL_MS);
 
-  // unref() so the timer doesn't keep the Node process alive after everything
-  // else has finished — matches the inbox-watcher convention.
   if (typeof timer.unref === 'function') timer.unref();
   liveTimer = timer;
 
-  // Clear on shutdown so a /reload never discovers a live sibling timer.
   pi.on('session_shutdown', (): void => {
     clearInterval(timer);
     if (liveTimer === timer) liveTimer = undefined;

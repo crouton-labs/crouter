@@ -1,6 +1,6 @@
 import { join } from 'node:path';
-import { CONFIG_FILE, STATE_FILE, SCHEMA_VERSION, defaultScopeConfig, defaultScopeState } from '../types.js';
-import type { Scope, ScopeConfig, ScopeState } from '../types.js';
+import { CONFIG_FILE, STATE_FILE, SCHEMA_VERSION, defaultScopeConfig, defaultScopeState, defaultCanvasNavConfig } from '../types.js';
+import type { Scope, ScopeConfig, ScopeState, CanvasNavConfig, CanvasBind } from '../types.js';
 import { readJsonIfExists, writeJson, ensureDir } from './fs-utils.js';
 import { scopeRoot, requireScopeRoot } from './scope.js';
 import { diag } from './io.js';
@@ -82,6 +82,44 @@ export function ensureScopeInitialized(scope: Scope, root: string): void {
   }
 }
 
+/** Deep-merge one bind table over its built-in defaults: a user adding a single
+ *  bind must not wipe the rest. Each user entry is validated (a `run` string is
+ *  required) before it replaces/extends a key. */
+function mergeBinds(
+  base: Record<string, CanvasBind>,
+  over: unknown,
+): Record<string, CanvasBind> {
+  const out: Record<string, CanvasBind> = { ...base };
+  if (over !== null && typeof over === 'object') {
+    for (const [k, v] of Object.entries(over as Record<string, unknown>)) {
+      if (v !== null && typeof v === 'object' && typeof (v as { run?: unknown }).run === 'string') {
+        const b = v as CanvasBind;
+        out[k] = {
+          run: b.run,
+          ...(b.confirm === true ? { confirm: true } : {}),
+          ...(typeof b.desc === 'string' ? { desc: b.desc } : {}),
+        };
+      }
+    }
+  }
+  return out;
+}
+
+/** Validate + deep-merge a user `canvasNav` block over the built-in defaults.
+ *  An absent or malformed block falls back wholesale to defaults. */
+function mergeCanvasNav(raw: unknown): CanvasNavConfig {
+  const defaults = defaultCanvasNavConfig();
+  if (raw === null || typeof raw !== 'object') return defaults;
+  const r = raw as Partial<CanvasNavConfig>;
+  const prefixKey =
+    typeof r.prefixKey === 'string' && r.prefixKey.trim() !== '' ? r.prefixKey : defaults.prefixKey;
+  return {
+    prefixKey,
+    prefixBinds: mergeBinds(defaults.prefixBinds, r.prefixBinds),
+    graphBinds: mergeBinds(defaults.graphBinds, r.graphBinds),
+  };
+}
+
 function normalizeMode(value: unknown, fallback: ScopeConfig['auto_update']['crtr']): ScopeConfig['auto_update']['crtr'] {
   if (value === true) return 'notify';
   if (value === false) return false;
@@ -112,7 +150,8 @@ function mergeConfig(partial: Partial<ScopeConfig>): ScopeConfig {
     typeof rawMaxPanes === 'number' && Number.isFinite(rawMaxPanes) && rawMaxPanes >= 1
       ? Math.floor(rawMaxPanes)
       : defaults.max_panes_per_window;
-  return { schema_version, marketplaces, plugins, skills, auto_update, max_panes_per_window };
+  const canvasNav = mergeCanvasNav(partial.canvasNav);
+  return { schema_version, marketplaces, plugins, skills, auto_update, max_panes_per_window, canvasNav };
 }
 
 export function updateConfig(scope: Scope, mutate: (cfg: ScopeConfig) => void): ScopeConfig {

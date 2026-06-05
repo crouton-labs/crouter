@@ -27,6 +27,8 @@ import { VALID_TYPES, resolveWriteScope } from './shared.js';
 
 export const authorGuide = defineLeaf({
   name: 'guide',
+  description: 'load authoring workflow + skeleton for a type',
+  whenToUse: 'writing a new skill and you want the authoring workflow plus the template skeleton — call it once with no --type for the template picker, then again with --type for the full workflow and skeleton of that type.',
   help: {
     name: 'skill author guide',
     summary: 'load the skill authoring workflow — two stages: omit type to pick one, pass type for its full skeleton',
@@ -57,6 +59,8 @@ export const authorGuide = defineLeaf({
 
 export const authorScaffold = defineLeaf({
   name: 'scaffold',
+  description: 'create an empty SKILL.md stub',
+  whenToUse: 'creating the empty SKILL.md stub at a `<plugin>/<skill>` qualifier before you fill in content — it writes the frontmatter and file, then points you at the authoring guide.',
   help: {
     name: 'skill author scaffold',
     summary: 'create an empty SKILL.md stub at the given qualifier',
@@ -164,13 +168,11 @@ export const authorScaffold = defineLeaf({
 
 export const authorBranch = defineBranch({
   name: 'author',
+  description: 'create and scaffold skills',
+  whenToUse: 'you have a reusable workflow, methodology, or hard-won convention worth capturing so future agents adopt it instead of re-deriving it — author carries you from picking a template through scaffolding the file. Reach for it when a task just taught you a repeatable procedure, when the same guidance keeps getting re-explained across sessions, or when the house conventions for a tool deserve to be written down once. Start with `crtr skill author guide` for the template picker and authoring workflow; use `crtr skill author scaffold` to stub the SKILL.md file.',
   help: {
     name: 'skill author',
     summary: 'create and scaffold new skills',
-    children: [
-      { name: 'guide', desc: 'load authoring workflow + skeleton for a type', useWhen: 'writing a new skill and need the template and instructions' },
-      { name: 'scaffold', desc: 'create an empty SKILL.md stub', useWhen: 'initializing the file before writing content' },
-    ],
   },
   children: [authorGuide, authorScaffold],
 });

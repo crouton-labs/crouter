@@ -25,12 +25,6 @@ export function registerSkill(): BranchDef {
       model:
         '`find` when you do not yet know which skill applies — it locates candidates by topic, keyword, or body text. `read` (leaf) loads SKILL.md by name; takes the name as a positional, returns body + metadata, accepts --no-body to skip the body. `author` when you are writing a new skill — it carries the template workflow and the scaffolder. `state` when a skill should be hidden from discovery without being removed. Append `-h` at any branch or leaf for its full schema.',
       dynamicState: buildSkillCatalog,
-      children: [
-        { name: 'find', desc: 'list, search, or grep skills', useWhen: 'discovering what skills are available' },
-        { name: 'read', desc: 'load SKILL.md body + metadata for a named skill', useWhen: 'loading a skill to act on it' },
-        { name: 'author', desc: 'create and scaffold skills', useWhen: 'writing a new skill' },
-        { name: 'state', desc: 'enable or disable skills', useWhen: 'toggling skill visibility' },
-      ],
     },
     children: [findBranch, readLeaf, authorBranch, stateBranch],
   });

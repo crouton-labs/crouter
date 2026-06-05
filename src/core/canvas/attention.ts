@@ -96,6 +96,46 @@ export function pendingAsksForView(rootId: string): AskEntry[] {
 }
 
 /**
+ * Per-node pending ask counts for an explicit set of node ids — the batched
+ * counterpart to `countAsks`, used by the nav chrome to label every visible
+ * node in ONE pass. Groups ids by their cwd so each distinct interactions dir
+ * is scanned exactly once, then buckets the decks by the `source.nodeId` stamp
+ * (same attribution as `countForCwd(cwd, nodeId)`). Asks with no node stamp are
+ * not attributable to any node and are excluded. Every requested id appears in
+ * the result (0 when it has none). Never throws.
+ */
+export function asksForNodes(ids: string[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const id of ids) counts[id] = 0;
+
+  // Bucket the requested ids by cwd so we scan each inbox once, not per id.
+  const idsByCwd = new Map<string, string[]>();
+  for (const id of ids) {
+    const node = getNode(id);
+    if (node === null) continue;
+    const arr = idsByCwd.get(node.cwd) ?? [];
+    arr.push(id);
+    idsByCwd.set(node.cwd, arr);
+  }
+
+  for (const [cwd, cwdIds] of idsByCwd) {
+    let items;
+    try {
+      items = scanInbox([interactionsRoot(cwd)]);
+    } catch {
+      continue; // humanloop missing / no interactions dir — leave these at 0
+    }
+    const want = new Set(cwdIds);
+    for (const i of items) {
+      const nid = (i.source as { nodeId?: string } | undefined)?.nodeId;
+      if (nid !== undefined && want.has(nid)) counts[nid] = (counts[nid] ?? 0) + 1;
+    }
+  }
+
+  return counts;
+}
+
+/**
  * Pending asks across the entire canvas — every distinct cwd among all known
  * nodes. Returns only entries with count > 0.
  */

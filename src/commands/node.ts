@@ -7,25 +7,53 @@
 
 import { defineLeaf, defineBranch, type BranchDef } from '../core/command.js';
 import { InputError } from '../core/io.js';
-import { spawnChild, bootRoot } from '../core/runtime/spawn.js';
+import { spawnChild } from '../core/runtime/spawn.js';
 import { promote, requestYield } from '../core/runtime/promote.js';
 import { writeYieldMessage } from '../core/runtime/kickoff.js';
 import { reviveNode } from '../core/runtime/revive.js';
 import { focusNodeInPlace } from '../core/runtime/presence.js';
 import { demoteNode } from '../core/runtime/demote.js';
+import { closeNode } from '../core/runtime/close.js';
 import { windowAlive, windowOfPane, currentTmux } from '../core/runtime/tmux.js';
 import { appendInbox, type InboxTier } from '../core/feed/inbox.js';
 import { availableKinds } from '../core/personas/index.js';
 import {
   getNode,
+  updateNode,
   listNodes,
   subscribe,
   unsubscribe,
   subscriptionsOf,
   subscribersOf,
+  readContextTokens,
   type Mode,
+  type Lifecycle,
   type NodeStatus,
 } from '../core/canvas/index.js';
+
+// Past this much context, an ORCHESTRATOR that spawns a managed child is better
+// off yielding than holding its fat window open for the child's result: the
+// child's finish revives it fresh against its roadmap, so a clean window absorbs
+// the result instead of this bloated one. Below the steering bands (130k+) on
+// purpose — catch it at spawn, before the window is critically full.
+const YIELD_NUDGE_THRESHOLD = 100_000;
+
+const STD_CHILD_FOLLOW_UP =
+  "Do not wait or poll on this child — there is no result to await and stopping will not strand you. You're auto-subscribed, so its finish wakes you on its own. Two moves only: continue other independent work right now, or stop and end your turn — the wake brings you back.";
+
+/** Decision road sign for a managed (non-root) child. Normally STD_CHILD_FOLLOW_UP,
+ *  but when the SPAWNER is an orchestrator whose context has already grown past
+ *  YIELD_NUDGE_THRESHOLD, steer it to yield now and let its fresh revive handle
+ *  the child's result. */
+export function childFollowUp(spawnerId: string | undefined): string {
+  if (spawnerId === undefined || spawnerId === '') return STD_CHILD_FOLLOW_UP;
+  const spawner = getNode(spawnerId);
+  if (spawner === null || spawner.mode !== 'orchestrator') return STD_CHILD_FOLLOW_UP;
+  const ctxTokens = readContextTokens(spawnerId);
+  if (ctxTokens === null || ctxTokens < YIELD_NUDGE_THRESHOLD) return STD_CHILD_FOLLOW_UP;
+  const k = Math.round(ctxTokens / 1000);
+  return `Child spawned — you're auto-subscribed, so its finish wakes you on its own; never wait or poll. But you're an orchestrator already carrying ~${k}k of context: rather than hold this window open for the result, checkpoint context/roadmap.md and \`crtr node yield\` now. Yielding ends this turn, and the child's completion then revives you fresh against your roadmap — let that clean revive absorb the result instead of this bloated context.`;
+}
 
 /** Validate a `--kind` against the installed personas; throws a listing InputError. */
 function assertKind(kind: string): void {
@@ -41,30 +69,35 @@ function assertKind(kind: string): void {
 
 const nodeNew = defineLeaf({
   name: 'new',
+  description: 'spawn a node — a managed child (default), or an independent root with --root',
+  whenToUse: 'you have a self-contained unit of work — reach for this instead of doing it inline, so the reading and the tokens land in a fresh window and only the conclusion comes back: mapping an unfamiliar part of the codebase, writing a spec, designing an approach, breaking a job into a plan, implementing a change, or running a review. Match `--kind` to the work (explore/spec/design/plan/developer/review/general) and fan independent units out as concurrent children. Default is a managed child you auto-subscribe to, so its finish wakes you; pass `--mode orchestrator` when the unit is itself too big for one window (e.g. a large multi-area review) so it boots as a sub-orchestrator with its own roadmap instead of a base worker you hope promotes itself; pass `--root` to hand off an INDEPENDENT node you neither manage nor get woken by (e.g. one a human will sit and drive), not for ordinary delegation',
+  tier: 'important',
   help: {
     name: 'node new',
     summary: 'spawn a terminal worker onto the canvas as a background window — returns its node id',
     params: [
       { kind: 'stdin', name: 'prompt', required: true, constraint: 'First user message for the spawned node. Piped on stdin or passed as a positional.' },
       { kind: 'flag', name: 'kind', type: 'string', required: false, default: 'general', constraint: 'Persona kind — match the work: explore (map/investigate a codebase), spec (write a spec), design (architect a solution), plan (break work into steps), developer (implement a change), review (validate/critique), general (anything else).' },
-      { kind: 'flag', name: 'mode', type: 'enum', choices: ['base', 'orchestrator'], required: false, default: 'base', constraint: 'Persona mode. Almost always base; orchestrator is reserved for promoted/resident nodes.' },
+      { kind: 'flag', name: 'mode', type: 'enum', choices: ['base', 'orchestrator'], required: false, default: 'base', constraint: 'Persona mode. base for a worker that finishes in one window; orchestrator to create the child directly as a sub-orchestrator (it boots with the orchestrator persona + a seeded roadmap and fans its scope out) — use it when the unit is too large for one window, e.g. a big review, instead of spawning a base worker and counting on it to promote itself.' },
       { kind: 'flag', name: 'cwd', type: 'path', required: false, constraint: 'Dir the node is pinned to. Defaults to the caller cwd.' },
       { kind: 'flag', name: 'name', type: 'string', required: false, constraint: 'Display name (tmux window + resume picker). Defaults to the kind.' },
       { kind: 'flag', name: 'parent', type: 'string', required: false, constraint: 'Parent node id. Defaults to the calling node (CRTR_NODE_ID).' },
+      { kind: 'flag', name: 'root', type: 'bool', required: false, constraint: 'Spawn an INDEPENDENT root instead of a managed child: no parent (top-level on the canvas), NO subscription back to you (you are NOT woken by it), resident lifecycle. It records spawned_by=you for provenance. When spawned from inside tmux it opens as an ADJACENT pane in your current window (side-by-side, not exiled to the shared crtr session) and is focused so it can be driven directly. Use for a node you hand off and do not manage (e.g. a sub-orchestrator a human will discuss with).' },
+      { kind: 'flag', name: 'fork-from', type: 'string', required: false, constraint: 'FORK the new node from an existing pi conversation instead of starting it fresh: pass a node id (forks from that node\'s session), an absolute session `.jsonl` path, or a partial pi session uuid. pi copies that whole history into a NEW session for the child (the source is untouched), then the prompt is delivered as the next message — i.e. the child wakes up as a continuation of that conversation. Use to branch exploratory work off a node that already built up the context you need, instead of re-deriving it. One-shot at birth: the fork resumes its own session thereafter.' },
     ],
     output: [
       { name: 'node_id', type: 'string', required: true, constraint: 'The new node id.' },
       { name: 'name', type: 'string', required: true, constraint: 'Display name.' },
-      { name: 'window', type: 'string', required: false, constraint: 'tmux window id of the background window.' },
-      { name: 'session', type: 'string', required: true, constraint: 'The shared crtr tmux session the node was placed in.' },
+      { name: 'window', type: 'string', required: false, constraint: 'tmux window id the node was placed in — a fresh background window for a child; the caller\'s own window (as an adjacent pane) for an in-tmux --root.' },
+      { name: 'session', type: 'string', required: true, constraint: 'The tmux session the node was placed in — the shared crtr session for a child; the caller\'s session for an in-tmux --root.' },
       { name: 'status', type: 'string', required: true, constraint: 'Always "active" on spawn.' },
-      { name: 'follow_up', type: 'string', required: true, constraint: 'Decision road sign for the caller: the child runs independently and its finish wakes you on its own, so never wait or poll on it — either pick up other work now or end your turn. Read it, then act.' },
+      { name: 'follow_up', type: 'string', required: true, constraint: 'Decision road sign for the caller: the child runs independently and its finish wakes you on its own, so never wait or poll on it — either pick up other work now or end your turn. If you are an orchestrator already deep in context (>100k), it instead steers you to `crtr node yield` now so your fresh revive absorbs the child\'s result. Read it, then act.' },
     ],
     outputKind: 'object',
     effects: [
       'Creates a node under ~/.crtr/nodes/<id>/ and indexes it in canvas.db.',
-      'Parent auto-subscribes (active) to the child so it is woken on the child\'s pushes.',
-      'Opens a background (non-focus-stealing) tmux window running pi.',
+      'Default (managed child): parent auto-subscribes (active) and is woken on the child\'s pushes. With --root: no subscription — records a spawned_by edge for provenance only.',
+      'Opens pi in tmux: a background (non-focus-stealing) window for a child; with --root from inside tmux, an adjacent pane split into the caller\'s current window (focused to drive), or its own window when spawned outside tmux.',
     ],
   },
   run: async (input) => {
@@ -77,16 +110,19 @@ const nodeNew = defineLeaf({
     const cwd = (input['cwd'] as string | undefined) ?? process.cwd();
     const name = input['name'] as string | undefined;
     const parent = input['parent'] as string | undefined;
+    const root = input['root'] === true;
+    const forkFrom = input['forkFrom'] as string | undefined;
 
-    const res = spawnChild({ kind, mode, cwd, name, prompt, parent });
+    const res = spawnChild({ kind, mode, cwd, name, prompt, parent, root, forkFrom });
     return {
       node_id: res.node.node_id,
       name: res.node.name,
       window: res.window ?? undefined,
       session: res.session,
       status: res.node.status,
-      follow_up:
-        "Do not wait or poll on this child — there is no result to await and stopping will not strand you. You're auto-subscribed, so its finish wakes you on its own. Two moves only: pick up other independent work right now, or stop and end your turn — the wake brings you back. Sitting idle to watch it is wasted; pick one and act.",
+      follow_up: root
+        ? "Independent root spawned — it is NOT under you. You are not subscribed, so its finish will NOT wake you and it does not hold you alive; it carries spawned_by=you for lineage only. It opened as an adjacent pane in your current tmux window (focused) so it can be driven directly side-by-side. Hand it off and move on — you will not be notified of its progress."
+        : childFollowUp(parent ?? process.env['CRTR_NODE_ID']),
     };
   },
   render: (r) =>
@@ -99,11 +135,13 @@ const nodeNew = defineLeaf({
 
 const nodeList = defineLeaf({
   name: 'list',
+  description: 'list nodes on the canvas',
+  whenToUse: 'you want a flat roster of the nodes on the canvas, optionally sliced by status (active/idle/done/dead/canceled): a quick read of what exists and what is still running. Use `node inspect show` instead to drill into one node and its spine neighbors, `canvas dashboard` for the tree SHAPE, and `canvas attention` to find which nodes are blocked on a human',
   help: {
     name: 'node inspect list',
     summary: 'list nodes on the canvas, optionally by status',
     params: [
-      { kind: 'flag', name: 'status', type: 'string', required: false, constraint: 'Filter: active | idle | done | dead. Comma-separated for several.' },
+      { kind: 'flag', name: 'status', type: 'string', required: false, constraint: 'Filter: active | idle | done | dead | canceled. Comma-separated for several.' },
     ],
     output: [
       { name: 'nodes', type: 'object[]', required: true, constraint: 'Rows: {node_id, name, kind, mode, lifecycle, status, cwd, parent, created}.' },
@@ -125,6 +163,8 @@ const nodeList = defineLeaf({
 
 const nodeShow = defineLeaf({
   name: 'show',
+  description: 'show a node + its spine neighbors',
+  whenToUse: 'you want one node in depth: its meta plus its spine neighbors — who it reports to (subscriptions) and who manages it (subscribers). Use `node inspect list` instead for the flat roster of every node, or `canvas dashboard` to see the whole-tree shape',
   help: {
     name: 'node inspect show',
     summary: 'show a node\'s meta plus its subscriptions (reports) and subscribers (managers)',
@@ -155,13 +195,11 @@ const nodeShow = defineLeaf({
 
 const nodeInspect = defineBranch({
   name: 'inspect',
+  description: 'read the graph (list nodes / show one)',
+  whenToUse: 'reading the graph: enumerate the nodes on the canvas (`list`) or drill into one and its spine neighbors (`show`). Use `canvas dashboard` instead to render the tree SHAPE, or `canvas attention` to find which nodes are blocked on a human',
   help: {
     name: 'node inspect',
     summary: 'read the canvas graph — enumerate nodes or inspect one with its spine neighbors',
-    children: [
-      { name: 'list', desc: 'list nodes on the canvas', useWhen: 'surveying what exists' },
-      { name: 'show', desc: 'show a node + its spine neighbors', useWhen: 'inspecting one node' },
-    ],
   },
   children: [nodeList, nodeShow],
 });
@@ -172,6 +210,8 @@ const nodeInspect = defineBranch({
 
 const nodeFocus = defineLeaf({
   name: 'focus',
+  description: 'bring a node window forefront',
+  whenToUse: 'you want to bring a specific node into view — swapped into your current pane — to watch or steer it directly, reviving it first if dormant. Use `node cycle` instead to walk neighbors one window at a time rather than jump to a named node, and `node msg` to steer a node without leaving where you are',
   help: {
     name: 'node focus',
     summary: 'bring a node into your CURRENT pane in place (swap-pane) — the agent appears where you are instead of navigating you to its window',
@@ -218,8 +258,9 @@ function nodeByWindow(win: string): string | undefined {
 /** The live node occupying a tmux pane (pane → window → node), or undefined.
  *  Defaults to $TMUX_PANE / the caller's current pane when `pane` is omitted —
  *  shared by `node demote` and `node cycle`, both of which act on "the agent in
- *  front of you". */
-function nodeInPane(pane?: string): string | undefined {
+ *  front of you". Exported for the `canvas chord` / `canvas tmux-spread` leaves,
+ *  which resolve the active pane's node the same way. */
+export function nodeInPane(pane?: string): string | undefined {
   const resolvePane = pane ?? process.env['TMUX_PANE'] ?? currentTmux()?.pane;
   const win = resolvePane !== undefined && resolvePane !== '' ? windowOfPane(resolvePane) : null;
   return win !== null ? nodeByWindow(win) : undefined;
@@ -227,6 +268,8 @@ function nodeInPane(pane?: string): string | undefined {
 
 const nodeDemote = defineLeaf({
   name: 'demote',
+  description: 'finish the agent in your pane + recycle it into a fresh root',
+  whenToUse: 'you are at an agent\'s pane and done with it: finish it cleanly and recycle the pane in one move — push its last message as a final report to everyone waiting on it, mark it done, then boot a fresh crtr root in the same pane to keep working. The human-driver way to end an agent and immediately start over in place. Use `node close` instead to tear a node and its subtree down WITHOUT finishing (no report, revivable), and `push final` when the agent should finish ITSELF from inside its own turn (Alt+C → d)',
   help: {
     name: 'node demote',
     summary: 'finish the agent in your current pane and recycle the pane — push its last message as a final report to everyone waiting on it, mark it done, then boot a fresh crtr root in the same pane',
@@ -267,6 +310,55 @@ const nodeDemote = defineLeaf({
 });
 
 // ---------------------------------------------------------------------------
+// node close — close a node + cascade-cancel its exclusive subtree (Alt+C → x)
+// ---------------------------------------------------------------------------
+
+const nodeClose = defineLeaf({
+  name: 'close',
+  description: 'close a node + cascade-cancel its exclusive subtree (revivable)',
+  whenToUse: 'you want to tear a node down WITHOUT finishing it, cascade-cancelling every descendant it exclusively owns: abandoning a line of work, killing a stuck or wrong-turn subtree, clearing a branch you no longer need. Windows die but nothing is deleted — each closed node keeps its pi session and can be revived later (`canvas revive`). Use `node demote` instead to FINISH the agent in your pane with a final report, and `push final` when a worker should end its own work normally (Alt+C → x)',
+  help: {
+    name: 'node close',
+    summary:
+      'close a node and cascade-cancel its subtree — kill its tmux window plus those of every descendant it EXCLUSIVELY owns (down the subscribes_to spine), mark them all canceled, and leave each a notice it reads on resume. A descendant still subscribed to by a manager outside the subtree is left running. Nothing is deleted: every closed node keeps its pi session and can be revived later (`crtr canvas revive`)',
+    params: [
+      { kind: 'flag', name: 'node', type: 'string', required: false, constraint: 'Node to close. Defaults to the node occupying --pane (or your current pane).' },
+      { kind: 'flag', name: 'pane', type: 'string', required: false, constraint: 'tmux pane id whose node to close. Defaults to $TMUX_PANE / your current pane. The Alt+C menu passes this for you.' },
+    ],
+    output: [
+      { name: 'closed', type: 'boolean', required: true, constraint: 'True when the node (and its exclusive subtree) was closed.' },
+      { name: 'node_id', type: 'string', required: false, constraint: 'The node that was closed — the cascade root.' },
+      { name: 'count', type: 'number', required: false, constraint: 'How many nodes were closed (root + cascaded descendants).' },
+      { name: 'closed_ids', type: 'string[]', required: false, constraint: 'All closed node ids, kill order (leaves first, root last).' },
+      { name: 'spared', type: 'string[]', required: false, constraint: 'Descendants left alive because a manager outside the subtree still subscribes to them.' },
+    ],
+    outputKind: 'object',
+    effects: [
+      'Marks the node and its exclusive descendants `canceled` and clears intent (the daemon never revives a canceled node).',
+      'Kills each closed node\'s tmux window; their pi sessions and canvas edges persist for a later revive.',
+      'Appends a cancellation notice to each closed node\'s inbox, surfaced on its next resume.',
+    ],
+  },
+  run: async (input) => {
+    const pane = (input['pane'] as string | undefined) ?? process.env['TMUX_PANE'];
+    let id = input['node'] as string | undefined;
+    if (id === undefined || id === '') id = nodeInPane(pane);
+    if (id === undefined || id === '') {
+      throw new InputError({ error: 'no_node', message: 'no node found in this pane to close', next: 'Pass --node <id>, or run from inside the agent\'s pane.' });
+    }
+    if (getNode(id) === null) {
+      throw new InputError({ error: 'not_found', message: `no node: ${id}`, next: 'List nodes with `crtr node inspect list`.' });
+    }
+    const res = closeNode(id);
+    return { closed: true, node_id: res.root, count: res.closed.length, closed_ids: res.closed, spared: res.spared };
+  },
+  render: (r) =>
+    r['closed'] === true
+      ? `<closed id="${r['node_id']}" count="${r['count']}" spared="${(r['spared'] as string[] | undefined)?.length ?? 0}"/>`
+      : `<close-failed/>`,
+});
+
+// ---------------------------------------------------------------------------
 // node cycle — DFS-walk the canvas one window at a time (Alt+] / Alt+[)
 // ---------------------------------------------------------------------------
 
@@ -303,6 +395,8 @@ function liveDfsOrder(): string[] {
 
 const nodeCycle = defineLeaf({
   name: 'cycle',
+  description: 'DFS-walk to the next/prev live node in place',
+  whenToUse: 'sweeping the canvas one window at a time, descending into children before siblings (bound to Alt+] forward / Alt+[ back). Use `node focus` instead to jump straight to a named node',
   help: {
     name: 'node cycle',
     summary:
@@ -351,44 +445,13 @@ const nodeCycle = defineLeaf({
 });
 
 // ---------------------------------------------------------------------------
-// node session — boot a NEW root in its own tmux session (the explicit form)
-// ---------------------------------------------------------------------------
-
-const nodeSession = defineLeaf({
-  name: 'session',
-  help: {
-    name: 'node session',
-    summary: 'start a fresh root node as its own window in the shared crtr session (use from inside a node to start a new root without taking your pane)',
-    params: [
-      { kind: 'stdin', name: 'prompt', required: false, constraint: 'Optional starter prompt; a root needs none.' },
-      { kind: 'flag', name: 'kind', type: 'string', required: false, default: 'general', constraint: 'Persona kind for the root.' },
-      { kind: 'flag', name: 'cwd', type: 'path', required: false, constraint: 'Dir to pin the root to. Defaults to the caller cwd.' },
-      { kind: 'flag', name: 'name', type: 'string', required: false, constraint: 'Display name.' },
-    ],
-    output: [
-      { name: 'node_id', type: 'string', required: true, constraint: 'The root node id.' },
-      { name: 'session', type: 'string', required: true, constraint: 'The shared crtr tmux session this root\'s window was placed in.' },
-      { name: 'window', type: 'string', required: false, constraint: 'The root node\'s window id.' },
-    ],
-    outputKind: 'object',
-    effects: ['Opens a detached window in the shared crtr session and runs pi in it as a resident root node.'],
-  },
-  run: async (input) => {
-    const prompt = input['prompt'] as string | undefined;
-    const kind = (input['kind'] as string | undefined) ?? 'general';
-    const cwd = (input['cwd'] as string | undefined) ?? process.cwd();
-    const name = input['name'] as string | undefined;
-    const meta = bootRoot({ cwd, kind, name, prompt, placement: 'session' });
-    return { node_id: meta.node_id, session: meta.tmux_session ?? '', window: meta.window ?? undefined };
-  },
-});
-
-// ---------------------------------------------------------------------------
 // node msg — direct-address any node at a wake tier (wakes a dormant target)
 // ---------------------------------------------------------------------------
 
 const nodeMsg = defineLeaf({
   name: 'msg',
+  description: 'direct-message any node at a wake tier',
+  whenToUse: 'you want to address a specific node directly — steer it mid-flight, hand it a correction, ping it, or pass it new information — and have it land regardless of subscriptions, reviving a dormant target. Set `--tier` by urgency: critical interrupts with a new turn, urgent steers mid-turn, normal is a follow-up, deferred waits for its next cycle. Use `node subscribe` instead to wire ongoing push delivery rather than send a one-off, and `push` to report UP your own spine',
   help: {
     name: 'node msg',
     summary: 'send a direct message to any node\'s inbox at a wake tier — a direct message wakes the node regardless of subscriptions (reviving it if dormant)',
@@ -441,6 +504,8 @@ function resolveSubscriber(input: Record<string, unknown>): string {
 
 const nodeSubscribe = defineLeaf({
   name: 'subscribe',
+  description: 'wire a subscribes_to edge between any pair (active or --passive)',
+  whenToUse: 'you want to wire who-wakes-whom on the graph: make a node receive the pushes another node emits — yourself by default, or any node to any publisher via `--subscriber` (e.g. point a manager at a `--root` worker you spawned, or fan a reviewer to a second orchestrator). Active by default, so a push WAKES the subscriber; pass `--passive` to have pushes accumulate and auto-inject on its next message without waking it. You already auto-subscribe to any child you spawn, so reach for this for edges spawn did not create. Inverse is `node unsubscribe`',
   help: {
     name: 'node subscribe',
     summary: 'wire a subscribes_to edge so one node receives another\'s pushes — the subscriber can be you (default) or, with --subscriber, ANY node, to ANY publisher. Re-running flips an existing edge\'s active/passive mode.',
@@ -476,6 +541,8 @@ const nodeSubscribe = defineLeaf({
 
 const nodeUnsubscribe = defineLeaf({
   name: 'unsubscribe',
+  description: 'drop a subscribes_to edge',
+  whenToUse: 'you want to stop a node receiving another\'s pushes: detach yourself (default) or any node via `--subscriber` from a publisher — quiet a feed you no longer track, or cut a manager loose from a finished worker. Idempotent. The inverse of `node subscribe`',
   help: {
     name: 'node unsubscribe',
     summary: 'drop a subscribes_to edge — the subscriber (you by default, or any node via --subscriber) stops receiving the publisher\'s pushes.',
@@ -501,38 +568,83 @@ const nodeUnsubscribe = defineLeaf({
 });
 
 // ---------------------------------------------------------------------------
-// node promote — become a resident orchestrator (terminal → resident polymorph)
+// node promote — become an orchestrator (the worker→orchestrator polymorph)
 // ---------------------------------------------------------------------------
 
 const nodePromote = defineLeaf({
   name: 'promote',
+  description: 'become an orchestrator of a chosen kind',
+  whenToUse: 'your task has outgrown a single context window — many phases to delegate and persist across refreshes — so become an orchestrator: a long-lived, roadmap-holding node that fans work out to children and survives context refreshes (`node yield`). Choose `--kind` to specialize (developer/review/spec/design/plan/explore/general). Pass `--resident` to ALSO make it interactable (stays dormant, woken by inbox/human, never forced to submit a final); without it you stay terminal/orchestrator — still reporting a final up the spine and reaping when done. Do NOT reach for this for work that fits one window, or merely because you spawned a child — a base worker that spawns a helper and ends with `push final` never needs to promote',
+  tier: 'important',
   help: {
     name: 'node promote',
-    summary: 'promote yourself to a resident orchestrator — do this when your task outgrows one context window (many phases to delegate and persist across refreshes); not for work that fits one window, and not merely because you spawned a child',
+    summary: 'promote yourself to an orchestrator — do this when your task outgrows one context window (many phases to delegate and persist across refreshes); not for work that fits one window, and not merely because you spawned a child. Mode only — lifecycle stays as-is unless you pass --resident',
     params: [
       { kind: 'flag', name: 'kind', type: 'string', required: false, constraint: 'Specialize as this kind of orchestrator: developer (own feature delivery), review, spec, design, plan, explore, general. Defaults to your current kind. Promoting from a generic kind? CHOOSE a concrete one — it sets the orchestrator persona you revive into.' },
+      { kind: 'flag', name: 'resident', type: 'bool', required: false, constraint: 'ALSO flip lifecycle→resident: make the node interactable — it stays dormant, woken by inbox/human, and is never forced to submit a final. Omit to stay terminal/orchestrator (delegates + holds a roadmap, but still owes a final up the spine and reaps when done).' },
       { kind: 'flag', name: 'node', type: 'string', required: false, constraint: 'Node to promote. Defaults to the caller (CRTR_NODE_ID).' },
     ],
     output: [
       { name: 'node_id', type: 'string', required: true, constraint: 'The promoted node.' },
       { name: 'kind', type: 'string', required: true, constraint: 'The kind it now orchestrates as.' },
       { name: 'mode', type: 'string', required: true, constraint: 'Now "orchestrator".' },
+      { name: 'lifecycle', type: 'string', required: true, constraint: '"resident" if you passed --resident, else unchanged (typically "terminal").' },
       { name: 'roadmap_written', type: 'boolean', required: true, constraint: 'True if a roadmap scaffold was seeded by this call.' },
       { name: 'roadmap_path', type: 'string', required: true, constraint: 'Absolute path to your roadmap doc (context/roadmap.md) — edit it to author your plan.' },
       { name: 'goal_path', type: 'string', required: true, constraint: 'Absolute path to your goal doc (context/initial-prompt.md) — the mandate you were spawned with.' },
-      { name: 'guidance', type: 'string', required: true, constraint: 'Instructions for your new role — read and act on them this turn.' },
+      { name: 'memory_path', type: 'string', required: true, constraint: 'Absolute path to your NODE-LOCAL memory index (context/memory/MEMORY.md) — facts specific to this goal; dies with this node.' },
+      { name: 'user_memory_path', type: 'string', required: true, constraint: 'Absolute path to your USER-GLOBAL memory index (<crtrHome>/memory/MEMORY.md) — who the human is, how they like to work; loaded into every orchestrator everywhere.' },
+      { name: 'project_memory_path', type: 'string', required: true, constraint: 'Absolute path to your PROJECT memory index (<crtrHome>/projects/<key>/memory/MEMORY.md) — facts bound to this repo; loaded into every orchestrator working here.' },
     ],
     outputKind: 'object',
-    effects: ['Flips lifecycle→resident, mode→orchestrator, kind→chosen; rewrites the launch spec to that kind\'s orchestrator persona; seeds context/roadmap.md scaffold if absent.'],
+    effects: ['Flips mode→orchestrator + kind→chosen (lifecycle unchanged unless --resident, which also flips lifecycle→resident); rewrites the launch spec to that kind\'s orchestrator persona; seeds context/roadmap.md scaffold + all three scoped memory stores (user-global, project, node-local) if absent.', 'Your new-role guidance is injected automatically at the turn boundary by the persona injector — the command no longer returns it.'],
   },
   run: async (input) => {
     const id = (input['node'] as string | undefined) ?? process.env['CRTR_NODE_ID'];
     if (id === undefined || id === '') throw new InputError({ error: 'no_node', message: 'no node to promote (set CRTR_NODE_ID or pass --node)', next: 'Run from inside a node, or pass --node <id>.' });
     const kind = input['kind'] as string | undefined;
     if (kind !== undefined) assertKind(kind);
-    const res = promote(id, kind !== undefined ? { kind } : {});
-    return { node_id: res.meta.node_id, kind: res.meta.kind, mode: res.meta.mode, roadmap_written: res.roadmapWritten, roadmap_path: res.roadmapPath, goal_path: res.goalPath, guidance: res.guidance };
+    const resident = input['resident'] === true;
+    const res = promote(id, { ...(kind !== undefined ? { kind } : {}), ...(resident ? { resident: true } : {}) });
+    return { node_id: res.meta.node_id, kind: res.meta.kind, mode: res.meta.mode, lifecycle: res.meta.lifecycle, roadmap_written: res.roadmapWritten, roadmap_path: res.roadmapPath, goal_path: res.goalPath, memory_path: res.memoryPath, user_memory_path: res.userMemoryPath, project_memory_path: res.projectMemoryPath };
   },
+});
+
+// ---------------------------------------------------------------------------
+// node lifecycle — flip the lifecycle axis (terminal ↔ resident), independent
+// of mode. The persona injector delivers the transition guidance.
+// ---------------------------------------------------------------------------
+
+const nodeLifecycle = defineLeaf({
+  name: 'lifecycle',
+  description: 'switch a node between terminal and resident',
+  whenToUse: 'you want to flip a node\'s LIFECYCLE independent of its mode: make a node RESIDENT so it becomes interactable — it stays dormant, wakes on inbox/human, and is never forced to submit a final; or make a node TERMINAL so it owes a final result up the spine and reaps when done. Orthogonal to `node promote`, which changes MODE (base↔orchestrator), not lifecycle. The new-state guidance is injected automatically at the next turn boundary',
+  help: {
+    name: 'node lifecycle',
+    summary: 'set a node\'s lifecycle axis — terminal (owes a final up the spine, reaps when done) or resident (interactable, stays dormant, woken by inbox/human, never forced to submit). Orthogonal to mode; promotion does not touch it',
+    params: [
+      { kind: 'positional', name: 'lifecycle', required: true, constraint: 'terminal | resident.' },
+      { kind: 'flag', name: 'node', type: 'string', required: false, constraint: 'Node to change. Defaults to the caller (CRTR_NODE_ID).' },
+    ],
+    output: [
+      { name: 'node_id', type: 'string', required: true, constraint: 'The node.' },
+      { name: 'lifecycle', type: 'string', required: true, constraint: 'Its new lifecycle (terminal | resident).' },
+    ],
+    outputKind: 'object',
+    effects: ['Sets lifecycle on the node meta.', 'The persona injector delivers the transition guidance at the next turn boundary (or on the node\'s next revive if it is dormant).'],
+  },
+  run: async (input) => {
+    const value = (input['lifecycle'] as string | undefined)?.trim().toLowerCase();
+    if (value !== 'terminal' && value !== 'resident') {
+      throw new InputError({ error: 'bad_lifecycle', message: `invalid lifecycle: ${value ?? ''}`, field: 'lifecycle', next: 'Pass `terminal` or `resident`.' });
+    }
+    const id = (input['node'] as string | undefined) ?? process.env['CRTR_NODE_ID'];
+    if (id === undefined || id === '') throw new InputError({ error: 'no_node', message: 'no node (set CRTR_NODE_ID or pass --node)', next: 'Run from inside a node, or pass --node <id>.' });
+    if (getNode(id) === null) throw new InputError({ error: 'not_found', message: `no node: ${id}`, next: 'List nodes with `crtr node inspect list`.' });
+    const meta = updateNode(id, { lifecycle: value as Lifecycle });
+    return { node_id: meta.node_id, lifecycle: meta.lifecycle };
+  },
+  render: (r) => `<lifecycle node="${r['node_id']}" set="${r['lifecycle']}"/>`,
 });
 
 // ---------------------------------------------------------------------------
@@ -541,16 +653,18 @@ const nodePromote = defineLeaf({
 
 const nodeYield = defineLeaf({
   name: 'yield',
+  description: 'refresh your context against your roadmap',
+  whenToUse: 'your context window is filling up but the mandate is unfinished: request a refresh — end your turn and revive fresh against your roadmap, leaving a note to your future self for the moment you wake. A base node auto-promotes to orchestrator first (a yield needs a roadmap to refresh against). Use `node promote` instead when you need to BECOME an orchestrator with no refresh pending',
   help: {
     name: 'node yield',
-    summary: 'request a context refresh — you will be respawned fresh against your roadmap on your next stop (a terminal node auto-promotes to resident first)',
+    summary: 'request a context refresh — you will be respawned fresh against your roadmap on your next stop (a base node auto-promotes to orchestrator first)',
     params: [
-      { kind: 'flag', name: 'kind', type: 'string', required: false, constraint: 'If this yield auto-promotes a terminal node, specialize it as this kind of orchestrator (developer, review, spec, design, plan, explore, general). Defaults to your current kind.' },
-      { kind: 'stdin', name: 'message', required: false, constraint: 'A short note to your future self — what to do (if anything) the moment you wake fresh. Surfaced as <yield-message> in the next revive. Pass as a positional or pipe via heredoc.' },
+      { kind: 'flag', name: 'kind', type: 'string', required: false, constraint: 'If this yield auto-promotes a base node, specialize it as this kind of orchestrator (developer, review, spec, design, plan, explore, general). Defaults to your current kind.' },
+      { kind: 'stdin', name: 'message', required: true, constraint: 'A note to your future self — what to do the moment you wake fresh. Surfaced as <yield-message> in the next revive. Pass as a positional or pipe via heredoc.' },
     ],
     output: [
       { name: 'node_id', type: 'string', required: true, constraint: 'The yielding node.' },
-      { name: 'promoted', type: 'boolean', required: true, constraint: 'True if this yield promoted a terminal node to resident.' },
+      { name: 'promoted', type: 'boolean', required: true, constraint: 'True if this yield promoted a base node to orchestrator.' },
       { name: 'will_refresh', type: 'boolean', required: true, constraint: 'Always true: end your turn and you will revive fresh against your roadmap.' },
     ],
     outputKind: 'object',
@@ -562,7 +676,10 @@ const nodeYield = defineLeaf({
     const kind = input['kind'] as string | undefined;
     if (kind !== undefined) assertKind(kind);
     const message = typeof input['message'] === 'string' ? (input['message'] as string).trim() : '';
-    if (message !== '') writeYieldMessage(id, message);
+    if (message === '') {
+      throw new InputError({ error: 'empty_message', message: 'a yield message is required (stdin or positional)', next: 'Pass a note to your future self as an argument or pipe it on stdin.' });
+    }
+    writeYieldMessage(id, message);
     const res = requestYield(id, kind !== undefined ? { kind } : {});
     return { node_id: res.meta.node_id, promoted: res.promoted, will_refresh: res.willRefresh };
   },
@@ -584,21 +701,8 @@ export function registerNode(): BranchDef {
         'Every agent is a node in one directed graph (the canvas); `subscribes_to` is the spine — spawn a child and you auto-subscribe (active) to it, so its finish wakes you.\n\n' +
         'WHEN TO DELEGATE: hand any self-contained unit of work to a child instead of doing it inline — it keeps your own context window (your scarce resource) free for steering. Spawn independent units in PARALLEL; a wake with idle workers is wasted. Serialize only true dependencies, and never let two live children edit the same files.\n\n' +
         'HOW: `crtr node new "<task>" --kind <kind>` returns a node id immediately and runs the worker in a background window. Match the kind to the work (see `node new -h`). You are woken when a child finishes; absorb what your children reported with `crtr feed read` (coalesced pointers — dereference the report paths that matter, don\'t act on a one-line summary). Integrate, then either delegate the next units or finish.\n\n' +
-        'FINISH: a worker ends its own work with `crtr push final "<result>"` (writes the canonical result, marks done, closes the window) — stopping without it is not finishing. For a job too big for one context window, `node promote` to a resident orchestrator (holds a roadmap, delegates phases); when context fills, `node yield` to refresh against that roadmap.',
-      children: [
-        { name: 'new', desc: 'spawn a terminal worker as a background window', useWhen: 'delegating a self-contained unit of work', tier: 'important' },
-        { name: 'inspect', desc: 'read the graph (list nodes / show one)', useWhen: 'surveying the canvas or inspecting a node' },
-        { name: 'focus', desc: 'bring a node window forefront', useWhen: 'jumping to a node to watch or steer it' },
-        { name: 'cycle', desc: 'DFS-walk to the next/prev live node in place', useWhen: 'sweeping the canvas one window at a time (Alt+] forward / Alt+[ back)' },
-        { name: 'demote', desc: 'finish the agent in your pane + recycle it into a fresh root', useWhen: 'wrapping up the agent in front of you and starting fresh (Alt+C → d)' },
-        { name: 'session', desc: 'open a fresh root in its own tmux session', useWhen: 'starting a new top-level session from inside a node' },
-        { name: 'msg', desc: 'direct-message any node at a wake tier', useWhen: 'steering or pinging a specific node (wakes it)' },
-        { name: 'subscribe', desc: 'wire a subscribes_to edge between any pair (active or --passive)', useWhen: 'making a node (you or another) receive another node\'s pushes' },
-        { name: 'unsubscribe', desc: 'drop a subscribes_to edge', useWhen: 'detaching a subscriber from a publisher' },
-        { name: 'promote', desc: 'become a resident orchestrator of a chosen kind', useWhen: 'your task is bigger than one context window and you must delegate + persist', tier: 'important' },
-        { name: 'yield', desc: 'refresh your context against your roadmap', useWhen: 'your context window is filling up' },
-      ],
+        'FINISH: a worker ends its own work with `crtr push final "<result>"` (writes the canonical result, marks done, closes the window) — stopping without it is not finishing. For a job too big for one context window, `node promote` to an orchestrator (holds a roadmap, delegates phases); when context fills, `node yield` to refresh against that roadmap.',
     },
-    children: [nodeNew, nodeInspect, nodeFocus, nodeCycle, nodeDemote, nodeSession, nodeMsg, nodeSubscribe, nodeUnsubscribe, nodePromote, nodeYield],
+    children: [nodeNew, nodeInspect, nodeFocus, nodeCycle, nodeDemote, nodeClose, nodeMsg, nodeSubscribe, nodeUnsubscribe, nodePromote, nodeLifecycle, nodeYield],
   });
 }

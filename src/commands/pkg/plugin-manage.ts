@@ -23,6 +23,8 @@ import { isGitUrl, setPluginEnabled, resolveInstallScope } from './shared.js';
 
 const pluginInstall = defineLeaf({
   name: 'install',
+  description: 'install from a git URL',
+  whenToUse: 'installing a plugin directly from a git URL into a scope, e.g. `pkg plugin manage install https://github.com/org/repo`',
   help: {
     name: 'pkg plugin manage install',
     summary: 'install a plugin from a git URL into the given scope',
@@ -112,6 +114,8 @@ const pluginInstall = defineLeaf({
 
 const pluginRemove = defineLeaf({
   name: 'remove',
+  description: 'remove plugin and directory',
+  whenToUse: 'uninstalling a plugin: deletes its directory and removes it from config',
   help: {
     name: 'pkg plugin manage remove',
     summary: 'remove a plugin and its directory from the given scope',
@@ -172,6 +176,8 @@ const pluginRemove = defineLeaf({
 
 const pluginEnable = defineLeaf({
   name: 'enable',
+  description: 'enable a plugin',
+  whenToUse: 'reactivating a plugin that was previously disabled so its skills resolve again',
   help: {
     name: 'pkg plugin manage enable',
     summary: 'enable a plugin in the given scope',
@@ -192,6 +198,8 @@ const pluginEnable = defineLeaf({
 
 const pluginDisable = defineLeaf({
   name: 'disable',
+  description: 'disable without removing',
+  whenToUse: 'hiding a plugin from resolution without deleting it, so you can re-enable it later',
   help: {
     name: 'pkg plugin manage disable',
     summary: 'disable a plugin (keeps files, hides from resolution)',
@@ -217,6 +225,8 @@ const pluginDisable = defineLeaf({
 
 const pluginUpdate = defineLeaf({
   name: 'update',
+  description: 'pull latest from git',
+  whenToUse: 'pulling the latest git version of one named plugin, or of all installed plugins when no name is given',
   help: {
     name: 'pkg plugin manage update',
     summary: 'git pull updates for one or all installed plugins',
@@ -319,16 +329,11 @@ const pluginUpdate = defineLeaf({
 
 export const pluginManageBranch = defineBranch({
   name: 'manage',
+  description: 'install, remove, enable, disable, update',
+  whenToUse: 'changing plugin state: install, remove, enable, disable, or update installed plugins',
   help: {
     name: 'pkg plugin manage',
     summary: 'install, remove, enable, disable, or update plugins',
-    children: [
-      { name: 'install', desc: 'install from a git URL', useWhen: 'adding a new plugin' },
-      { name: 'remove', desc: 'remove plugin and directory', useWhen: 'uninstalling a plugin' },
-      { name: 'enable', desc: 'enable a plugin', useWhen: 'activating a disabled plugin' },
-      { name: 'disable', desc: 'disable without removing', useWhen: 'temporarily hiding a plugin' },
-      { name: 'update', desc: 'pull latest from git', useWhen: 'updating a plugin to its latest version' },
-    ],
   },
   children: [pluginInstall, pluginRemove, pluginEnable, pluginDisable, pluginUpdate],
 });

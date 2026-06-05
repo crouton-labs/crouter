@@ -18,10 +18,6 @@ export function registerPkg(): BranchDef {
     help: {
       name: 'pkg',
       summary: 'manage plugins and plugin marketplaces',
-      children: [
-        { name: 'plugin', desc: 'install and manage plugins', useWhen: 'working with individual plugins directly' },
-        { name: 'market', desc: 'manage marketplace sources and install from them', useWhen: 'using curated plugin collections' },
-      ],
     },
     children: [pluginBranch, marketBranch],
   });

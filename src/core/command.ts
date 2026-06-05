@@ -6,7 +6,7 @@
 // edge cases.
 
 import { renderRoot, renderBranch, renderLeafArgv } from './help.js';
-import type { RootHelp, RootCommand, RootEntry, BranchHelp, LeafHelp, InputParam, FlagParam } from './help.js';
+import type { RootHelp, RootCommand, RootEntry, BranchHelp, LeafHelp, InputParam, FlagParam, SubTier, ListingChild } from './help.js';
 import { readStdinRaw, emit, handle, setJsonOutput, isJsonOutput } from './io.js';
 import { renderResult } from './render.js';
 import { CrtrError } from './errors.js';
@@ -37,6 +37,15 @@ export interface SlashSpec {
 export interface LeafDef {
   kind: 'leaf';
   name: string;
+  /** Short description for this node's <subcommand> row in its parent's -h. */
+  description?: string;
+  /** Selection rubric for the parent's listing — plainly states when to reach
+   *  for this command (expansive with examples for judgment-heavy ones, concise
+   *  for single-purpose). Rendered verbatim, no prefix. */
+  whenToUse?: string;
+  /** Visibility tier in ancestor listings (see SubTier). Default 'normal';
+   *  'hidden' keeps an internal leaf out of every listing. */
+  tier?: SubTier;
   help: LeafHelp;
   /** Opt into editor slash-command exposure (see SlashSpec). */
   slash?: SlashSpec;
@@ -50,6 +59,15 @@ export interface LeafDef {
 export interface BranchDef {
   kind: 'branch';
   name: string;
+  /** Short description for this node's <subcommand> row in its parent's -h.
+   *  Unused on a top-level subtree (its root representation is its rootEntry). */
+  description?: string;
+  /** Selection rubric for the parent's listing — plainly states when to reach
+   *  for this command (expansive with examples for judgment-heavy ones, concise
+   *  for single-purpose). Rendered verbatim, no prefix. */
+  whenToUse?: string;
+  /** Visibility tier in ancestor listings (see SubTier). Default 'normal'. */
+  tier?: SubTier;
   help: BranchHelp;
   /** How this subtree represents itself one level up. Present on top-level
    *  subtrees (assembled into root -h by defineRoot); omitted on nested
@@ -72,6 +90,9 @@ export interface RootDef {
 
 export function defineLeaf(opts: {
   name: string;
+  description?: string;
+  whenToUse?: string;
+  tier?: SubTier;
   help: LeafHelp;
   slash?: SlashSpec;
   run: (input: Record<string, unknown>) => Promise<Record<string, unknown> | void>;
@@ -80,6 +101,9 @@ export function defineLeaf(opts: {
   return {
     kind: 'leaf',
     name: opts.name,
+    description: opts.description,
+    whenToUse: opts.whenToUse,
+    tier: opts.tier,
     help: opts.help,
     slash: opts.slash,
     run: opts.run,
@@ -91,30 +115,39 @@ export function defineLeaf(opts: {
  *  childless branches return 0. */
 function visibleSubCount(def: LeafDef | BranchDef): number {
   if (def.kind !== 'branch') return 0;
-  return def.help.children.filter((c) => (c.tier ?? 'normal') !== 'hidden').length;
+  return (def.help.listing ?? []).filter((c) => c.tier !== 'hidden').length;
 }
 
 export function defineBranch(opts: {
   name: string;
+  description?: string;
+  whenToUse?: string;
+  tier?: SubTier;
   help: BranchHelp;
   rootEntry?: RootEntry;
   slash?: SlashSpec;
   children: (LeafDef | BranchDef)[];
 }): BranchDef {
-  // Enrich each help-child entry with the count of its own non-hidden
-  // subcommands so renderBranch can show "[+N subcommands]" when a branch child
-  // is listed without expanding it. Match help entries to child defs by name;
-  // entries without a matching def (or whose def has no subcommands) stay bare.
-  for (const hc of opts.help.children) {
-    const childDef = opts.children.find((c) => c.name === hc.name);
-    if (childDef !== undefined) {
-      const n = visibleSubCount(childDef);
-      if (n > 0) hc.subCount = n;
-    }
-  }
+  // Assemble the parent-level listing straight from the child defs — each node
+  // owns its own description/whenToUse/tier, so the parent copies nothing
+  // (principle 16). Bottom-up construction guarantees a child branch's listing
+  // is already computed, so subCount is available here.
+  opts.help.listing = opts.children.map((c): ListingChild => {
+    const subCount = visibleSubCount(c);
+    return {
+      name: c.name,
+      description: c.description ?? '',
+      whenToUse: c.whenToUse ?? '',
+      tier: c.tier ?? 'normal',
+      ...(subCount > 0 ? { subCount } : {}),
+    };
+  });
   return {
     kind: 'branch',
     name: opts.name,
+    description: opts.description,
+    whenToUse: opts.whenToUse,
+    tier: opts.tier,
     help: opts.help,
     rootEntry: opts.rootEntry,
     slash: opts.slash,
@@ -153,13 +186,13 @@ export function defineRoot(opts: {
     .map((s) => {
       // Promote this subtree's common/important children into root, and count
       // how many other (non-hidden) direct subcommands stay behind `<name> -h`.
-      const visible = s.help.children.filter((c) => (c.tier ?? 'normal') !== 'hidden');
+      const visible = (s.help.listing ?? []).filter((c) => c.tier !== 'hidden');
       const promoted = visible
         .filter((c) => c.tier === 'common' || c.tier === 'important')
         .map((c) => ({
           path: `${s.name} ${c.name}`,
           // important carries its shortform desc; common shows the bare path.
-          desc: c.tier === 'important' ? c.desc : undefined,
+          desc: c.tier === 'important' ? c.description : undefined,
         }));
       return {
         name: s.name,

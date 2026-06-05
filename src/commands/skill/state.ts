@@ -28,6 +28,8 @@ async function toggleSkill(
 
 export const stateEnable = defineLeaf({
   name: 'enable',
+  description: 'enable a skill',
+  whenToUse: 're-enable a skill that was previously disabled, making it visible to list and agent discovery again in the target scope.',
   help: {
     name: 'skill state enable',
     summary: 'enable a skill in the given scope',
@@ -48,6 +50,8 @@ export const stateEnable = defineLeaf({
 
 export const stateDisable = defineLeaf({
   name: 'disable',
+  description: 'disable a skill',
+  whenToUse: 'hide a skill from list and agent discovery without deleting it — writes a disable flag to config.json in the target scope; reverse it later with `crtr skill state enable`.',
   help: {
     name: 'skill state disable',
     summary: 'disable a skill in the given scope, hiding it from list and agent discovery',
@@ -68,13 +72,11 @@ export const stateDisable = defineLeaf({
 
 export const stateBranch = defineBranch({
   name: 'state',
+  description: 'enable or disable skills',
+  whenToUse: 'turn a skill on or off in a scope — disable to hide it from discovery without removing it, enable to bring it back.',
   help: {
     name: 'skill state',
     summary: 'enable or disable skills',
-    children: [
-      { name: 'enable', desc: 'enable a skill', useWhen: 'making a previously disabled skill available again' },
-      { name: 'disable', desc: 'disable a skill', useWhen: 'hiding a skill from list and agent discovery without removing it' },
-    ],
   },
   children: [stateEnable, stateDisable],
 });

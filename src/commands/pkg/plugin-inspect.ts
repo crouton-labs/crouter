@@ -15,6 +15,8 @@ import type { Scope } from '../../types.js';
 
 const pluginList = defineLeaf({
   name: 'list',
+  description: 'paginated list of installed plugins',
+  whenToUse: 'enumerating which plugins are installed across user and project scope, optionally including disabled ones',
   help: {
     name: 'pkg plugin inspect list',
     summary: 'paginated list of installed plugins',
@@ -90,6 +92,8 @@ const pluginList = defineLeaf({
 
 const pluginShow = defineLeaf({
   name: 'show',
+  description: 'read plugin manifest and skill inventory',
+  whenToUse: 'reading one installed plugin in detail to decide before you enable, disable, or remove it — returns the full manifest, the skills it provides, its scope, and whether it is currently enabled. Use `pkg plugin inspect list` instead to enumerate plugins rather than drill into one',
   help: {
     name: 'pkg plugin inspect show',
     summary: 'read plugin manifest and metadata by name',
@@ -147,13 +151,11 @@ const pluginShow = defineLeaf({
 
 export const pluginInspectBranch = defineBranch({
   name: 'inspect',
+  description: 'list or show installed plugins',
+  whenToUse: 'reading installed plugin metadata to decide before you change anything — list what is installed, or show the manifest and skills of one plugin. Read-only; switch to `pkg plugin manage` to actually install, enable, disable, or remove',
   help: {
     name: 'pkg plugin inspect',
     summary: 'read plugin metadata without modifying state',
-    children: [
-      { name: 'list', desc: 'paginated list of installed plugins', useWhen: 'enumerating what plugins are installed' },
-      { name: 'show', desc: 'read plugin manifest and skill inventory', useWhen: 'inspecting a specific plugin\'s details' },
-    ],
   },
   children: [pluginList, pluginShow],
 });

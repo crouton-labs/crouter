@@ -3,7 +3,7 @@ import { InputError } from '../../core/io.js';
 import { pushFinal } from '../../core/feed/feed.js';
 import { interactionsRoot, interactionDir } from '../../core/artifact.js';
 import { paginate } from '../../core/pagination.js';
-import { getNode, setStatus, updateNode, subscribersOf } from '../../core/canvas/index.js';
+import { getNode, setStatus, setIntent, subscribersOf } from '../../core/canvas/index.js';
 import { appendInbox } from '../../core/feed/inbox.js';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -28,6 +28,8 @@ import { killPane, type RunRecord } from './shared.js';
 
 export const humanInbox = defineLeaf({
   name: 'inbox',
+  description: 'interactively drain pending interactions',
+  whenToUse: 'a human is clearing the queue at their terminal',
   help: {
     name: 'human inbox',
     summary: 'interactively drain pending interactions at your own terminal',
@@ -49,6 +51,8 @@ export const humanInbox = defineLeaf({
 
 export const humanList = defineLeaf({
   name: 'list',
+  description: 'enumerate pending interactions',
+  whenToUse: 'discovering what is blocked on a human',
   help: {
     name: 'human list',
     summary: 'paginated list of pending, unclaimed interactions, oldest first',
@@ -101,6 +105,8 @@ export const humanList = defineLeaf({
 
 export const humanCancel = defineLeaf({
   name: 'cancel',
+  description: 'retract a pending ask/approve/review',
+  whenToUse: 'a question went stale before the human answered',
   help: {
     name: 'human cancel',
     summary:
@@ -168,7 +174,7 @@ export const humanCancel = defineLeaf({
     //     `human review` caller must see the pane-death 'closed', not a phantom
     //     'done' result.
     setStatus(jobId, 'done');
-    updateNode(jobId, { intent: 'done' });
+    setIntent(jobId, 'done');
     // Almost always the asking agent cancels its OWN deck — it already knows, so
     // never message the caller. Only a third-party cancel (a human, an
     // orchestrator) leaves a genuinely-waiting asker uninformed; give them a
@@ -200,6 +206,7 @@ export const humanCancel = defineLeaf({
 
 export const humanRun = defineLeaf({
   name: '_run',
+  tier: 'hidden',
   help: {
     name: 'human _run',
     summary: 'internal: the detached worker that runs the blocking humanloop call at the pane TTY',

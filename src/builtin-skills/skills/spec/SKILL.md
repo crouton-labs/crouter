@@ -20,7 +20,7 @@ Gate: human confirms readiness to proceed to design.
 
 Design produces the blueprint: components and their topology, end-to-end flows, files and directories affected, locked decisions, and open questions resolved. The altitude is infra/services — no function signatures, no algorithm descriptions, no implementation ordering. Design answers "what shape does this take?" — planning answers "how is it built?"
 
-Small or simple design work (one surface, clear scope, few components) can be done by a single `design`-kind child node. Large or complex design work — multi-surface features, multiple interacting subsystems, significant architectural choices — must be delegated to a **design orchestrator** (a resident `design`-kind node), which decomposes the design internally and returns a finished artifact. The trigger for spawning a design orchestrator rather than a base design node: if the design effort has more than one distinct phase or more than ~5 interacting components, use an orchestrator.
+Small or simple design work (one surface, clear scope, few components) can be done by a single `design`-kind child node. Large or complex design work — multi-surface features, multiple interacting subsystems, significant architectural choices — must be delegated to a **design orchestrator** (a `design`-kind node created directly with `--mode orchestrator`), which decomposes the design internally and returns a finished artifact. The trigger for spawning a design orchestrator rather than a base design node: if the design effort has more than one distinct phase or more than ~5 interacting components, use an orchestrator.
 
 Gate: human approves the rendered design artifact.
 
@@ -64,7 +64,7 @@ After yield-and-revive, `## Strategy / phases` plus `## Active context` must let
 
 Spawn a base `design` node (terminal) when: the design surface is bounded, one component or subsystem, no multi-phase structure required. The node produces `context/design.md` and `context/design.json` and returns.
 
-Spawn a `design` orchestrator (resident) when: the feature spans multiple subsystems, has distinct implementation phases that need separate design treatment, or the design effort is itself likely to fill one context window before it's finished. Pass it the shape brief as its goal; it owns the decomposition and integration internally and reports a finished design artifact when done.
+Spawn a `design` orchestrator (resident) when: the feature spans multiple subsystems, has distinct implementation phases that need separate design treatment, or the design effort is itself likely to fill one context window before it's finished. Create it directly as an orchestrator — `crtr node new --kind design --mode orchestrator` — rather than spawning a base design node and counting on it to promote itself once it discovers the surface is too big; self-promotion is unreliable, and a node born an orchestrator is strictly more capable than one hoping to become one. Pass it the shape brief as its goal; it owns the decomposition and integration internally and reports a finished design artifact when done.
 
 In either case, the spec orchestrator waits for the design to land and the human to approve it before proceeding.
 

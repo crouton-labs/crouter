@@ -5,12 +5,17 @@
 // subscription to a node that's still live (active|idle) — something that can
 // actually wake it. (A passive sub won't wake you, so it doesn't count.)
 //
-//   • waiting        → stopping is correct; it's a dormant orchestrator awaiting
-//                      its workers. Let it sleep; a child's push wakes it.
+//   • resident       → an interactable / human-driven node is NEVER forced to
+//                      submit a final: stopping to go dormant is always
+//                      legitimate (woken by inbox/human). Keyed on the LIFECYCLE
+//                      value, not on parent/mode — what matters is residency.
+//   • waiting        → a TERMINAL node holding an active live subscription is a
+//                      dormant orchestrator awaiting its workers. Let it sleep;
+//                      a child's push wakes it (and idle-releases its window).
 //   • finished/asked → it pushed --final (done) or called `crtr ask` this turn.
 //                      Also fine.
-//   • otherwise      → it has nothing live to wait for and hasn't resolved.
-//                      Re-prompt it to finish or escalate. Stalls are impossible.
+//   • otherwise      → a TERMINAL node with nothing live to wait for and no
+//                      final pushed. Re-prompt it to finish or escalate.
 
 import { hasActiveLiveSubscription, getNode } from '../canvas/index.js';
 
@@ -22,7 +27,7 @@ export interface StopSignals {
 }
 
 export type StopAction =
-  | { action: 'allow'; reason: 'awaiting' | 'finished' | 'escalated' | 'attended' }
+  | { action: 'allow'; reason: 'awaiting' | 'finished' | 'escalated' | 'dormant' }
   | { action: 'reprompt'; reason: 'stalled'; message: string };
 
 export const STALL_REPROMPT =
@@ -34,12 +39,17 @@ export const STALL_REPROMPT =
 export function evaluateStop(nodeId: string, signals: StopSignals): StopAction {
   if (signals.pushedFinal) return { action: 'allow', reason: 'finished' };
   if (signals.askedHuman) return { action: 'allow', reason: 'escalated' };
-  // A user-opened root (no parent) is human-attended: the human is its wake
-  // source, so stopping to await input is always legitimate — never nag it.
+  // A RESIDENT node is interactable / human-driven and is never forced to submit
+  // a final: stopping to go dormant is always legitimate (the inbox or the human
+  // wakes it). Keyed on lifecycle, not parent — whether it has a parent doesn't
+  // matter, only whether it's resident. Roots are resident by birth default, so
+  // this still covers "don't nag the human's root" while generalizing it.
   const node = getNode(nodeId);
-  if (node !== null && (node.parent === null || node.parent === undefined)) {
-    return { action: 'allow', reason: 'attended' };
+  if (node !== null && node.lifecycle === 'resident') {
+    return { action: 'allow', reason: 'dormant' };
   }
+  // A terminal node holding something live to wake it is legitimately awaiting.
   if (hasActiveLiveSubscription(nodeId)) return { action: 'allow', reason: 'awaiting' };
+  // A terminal node with nothing live and no final pushed has stalled.
   return { action: 'reprompt', reason: 'stalled', message: STALL_REPROMPT };
 }

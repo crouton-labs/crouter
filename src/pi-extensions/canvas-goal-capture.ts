@@ -20,6 +20,8 @@
 // crouter's own tsc build without a dep on the pi packages.
 
 import { captureGoalIfAbsent, REVIVE_KICKOFF_SENTINEL } from '../core/runtime/kickoff.js';
+import { generateAndPersistName } from '../core/runtime/naming.js';
+import { editorLabel } from '../core/canvas/index.js';
 
 // ---------------------------------------------------------------------------
 // Minimal PiLike interface (avoids hard dep on @earendil-works/*).
@@ -35,6 +37,9 @@ interface InputEventLike {
 
 interface PiLike {
   on: (event: 'input', handler: (event: InputEventLike, ctx: any) => void) => void;
+  /** Update the live session display name (pi's editor label). Present in
+   *  interactive mode; optional so the extension stays inert where it's not. */
+  setSessionName?: (name: string) => void;
 }
 
 /**
@@ -61,7 +66,16 @@ export function registerCanvasGoalCapture(pi: PiLike): void {
       // masquerade as the user's first mandate.
       if (text.startsWith(REVIVE_KICKOFF_SENTINEL)) return;
 
-      captureGoalIfAbsent(nodeId, text);
+      // First mandate for a bare root: persist it as the goal, and ask pi
+      // (async, non-blocking) to name the session from it. The name lands on
+      // meta.description; the onNamed callback pushes the new editor label into
+      // THIS live session via setSessionName, so it updates immediately instead
+      // of only on the next cycle.
+      if (captureGoalIfAbsent(nodeId, text)) {
+        generateAndPersistName(nodeId, text, (meta) => {
+          try { pi.setSessionName?.(editorLabel(meta)); } catch { /* best-effort */ }
+        });
+      }
     } catch {
       // Best-effort: a capture failure must never drop or alter the message.
     }

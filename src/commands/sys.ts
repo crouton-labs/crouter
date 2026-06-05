@@ -18,12 +18,6 @@ export function registerSys(): BranchDef {
     help: {
       name: 'sys',
       summary: 'crtr system configuration, diagnostics, and self-management',
-      children: [
-        { name: 'config', desc: 'read and write configuration', useWhen: 'inspecting or changing crtr settings' },
-        { name: 'doctor', desc: 'diagnose installation health', useWhen: 'troubleshooting missing manifests or broken config' },
-        { name: 'update', desc: 'update binary and content', useWhen: 'upgrading crtr or its installed plugins/marketplaces' },
-        { name: 'version', desc: 'print installed version', useWhen: 'checking which version of crtr is installed' },
-      ],
     },
     children: [configBranch, sysDoctorLeaf, sysUpdateLeaf, sysVersionLeaf],
   });

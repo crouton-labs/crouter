@@ -16,8 +16,8 @@
 //     (a) stopReason is 'aborted' or 'error' → stay alive for re-steering; return.
 //     (b) node.status is already 'done' (agent called `crtr push --final` this
 //         turn, which sets status synchronously) → shut down; work is complete.
-//     (c) Natural stop ('stop' | 'length') — auto-push the last assistant text
-//         as a routine feed update, then run the stop-guard:
+//     (c) Natural stop ('stop' | 'length') — run the stop-guard (the node is
+//         NEVER auto-pushed; it reports only via its own explicit `crtr push`):
 //           • 'reprompt' → pi.sendUserMessage so the node finishes or escalates.
 //           • 'allow' (awaiting) → idle-release: free the tmux window and shut
 //                          down; the daemon watches the inbox and revives it
@@ -30,8 +30,7 @@
 import { writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { getNode, jobDir, updateNode, subscribersOf } from '../core/canvas/index.js';
-import { push } from '../core/feed/feed.js';
+import { getNode, jobDir, updateNode, setStatus, setIntent, recordPid, subscribersOf } from '../core/canvas/index.js';
 import { evaluateStop } from '../core/runtime/stop-guard.js';
 import { personaDrift, commitPersonaAck } from '../core/runtime/persona.js';
 import { reviveInPlace, reviveNode } from '../core/runtime/revive.js';
@@ -57,6 +56,10 @@ interface PiLike {
 interface Telemetry {
   tokens_in: number;
   tokens_out: number;
+  /** Live context-window size from this turn_end (pi's getContextUsage). Lets
+   *  out-of-process readers (e.g. `crtr node new`'s yield nudge) see how full a
+   *  node's window is without pi's in-memory gauge. */
+  context_tokens?: number;
   model: string;
   updated_at: string;
 }
@@ -64,12 +67,15 @@ interface Telemetry {
 /**
  * Merge accumulated token counts into nodes/<nodeId>/job/telemetry.json.
  * Creates the directory when it doesn't yet exist. Best-effort; never throws.
+ * `contextTokens` is the live window gauge for THIS turn; when null (pi can't
+ * size the window yet) the last recorded value is preserved.
  */
 function flushTelemetry(
   jobDirPath: string,
   tokensIn: number,
   tokensOut: number,
   model: string,
+  contextTokens: number | null,
 ): void {
   try {
     if (!existsSync(jobDirPath)) mkdirSync(jobDirPath, { recursive: true });
@@ -90,6 +96,7 @@ function flushTelemetry(
     const record: Telemetry = {
       tokens_in: tokensIn,
       tokens_out: tokensOut,
+      context_tokens: contextTokens ?? existing.context_tokens,
       model: model !== '' ? model : (existing.model ?? ''),
       updated_at: new Date().toISOString(),
     };
@@ -157,16 +164,6 @@ function restoreFocusToManager(nodeId: string): void {
   } catch {
     /* best-effort; never throw out of agent_end */
   }
-}
-
-/** Concatenate all {type:'text'} content blocks from an assistant message. */
-function extractText(msg: any): string {
-  if (!msg || !Array.isArray(msg.content)) return '';
-  return (msg.content as any[])
-    .filter((c) => c != null && c.type === 'text' && typeof c.text === 'string')
-    .map((c) => (c.text as string))
-    .join('\n')
-    .trim();
 }
 
 // ---------------------------------------------------------------------------
@@ -323,6 +320,12 @@ export function registerCanvasStophook(pi: PiLike): void {
       const id: unknown = ctx?.sessionManager?.getSessionId?.();
       if (typeof id !== 'string' || id === '') return;
 
+      // The absolute path to this session's .jsonl, captured alongside the id.
+      // Resuming by path is immune to a cwd discrepancy (pi opens it directly),
+      // whereas a bare id is resolved cwd-relative and forks across projects.
+      const filed: unknown = ctx?.sessionManager?.getSessionFile?.();
+      const sessionFile = typeof filed === 'string' && filed !== '' ? filed : null;
+
       if (boundSessionId === null) {
         // Boot: bind this process to its session id, record our OS pid (the
         // daemon's liveness signal for inline roots whose window outlives pi),
@@ -334,11 +337,15 @@ export function registerCanvasStophook(pi: PiLike): void {
         // respawn would look identical to a successful one.
         boundSessionId = id;
         const existing = getNode(nodeId);
+        // Identity (session id/file) → meta; runtime (pid, intent) → atomic row
+        // setters. Reaching session_start proves a fresh pi booted, so a pending
+        // refresh-yield is now safe to clear.
         updateNode(nodeId, {
-          pi_pid: process.pid,
           pi_session_id: id,
-          ...(existing?.intent === 'refresh' ? { intent: null } : {}),
+          pi_session_file: sessionFile,
         });
+        recordPid(nodeId, process.pid);
+        if (existing?.intent === 'refresh') setIntent(nodeId, null);
         return;
       }
 
@@ -352,7 +359,7 @@ export function registerCanvasStophook(pi: PiLike): void {
       // lines after the call run — that's fine (same as the refresh-yield path);
       // do not rely on anything after handleNewSession.
       boundSessionId = id;
-      try { handleNewSession(nodeId, id, process.env['TMUX_PANE']); } catch { /* best-effort */ }
+      try { handleNewSession(nodeId, id, process.env['TMUX_PANE'], {}, sessionFile); } catch { /* best-effort */ }
       // Clear in-memory context-steering so the fresh conversation starts clean.
       totalIn = 0;
       totalOut = 0;
@@ -395,8 +402,22 @@ export function registerCanvasStophook(pi: PiLike): void {
   // ---------------------------------------------------------------------------
   pi.on('turn_end', (event: any, ctx: any): void => {
     accumulate(event?.message);
+
+    // The CURRENT context size via ctx.getContextUsage() — the exact figure pi's
+    // footer shows. Captured once here for two consumers: the telemetry flush
+    // (so out-of-process readers like `crtr node new` can size this node) and
+    // the context-size steering below.
+    //   .tokens is null/undefined only when pi can't know the size yet (no model,
+    //   or right after a compaction before the next reply) — telemetry then keeps
+    //   its last value and steering is skipped for the turn.
+    let contextTokens: number | null = null;
+    try {
+      const t = ctx.getContextUsage()?.tokens;
+      if (typeof t === 'number') contextTokens = t;
+    } catch { /* gauge unavailable this turn */ }
+
     // Fire-and-forget: flushTelemetry uses synchronous fs writes and never throws.
-    flushTelemetry(jobDirPath, totalIn, totalOut, model);
+    flushTelemetry(jobDirPath, totalIn, totalOut, model, contextTokens);
 
     // Context-size steering: fire the current band once, with lifecycle-specific
     // guidance (lifecycle is read live — a terminal worker may have promoted to
@@ -404,19 +425,14 @@ export function registerCanvasStophook(pi: PiLike): void {
     // Delivered as a STEER, not a followUp: guidance to become an orchestrator /
     // delegate / yield must redirect the node at the turn boundary, not queue
     // behind whatever it does next (where it rides along, easy to ignore).
-    // Gauge on the CURRENT context size via ctx.getContextUsage() — the exact
-    // figure pi's footer shows (same method). Never the cumulative totalIn: under
-    // prompt caching that never grows (input is a ~2-token uncached delta each
-    // turn), so the bands were unreachable and the nudge never fired.
-    //   .tokens is null/undefined only when pi can't know the size yet (no model,
-    //   or right after a compaction before the next reply) — we just skip steering
-    //   that turn and the next turn fires.
+    // Never the cumulative totalIn: under prompt caching that never grows (input
+    // is a ~2-token uncached delta each turn), so the bands were unreachable and
+    // the nudge never fired.
     try {
       const node = getNode(nodeId);
       const lifecycle = node?.lifecycle ?? 'terminal';
       const mode = node?.mode ?? 'base';
-      const tokens = ctx.getContextUsage()?.tokens;
-      const at = typeof tokens === 'number' ? steerBand(tokens) : null;
+      const at = contextTokens !== null ? steerBand(contextTokens) : null;
       if (at !== null && !firedBands.has(at)) {
         firedBands.add(at);
         pi.sendUserMessage(`[crtr] ${steerNote(at, lifecycle, mode)}`, { deliverAs: 'steer' });
@@ -449,12 +465,11 @@ export function registerCanvasStophook(pi: PiLike): void {
   // event shape: { messages: AgentMessage[] }
   // ---------------------------------------------------------------------------
   pi.on('agent_end', (event: any, ctx: any): void => {
-    // Wrap in a void async IIFE so we can await the async push() call without
-    // making the handler signature async (pi may not uniformly await async
-    // handlers). The internal I/O (push) is all synchronous fs, so this
-    // resolves in a single microtask tick — no meaningful async delay.
-    void (async (): Promise<void> => {
-      try {
+    // All routing here is synchronous fs (status writes, telemetry, idle-release,
+    // steering). The stop/yield auto-pushes that needed `await push(...)` were
+    // removed, so the handler no longer needs to be async — the node reaches its
+    // subscribers ONLY through its own explicit `crtr push` calls.
+    try {
         const messages: any[] = Array.isArray(event?.messages) ? event.messages : [];
 
         // Accumulate tokens from the final batch (edge case: a turn that fired
@@ -486,19 +501,10 @@ export function registerCanvasStophook(pi: PiLike): void {
         //     shutdown (daemon revives in a new window) only when we're not in
         //     a tmux pane.
         if (node?.intent === 'refresh') {
-          // Notify subscribers BEFORE refreshing. A yield is a checkpoint, not a
-          // disappearance: the node keeps its identity and its subscription
-          // edges across the revive, so it still owes its parent a report. Emit
-          // one now (an `update`, not a `final` — the node isn't done) so a
-          // yield is never silent to whoever is watching.
-          try {
-            const yieldText = extractText(last);
-            const body = yieldText !== ''
-              ? `↻ Refreshing context (yield) — still working toward my goal.\n\n${yieldText}`
-              : '↻ Refreshing context (yield) — still working toward my goal.';
-            await push(nodeId, { kind: 'update', body });
-          } catch { /* notify is best-effort */ }
-
+          // A yield is SILENT to subscribers: the node keeps its identity and
+          // subscription edges across the revive and reports only through its
+          // own explicit `crtr push` calls, so there is no checkpoint push here
+          // — just re-exec a fresh pi in place against the roadmap.
           const pane = process.env['TMUX_PANE'];
           if (pane !== undefined && pane.trim() !== '') {
             try {
@@ -510,47 +516,41 @@ export function registerCanvasStophook(pi: PiLike): void {
           return;
         }
 
-        // (c) Natural stop — decide FIRST, then act. Running the stop-guard
-        //     before any auto-push is what prevents duplicate reporting: a
-        //     stalled terminal worker that narrates "done" without calling
-        //     `push final` must NOT have that prose pushed as an `update`,
-        //     because the reprompt below makes it emit a `final` next turn —
-        //     two feed entries for one completion. Only genuinely dormant
-        //     nodes ('allow') get a routine checkpoint update.
+        // (c) Natural stop — run the stop-guard to classify this stop. Nothing
+        //     is auto-pushed: the node reaches its subscribers only through its
+        //     own explicit `crtr push` calls this turn. The guard decides
+        //     whether the stop is a legitimate dormancy (idle-release, or an
+        //     attended root staying live) or a stall to reprompt.
         const decision = evaluateStop(nodeId, { pushedFinal: false, askedHuman: false });
 
         if (decision.action === 'reprompt') {
-          // Stalled — re-prompt so the node finishes or escalates. Its `final`
-          // (or escalation) carries the real result, so we deliberately skip
-          // the auto-update here. Deliver as a followUp: the turn just ended
-          // but pi may still be flushing, so an unqualified sendUserMessage
-          // races with 'already processing'.
+          // Stalled — re-prompt so the node finishes or escalates with an
+          // explicit `crtr push final` (or `crtr human ask`). Deliver as a
+          // followUp: the turn just ended but pi may still be flushing, so an
+          // unqualified sendUserMessage races with 'already processing'.
           pi.sendUserMessage(decision.message, { deliverAs: 'followUp' });
           return;
         }
 
-        // 'allow' — the node legitimately stopped. Surface the last assistant
-        // message as a routine feed checkpoint first.
-        const text = extractText(last);
-        if (text !== '') {
-          await push(nodeId, { kind: 'update', body: text });
-        }
-
+        // 'allow' — the node legitimately stopped. Nothing is pushed here; any
+        // report it owed its subscribers was sent by an explicit `crtr push`
+        // during the turn.
+        //
         // Idle-release: a node awaiting its workers (reason 'awaiting') is holding
         // a tmux window for nothing. Free it — mark it idle-released and shut pi
         // down; the daemon watches its inbox and revives it (resume) the moment a
         // subscribed worker delivers. An 'attended' root never releases: the human
         // is its wake source, so we keep its window live and dormant.
         if (decision.reason === 'awaiting') {
-          updateNode(nodeId, { intent: 'idle-release', status: 'idle' });
+          setIntent(nodeId, 'idle-release');
+          setStatus(nodeId, 'idle');
           restoreFocusToManager(nodeId);
           try { ctx?.shutdown?.(); } catch { /* ignore */ }
           return;
         }
-      } catch {
-        /* agent_end handler must never throw out of the extension */
-      }
-    })();
+    } catch {
+      /* agent_end handler must never throw out of the extension */
+    }
   });
 }
 

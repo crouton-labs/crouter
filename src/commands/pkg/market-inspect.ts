@@ -16,6 +16,8 @@ import type { Scope } from '../../types.js';
 
 const marketList = defineLeaf({
   name: 'list',
+  description: 'list registered marketplaces',
+  whenToUse: 'listing which marketplaces are registered, with their git URL, ref, and scope',
   help: {
     name: 'pkg market inspect list',
     summary: 'list registered marketplaces',
@@ -89,6 +91,8 @@ const marketList = defineLeaf({
 
 const marketBrowse = defineLeaf({
   name: 'browse',
+  description: 'list plugins available in a marketplace',
+  whenToUse: 'exploring what a marketplace offers so you can decide before installing — lists every plugin in a marketplace index with its description, keywords, version, and whether it is already installed. Reach for this to pick which plugin to pull, then install it by name with `pkg market manage install`',
   help: {
     name: 'pkg market inspect browse',
     summary: 'list plugins available in a marketplace',
@@ -172,13 +176,11 @@ const marketBrowse = defineLeaf({
 
 export const marketInspectBranch = defineBranch({
   name: 'inspect',
+  description: 'list or browse marketplaces',
+  whenToUse: 'reading marketplace metadata to decide before you install — list registered marketplaces, or browse the plugins available in one marketplace. Read-only; switch to `pkg market manage` to add a marketplace or install a plugin from it',
   help: {
     name: 'pkg market inspect',
     summary: 'read marketplace metadata without modifying state',
-    children: [
-      { name: 'list', desc: 'list registered marketplaces', useWhen: 'seeing which marketplaces are configured' },
-      { name: 'browse', desc: 'list plugins available in a marketplace', useWhen: 'exploring what a marketplace offers before installing' },
-    ],
   },
   children: [marketList, marketBrowse],
 });

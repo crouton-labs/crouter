@@ -1,11 +1,11 @@
 // canvas-commands.ts — pi extension registering canvas slash-commands on nodes.
 //
-//   /promote [kind]  — promote THIS node to a resident orchestrator. Runs
+//   /promote [kind]  — promote THIS node to an orchestrator. Runs
 //     `crtr node promote --json` for CRTR_NODE_ID (optionally specializing its
-//     kind), then injects the orchestration guidance the command returns into
-//     context and triggers a turn, so the node authors its roadmap immediately.
-//     This is the same mid-turn guidance dump the node would get by running the
-//     command itself by hand — surfaced as a one-keystroke affordance.
+//     kind), then triggers a turn. The orchestration guidance is injected
+//     CENTRALLY by the persona injector (canvas-stophook turn_end) at the turn
+//     boundary — the same path the node gets by running the command itself by
+//     hand — surfaced as a one-keystroke affordance.
 //
 // The Alt+C tmux action menu's "promote to orchestrator" item (key `o`) simply
 // send-keys `/promote` into the active pane, so the menu and the slash command
@@ -68,10 +68,10 @@ interface PromoteResult {
   node_id?: string;
   kind?: string;
   mode?: string;
+  lifecycle?: string;
   roadmap_written?: boolean;
   roadmap_path?: string;
   goal_path?: string;
-  guidance?: string;
 }
 
 // Kinds for `/promote <kind>` completions — computed once (persona dirs rarely
@@ -100,7 +100,7 @@ export function registerCanvasCommands(pi: PiLike): void {
 
   pi.registerCommand('promote', {
     description:
-      'Promote this node to a resident orchestrator — /promote, or /promote <kind> to specialize',
+      'Promote this node to an orchestrator — /promote, or /promote <kind> to specialize',
     getArgumentCompletions: (prefix: string) => {
       const items = kinds()
         .filter((k) => k.startsWith(prefix))
@@ -146,12 +146,20 @@ export function registerCanvasCommands(pi: PiLike): void {
         'info',
       );
 
-      // The guidance is operating instructions for the node, not the user.
-      // Inject it silently and trigger a turn so the node acts on it now —
-      // exactly what happens when the node runs `crtr node promote` by hand.
-      const guidance = (result.guidance ?? '').trim();
-      if (guidance === '') return;
-      pi.sendMessage({ customType: 'crtr-promote', content: guidance, display: false }, { triggerTurn: true });
+      // The orchestration guidance is no longer returned by the command — the
+      // persona injector (canvas-stophook turn_end) is the single source and
+      // steers it in at the next turn boundary. Trigger a turn so the node wakes
+      // and the injector fires, exactly as when the node runs `crtr node
+      // promote` itself by hand.
+      pi.sendMessage(
+        {
+          customType: 'crtr-promote',
+          content:
+            'You have just been promoted to an orchestrator. Your new-role guidance is arriving — read it, author your roadmap, and start delegating.',
+          display: false,
+        },
+        { triggerTurn: true },
+      );
     },
   });
 }

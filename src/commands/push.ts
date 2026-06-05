@@ -1,9 +1,10 @@
 // `crtr push` + `crtr feed` — the one verb up the graph, and its read side.
 //
-//   crtr push update [body]   — routine progress (also auto-emitted every stop)
+//   crtr push update [body]   — routine progress to subscribers
 //   crtr push urgent [body]   — force-wake subscribers
 //   crtr push final  [body]   — finish: write result, mark node done, close window
 //   crtr feed read            — drain the caller's (or a named) inbox into a digest
+//   crtr feed peek            — live state of the nodes below you, cursor untouched
 //
 // "push" is THE verb a node uses to talk to its managers; the tier is the
 // subcommand. The caller's node is resolved from CRTR_NODE_ID (injected by the
@@ -14,6 +15,7 @@ import { defineBranch, defineLeaf } from '../core/command.js';
 import type { BranchDef, LeafDef } from '../core/command.js';
 import { InputError, readStdinRaw } from '../core/io.js';
 import { push } from '../core/feed/feed.js';
+import { getNode, subscribersOf, subscriptionsOf, fullName } from '../core/canvas/index.js';
 import {
   readInboxSince,
   readCursor,
@@ -46,14 +48,28 @@ const TIER_BLURB: Record<Tier, string> = {
   final: 'finish: write the canonical result, mark the node done, close its window',
 };
 
+const TIER_WHENTOUSE: Record<Tier, string> = {
+  update:
+    'you have routine progress worth surfacing to your managers but nothing that needs them to act right now — a checkpoint, a finished sub-step, a status note while you keep working, a heads-up on a decision you made. Fans a lightweight pointer to every subscriber without forcing a wake. Nothing is pushed automatically — your managers see only what you push explicitly, so reach for this whenever you want a progress signal to reach them. Use push urgent instead when a manager must see it immediately, push final when the work is actually done.',
+  urgent:
+    'something your managers must see and act on immediately — you are blocked and need a decision, you hit an error that derails the plan, a discovery changes the scope, or a child reported something that has to travel further up the chain now. Same report mechanism as push update, but it force-wakes every subscriber instead of waiting for them to drain their feed on their own time. Use push update instead for progress that can wait, push final when you are handing back a finished result rather than raising an alarm.',
+  final:
+    'the work this node was spawned to do is complete and you are ready to hand back the canonical result — this writes that result, marks the node done, and closes its window, so it is the LAST thing you do here, not a progress note. Any node finishes this way. Use push update or push urgent instead while work is still in flight, and do not reach for this on a node working directly with the user: it has no manager to report up to and would close mid-conversation (the guard blocks it unless you pass --force after the user confirms).',
+};
+
 function makeTierLeaf(tier: Tier): LeafDef {
   return defineLeaf({
     name: tier,
+    description: TIER_BLURB[tier],
+    whenToUse: TIER_WHENTOUSE[tier],
     help: {
       name: `push ${tier}`,
       summary: TIER_BLURB[tier],
       params: [
-        { kind: 'stdin', name: 'body', required: true, constraint: 'Report body (markdown). Positional or stdin.' },
+        { kind: 'stdin', name: 'body', required: true, constraint: `Report body (markdown). Positional or stdin — use stdin/heredoc for large bodies (\`crtr push ${tier} <<'EOF' … EOF\`).` },
+        ...(tier === 'final'
+          ? [{ kind: 'flag', name: 'force', type: 'bool', required: false, default: false, constraint: 'Override the guard that blocks `push final` on a human-attended node (a resident with no one to report up to). Only pass this after the user explicitly confirms they want this node finished.' } as const]
+          : []),
       ],
       output: [
         { name: 'report_path', type: 'string', required: true, constraint: 'Path of the written report.' },
@@ -73,6 +89,26 @@ function makeTierLeaf(tier: Tier): LeafDef {
       if (body === '') body = (await readStdinRaw()).trim();
       if (body === '') {
         throw new InputError({ error: 'missing_body', message: 'no report body', field: 'body', next: 'Pass the body as an argument or on stdin.' });
+      }
+      // A RESIDENT node with no subscribers is human-driven and has no one to
+      // submit a canonical result to: `push final` fans to subscribers, and a
+      // resident root conversation has none. Finishing it would close its window
+      // mid-conversation. Block that unless the user confirms (--force). Keyed on
+      // lifecycle, NOT subscriber-count alone: a TERMINAL node with no subscribers
+      // was deliberately terminalized to owe a final — it self-completes here
+      // (records the result, reaps) rather than being blocked for lack of a recipient.
+      if (tier === 'final' && input['force'] !== true) {
+        const node = getNode(nodeId);
+        const noRecipient = node !== null && node.lifecycle === 'resident' && subscribersOf(nodeId).length === 0;
+        if (noRecipient) {
+          throw new InputError({
+            error: 'no_final_recipient',
+            message:
+              'This node is working directly with the user — it has no manager to submit a final result to. `push final` would close its window mid-conversation.',
+            next:
+              'You almost certainly do NOT need to finish here — just keep working with the user. If the user has explicitly asked you to finish and close this node, confirm with them first, then rerun with `crtr push final --force "<result>"`.',
+          });
+        }
       }
       const result = await push(nodeId, { kind: tier, body });
       return { report_path: result.reportPath, delivered_to: result.deliveredTo, status: tier === 'final' ? 'done' : 'active' };
@@ -96,6 +132,8 @@ function makeTierLeaf(tier: Tier): LeafDef {
 
 const feedReadLeaf = defineLeaf({
   name: 'read',
+  description: 'drain unread pointers into a digest',
+  whenToUse: 'you want to catch up on what the nodes you subscribe to — your children and anyone you follow — have reported, draining the unread pointers in your inbox into one coalesced digest so progress notes, urgent flags, and finished results read at a glance before you dereference the reports that matter. Reach for it when a subscriber push wakes you, or to poll the feed before deciding your next move; pass --node to inspect a worker inbox as an orchestrator.',
   help: {
     name: 'feed read',
     summary: 'drain unread inbox pointers for the caller (or a named node) into a compact digest',
@@ -130,10 +168,137 @@ const feedReadLeaf = defineLeaf({
   },
   render: (r) => {
     const n = Array.isArray(r['entries']) ? (r['entries'] as unknown[]).length : 0;
-    const digest = typeof r['digest'] === 'string' && (r['digest'] as string).trim() !== ''
-      ? (r['digest'] as string)
-      : 'Inbox empty — nothing new from your subscriptions.';
+    const rawDigest = typeof r['digest'] === 'string' ? (r['digest'] as string) : '';
+    const digest = n > 0 && rawDigest.trim() !== ''
+      ? rawDigest
+      : 'Inbox empty — nothing new from your subscriptions. This is expected while workers are still running (a worker that has not pushed yet leaves no pointer). Run `crtr feed peek` to see if they are alive and whether it is safe to yield.';
     return `<feed node="${r['node_id']}" unread="${n}">\n${digest}\n</feed>`;
+  },
+});
+
+// ---------------------------------------------------------------------------
+// feed peek — live state of the nodes below you, without draining anything
+// ---------------------------------------------------------------------------
+
+const STATUS_GLYPH: Record<string, string> = {
+  active: '●', idle: '○', done: '✓', dead: '✗', canceled: '⊘',
+};
+
+/** Coarse "Nm ago" age from an ISO timestamp — enough to read staleness at a glance. */
+function fmtAge(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return 'just now';
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
+interface PeekChild {
+  node_id: string;
+  kind: string;
+  name: string;
+  status: string;
+  active: boolean;
+  spawned: string;
+  cycles: number;
+  last_push: { kind: string; ts: string; ref: string | null; label: string } | null;
+}
+
+const feedPeekLeaf = defineLeaf({
+  name: 'peek',
+  description: 'live state of the nodes below you, without draining anything',
+  whenToUse: 'you are about to end a turn and want to confirm your workers are running before you chill — peek shows every node you subscribe to (the workers below you) with its live status (working/idle/done/dead), how long it has run, its cycle count, and whether it has pushed yet, plus a one-line verdict on whether it is safe to yield. Non-destructive: it never advances your inbox cursor, so a later `feed read` still delivers undrained reports. Reach for it exactly when the feed reads empty but you have outstanding children — that empty feed is EXPECTED (a worker that has not pushed yet contributes no inbox pointer); peek confirms those workers are alive and running async so you can stop and wait instead of polling.',
+  help: {
+    name: 'feed peek',
+    summary: 'show the live state of every node you subscribe to (the workers below you) with a yield-or-not verdict; never drains the inbox',
+    params: [
+      { kind: 'flag', name: 'node', type: 'string', required: false, constraint: 'Node whose subscriptions to peek. Defaults to CRTR_NODE_ID. Use to inspect a worker\'s downstream as an orchestrator.' },
+    ],
+    output: [
+      { name: 'node_id', type: 'string', required: true, constraint: 'Node that was peeked.' },
+      { name: 'unread', type: 'number', required: true, constraint: 'Inbox pointers not yet drained by `feed read`.' },
+      { name: 'children', type: 'object[]', required: true, constraint: 'One row per subscription: {node_id, kind, name, status, active, spawned, cycles, last_push}.' },
+    ],
+    outputKind: 'object',
+    effects: ['Read-only: reads canvas.db edges + node metas + inbox.jsonl.', 'Does NOT advance the inbox cursor — peek leaves the feed intact for a later `feed read`.'],
+  },
+  run: async (input) => {
+    const nodeId =
+      typeof input['node'] === 'string' && (input['node'] as string).trim() !== ''
+        ? (input['node'] as string).trim()
+        : requireCallerNode();
+    // Read the WHOLE inbox to find each child's last push, but with no cursor
+    // write — peek is non-destructive by contract. `unread` is computed from the
+    // persisted cursor so peek can tell you a `feed read` would deliver something.
+    const all = readInboxSince(nodeId, undefined);
+    const unread = readInboxSince(nodeId, readCursor(nodeId)).length;
+    const children: PeekChild[] = subscriptionsOf(nodeId).map((s) => {
+      const n = getNode(s.node_id);
+      const fromMe = all.filter((e) => e.from === s.node_id);
+      const last = fromMe.length > 0 ? fromMe[fromMe.length - 1]! : undefined;
+      return {
+        node_id: s.node_id,
+        kind: n?.kind ?? '?',
+        name: n !== null ? fullName(n) : s.node_id,
+        status: n?.status ?? 'dead',
+        active: s.active,
+        spawned: n?.created ?? s.created,
+        cycles: n?.cycles ?? 0,
+        last_push: last !== undefined
+          ? { kind: last.kind, ts: last.ts, ref: last.ref ?? null, label: last.label }
+          : null,
+      };
+    });
+    return { node_id: nodeId, unread, children };
+  },
+  render: (r) => {
+    const id = r['node_id'] as string;
+    const unread = (r['unread'] as number) ?? 0;
+    const kids = (r['children'] as PeekChild[]) ?? [];
+
+    if (kids.length === 0) {
+      const tail = unread > 0
+        ? `${unread} unread report${unread === 1 ? '' : 's'} sit in your inbox — run \`crtr feed read\` to absorb ${unread === 1 ? 'it' : 'them'}.`
+        : 'If you spawned workers, they have finished and detached, or you never subscribed. Nothing will wake you.';
+      return `<peek node="${id}" subscriptions="0" unread="${unread}" verdict="empty">\nNo nodes below you. ${tail}\n</peek>`;
+    }
+
+    const working = kids.filter((k) => k.status === 'active' || k.status === 'idle');
+    const liveWaking = working.filter((k) => k.active); // active sub to a live node = it will wake me
+    const done = kids.filter((k) => k.status === 'done' || k.status === 'canceled');
+    const dead = kids.filter((k) => k.status === 'dead');
+
+    let verdict: string;
+    let line: string;
+    if (dead.length > 0) {
+      verdict = 'attention';
+      line = `\u26a0 ${dead.length} below you ${dead.length === 1 ? 'is' : 'are'} dead and will NOT wake you. Inspect with \`crtr node inspect show <id>\`, then re-delegate or proceed without ${dead.length === 1 ? 'it' : 'them'}.`;
+    } else if (liveWaking.length > 0) {
+      verdict = 'working';
+      line = `Safe to yield \u2014 ${liveWaking.length} worker${liveWaking.length === 1 ? '' : 's'} running async will wake you on the next push. Nothing to do now; end your turn and chill.`;
+    } else if (unread > 0) {
+      verdict = 'ready';
+      line = `Nothing still running, but ${unread} unread report${unread === 1 ? '' : 's'} \u2014 run \`crtr feed read\` to absorb ${unread === 1 ? 'it' : 'them'}, then continue or finish.`;
+    } else {
+      verdict = 'idle';
+      line = 'Everything below you has finished and been drained \u2014 nothing is running. Continue your own work, or `crtr push final` to finish.';
+    }
+
+    const rows = kids.map((k) => {
+      const sub = k.active ? '' : ' (passive)';
+      const push = k.last_push !== null
+        ? `pushed ${fmtAge(k.last_push.ts)} [${k.last_push.kind}]${k.last_push.ref !== null ? ` ref:${k.last_push.ref}` : ''}`
+        : 'no push yet';
+      const glyph = STATUS_GLYPH[k.status] ?? '?';
+      return `  ${glyph} ${k.node_id}  ${k.kind}  ${k.name}${sub}  \u00b7 ${k.status} \u00b7 spawned ${fmtAge(k.spawned)} \u00b7 cyc ${k.cycles} \u00b7 ${push}`;
+    }).join('\n');
+
+    const attrs = `node="${id}" subscriptions="${kids.length}" working="${working.length}" done="${done.length}" dead="${dead.length}" unread="${unread}" verdict="${verdict}"`;
+    return `<peek ${attrs}>\n${line}\n\n${rows}\n</peek>`;
   },
 });
 
@@ -153,12 +318,7 @@ export function registerPush(): BranchDef {
       name: 'push',
       summary: 'push a report to your subscribers',
       model:
-        'A push writes a markdown report to the node\'s reports/ history and fans a lightweight pointer to every subscriber\'s inbox (not the content — they dereference lazily). The stophook auto-pushes an `update` every stop, so the feed is continuous; you push explicitly for intentional signals. `push final` is how ANY node finishes: write the canonical result, mark done, close the window.',
-      children: [
-        { name: 'update', desc: TIER_BLURB.update, useWhen: 'sharing routine progress explicitly' },
-        { name: 'urgent', desc: TIER_BLURB.urgent, useWhen: 'something your managers must see now' },
-        { name: 'final', desc: TIER_BLURB.final, useWhen: 'the work is done — this finishes the node' },
-      ],
+        'A push writes a markdown report to the node\'s reports/ history and fans a lightweight pointer to every subscriber\'s inbox (not the content — they dereference lazily). Nothing is pushed automatically — the feed contains only what a node pushes explicitly, so push whenever you want a manager to see something. Pipe large bodies via stdin/heredoc (`crtr push <tier> <<\'EOF\' … EOF`). `push final` is how ANY node finishes: write the canonical result, mark done, close the window.',
     },
     children: [makeTierLeaf('update'), makeTierLeaf('urgent'), makeTierLeaf('final')],
   });
@@ -176,9 +336,8 @@ export function registerFeed(): BranchDef {
       name: 'feed',
       summary: 'read the per-node inbox feed',
       model:
-        'Each node has an inbox.jsonl that accumulates ~30-token pointers from publishers it subscribes to. `feed read` coalesces unread pointers into one digest; dereference the reports that matter by reading their ref paths.',
-      children: [{ name: 'read', desc: 'drain unread pointers into a digest', useWhen: 'checking what your subscriptions pushed' }],
+        'Each node has an inbox.jsonl that accumulates ~30-token pointers from publishers it subscribes to. `feed read` coalesces UNREAD pointers into one digest and advances the cursor; dereference the reports that matter by reading their ref paths. An empty feed is normal while workers run \u2014 a worker that has not pushed leaves no pointer \u2014 so use `feed peek` to see the live state of the nodes below you (and whether to yield) without draining anything.',
     },
-    children: [feedReadLeaf],
+    children: [feedReadLeaf, feedPeekLeaf],
   });
 }

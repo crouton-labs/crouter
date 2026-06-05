@@ -1,95 +1,57 @@
-// Promotion — terminal → resident, and the worker→orchestrator polymorph.
+// Promotion — the worker→orchestrator polymorph (mode→orchestrator).
 //
 // Two stages (the pi-mode-switch pattern):
-//   1. Promotion → guidance dump (mid-turn, ephemeral). This call flips the
-//      node's mode/lifecycle and (optionally) its KIND, REWRITES its launch
-//      spec to that kind's orchestrator persona (so the next revive comes back
-//      as that orchestrator), seeds a roadmap scaffold, and RETURNS kind-
-//      specific orchestration + roadmap-shaping guidance — which enters the
-//      current context so the node can author its roadmap before any refresh.
+//   1. Promotion → mode flips to orchestrator (mid-turn). This call flips the
+//      node's mode and (optionally) its KIND, REWRITES its launch spec to that
+//      kind's orchestrator persona (so the next revive comes back as that
+//      orchestrator), and seeds a roadmap scaffold + the three memory stores.
+//      The transition guidance the node needs is injected CENTRALLY by the
+//      persona injector (runtime/persona.ts) at the turn boundary — promote()
+//      itself no longer returns or hand-emits guidance.
 //   2. Refresh → persona swap (permanent). On the next fresh revive the node
 //      starts with the orchestrator system prompt baked in (because the launch
-//      spec now says orchestrator). The guidance dump bridges until then.
+//      spec now says orchestrator). The injected guidance bridges until then.
+//
+// Mode and lifecycle are ORTHOGONAL: promotion flips mode only. Lifecycle stays
+// whatever it was (a promoted child is terminal/orchestrator — still reports up
+// + reaps) unless the caller passes `resident:true` to also make it resident.
 //
 // Trigger is persistence-need (deliberate, or a refresh-yield with open work),
 // never the mere act of spawning a child.
 
-import { getNode, updateNode, hasActiveLiveSubscription, type NodeMeta } from '../canvas/index.js';
+import { getNode, updateNode, setIntent, type NodeMeta } from '../canvas/index.js';
 import { buildLaunchSpec } from './launch.js';
-import { loadKernel, loadPersona } from '../personas/index.js';
-import { resolveSkill } from '../resolver.js';
-import { readText } from '../fs-utils.js';
-import { parseFrontmatter } from '../frontmatter.js';
-import { hasRoadmap, seedRoadmap, readRoadmap, roadmapPath } from './roadmap.js';
+import { hasRoadmap, seedRoadmap, roadmapPath } from './roadmap.js';
+import {
+  seedMemory, memoryPath,
+  seedUserMemory, userMemoryPath,
+  seedProjectMemory, projectMemoryPath,
+} from './memory.js';
 import { readGoal, goalPath } from './kickoff.js';
 
 export interface PromoteResult {
   meta: NodeMeta;
-  /** Orchestration guidance to surface into the node's current context now. */
-  guidance: string;
   roadmapWritten: boolean;
   /** Absolute path to the node's roadmap doc (context/roadmap.md). */
   roadmapPath: string;
   /** Absolute path to the node's goal doc (context/initial-prompt.md). */
   goalPath: string;
+  /** Absolute path to the node-local memory index (context/memory/MEMORY.md). */
+  memoryPath: string;
+  /** Absolute path to the user-global memory index (<crtrHome>/memory/MEMORY.md). */
+  userMemoryPath: string;
+  /** Absolute path to the project memory index (<crtrHome>/projects/<key>/memory/MEMORY.md). */
+  projectMemoryPath: string;
 }
 
-/** Load a skill's body text by name, or null if it can't be resolved. Used to
- *  inline a kind's roadmap-shaping skill into the promotion guidance dump. */
-function loadSkillBody(name: string): string | null {
-  try {
-    const skill = resolveSkill(name, {});
-    return parseFrontmatter(readText(skill.path)).body.trim();
-  } catch {
-    return null;
-  }
-}
-
-/** Build the mid-turn guidance dump, specialized to the node's (possibly
- *  just-chosen) kind: the shared kernel + that kind's roadmap-shaping skill
- *  (auto-loaded now, before the persona swap bakes in on revive) + the roadmap
- *  scaffold the node must author. No goal is assumed — writing it is step one. */
-function orchestrationGuidance(nodeId: string, kind: string): string {
-  const kernel = loadKernel();
-  const orch = loadPersona(kind, 'orchestrator');
-  const roadmapSkill =
-    typeof orch?.frontmatter?.['roadmapSkill'] === 'string'
-      ? (orch.frontmatter['roadmapSkill'] as string)
-      : undefined;
-  const skillBody = roadmapSkill ? loadSkillBody(roadmapSkill) : null;
-  const roadmap = readRoadmap(nodeId) ?? '(no roadmap yet)';
-  const rmPath = roadmapPath(nodeId);
-  const goal = readGoal(nodeId);
-
-  const parts: string[] = [
-    `You are now a RESIDENT ${kind.toUpperCase()} ORCHESTRATOR. Your scarce resource is your own context window.`,
-    'Your job is to manage context and delegate — not to do the goal yourself.',
-    '',
-    kernel,
-  ];
-  if (goal !== null && goal.trim() !== '') {
-    parts.push('', `--- Your goal (${goalPath(nodeId)}) ---`, '', goal.trim());
-  }
-  if (skillBody) {
-    parts.push('', `--- How to shape a ${kind} roadmap (skill: ${roadmapSkill}) ---`, '', skillBody);
-  }
-  parts.push(
-    '',
-    `Your roadmap scaffold (\`${rmPath}\`) — author it now: state the goal, exit criteria, and the phase skeleton, using the approach above. Current contents:`,
-    '',
-    roadmap,
-    '',
-    'Then delegate each phase with `crtr node new --kind <kind>`. When your context fills, run `crtr node yield` to refresh against this roadmap.',
-  );
-  return parts.join('\n');
-}
-
-/** Promote a node to resident orchestrator, optionally specializing its kind
- *  (e.g. a `general` worker becoming a `developer.orchestrator`). Idempotent:
- *  re-promoting just rewrites the spec + returns fresh guidance. Seeds a
- *  roadmap SCAFFOLD if absent (a boss with no map is a failure mode) — no goal
- *  is forced here; authoring the goal + roadmap is the node's next act. */
-export function promote(nodeId: string, opts: { kind?: string } = {}): PromoteResult {
+/** Promote a node to an orchestrator (mode→orchestrator), optionally
+ *  specializing its kind (e.g. a `general` worker becoming a
+ *  `developer.orchestrator`) and optionally also making it resident. Idempotent:
+ *  re-promoting just rewrites the spec. Seeds a roadmap SCAFFOLD if absent (a
+ *  boss with no map is a failure mode) — no goal is forced here; authoring the
+ *  goal + roadmap is the node's next act. The transition guidance is injected
+ *  centrally by the persona injector at the next turn boundary, not returned. */
+export function promote(nodeId: string, opts: { kind?: string; resident?: boolean } = {}): PromoteResult {
   const node = getNode(nodeId);
   if (node === null) throw new Error(`unknown node: ${nodeId}`);
 
@@ -113,13 +75,31 @@ export function promote(nodeId: string, opts: { kind?: string } = {}): PromoteRe
     roadmapWritten = true;
   }
 
-  const meta = updateNode(nodeId, { kind: targetKind, lifecycle: 'resident', mode: 'orchestrator', launch });
+  // Seed all three scoped memory stores alongside the roadmap — user-global,
+  // project (keyed off this node's cwd), and node-local. Each is a durable,
+  // refresh-surviving artifact; each guarded so a re-seed never clobbers an
+  // evolved memory.
+  seedUserMemory();
+  seedProjectMemory(node.cwd);
+  seedMemory(nodeId);
+
+  // Flip mode→orchestrator + kind + launch spec. Lifecycle is independent:
+  // only set resident when the caller asked for it (the common self-promotion
+  // stays terminal/orchestrator — it still reports up + reaps).
+  const meta = updateNode(nodeId, {
+    kind: targetKind,
+    mode: 'orchestrator',
+    launch,
+    ...(opts.resident === true ? { lifecycle: 'resident' as const } : {}),
+  });
   return {
     meta,
-    guidance: orchestrationGuidance(nodeId, targetKind),
     roadmapWritten,
     roadmapPath: roadmapPath(nodeId),
     goalPath: goalPath(nodeId),
+    memoryPath: memoryPath(nodeId),
+    userMemoryPath: userMemoryPath(),
+    projectMemoryPath: projectMemoryPath(node.cwd),
   };
 }
 
@@ -141,15 +121,17 @@ export function requestYield(nodeId: string, opts: { kind?: string } = {}): Yiel
   if (node === null) throw new Error(`unknown node: ${nodeId}`);
 
   let promoted = false;
-  if (node.lifecycle === 'terminal') {
-    // Yielding with open work ⇒ must survive a context reset ⇒ promote
-    // (optionally specializing the kind).
+  if (node.mode !== 'orchestrator') {
+    // A yield needs a ROADMAP to refresh against — i.e. orchestrator mode, not
+    // resident lifecycle. Ensure orchestrator (which seeds the roadmap + memory)
+    // WITHOUT forcing resident: a terminal/orchestrator yields fine, since the
+    // daemon's refresh-revive keys on intent='refresh', not lifecycle.
     promote(nodeId, opts.kind !== undefined ? { kind: opts.kind } : {});
     promoted = true;
   }
 
   // Mark the intent; the stophook enacts the shutdown, the daemon the revive.
-  const meta = updateNode(nodeId, { intent: 'refresh' });
-  void hasActiveLiveSubscription; // (open-work signal, reserved for future gating)
+  setIntent(nodeId, 'refresh');
+  const meta = getNode(nodeId) as NodeMeta;
   return { meta, promoted, willRefresh: true };
 }

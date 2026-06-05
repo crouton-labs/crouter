@@ -10,7 +10,7 @@
 
 import { test, before, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -118,6 +118,34 @@ test('drainPassive reads then clears (surfaces exactly once)', () => {
   // Cleared — a second drain is empty.
   assert.equal(drainPassive('observer').length, 0);
   assert.equal(readPassive('observer').length, 0);
+});
+
+test('drainPassive tolerates a corrupt line — keeps every good entry, loses only the bad one', () => {
+  createNode(node('observer'));
+  appendPassive('observer', { from: 'a', tier: 'normal', kind: 'update', label: 'one' });
+  appendPassive('observer', { from: 'b', tier: 'normal', kind: 'update', label: 'two' });
+  // A torn/garbage line lands between good entries (a partial write, a crash
+  // mid-append). The whole feed must NOT be discarded over it.
+  appendFileSync(passivePath('observer'), '{not valid json\n', 'utf8');
+  appendPassive('observer', { from: 'c', tier: 'normal', kind: 'update', label: 'three' });
+
+  const drained = drainPassive('observer');
+  assert.equal(drained.length, 3, 'all three good entries survive the corrupt line');
+  assert.deepEqual(drained.map((e) => e.label), ['one', 'two', 'three']);
+
+  // And it still cleared: a second drain is empty (snapshot removed).
+  assert.equal(drainPassive('observer').length, 0);
+  assert.equal(existsSync(passivePath('observer')), false);
+});
+
+test('readPassive tolerates a corrupt line without clearing', () => {
+  createNode(node('observer'));
+  appendPassive('observer', { from: 'a', tier: 'normal', kind: 'update', label: 'one' });
+  appendFileSync(passivePath('observer'), 'garbage}\n', 'utf8');
+  appendPassive('observer', { from: 'b', tier: 'normal', kind: 'update', label: 'two' });
+
+  const read = readPassive('observer');
+  assert.deepEqual(read.map((e) => e.label), ['one', 'two']);
 });
 
 test('formatPassive renders timestamped XML update blocks', () => {

@@ -28,9 +28,11 @@ import {
   contextDir,
   getNode,
   subscriptionsOf,
+  subscribersOf,
   type NodeMeta,
 } from '../canvas/index.js';
 import { readRoadmap, roadmapPath } from './roadmap.js';
+import { personaDrift, commitPersonaAck } from './persona.js';
 import {
   readInboxSince,
   readCursor,
@@ -186,10 +188,34 @@ export function buildReviveKickoff(meta: NodeMeta): string {
       : '<yield-message/>',
   );
 
+  // A node that reports UP the spine (has subscribers awaiting its result)
+  // finishes with `push final`. A human-attended node (no subscribers — a root
+  // conversation working directly with the user) has no result to submit and
+  // must not be told to finish: it stays resident and keeps working with the
+  // user.
+  const reportsUp = subscribersOf(nodeId).length > 0;
   parts.push(
-    'If there is work to do, perform it. Otherwise stop — `crtr push final "<result>"` ' +
-      'if the goal is met, or end your turn to stay dormant awaiting your workers.',
+    reportsUp
+      ? 'If there is work to do, perform it. Otherwise stop — `crtr push final "<result>"` ' +
+          'if the goal is met, or end your turn to stay dormant awaiting your workers.'
+      : 'If there is work to do, perform it. Otherwise end your turn — you are working ' +
+          'directly with the user, so stay available and continue the conversation when they ' +
+          'write back.',
   );
+
+  // Persona-transition catch-up. If the node's mode/lifecycle was changed
+  // EXTERNALLY while it was dormant (e.g. a human ran `crtr node lifecycle` /
+  // `node promote --node` on it), it never saw the turn_end injector. Surface
+  // the guidance for its new persona here and commit the ack — the second (and
+  // only other) delivery site. Idempotent: a clean fresh revive already has its
+  // ack committed, so this fires only on a real external change.
+  const drift = personaDrift(nodeId);
+  if (drift !== null) {
+    parts.push(
+      `<persona-transition>\nYour role was changed while you were away. ${drift.guidance}\n</persona-transition>`,
+    );
+    commitPersonaAck(nodeId, drift.to);
+  }
 
   return parts.join('\n\n');
 }

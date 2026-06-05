@@ -13,6 +13,8 @@ import { appendNeighbors } from './shared.js';
 
 export const readLeaf = defineLeaf({
   name: 'read',
+  description: 'load SKILL.md body + metadata for a named skill',
+  whenToUse: 'a task in front of you matches a skill that is already loaded — read it BEFORE you start improvising, not after. Reach for it the moment you are about to do something a skill covers: adopting a documented workflow that fits the task at hand, following a methodology before writing a spec or a plan, picking up the house conventions for a tool or framework, replaying a runbook for an operation you have run before. Takes the crtr skill name as a positional (a crtr identifier, never a file path — do not cat or find SKILL.md off disk) and returns the SKILL.md body plus its resolution metadata; add --no-body to just confirm a skill exists or locate it. Reach for `crtr skill find` first when you do not yet know which skill applies.',
   help: {
     name: 'skill read',
     summary: 'load SKILL.md body and resolution metadata for a named skill',

@@ -39,6 +39,7 @@ import {
   coalesce,
 } from '../core/feed/inbox.js';
 import type { InboxEntry } from '../core/feed/inbox.js';
+import { getNode } from '../core/canvas/index.js';
 
 // ---------------------------------------------------------------------------
 // Minimal PiLike interface (avoids hard dep on @earendil-works/*)
@@ -206,6 +207,18 @@ export function registerCanvasInboxWatcher(pi: PiLike): () => void {
       }
 
       const newEntries = readInboxSince(nodeId, cursor);
+
+      // Refresh-yield in flight: the node ran `crtr node yield` and is about to be
+      // torn down and revived fresh. Hold everything — don't consume the cursor
+      // (advancing it past these entries would drop them on tear-down) and don't
+      // deliver (steering a child's `final` into the yielding turn hijacks the
+      // clean stop the refresh path depends on, which is how a yield got derailed
+      // mid-flight). The fresh pi re-reads the feed on boot. getNode only when
+      // there's actual work pending, so idle ticks stay cheap.
+      if ((newEntries.length > 0 || buffer.length > 0) && getNode(nodeId)?.intent === 'refresh') {
+        return;
+      }
+
       if (newEntries.length > 0) {
         // Advance and persist the cursor BEFORE buffering, so a crash after this
         // point loses at most one coalesced message rather than re-injecting

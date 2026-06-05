@@ -7,8 +7,9 @@
 // `subscribes_to` edges (which no single meta owns).
 
 /** What a node is doing right now. UI shows active+idle; `done` is hidden but
- *  revivable; only `dead` is a fault. */
-export type NodeStatus = 'active' | 'idle' | 'done' | 'dead';
+ *  revivable; `canceled` is a user-closed node (also hidden, also revivable —
+ *  not a fault); only `dead` is a fault. */
+export type NodeStatus = 'active' | 'idle' | 'done' | 'dead' | 'canceled';
 
 /** Does stopping finalize the node? terminal = worker (finalizes on push --final);
  *  resident = manager/orchestrator (stays dormant, woken by inbox). */
@@ -39,11 +40,21 @@ export interface LaunchSpec {
   env: Record<string, string>;
 }
 
-/** A node's `meta.json` — source of truth for its canvas row. Files for flesh,
- *  sqlite for skeleton: the db indexes the queryable subset of these fields. */
-export interface NodeMeta {
+/** A node's DURABLE IDENTITY — the subset that `meta.json` persists on disk.
+ *  Written rarely (birth, polymorph, session-id capture, naming); never touched
+ *  by a status flip, an intent change, a focus swap, or a pid stamp. The db row
+ *  indexes the queryable identity columns; `rebuildIndex()` re-derives them from
+ *  here. (Live runtime state lives in NodeRuntime, authoritative in the row.) */
+export interface NodeIdentity {
   node_id: string;
   name: string;
+  /** A 2-4 word kebab-case handle derived from the node's first prompt (named
+   *  headlessly by pi; see runtime/naming.ts). Shown in the editor label. */
+  description?: string;
+  /** How many times this node has been (re)launched — born at 0, bumped on
+   *  every revive. The trailing N in the editor label, so a refresh/crash cycle
+   *  reads at a glance. */
+  cycles?: number;
   created: string; // ISO 8601
   /** The dir this node is pinned to — its cwd (where pi runs, bash executes). */
   cwd: string;
@@ -51,25 +62,73 @@ export interface NodeMeta {
   kind: string;
   mode: Mode;
   lifecycle: Lifecycle;
-  status: NodeStatus;
-  /** spawned_by target — who created me. Audit only; null for user-opened roots. */
+  /** The last persona state {mode,lifecycle} the node was GIVEN transition
+   *  guidance for. Meta-only (not a db column). Born equal to the node's initial
+   *  {mode,lifecycle} at spawn so a fresh node never gets spurious guidance. The
+   *  persona injector (runtime/persona.ts) compares the live {mode,lifecycle}
+   *  against this and, on drift, injects guidance for the new state then commits
+   *  it here. */
+  persona_ack?: { mode: Mode; lifecycle: Lifecycle };
+  /** Spine parent — my manager (who subscribes to me); drives canvas nesting +
+   *  orphaning. null for a root (top-level, no manager). */
   parent?: string | null;
+  /** Provenance — who spawned me (the `spawned_by` edge). Decoupled from
+   *  `parent` so an INDEPENDENT root (parent=null) still records its lineage.
+   *  Audit only; null for a user-opened root. Defaults to `parent` for a child. */
+  spawned_by?: string | null;
   /** New subscriptions this node opens default to passive when true. */
   passive_default?: boolean;
-  /** Why the node last stopped (done | refresh). Drives reap-vs-revive. */
-  intent?: ExitIntent;
-  /** The pi session id for `--resume`. */
+  /** The pi session id for `--session <id>` revival. */
   pi_session_id?: string | null;
+  /** Absolute path to pi's session `.jsonl` file, captured at session_start via
+   *  ctx.sessionManager.getSessionFile(). Preferred over pi_session_id when
+   *  resuming: pi resolves a BARE `--session <id>` relative to the launch cwd
+   *  first (and shows an interactive cross-project "Fork? [y/N]" prompt when the
+   *  revive cwd differs from the session's creation cwd), whereas an absolute
+   *  PATH is opened directly — immune to any cwd discrepancy. Null for older
+   *  nodes booted before this field existed → revive falls back to the bare id. */
+  pi_session_file?: string | null;
   /** Full pi launch recipe; rewritten on every polymorph. */
   launch?: LaunchSpec;
+}
+
+/** A node's LIVE RUNTIME state — authoritative in the WAL'd `nodes` row, each
+ *  field mutated by exactly one atomic single-statement `UPDATE` (setStatus /
+ *  setIntent / setPresence / recordPid+clearPid). NOT persisted to meta.json and
+ *  NOT re-derivable by `rebuildIndex()` — it describes live process/presence
+ *  state that is meaningless after the event that would lose the db; the daemon
+ *  reconciles it from tmux reality, not from a stale file. */
+export interface NodeRuntime {
+  /** What the node is doing right now. */
+  status: NodeStatus;
+  /** Why the node last stopped (done | refresh | idle-release). Drives reap-vs-revive.
+   *  Optional on the hydrated view (a fresh construction omits it); the row
+   *  column is always present, defaulting null. */
+  intent?: ExitIntent;
+  /** OS pid of the live pi process, recorded on boot (stophook session_start).
+   *  The daemon's authoritative liveness signal: an inline root runs pi as a
+   *  child of a persistent login shell, so its tmux window outlives a dead pi —
+   *  window-existence alone can't detect the death, but a dead pid can. Cleared
+   *  to null by a window-backed relaunch (reviveNode) until the fresh pi
+   *  re-records it; left intact by an in-place respawn (reviveInPlace) so a
+   *  failed respawn surfaces as a dead pid. */
+  pi_pid?: number | null;
   /** Presence: the tmux session (its root's home) and window this node renders
    *  in while active. Cleared when the node goes done/dead and its window closes.
-   *  (Phase 5 promotes this to a dedicated presence registry.) */
+   *  The row IS the presence registry (one atomic setPresence per move). */
   tmux_session?: string | null;
   window?: string | null;
 }
 
-/** The queryable projection of a NodeMeta stored as a canvas.db row. */
+/** The hydrated node view `getNode()` returns: durable identity (from meta.json)
+ *  ∪ live runtime (from the row). Keeps the historical `NodeMeta` name and field
+ *  set so every `meta.X` read across the codebase typechecks unchanged — but
+ *  `writeMeta` serializes only the NodeIdentity subset and the runtime fields are
+ *  hydrated from the authoritative row. */
+export type NodeMeta = NodeIdentity & NodeRuntime;
+
+/** The queryable projection of a node stored as a canvas.db row: the indexed
+ *  identity columns PLUS the authoritative runtime columns. */
 export interface NodeRow {
   node_id: string;
   name: string;
@@ -80,6 +139,11 @@ export interface NodeRow {
   cwd: string;
   parent: string | null;
   created: string;
+  /** Authoritative runtime columns (see NodeRuntime). */
+  intent: ExitIntent;
+  pi_pid: number | null;
+  window: string | null;
+  tmux_session: string | null;
 }
 
 /** An edge as stored. For `subscribes_to`, `from` is the subscriber and `to`

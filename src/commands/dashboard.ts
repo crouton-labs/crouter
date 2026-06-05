@@ -18,6 +18,8 @@ import { renderTree, renderForest, dashboardRows, dashboardRowsAll } from '../co
 
 export const dashboardLeaf: LeafDef = defineLeaf({
   name: 'dashboard',
+  description: 'render the canvas as a subscription tree',
+  whenToUse: 'you want the whole graph at a glance as a rendered tree — the subscription forest drawn in ASCII so you can read its SHAPE: who reports to whom, how deep each branch runs, plus each node\'s status and context size. Scope to one root or show the full forest. Use `node inspect list` instead for a flat roster without the tree, `node inspect show` to drill into one node\'s neighbors, and `canvas attention` to find which nodes are blocked on a human',
   help: {
     name: 'canvas dashboard',
     summary: 'render the canvas as an ASCII subscription tree — scoped to a root or the full forest',

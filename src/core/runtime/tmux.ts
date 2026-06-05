@@ -9,6 +9,7 @@
 // their window; reviving opens a fresh one.
 
 import { spawn, spawnSync } from 'node:child_process';
+import { readConfig } from '../config.js';
 
 // ---------------------------------------------------------------------------
 // Shell quoting + tmux invocation
@@ -123,6 +124,41 @@ export function openNodeWindow(opts: OpenWindowOpts): string | null {
   return r.ok ? r.stdout : null;
 }
 
+export interface SplitPaneOpts {
+  /** The pane to split — the caller's current pane. */
+  pane: string;
+  cwd: string;
+  env: Record<string, string>;
+  /** The full command to run in the new pane (already a shell string). */
+  command: string;
+  /** 'h' → side-by-side (left/right); 'v' → stacked (top/bottom). Default 'h'. */
+  direction?: 'h' | 'v';
+}
+
+/** Split `pane` and run `command` in the new ADJACENT pane, within the SAME
+ *  window. Unlike openNodeWindow (which exiles the node to its own background
+ *  window in the shared session), this keeps the new node BESIDE the caller so
+ *  the two can be driven side-by-side. No `-d`, so split-window makes the new
+ *  pane active — bringing the spawned node forefront. Returns the new pane id,
+ *  or null if tmux fails. */
+export function splitPane(opts: SplitPaneOpts): string | null {
+  const dir = opts.direction === 'v' ? '-v' : '-h';
+  const r = tmux([
+    'split-window',
+    dir,
+    '-P',
+    '-F',
+    '#{pane_id}',
+    '-t',
+    opts.pane,
+    '-c',
+    opts.cwd,
+    ...envFlags(opts.env),
+    opts.command,
+  ]);
+  return r.ok ? r.stdout : null;
+}
+
 /** Bring a node's window forefront. Switches client across roots when needed. */
 export function focusWindow(session: string, window: string): boolean {
   const here = currentTmux();
@@ -136,6 +172,15 @@ export function focusWindow(session: string, window: string): boolean {
 /** Close a node's window (drop it from the UI). */
 export function closeWindow(window: string): boolean {
   return tmux(['kill-window', '-t', window]).ok;
+}
+
+/** Close a single PANE. Its window closes automatically once this was the last
+ *  pane, but sibling panes survive — so co-located nodes (several agents sharing
+ *  one window via swap-pane focus) are torn down one at a time instead of all
+ *  at once by a window kill. Pane ids are the stable vehicle handle; windows
+ *  shift under swap-pane focus, so pane-granular teardown is the correct unit. */
+export function closePane(pane: string): boolean {
+  return tmux(['kill-pane', '-t', pane]).ok;
 }
 
 /** The active pane id of a window. Node windows are single-pane, so this is the
@@ -265,13 +310,53 @@ export function switchClient(session: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// Multi-pane layout (used by `canvas tmux-spread`)
+// ---------------------------------------------------------------------------
+
+/** Move a source pane into a destination window (`tmux join-pane`). The source
+ *  pane's running process (e.g. a child's live pi) is preserved; its now-empty
+ *  source window auto-closes. Best-effort; false if tmux fails. */
+export function joinPane(srcPane: string, dstWindow: string): boolean {
+  return tmux(['join-pane', '-s', srcPane, '-t', dstWindow]).ok;
+}
+
+/** Apply a named tmux layout to a window (`tmux select-layout`). Use
+ *  `main-vertical` for one wide pane on the left + the rest stacked right.
+ *  Best-effort; never throws. */
+export function selectLayout(window: string, layout: string): boolean {
+  return tmux(['select-layout', '-t', window, layout]).ok;
+}
+
+/** Set a tmux window option (`tmux set-window-option`). Used to size the main
+ *  pane (`main-pane-width`) before a main-vertical layout. Best-effort. */
+export function setWindowOption(window: string, name: string, value: string): boolean {
+  return tmux(['set-window-option', '-t', window, name, value]).ok;
+}
+
+/** Type a literal (e.g. a `/graph` slash command) into a pane and press Enter
+ *  (`tmux send-keys -t <pane> '<text>' Enter`). Requires the pane's editor be
+ *  empty, same limitation as the menu's `/promote` item. Best-effort. */
+export function sendKeysEnter(pane: string, text: string): boolean {
+  return tmux(['send-keys', '-t', pane, text, 'Enter']).ok;
+}
+
+// ---------------------------------------------------------------------------
 // Prefix menu — Alt+C opens a which-key-style tmux display-menu of crouter
 // actions. Installed on the running server at root boot; idempotent (a re-bind
 // overwrites the previous one). Items shell out to `crtr`, passing the active
 // pane so an action targets the agent currently in front of you.
 // ---------------------------------------------------------------------------
 
-/** Bind Alt+C to the crouter action menu. Best-effort; false if tmux fails. */
+/** Reserved mnemonic keys owned by the built-in menu items below — a custom
+ *  `prefixBind` may not claim these (the built-in item wins). */
+const RESERVED_MENU_KEYS = new Set(['o', 'd', 'x', 'b']);
+
+/** Bind Alt+C to the crouter action menu. Best-effort; false if tmux fails.
+ *  The built-in items (promote/demote/close/browse) are static; the canvas-nav
+ *  chords (graph/manager/expand/report-N + any custom prefixBind) are appended
+ *  from `canvasNav.prefixBinds`, each routed through `crtr canvas chord` (or, for
+ *  the `__graph__` sentinel, a `send-keys '/graph'`) so the menu stays static
+ *  while behaviour is config-driven. */
 export function installMenuBinding(): boolean {
   const sess = nodeSession();
   const title = ' crtr ';
@@ -281,8 +366,40 @@ export function installMenuBinding(): boolean {
     // context, which a bare `run-shell` (output discarded) could not.
     { name: 'promote to orchestrator',    key: 'o', cmd: `send-keys -t '#{pane_id}' '/promote' Enter` },
     { name: 'finish agent + recycle pane', key: 'd', cmd: `run-shell "crtr node demote --pane '#{pane_id}'"` },
-    { name: 'browse background agents',    key: 'g', cmd: `switch-client -t ${sess}` },
+    // Close cascades down the subscribes_to spine (kills the subtree's windows,
+    // marks them canceled); revivable. Output discarded — the keypress just acts.
+    { name: 'close agent + subtree',       key: 'x', cmd: `run-shell "crtr node close --pane '#{pane_id}' >/dev/null 2>&1"` },
+    // Re-keyed g→b so `g` is free for the canvas-nav GRAPH toggle (below).
+    { name: 'browse background agents',    key: 'b', cmd: `switch-client -t ${sess}` },
   ];
+
+  // Canvas-nav chords from config (default: g→graph, m→manager, e→expand). The
+  // `__graph__` sentinel toggles the in-pi GRAPH modal via send-keys; every
+  // other bind shells the chord dispatcher, which resolves the pane's node and
+  // interpolates the bind at popup time. Keys colliding with the built-ins are
+  // skipped (the built-in wins).
+  let prefixBinds: Record<string, { run: string; desc?: string }> = {};
+  try { prefixBinds = readConfig('user').canvasNav.prefixBinds; } catch { /* defaults below */ }
+  for (const [key, bind] of Object.entries(prefixBinds)) {
+    if (key.length !== 1 || RESERVED_MENU_KEYS.has(key)) continue;
+    const name = bind.desc !== undefined && bind.desc !== '' ? bind.desc : `chord ${key}`;
+    const cmd =
+      bind.run === '__graph__'
+        ? `send-keys -t '#{pane_id}' '/graph' Enter`
+        : `run-shell "crtr canvas chord --pane '#{pane_id}' --key ${key} >/dev/null 2>&1"`;
+    items.push({ name, key, cmd });
+  }
+
+  // Focus report N: nine generated chord items (1..9), each resolved by the
+  // dispatcher to subscriptionsOf(self)[N-1] at popup time.
+  for (let n = 1; n <= 9; n++) {
+    items.push({
+      name: `focus report ${n}`,
+      key: `${n}`,
+      cmd: `run-shell "crtr canvas chord --pane '#{pane_id}' --key ${n} >/dev/null 2>&1"`,
+    });
+  }
+
   // tmux's -x sets the menu's LEFT edge. To sit the box INSIDE the pane's
   // top-right corner, shift x left by the box width (longest line + tmux chrome:
   // borders + padding + the right-aligned mnemonic-key column) via format math.

@@ -13,6 +13,8 @@ import { dashboardLeaf } from './dashboard.js';
 import { reviveLeaf } from './revive.js';
 import { attentionBranch } from './attention.js';
 import { daemonBranch } from './daemon.js';
+import { tmuxSpreadLeaf } from './tmux-spread.js';
+import { chordLeaf } from './chord.js';
 
 export function registerCanvas(): BranchDef {
   return defineBranch({
@@ -26,14 +28,8 @@ export function registerCanvas(): BranchDef {
       name: 'canvas',
       summary: 'observe and supervise the whole agent graph',
       model:
-        'Canvas-wide operations, distinct from per-node work (`node`) and a node\'s own spine I/O (`push`/`feed`). `dashboard` renders the subscription forest as a tree; `attention` aggregates pending human asks across the graph; `revive` reopens a window for a done/idle/dead node; `daemon` manages the thin crtrd supervisor that auto-revives nodes on window exit.',
-      children: [
-        { name: 'dashboard', desc: 'render the canvas as a subscription tree', useWhen: 'inspecting the whole graph at a glance' },
-        { name: 'attention', desc: 'count/list pending human asks across the graph', useWhen: 'checking whether any agent is blocked on a human' },
-        { name: 'revive', desc: 'reopen a window for a done/idle/dead node', useWhen: 'manually waking a node (the daemon does this automatically)' },
-        { name: 'daemon', desc: 'manage the crtrd supervisor process', useWhen: 'starting, checking, or stopping background supervision' },
-      ],
+        'Canvas-wide operations, distinct from per-node work (`node`) and a node\'s own spine I/O (`push`/`feed`). `dashboard` renders the subscription forest as a tree; `attention` aggregates pending human asks across the graph; `revive` reopens a window for a done/idle/dead/canceled node; `daemon` manages the thin crtrd supervisor that auto-revives nodes on window exit.',
     },
-    children: [dashboardLeaf, attentionBranch, reviveLeaf, daemonBranch],
+    children: [dashboardLeaf, attentionBranch, reviveLeaf, tmuxSpreadLeaf, daemonBranch, chordLeaf],
   });
 }

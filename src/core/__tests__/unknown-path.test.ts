@@ -12,19 +12,25 @@ import { defineRoot, defineBranch, defineLeaf, walk, unknownPathError } from '..
 
 const leaf = defineLeaf({
   name: 'search',
+  description: 'search',
+  whenToUse: 'x',
   help: { name: 'search', summary: 'search', output: [], outputKind: 'object', effects: ['None. Read-only.'] },
   run: async () => ({}),
 });
 
 const findBranch = defineBranch({
   name: 'find',
-  help: { name: 'find', summary: 'find', children: [{ name: 'search', desc: 'search', useWhen: 'x' }] },
+  description: 'find',
+  whenToUse: 'x',
+  help: { name: 'find', summary: 'find' },
   children: [leaf],
 });
 
 const skillBranch = defineBranch({
   name: 'skill',
-  help: { name: 'skill', summary: 'skill', children: [{ name: 'find', desc: 'find', useWhen: 'x' }] },
+  description: 'skill',
+  whenToUse: 'x',
+  help: { name: 'skill', summary: 'skill' },
   rootEntry: { concept: 'skill', desc: 'skill', useWhen: 'x' },
   children: [findBranch],
 });

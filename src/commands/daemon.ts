@@ -19,6 +19,8 @@ import { isDaemonRunning, readPidfile, isPidAlive } from '../daemon/crtrd.js';
 
 const daemonStart = defineLeaf({
   name: 'start',
+  description: 'start the daemon in the background',
+  whenToUse: 'bringing the crtrd supervisor up for the first time in a session so node window-exits get handled (no-op if it is already running)',
   help: {
     name: 'canvas daemon start',
     summary: 'start the crtrd supervisor daemon in the background (no-op if already running)',
@@ -46,6 +48,8 @@ const daemonStart = defineLeaf({
 
 const daemonStatus = defineLeaf({
   name: 'status',
+  description: 'check whether the daemon is running',
+  whenToUse: 'checking whether the crtrd supervisor is running — e.g. confirming supervision is up before relying on auto-revive',
   help: {
     name: 'canvas daemon status',
     summary: 'check whether the crtrd supervisor daemon is currently running',
@@ -72,6 +76,8 @@ const daemonStatus = defineLeaf({
 
 const daemonStop = defineLeaf({
   name: 'stop',
+  description: 'stop the running daemon',
+  whenToUse: 'shutting the crtrd supervisor down, ending auto-revival of nodes on window exit',
   help: {
     name: 'canvas daemon stop',
     summary: 'send SIGTERM to the crtrd supervisor daemon',
@@ -107,16 +113,13 @@ const daemonStop = defineLeaf({
 
 export const daemonBranch: BranchDef = defineBranch({
     name: 'daemon',
+    description: 'manage the crtrd supervisor process',
+    whenToUse: 'managing the crtrd supervisor that auto-revives nodes on window exit — start it, check its status, or stop it',
     help: {
       name: 'canvas daemon',
       summary: 'manage the crtrd canvas supervisor daemon',
       model:
         'crtrd is a thin background daemon that polls active+idle nodes and acts on window exit: crashed windows become dead; refresh-yield windows get a fresh respawn. It holds no orchestration logic — just process supervision.',
-      children: [
-        { name: 'start', desc: 'start the daemon in the background', useWhen: 'bringing up the supervisor for the first time in a session' },
-        { name: 'status', desc: 'check whether the daemon is running', useWhen: 'verifying the daemon is up before spawning canvas nodes' },
-        { name: 'stop', desc: 'stop the running daemon', useWhen: 'shutting down supervision' },
-      ],
     },
     children: [daemonStart, daemonStatus, daemonStop],
 });

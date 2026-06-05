@@ -36,7 +36,6 @@ export function newNodeId(): string {
 
 export interface NodeContext {
   nodeId: string | null;
-  parentNodeId: string | null;
   kind: string | null;
   mode: Mode | null;
 }
@@ -48,7 +47,6 @@ export function currentNodeContext(): NodeContext {
   const env = process.env;
   return {
     nodeId: env['CRTR_NODE_ID'] ?? null,
-    parentNodeId: env['CRTR_NODE_ID'] ?? null, // a child's parent is the live node
     kind: env['CRTR_KIND'] ?? null,
     mode: (env['CRTR_MODE'] as Mode | undefined) ?? null,
   };
@@ -87,8 +85,14 @@ export interface SpawnNodeOpts {
   lifecycle?: Lifecycle;
   cwd: string;
   name?: string;
+  /** Editor-label handle (2-4 word kebab-case) for the node's first prompt. */
+  description?: string;
   /** Parent node id. Omit for a user-opened root. */
   parent?: string | null;
+  /** Who spawned me (the `spawned_by` provenance edge), when it differs from
+   *  `parent` — e.g. an independent root (parent=null) still records its
+   *  spawner. Defaults to `parent`. */
+  spawnedBy?: string | null;
   /** New subscriptions this node opens default to passive when true. */
   passiveDefault?: boolean;
   /** Resolved pi launch recipe (from resolve(kind,mode)). */
@@ -105,35 +109,56 @@ export interface SpawnNodeOpts {
 export function spawnNode(opts: SpawnNodeOpts): NodeMeta {
   const parent = opts.parent ?? null;
   const isRoot = parent === null;
+  // Provenance is independent of the spine: a root has no parent but still
+  // records who spawned it. A child's spawner is its parent unless overridden.
+  const spawnedBy = opts.spawnedBy ?? parent;
+  const mode: Mode = opts.mode ?? 'base';
+  // A user-opened root is resident (a conversation you live in); a spawned node
+  // is terminal until it must persist (promotion handles that later).
+  const lifecycle: Lifecycle = opts.lifecycle ?? (isRoot ? 'resident' : 'terminal');
   const meta: NodeMeta = {
     node_id: opts.nodeId ?? newNodeId(),
     name: opts.name ?? opts.kind,
+    description: opts.description,
+    cycles: 0,
     created: new Date().toISOString(),
     cwd: opts.cwd,
     kind: opts.kind,
-    mode: opts.mode ?? 'base',
-    // A user-opened root is resident (a conversation you live in); a spawned
-    // node is terminal until it must persist (promotion handles that later).
-    lifecycle: opts.lifecycle ?? (isRoot ? 'resident' : 'terminal'),
+    mode,
+    lifecycle,
+    // Born already acked to its initial persona: a fresh node has been "given
+    // guidance" for the state it starts in (its bearings carry it), so the
+    // persona injector sees no drift on its first turn boundary.
+    persona_ack: { mode, lifecycle },
     status: 'active',
     parent,
+    spawned_by: spawnedBy,
     passive_default: opts.passiveDefault ?? false,
     intent: null,
     pi_session_id: null,
+    pi_session_file: null,
     launch: opts.launch,
   };
+
+  // Validate BEFORE minting: a bad parent must leave no half-born orphan row or
+  // dirs behind, so the parent's existence is checked before createNode
+  // scaffolds anything on disk or in the db.
+  if (parent !== null && getNode(parent) === null) {
+    throw new Error(`cannot spawn under unknown parent node: ${parent}`);
+  }
 
   createNode(meta);
 
   if (parent !== null) {
-    if (getNode(parent) === null) {
-      throw new Error(`cannot spawn under unknown parent node: ${parent}`);
-    }
     // The load-bearing seed: parent subscribes (active) to child so it learns
     // when the work finishes. This mirrors spawn structure into the spine.
+    // A root (parent=null) gets NO subscription — nobody is woken by it.
     subscribe(parent, meta.node_id, true);
-    // Audit-only provenance.
-    recordSpawn(meta.node_id, parent);
+  }
+
+  // Audit-only provenance edge — recorded for a root too (from its spawner).
+  if (spawnedBy !== null && spawnedBy !== undefined && getNode(spawnedBy) !== null) {
+    recordSpawn(meta.node_id, spawnedBy);
   }
 
   return meta;

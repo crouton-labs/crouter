@@ -12,6 +12,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import registerCanvasInboxWatcher from '../../pi-extensions/canvas-inbox-watcher.js';
 import { appendInbox } from '../feed/inbox.js';
+import { createNode, setIntent } from '../canvas/canvas.js';
+import { closeDb } from '../canvas/db.js';
+import type { NodeMeta } from '../canvas/types.js';
 
 // Mirror the watcher's internal cadence (TICK_MS=800, DEBOUNCE_MS=1000): allow a
 // resolve+seed tick, a read tick, and the debounce window before asserting.
@@ -91,6 +94,31 @@ describe('canvas inbox watcher — finished-node delivery', () => {
     await wait(SETTLE_MS);
     assert.equal(pi.injected.length, 1);
     assert.equal(pi.injected[0]!.deliverAs, 'followUp', 'a normal update is not urgent → followUp');
+  });
+
+  test('refresh-yield in flight: inbox entries are HELD, then delivered once intent clears (no loss)', async () => {
+    freshNode('node-refresh');
+    closeDb(); // rebind the canvas db to this test's fresh home
+    const meta: NodeMeta = {
+      node_id: 'node-refresh', name: 'r', created: new Date().toISOString(),
+      cwd: '/tmp', kind: 'general', mode: 'base', lifecycle: 'resident',
+      status: 'active', intent: 'refresh',
+    };
+    createNode(meta);
+    const pi = makeFakePi();
+    disposers.push(registerCanvasInboxWatcher(pi as any));
+    // Streaming (mid-turn) when a child finishes — normally this would steer.
+    pi.fire('agent_start', { type: 'agent_start' }, { isIdle: () => false });
+    await wait(TICK_MS + 100);
+    appendInbox('node-refresh', { from: 'child-x', tier: 'urgent', kind: 'final', label: 'done' });
+    await wait(SETTLE_MS);
+    assert.equal(pi.injected.length, 0, 'entries are held while a refresh-yield is in flight (no steer-hijack)');
+
+    // The fresh pi clears intent on boot; the held entry must then be delivered
+    // — the cursor was never advanced, so nothing is lost.
+    setIntent('node-refresh', null);
+    await wait(SETTLE_MS);
+    assert.equal(pi.injected.length, 1, 'the held entry is delivered once the refresh clears');
   });
 
   test('idle: a finished node triggers a fresh turn (no deliverAs)', async () => {

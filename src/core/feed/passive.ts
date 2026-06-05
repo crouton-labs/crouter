@@ -41,14 +41,30 @@ export function appendPassive(nodeId: string, entry: Omit<InboxEntry, 'ts'>): In
   return full;
 }
 
+/**
+ * Parse jsonl text into entries, tolerating corruption: each line is parsed on
+ * its own and a single malformed line is SKIPPED, never the whole feed. The
+ * drain path renames + deletes its snapshot, so a non-tolerant parse here would
+ * silently discard every accumulated entry the moment one bad line appears.
+ */
+function parseEntries(text: string): InboxEntry[] {
+  const entries: InboxEntry[] = [];
+  for (const line of text.split('\n')) {
+    if (line.trim() === '') continue;
+    try {
+      entries.push(JSON.parse(line) as InboxEntry);
+    } catch {
+      // Skip only the corrupt line — the rest of the feed survives.
+    }
+  }
+  return entries;
+}
+
 /** Return every accumulated passive entry (oldest first) without clearing. */
 export function readPassive(nodeId: string): InboxEntry[] {
   const p = passivePath(nodeId);
   if (!existsSync(p)) return [];
-  return readFileSync(p, 'utf8')
-    .split('\n')
-    .filter((l) => l.trim() !== '')
-    .map((l) => JSON.parse(l) as InboxEntry);
+  return parseEntries(readFileSync(p, 'utf8'));
 }
 
 /**
@@ -71,14 +87,11 @@ export function drainPassive(nodeId: string): InboxEntry[] {
     return [];
   }
 
+  // Parse with the tolerant per-line parser BEFORE removing the snapshot, so a
+  // single corrupt line can never discard the whole accumulated feed.
   let entries: InboxEntry[] = [];
   try {
-    entries = readFileSync(snapshot, 'utf8')
-      .split('\n')
-      .filter((l) => l.trim() !== '')
-      .map((l) => JSON.parse(l) as InboxEntry);
-  } catch {
-    entries = [];
+    entries = parseEntries(readFileSync(snapshot, 'utf8'));
   } finally {
     try { rmSync(snapshot, { force: true }); } catch { /* best-effort cleanup */ }
   }

@@ -8,6 +8,8 @@ import type { Scope } from '../../types.js';
 
 export const sysUpdateLeaf = defineLeaf({
   name: 'update',
+  description: 'update binary and content',
+  whenToUse: 'upgrading crtr or its installed plugins and marketplaces — pull the latest binary, refresh installed content, or both; pass --check first to see what is out of date without applying anything.',
   help: {
     name: 'sys update',
     summary: 'update the crtr binary and/or installed plugins and marketplaces',
@@ -112,6 +114,8 @@ export const sysUpdateLeaf = defineLeaf({
 
 export const sysVersionLeaf = defineLeaf({
   name: 'version',
+  description: 'print installed version',
+  whenToUse: 'you need the installed crtr version — to report it in a bug or confirm an upgrade landed.',
   help: {
     name: 'sys version',
     summary: 'print the installed crtr version',

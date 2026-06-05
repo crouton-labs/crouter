@@ -80,18 +80,25 @@ export type InputParam = PositionalParam | FlagParam | StdinParam | ContextFileP
  *   - important — ALSO promoted into the parent's -h, name + shortform desc. */
 export type SubTier = 'hidden' | 'normal' | 'common' | 'important';
 
-/** One child entry in a branch's -h listing. `desc`/`useWhen` are the shortform
- *  copy shown there; `tier` governs promotion into ancestor listings. */
-export interface BranchChild {
+/** A child's assembled parent-level listing entry — computed by defineBranch
+ *  from each child def's own self-description (`description`/`whenToUse`/`tier`).
+ *  renderBranch consumes this; it is never authored by hand and there is no
+ *  parent-side copy of a child's description (principle 16: each node owns its
+ *  representation one level up). */
+export interface ListingChild {
   name: string;
-  desc: string;
-  useWhen: string;
-  /** Visibility tier in ancestor listings (see SubTier). Default 'normal'. */
-  tier?: SubTier;
-  /** Computed at define time (defineBranch): how many non-hidden subcommands
-   *  this child itself owns. Drives the "[+N subcommands]" affordance shown when
-   *  a branch child is listed without expanding its own subcommands. Absent for
-   *  leaves and childless branches. Do not author by hand. */
+  /** Short description for this child's <subcommand> row. */
+  description: string;
+  /** Selection rubric — plainly states when to reach for this command. Expansive
+   *  with a variety of examples for judgment-heavy commands; concise for
+   *  genuinely single-purpose ones. Rendered verbatim (no prefix). */
+  whenToUse: string;
+  /** Visibility tier in ancestor listings (see SubTier). 'hidden' children are
+   *  dropped from every listing. */
+  tier: SubTier;
+  /** How many non-hidden subcommands this child itself owns — drives the
+   *  `subcommands="N"` attribute when a branch child is listed without
+   *  expansion. Absent for leaves and childless branches. */
   subCount?: number;
 }
 
@@ -148,14 +155,20 @@ export interface RootCommand {
 
 export interface BranchHelp {
   name: string;
+  /** The command's own description — rendered as the `description` attribute of
+   *  its <command> card at its own -h. */
   summary: string;
-  /** Local lifecycle/model line that extends the parent definition. */
+  /** Local model prose orienting the agent to what the subtree contains and how
+   *  the children differ as a group — never a per-child restatement (each
+   *  child's purpose lives in its own listing row). */
   model?: string;
   /** Bounded runtime aggregate as a complete self-named state element (build
    *  it with stateBlock), e.g. `<skills count="42">…</skills>`. Renderer
    *  soft-fails to omission if this returns null or throws. */
   dynamicState?: () => string | null;
-  children: BranchChild[];
+  /** Parent-level listing assembled by defineBranch from the actual child defs.
+   *  renderBranch reads this; never author it by hand. */
+  listing?: ListingChild[];
 }
 
 export interface LeafHelp {
@@ -231,11 +244,14 @@ const IO_CONTRACT =
 
 // Behavioral instruction (not a schema) — engrained in the appended system
 // prompt so the model treats unfamiliar capabilities as a cue to discover the
-// contract, never to guess. Lives in the root guide, outside any leaf -h.
+// contract, never to guess, AND reads a command's contract before invoking it.
+// Lives in the root guide, outside any leaf -h.
 const CAPABILITY_DISCOVERY =
-  "If the user mentions or implies a crtr capability you don't fully understand, " +
-  'do not guess or assume it is unsupported — run `-h` on the relevant command ' +
-  '(append it anywhere along the path) to read the contract before acting.';
+  'Before running a crtr command whose exact contract (args, flags, effects) ' +
+  "you haven't verified this session, run `-h` on it and read the schema first " +
+  '— a reliable read beats a guess that wastes a turn or triggers an unintended ' +
+  "effect. Same when the user names a capability you don't fully recognize: " +
+  '`-h` it before acting.';
 
 /** Lines for a command's subcommand affordance at root: any promoted
  *  (common/important) subcommands, then a remainder line naming how many other
@@ -296,13 +312,18 @@ export function renderRoot(h: RootHelp): string {
     lines.push('');
   }
 
-  // Globals block (footer)
-  lines.push('Globals');
-  const gNameW = maxLen(h.globals.map((g) => g.name));
-  for (const g of h.globals) {
-    lines.push(`  ${pad(g.name, gNameW)}  ${g.desc}`);
+  // Globals block (footer) — rendered only when globals exist, so an empty
+  // list never leaves a bare "Globals" header. -h itself is not a global: the
+  // capability-discovery rule below teaches -h usage with its reasoning, so no
+  // per-command CTA or standalone "-h: print help" stub is needed.
+  if (h.globals.length > 0) {
+    lines.push('Globals');
+    const gNameW = maxLen(h.globals.map((g) => g.name));
+    for (const g of h.globals) {
+      lines.push(`  ${pad(g.name, gNameW)}  ${g.desc}`);
+    }
+    lines.push('');
   }
-  lines.push('');
 
   lines.push(IO_CONTRACT);
   lines.push('');
@@ -315,44 +336,43 @@ export function renderRoot(h: RootHelp): string {
 // renderBranch
 // ---------------------------------------------------------------------------
 
+/** Escape a value for a rendered XML attribute. Output is light XML around
+ *  markdown read as prose by a model, not parsed — so we only guard the
+ *  double-quote that would visually break the attribute, swapping it for a
+ *  single quote rather than emitting noisy entities. */
+function attr(s: string): string {
+  return s.replace(/"/g, "'");
+}
+
 export function renderBranch(h: BranchHelp): string {
   const lines: string[] = [];
 
-  lines.push(`${h.name}: ${h.summary}.`);
+  // The branch renders as one <command> card: its own description in the
+  // opening attribute, then orientation prose / live state, then one
+  // self-closing <subcommand> per child. Each child's description + whenToUse
+  // are assembled by defineBranch from the child's own self-description, so the
+  // parent never restates what a child is — the child owns its representation.
+  lines.push(`<command name="${h.name}" description="${attr(h.summary)}">`);
 
-  // Dynamic content leads — the live aggregate (e.g. the <skills> catalog)
-  // renders right after the name, before the hardcoded model prose, so current
-  // state is read first. The subtree authors the whole element, so the same
-  // self-named block appears identically at root and at `skill -h`.
   const branchState = evalDynamic(h.dynamicState);
-  if (branchState !== null) {
-    // dynamicState returns a complete self-named element — emit as-is.
-    lines.push('');
-    lines.push(branchState);
+  if (branchState !== null) lines.push(branchState);
+  if (h.model !== undefined) lines.push(h.model);
+
+  for (const c of h.listing ?? []) {
+    if (c.tier === 'hidden') continue;
+    const subs = c.subCount !== undefined && c.subCount > 0 ? ` subcommands="${c.subCount}"` : '';
+    // whenToUse plainly states when to reach for this child, rendered verbatim —
+    // expansive with examples for judgment-heavy commands, concise for
+    // single-purpose ones. It does not restate "read my -h"; the
+    // capability-discovery rule in the root footer already teaches that.
+    lines.push(
+      `<subcommand name="${c.name}" description="${attr(c.description)}" whenToUse="${attr(
+        c.whenToUse,
+      )}"${subs}/>`,
+    );
   }
 
-  if (h.model !== undefined) {
-    lines.push('');
-    lines.push(h.model);
-  }
-
-  lines.push('');
-  lines.push('Branches');
-
-  // 'hidden' children never appear in any listing — drop them here.
-  const visible = h.children.filter((c) => (c.tier ?? 'normal') !== 'hidden');
-  const nameW = maxLen(visible.map((c) => c.name));
-  const descW = maxLen(visible.map((c) => c.desc));
-  for (const c of visible) {
-    let line = `  ${pad(c.name, nameW)}  ${pad(c.desc, descW)}  | use when ${c.useWhen}`;
-    // A branch child is listed without its own subcommands expanded — flag how
-    // many it has so the agent knows there is more depth behind `<child> -h`.
-    if (c.subCount !== undefined && c.subCount > 0) {
-      line += `  [+${c.subCount} subcommand${c.subCount === 1 ? '' : 's'}]`;
-    }
-    lines.push(line);
-  }
-
+  lines.push('</command>');
   return lines.join('\n');
 }
 

@@ -10,6 +10,8 @@ import { walkFiles, readText } from '../../core/fs-utils.js';
 
 export const findList = defineLeaf({
   name: 'list',
+  description: 'paginated list of installed skills',
+  whenToUse: 'browse the whole catalog of installed skills, paginated, when you want to see everything that is available rather than hunt for a particular topic — supports --scope, --plugin, and --full filters to narrow or enrich the listing. Use `crtr skill find search` instead when you already have a topic or keyword in mind.',
   help: {
     name: 'skill find list',
     summary: 'paginated list of installed skills',
@@ -94,6 +96,8 @@ export const findList = defineLeaf({
 
 export const findSearch = defineLeaf({
   name: 'search',
+  description: 'keyword search across name/description/keywords',
+  whenToUse: 'you have a topic, keyword, or problem in mind but not the exact skill name — search ranks installed skills by how well your terms match their name, description, and keywords (add --search-body to also look inside SKILL.md bodies). Reach for it to answer questions like is there a skill for writing tests, anything on prompt design, do we have a debugging workflow. Use `crtr skill find list` instead to browse the whole catalog when you have no particular topic in mind, and `crtr skill find grep` when you need an exact regex or literal-string match across skill bodies rather than a ranked topic match.',
   help: {
     name: 'skill find search',
     summary: 'search skills by name, description, and keywords',
@@ -189,6 +193,8 @@ export const findSearch = defineLeaf({
 
 export const findGrep = defineLeaf({
   name: 'grep',
+  description: 'regex search across SKILL.md bodies',
+  whenToUse: 'you need to find which skills contain a specific literal string or regex pattern in their SKILL.md body — an exact text match, not a ranked topic search: locating every skill that mentions a command name, a flag, or an exact phrase. Use `crtr skill find search` instead when you want skills matched by topic or keyword rather than exact body text.',
   help: {
     name: 'skill find grep',
     summary: 'search skill file contents for a regex pattern',
@@ -255,14 +261,11 @@ export const findGrep = defineLeaf({
 
 export const findBranch = defineBranch({
   name: 'find',
+  description: 'list, search, or grep skills',
+  whenToUse: 'you do not yet know which skill applies and need to discover what is installed — list to browse the whole catalog, search to rank skills by topic or keyword, grep to match exact text inside skill bodies.',
   help: {
     name: 'skill find',
     summary: 'discover skills by listing, keyword search, or body grep',
-    children: [
-      { name: 'list', desc: 'paginated list of installed skills', useWhen: 'enumerating all available skills' },
-      { name: 'search', desc: 'keyword search across name/description/keywords', useWhen: 'looking for skills matching a topic' },
-      { name: 'grep', desc: 'regex search across SKILL.md bodies', useWhen: 'finding skills containing specific text or patterns' },
-    ],
   },
   children: [findList, findSearch, findGrep],
 });

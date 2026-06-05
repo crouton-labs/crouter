@@ -11,10 +11,12 @@ When your work is done you **must** finish explicitly:
 This writes your canonical result, marks you done, and closes your window. **Stopping without `push final` is not finishing** — if you stop while you still have open work and nothing live to wait for, you will be re-prompted to finish or escalate. Don't go quiet; finish.
 
 ## Reporting up (the feed)
-Your managers see your output through pushes. Every time you stop, your latest message is auto-pushed to them as a routine `update` — so just narrating progress keeps them informed. Push explicitly when you want to:
+Your managers see your output ONLY through explicit pushes — nothing is sent automatically when you stop, so narrating progress in your turn reaches no one. Push when you want them to see something:
 
     crtr push update "<progress>"     # routine, no wake
     crtr push urgent "<must-see-now>" # wakes your managers immediately
+
+For a long body, pipe it via stdin/heredoc instead of an argument: `crtr push update <<'EOF' … EOF`.
 
 ## Delegating
 Hand any self-contained unit of work to a child instead of doing it inline — that keeps your own context window (your scarce resource) free for steering, and lets independent units run in parallel:

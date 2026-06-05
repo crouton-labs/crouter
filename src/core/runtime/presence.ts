@@ -20,9 +20,9 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { join } from 'node:path';
 
-import { crtrHome, getNode, updateNode } from '../canvas/index.js';
+import { crtrHome, getNode, setPresence } from '../canvas/index.js';
 import type { NodeMeta } from '../canvas/index.js';
-import { selectWindow, switchClient, windowAlive, currentTmux, paneOfWindow, swapPaneInPlace, windowOfPane } from './tmux.js';
+import { selectWindow, switchClient, windowAlive, currentTmux, paneOfWindow, swapPaneInPlace, paneLocation } from './tmux.js';
 
 // ---------------------------------------------------------------------------
 // Focus pointer
@@ -145,29 +145,38 @@ export function focusNodeInPlace(
   }
   if (targetPane === pane) return { focused: true, session, inPlace: true }; // already here
 
-  // The window the caller's pane currently sits in — the slot the target's pane
-  // is about to be swapped INTO.
-  const callerWindow = windowOfPane(pane);
+  // The session + window the caller's pane currently sits in — the slot the
+  // target's pane is about to be swapped INTO. Capture BOTH fields, not just
+  // the window: an inline root adopts the user's own tmux session while its
+  // children live in the shared `crtr` session, so the caller and target can
+  // sit in DIFFERENT sessions and swap-pane crosses the session boundary.
+  const callerLoc = paneLocation(pane);
 
   const ok = swapPaneInPlace(targetPane, pane);
 
-  // Keep the canvas window mapping in sync with the physical swap. swap-pane
-  // exchanges the two PANES between their windows (pane ids are stable, windows
-  // are slots): after the swap the target's pane occupies the caller's window
-  // and the caller's pane occupies the target's old window. Without this update
-  // meta.window goes stale, and a later paneOfWindow(session, meta.window)
-  // resolves the WRONG pane — the bug that made focusing back to a manager a
-  // no-op (it kept resolving the pane already in view) and made a focused node's
-  // exit collapse the visible window instead of its background one.
-  if (ok && callerWindow !== null && callerWindow !== window) {
-    try { updateNode(nodeId, { window: callerWindow }); } catch { /* best-effort */ }
+  // Keep the canvas (session, window) mapping in sync with the physical swap.
+  // swap-pane exchanges the two PANES between their slots (pane ids are stable,
+  // window/session are the slot, and a swap can cross sessions): after it the
+  // target's pane occupies the caller's slot and the caller's pane occupies the
+  // target's old slot. Re-point BOTH fields on BOTH nodes. Updating only
+  // `window` after a CROSS-SESSION swap leaves tmux_session naming the wrong
+  // session, so the (session, window) pair points at a window that isn't there:
+  // windowAlive() then reports the live node dormant, and the next focus tries
+  // to revive it — relaunching pi against a stale window, which drops you on the
+  // session selector. That was the broken "go back up to the parent" path
+  // (root in the user's session ↔ child in the `crtr` session). Window ids are
+  // server-global, so a differing window id is a reliable "panes moved" signal.
+  if (ok && callerLoc !== null && callerLoc.window !== window) {
+    // The focused node's pane now sits in the caller's old slot.
+    try { setPresence(nodeId, { tmux_session: callerLoc.session, window: callerLoc.window }); } catch { /* best-effort */ }
     // The caller is the node running this focus (its pi process owns callerPane).
-    // Its pane moved to the target's old window, so re-point its window there.
-    // Prefer an explicit id (the `node cycle` tmux binding runs outside any pi,
-    // so CRTR_NODE_ID is unset there) and fall back to the env for `node focus`.
+    // Its pane moved to the target's old slot (session, window), so re-point it
+    // there. Prefer an explicit id (the `node cycle` tmux binding runs outside
+    // any pi, so CRTR_NODE_ID is unset there) and fall back to the env for
+    // `node focus`.
     const cnid = callerNodeId ?? process.env['CRTR_NODE_ID'];
     if (cnid !== undefined && cnid.trim() !== '' && cnid !== nodeId) {
-      try { updateNode(cnid, { window }); } catch { /* best-effort */ }
+      try { setPresence(cnid, { tmux_session: session, window }); } catch { /* best-effort */ }
     }
   }
 

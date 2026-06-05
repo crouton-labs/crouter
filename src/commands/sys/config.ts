@@ -14,6 +14,7 @@ const TOP_LEVEL_KEYS: ReadonlySet<string> = new Set([
   'marketplaces',
   'plugins',
   'max_panes_per_window',
+  'canvasNav',
 ]);
 
 function getNestedValue(obj: ScopeConfig, key: string): unknown {
@@ -66,6 +67,19 @@ function setNestedValue(cfg: ScopeConfig, key: string, value: unknown): void {
     return;
   }
 
+  if (topKey === 'canvasNav') {
+    // Only the scalar prefixKey is settable here; the prefixBinds/graphBinds
+    // record tables are edited directly in config.json (run `crtr sys config
+    // path` to locate it).
+    if (key === 'canvasNav.prefixKey') {
+      cfg.canvasNav.prefixKey = String(value);
+      return;
+    }
+    throw usage(
+      `canvasNav.${parts.slice(1).join('.') || '*'} is a record table — edit config.json directly (run \`crtr sys config path\`). Only canvasNav.prefixKey is settable via this command.`,
+    );
+  }
+
   if (parts.length === 1) {
     (cfg as unknown as Record<string, unknown>)[topKey] = value;
     return;
@@ -86,11 +100,13 @@ function setNestedValue(cfg: ScopeConfig, key: string, value: unknown): void {
 
 const configGet = defineLeaf({
   name: 'get',
+  description: 'read a config value by key',
+  whenToUse: 'you want to read a single config value by its dotted key — the current auto_update policy, max_panes_per_window, the canvasNav prefix key — optionally from a specific scope. Use sys config set instead to change a value, sys config path to locate the file for hand-editing.',
   help: {
     name: 'sys config get',
     summary: 'read a config value by dotted key',
     params: [
-      { kind: 'positional', name: 'key', type: 'string', required: true, constraint: 'Dotted key path. Top-level keys: auto_update, marketplaces, plugins, max_panes_per_window.' },
+      { kind: 'positional', name: 'key', type: 'string', required: true, constraint: 'Dotted key path. Top-level keys: auto_update, marketplaces, plugins, max_panes_per_window, canvasNav (read whole; edit canvasNav.prefixBinds/graphBinds in config.json directly).' },
       { kind: 'flag', name: 'scope', type: 'enum', choices: ['user', 'project', 'all'], required: false, constraint: 'Scope to read from. Default: user.' },
     ],
     output: [
@@ -115,11 +131,13 @@ const configGet = defineLeaf({
 
 const configSet = defineLeaf({
   name: 'set',
+  description: 'write a config value by key',
+  whenToUse: 'you want to change a crtr setting — flip auto_update.crtr or auto_update.content to notify, apply, or off, raise max_panes_per_window, rebind canvasNav.prefixKey — written to the user or project scope. Use sys config get instead to read a value; the canvasNav record tables are not settable here, so edit config.json directly (sys config path) for those.',
   help: {
     name: 'sys config set',
     summary: 'write a config value by dotted key',
     params: [
-      { kind: 'positional', name: 'key', type: 'string', required: true, constraint: 'Dotted key path. Supported: auto_update.crtr, auto_update.content, auto_update.interval_hours, max_panes_per_window.' },
+      { kind: 'positional', name: 'key', type: 'string', required: true, constraint: 'Dotted key path. Supported: auto_update.crtr, auto_update.content, auto_update.interval_hours, max_panes_per_window, canvasNav.prefixKey. The canvasNav.prefixBinds/graphBinds record tables are not settable here — edit config.json directly (`crtr sys config path`).' },
       { kind: 'flag', name: 'value', type: 'string', required: true, constraint: 'value VALUE — string, required. Stored as-is if quoted; coerced to number or boolean when unambiguous.' },
       { kind: 'flag', name: 'scope', type: 'enum', choices: ['user', 'project'], required: false, constraint: 'Scope to write to. Default: user.' },
     ],
@@ -151,6 +169,8 @@ const configSet = defineLeaf({
 
 const configPath = defineLeaf({
   name: 'path',
+  description: 'print path(s) to config.json',
+  whenToUse: 'you need the absolute path to config.json — typically to hand-edit settings sys config set cannot reach, like the canvasNav.prefixBinds and graphBinds record tables.',
   help: {
     name: 'sys config path',
     summary: 'print absolute path(s) to config.json',
@@ -189,14 +209,11 @@ const configPath = defineLeaf({
 
 export const configBranch = defineBranch({
   name: 'config',
+  description: 'read and write configuration',
+  whenToUse: 'inspecting or changing crtr settings — read a value with sys config get, change one with sys config set (auto_update policy, max_panes_per_window, canvasNav.prefixKey), or locate config.json with sys config path to hand-edit the record tables set cannot reach.',
   help: {
     name: 'sys config',
     summary: 'read and write crtr configuration',
-    children: [
-      { name: 'get', desc: 'read a config value by key', useWhen: 'inspecting current configuration' },
-      { name: 'set', desc: 'write a config value by key', useWhen: 'changing a configuration setting' },
-      { name: 'path', desc: 'print path(s) to config.json', useWhen: 'locating the config file for manual inspection' },
-    ],
   },
   children: [configGet, configSet, configPath],
 });

@@ -36,6 +36,9 @@ function askingNode(): string | null {
 
 export const humanAsk = defineLeaf({
   name: 'ask',
+  description: 'put a structured choice or open question to a person',
+  whenToUse:
+    'you would otherwise lay a decision, a set of options, or a question out for the user as prose — reach for this instead, for anything from a quick yes/no to a judgment-heavy call: reviewing all the requirements before building, choosing among implementation patterns, walking a list of risks and deciding what to do about each, settling a naming or scope question, picking which of several findings to act on. Works for open-ended asks too (set `allowFreetext`, offer a few `options` as starting points). The kickoff never blocks, so the human answering on their own time is never a reason to skip the ask and guess instead',
   help: {
     name: 'human ask',
     summary: 'put a humanloop decision deck in front of a person; returns a job handle immediately. This is the default, expected channel for posing ANY question or decision to the user — reach for it instead of writing the question as prose in your reply.',
@@ -88,6 +91,8 @@ export const humanAsk = defineLeaf({
 
 export const humanApprove = defineLeaf({
   name: 'approve',
+  description: 'a Yes/No sign-off gate',
+  whenToUse: 'a step needs an explicit human yes before it proceeds and a plain answer (not anchored comments) is enough: before a handoff, a merge or deploy, a destructive or irreversible operation, spending real budget, or acting on a risky plan. Reach for `ask` instead when you need them to choose among options or answer something open-ended; reach for `review` when the feedback belongs inline on a document',
   help: {
     name: 'human approve',
     summary: 'a Yes/No approval gate; returns a job handle immediately. The standard way to gate a handoff on human sign-off. Kickoff never blocks — peek at the result later rather than busy-waiting; the human answering on their own time is not a reason to skip the gate.',
@@ -138,6 +143,8 @@ export const humanApprove = defineLeaf({
 
 export const humanReview = defineLeaf({
   name: 'review',
+  description: 'collect anchored comments on a .md (plan or spec)',
+  whenToUse: 'a human should comment line-by-line on a document rather than give one overall answer: reviewing a plan or spec before you build it, marking up a draft, flagging specific sections to change. The comments come back anchored to the lines they touch. Use `approve` instead for a single yes/no on the whole thing, or `ask` to pose a discrete choice',
   help: {
     name: 'human review',
     summary: 'open a .md in a read-only review editor for anchored comments; BLOCKS until the human submits the review. Humans respond on human time (often >10 min) — if you want to keep working, background this call (your harness will notify you when it finishes).',
@@ -214,6 +221,8 @@ export const humanReview = defineLeaf({
 
 export const humanNotify = defineLeaf({
   name: 'notify',
+  description: 'fire-and-forget acknowledgement, no reply expected',
+  whenToUse: 'informing a person without blocking or expecting an answer',
   help: {
     name: 'human notify',
     summary: 'show a fire-and-forget acknowledgement; creates no job',
@@ -268,6 +277,8 @@ export const humanNotify = defineLeaf({
 
 export const humanShow = defineLeaf({
   name: 'show',
+  description: "put a file live on the human's screen",
+  whenToUse: 'displaying a doc on screen while a human comments',
   help: {
     name: 'human show',
     summary: 'put a file live on screen in a tmux pane via humanloop display',

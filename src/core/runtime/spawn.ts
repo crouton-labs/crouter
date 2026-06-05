@@ -2,27 +2,34 @@
 // a running pi process on the canvas. Composes canvas (birth + spine), persona
 // (resolve), launch (pi argv), and tmux (placement).
 //
-//   bootRoot   — a user-opened entry point (bare `crtr`).
-//                Resident. Runs pi in the foreground (inline) or its own session.
-//   spawnChild — a background worker spawned by a live node (`crtr node new`).
-//                Terminal. Opens a non-focus-stealing window under the root.
+//   bootRoot   — the user-opened front door (bare `crtr`). Resident; runs pi
+//                inline, taking over the current terminal.
+//   spawnChild — a node spawned by a live node (`crtr node new`). A managed,
+//                terminal background worker by default; with `root`, an
+//                INDEPENDENT resident root (no subscription back to the spawner,
+//                provenance via spawned_by) brought forefront for direct driving.
 
 import { spawnSync } from 'node:child_process';
 import { FRONT_DOOR_ENV } from './front-door.js';
 import { spawnNode, currentNodeContext, nodeEnv } from './nodes.js';
 import { buildLaunchSpec, buildPiArgv } from './launch.js';
 import { writeGoal } from './kickoff.js';
+import { hasRoadmap, seedRoadmap } from './roadmap.js';
+import { seedMemory, seedUserMemory, seedProjectMemory } from './memory.js';
+import { generateSessionName } from './naming.js';
 import {
   ensureSession,
   openNodeWindow,
+  splitPane,
   piCommand,
   currentTmux,
   inTmux,
   nodeSession,
+  focusWindow,
   installMenuBinding,
   installNavBindings,
 } from './tmux.js';
-import { updateNode, getNode, type NodeMeta, type Mode } from '../canvas/index.js';
+import { setPresence, getNode, setStatus, fullName, type NodeMeta, type Mode, type Lifecycle } from '../canvas/index.js';
 import { ensureDaemon } from '../../daemon/manage.js';
 
 // All node windows live in one shared session — see `nodeSession()` in tmux.js.
@@ -37,9 +44,6 @@ export interface BootRootOpts {
   name?: string;
   /** Optional starter prompt (bare `crtr` requires none). */
   prompt?: string;
-  /** 'inline'  — exec pi in the current terminal (bare `crtr`).
-   *  'session' — create a dedicated tmux session and run pi there (`session new`). */
-  placement: 'inline' | 'session';
 }
 
 /** Create a root node and bring up its pi. Returns the node; for 'inline' this
@@ -52,12 +56,20 @@ export function bootRoot(opts: BootRootOpts): NodeMeta {
   // A born-resident root starts in base mode; it earns the orchestrator persona
   // the first time it delegates (or on promotion). Resident lifecycle either way.
   const { launch } = buildLaunchSpec(kind, 'base');
+  // A root opened WITH a prompt gets its editor name now (so the first pi
+  // session already carries it). A bare root has no prompt yet — the
+  // goal-capture extension names it from the first message (async, next cycle).
+  const description =
+    opts.prompt !== undefined && opts.prompt.trim() !== ''
+      ? generateSessionName(opts.prompt)
+      : undefined;
   const meta = spawnNode({
     kind,
     mode: 'base',
     lifecycle: 'resident',
     cwd: opts.cwd,
     name: opts.name ?? kind,
+    description,
     parent: null,
     launch,
   });
@@ -76,29 +88,13 @@ export function bootRoot(opts: BootRootOpts): NodeMeta {
     try { installNavBindings(); } catch { /* best-effort */ }
   }
 
-  if (opts.placement === 'session') {
-    updateNode(meta.node_id, { tmux_session: session });
-    const withSession = getNode(meta.node_id) as NodeMeta;
-    const inv = buildPiArgv(withSession, { prompt: opts.prompt });
-    const env = { ...inv.env, CRTR_ROOT_SESSION: session, [FRONT_DOOR_ENV]: '1' };
-    const win = openNodeWindow({
-      session,
-      name: meta.name,
-      cwd: opts.cwd,
-      env,
-      command: piCommand(inv.argv),
-    });
-    updateNode(meta.node_id, { window: win });
-    return getNode(meta.node_id) as NodeMeta;
-  }
-
   // inline: the root's pi takes over THIS terminal, so its own window stays
   // where the user is (its tmux_session tracks that real pane so supervision
   // sees it alive). But its children spawn into the shared global session via
   // CRTR_ROOT_SESSION — they never clutter the user's working session.
   const here = currentTmux();
   const adopted = here?.session ?? session;
-  updateNode(meta.node_id, { tmux_session: adopted, window: here?.window ?? null });
+  setPresence(meta.node_id, { tmux_session: adopted, window: here?.window ?? null });
   const withSession = getNode(meta.node_id) as NodeMeta;
   const inv = buildPiArgv(withSession, { prompt: opts.prompt });
   const env = { ...process.env, ...inv.env, CRTR_ROOT_SESSION: session, [FRONT_DOOR_ENV]: '1' } as NodeJS.ProcessEnv;
@@ -118,6 +114,38 @@ export interface SpawnChildOpts {
   prompt: string;
   /** Override the parent (defaults to the calling node from env). */
   parent?: string;
+  /** Spawn an INDEPENDENT root instead of a managed child: parent=null, no
+   *  subscription back to the spawner, resident lifecycle, spawned_by=spawner.
+   *  Brought forefront on spawn so a human can drive it directly. */
+  root?: boolean;
+  /** Fork the new node from an existing pi conversation instead of starting it
+   *  fresh: a node id (resolved to that node's session file), an absolute
+   *  `.jsonl` path, or a partial pi session uuid. pi COPIES that history into a
+   *  new session for the child — the source is untouched — then `prompt` is the
+   *  next message. A one-shot at birth; the child resumes its own session after. */
+  forkFrom?: string;
+}
+
+/** Resolve a `--fork-from` value to the source pi gets as `--fork <path|id>`.
+ *  A live node id resolves to its captured session FILE (absolute, cwd-immune),
+ *  falling back to its bare session id; a path or partial uuid passes straight
+ *  through to pi. Throws when a known node has no session to fork yet. */
+export function resolveForkSource(value: string): string {
+  const v = value.trim();
+  if (v === '') throw new Error('--fork-from requires a node id, session file, or session uuid.');
+  // A path (contains `/` or ends `.jsonl`) is a session file — hand it to pi as-is.
+  if (v.includes('/') || v.endsWith('.jsonl')) return v;
+  // A live node id — fork from the conversation it has accumulated.
+  const n = getNode(v);
+  if (n !== null) {
+    const src = n.pi_session_file ?? n.pi_session_id;
+    if (src === undefined || src === null || src === '') {
+      throw new Error(`node ${v} has no pi session yet — it has not started a conversation to fork from.`);
+    }
+    return src;
+  }
+  // Not a known node — treat as a bare/partial pi session id for pi to resolve.
+  return v;
 }
 
 export interface SpawnChildResult {
@@ -126,47 +154,140 @@ export interface SpawnChildResult {
   session: string;
 }
 
-/** Spawn a terminal worker as a background window under the root session.
- *  The parent auto-subscribes (active) to it via spawnNode. */
+/** Spawn a node from a live node. By default a managed terminal worker in a
+ *  background window, with the spawner auto-subscribed (active) via spawnNode.
+ *  With `root`: an independent resident root — parent=null, NO subscription back
+ *  to the spawner (it carries spawned_by=spawner for provenance only), brought
+ *  forefront so a human can pick up the conversation directly. */
 export function spawnChild(opts: SpawnChildOpts): SpawnChildResult {
   try { ensureDaemon(); } catch { /* daemon is best-effort */ }
   const ctx = currentNodeContext();
-  const parent = opts.parent ?? ctx.nodeId;
-  if (parent === null || parent === undefined) {
+  const spawner = opts.parent ?? ctx.nodeId;
+  if (spawner === null || spawner === undefined) {
     throw new Error('spawnChild requires a calling node (CRTR_NODE_ID) or an explicit parent');
   }
 
+  const root = opts.root === true;
   const mode = opts.mode ?? 'base';
+  // Lifecycle keys on ROOT-ness only, independent of mode: an independent root
+  // (or `--root`) is resident (a conversation that persists, woken by inbox/
+  // human); every spawned child is terminal — it owes a final up the spine and
+  // reaps when done. A child born as an orchestrator is terminal/orchestrator
+  // (delegates + holds a roadmap, but still reports up), NOT resident.
+  const lifecycle: Lifecycle = root ? 'resident' : 'terminal';
   const { launch } = buildLaunchSpec(opts.kind, mode);
+  // Name the worker from its task now, so its first editor label carries it.
   const meta = spawnNode({
     kind: opts.kind,
     mode,
-    lifecycle: 'terminal',
+    lifecycle,
     cwd: opts.cwd,
     name: opts.name ?? opts.kind,
-    parent,
+    description: generateSessionName(opts.prompt),
+    // A root has no spine parent (top-level, nobody subscribes); it still
+    // records spawned_by=spawner. A child's parent IS its manager.
+    parent: root ? null : spawner,
+    spawnedBy: root ? spawner : undefined,
     launch,
   });
 
   // Persist the task as the child's goal for a fresh revive to re-read.
   writeGoal(meta.node_id, opts.prompt);
 
-  // Children always land in the shared global session: inherited from the
-  // parent's CRTR_ROOT_SESSION, else the default node session.
+  // A fork copies an existing conversation into this child's first session
+  // (resolved to an absolute file path when forking from a node). Resolved here
+  // — not in buildPiArgv — so a bad reference fails the spawn loudly before any
+  // window opens, rather than after pi is already booting.
+  const forkFrom = opts.forkFrom !== undefined ? resolveForkSource(opts.forkFrom) : undefined;
+
+  // A child created DIRECTLY as an orchestrator (mode='orchestrator') boots
+  // with the orchestrator persona but bypasses promote(), which is where a
+  // roadmap scaffold would normally be seeded. Lay one down here (goal
+  // pre-filled from the task) so the orchestrator has its memory artifact from
+  // birth, instead of waking memory-less. Guarded so it never clobbers.
+  if (mode === 'orchestrator' && !hasRoadmap(meta.node_id)) {
+    seedRoadmap(meta.node_id, { goal: opts.prompt.trim() });
+  }
+  // Born an orchestrator ⇒ also lay down its three scoped long-term memory
+  // stores, the companions to the roadmap: user-global (key-less), project
+  // (keyed off the child's cwd), and node-local. Each guarded against clobber.
+  if (mode === 'orchestrator') {
+    seedUserMemory();
+    seedProjectMemory(opts.cwd);
+    seedMemory(meta.node_id);
+  }
+
+  // The shared global session for this node's CHILDREN: inherited from the
+  // parent's CRTR_ROOT_SESSION, else the default node session. A managed child
+  // also OPENS here; an adjacent-pane root does not (its own pane sits in the
+  // caller's window — see below) but still seeds this so ITS descendants flow to
+  // the shared session via CRTR_ROOT_SESSION rather than cluttering the caller.
   let session = process.env['CRTR_ROOT_SESSION'];
   if (session === undefined || session === '') session = nodeSession();
   ensureSession(session, opts.cwd);
 
-  const inv = buildPiArgv(meta, { prompt: opts.prompt });
-  const env = { ...inv.env, CRTR_ROOT_SESSION: session };
+  const inv = buildPiArgv(meta, { prompt: opts.prompt, forkFrom });
+  const env = { ...inv.env, CRTR_ROOT_SESSION: session, [FRONT_DOOR_ENV]: '1' };
+  const command = piCommand(inv.argv);
+
+  // An independent root spawned from inside a live tmux pane lands as an
+  // ADJACENT pane in the caller's window — driven side-by-side rather than
+  // exiled to its own background window in the shared crtr session. Its own
+  // children still flow to `session` (CRTR_ROOT_SESSION above). Both nodes then
+  // share one window; the daemon distinguishes their liveness by per-node
+  // pi_pid (same model as `canvas tmux-spread`). Falls through to the
+  // background-window path when not in tmux (no pane to split).
+  const here = root ? currentTmux() : null;
+  if (root && here !== null) {
+    const pane = splitPane({ pane: here.pane, cwd: opts.cwd, env, command });
+    if (pane === null) {
+      setStatus(meta.node_id, 'dead');
+      throw new Error(
+        `failed to split a tmux pane for ${meta.node_id} (${meta.name}) beside ${here.pane} — the node was not started.`,
+      );
+    }
+    // The split stays in the caller's window — track the node there. split-window
+    // already made the new pane active; ensure that window is the client's
+    // current one too (the caller may be a background window) so the root is
+    // forefront and ready to drive.
+    setPresence(meta.node_id, { tmux_session: here.session, window: here.window });
+    const saved = getNode(meta.node_id) as NodeMeta;
+    try { focusWindow(here.session, here.window); } catch { /* best-effort */ }
+    return { node: saved, window: here.window, session: here.session };
+  }
+
   const window = openNodeWindow({
     session,
-    name: meta.name,
+    name: fullName(meta),
     cwd: opts.cwd,
     env,
-    command: piCommand(inv.argv),
+    command,
   });
 
-  const saved = updateNode(meta.node_id, { tmux_session: session, window });
+  // Two-stage failure model. Opening the window is instant and definitive, so a
+  // failure here is reported SYNCHRONOUSLY: mark the node dead (so it isn't a
+  // zombie 'active' the daemon can't reap — it has no window to watch) and throw
+  // so `crtr node new` exits non-zero with a clear message for the caller.
+  //
+  // pi BOOTING inside the window, by contrast, is inherently slow (and slower
+  // under load), so we stay optimistic and return status='active' the instant
+  // the window exists. A vehicle that then dies before its first session_start
+  // is caught by the daemon — it surfaces the boot failure up the spine rather
+  // than letting the node die silently (see crtrd.ts surfaceBootFailure).
+  if (window === null) {
+    setStatus(meta.node_id, 'dead');
+    throw new Error(
+      `failed to open a tmux window for ${meta.node_id} (${meta.name}) in session '${session}' — the node was not started.`,
+    );
+  }
+
+  setPresence(meta.node_id, { tmux_session: session, window });
+  const saved = getNode(meta.node_id) as NodeMeta;
+  // A root spawned OUTSIDE tmux still wants forefront — bring its window up.
+  // (An in-tmux root took the adjacent-pane path above.) A child stays a
+  // background window.
+  if (root) {
+    try { focusWindow(session, window); } catch { /* best-effort */ }
+  }
   return { node: saved, window, session };
 }

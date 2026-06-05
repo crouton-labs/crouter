@@ -17,6 +17,8 @@ import { resolveInstallScope } from './shared.js';
 
 const marketAdd = defineLeaf({
   name: 'add',
+  description: 'add a marketplace by git URL',
+  whenToUse: 'registering a new marketplace by git URL so its plugins become installable by name',
   help: {
     name: 'pkg market manage add',
     summary: 'add a marketplace by git URL',
@@ -90,6 +92,8 @@ const marketAdd = defineLeaf({
 
 const marketRemove = defineLeaf({
   name: 'remove',
+  description: 'remove a marketplace',
+  whenToUse: 'unregistering a marketplace: deletes it and any plugins installed from it',
   help: {
     name: 'pkg market manage remove',
     summary: 'remove a marketplace and its directory',
@@ -169,6 +173,8 @@ const marketRemove = defineLeaf({
 
 const marketUpdate = defineLeaf({
   name: 'update',
+  description: 'pull latest marketplace index',
+  whenToUse: 'refreshing the plugin index of one named marketplace from git, or of all registered marketplaces when no name is given',
   help: {
     name: 'pkg market manage update',
     summary: 'git pull updates for one or all registered marketplaces',
@@ -263,6 +269,8 @@ const marketUpdate = defineLeaf({
 
 const marketInstall = defineLeaf({
   name: 'install',
+  description: 'install a plugin from a marketplace',
+  whenToUse: 'installing a plugin by name from an already-registered marketplace, e.g. `pkg market manage install --marketplace <m> --plugin <p>`',
   help: {
     name: 'pkg market manage install',
     summary: 'install a plugin from an added marketplace by plugin name',
@@ -339,15 +347,11 @@ const marketInstall = defineLeaf({
 
 export const marketManageBranch = defineBranch({
   name: 'manage',
+  description: 'add, remove, update, install',
+  whenToUse: 'changing marketplace state: add or remove a marketplace, refresh its index, or install a plugin from it',
   help: {
     name: 'pkg market manage',
     summary: 'add, remove, update, or install from marketplaces',
-    children: [
-      { name: 'add', desc: 'add a marketplace by git URL', useWhen: 'registering a new marketplace source' },
-      { name: 'remove', desc: 'remove a marketplace', useWhen: 'unregistering a marketplace' },
-      { name: 'update', desc: 'pull latest marketplace index', useWhen: 'refreshing the marketplace plugin list' },
-      { name: 'install', desc: 'install a plugin from a marketplace', useWhen: 'adding a plugin sourced from a registered marketplace' },
-    ],
   },
   children: [marketAdd, marketRemove, marketUpdate, marketInstall],
 });

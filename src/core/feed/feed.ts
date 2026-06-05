@@ -14,7 +14,7 @@ import {
   reportsDir,
   subscribersOf,
   setStatus,
-  updateNode,
+  setIntent,
 } from '../canvas/index.js';
 import { appendInbox } from './inbox.js';
 import { appendPassive } from './passive.js';
@@ -139,7 +139,7 @@ export async function push(nodeId: string, opts: PushOpts): Promise<PushResult> 
   // (c) Finalise node when kind === 'final'.
   if (kind === 'final') {
     setStatus(nodeId, 'done');
-    updateNode(nodeId, { intent: 'done' });
+    setIntent(nodeId, 'done');
   }
 
   return { reportPath, deliveredTo };
