@@ -17,7 +17,7 @@ import { detachToBackground, focus as placementFocus, windowAlive, windowOfPane,
 import { buildLaunchSpec } from '../core/runtime/launch.js';
 import { closeNode } from '../core/runtime/close.js';
 import { appendInbox, type InboxTier } from '../core/feed/inbox.js';
-import { availableKinds, kindWhenToUse } from '../core/personas/index.js';
+import { availableKinds, kindWhenToUse, subPersonasFor } from '../core/personas/index.js';
 import { stateBlock } from '../core/help.js';
 import {
   getNode,
@@ -68,7 +68,13 @@ function assertKind(kind: string): void {
 /** A live `<kinds count=N>` state element — one `<kind> — <whenToUse>` line per
  *  installed top-level persona kind (project > user > builtin), lazily built so
  *  it reflects the caller's cwd/project scope. Appended to `node new -h` and
- *  `node promote -h` so custom kinds appear in help. Soft-fails via the renderer. */
+ *  `node promote -h` so custom kinds appear in help. Soft-fails via the renderer.
+ *
+ *  CONTEXT-AWARE: when the CALLER is a live node (CRTR_NODE_ID set) whose kind
+ *  has sub-personas available to it, a SECOND `<sub-personas for=K count=M>`
+ *  block is appended right after — the specialist sub-personas THAT kind may
+ *  spawn (full kind string + whenToUse). Everything but the top-level `<kinds>`
+ *  block soft-fails to omission (caller block wrapped in its own try/catch). */
 function kindsStateBlock(): string {
   const kinds = availableKinds();
   const lines = kinds
@@ -77,7 +83,30 @@ function kindsStateBlock(): string {
       return w ? `${k} — ${w}` : k;
     })
     .join('\n');
-  return stateBlock('kinds', { count: kinds.length }, lines);
+  const block = stateBlock('kinds', { count: kinds.length }, lines);
+  const sub = callerSubPersonasBlock();
+  return sub ? `${block}\n${sub}` : block;
+}
+
+/** When the caller is a live node whose kind has sub-personas available to it,
+ *  render a `<sub-personas for="<kind>" count=M>` block — one
+ *  `<full-kind-string> — <whenToUse>` line per sub-persona spawnable BY that
+ *  kind (e.g. `plan/reviewers/security`). Returns '' (so the second block is
+ *  omitted) when CRTR_NODE_ID is unset, getNode returns null, the caller kind
+ *  has no sub-personas, or anything throws — this is help output, never error. */
+function callerSubPersonasBlock(): string {
+  try {
+    const id = process.env['CRTR_NODE_ID'];
+    if (id === undefined || id === '') return '';
+    const node = getNode(id);
+    if (node === null) return '';
+    const subs = subPersonasFor(node.kind);
+    if (subs.length === 0) return '';
+    const lines = subs.map((s) => (s.whenToUse ? `${s.kind} — ${s.whenToUse}` : s.kind)).join('\n');
+    return stateBlock('sub-personas', { for: node.kind, count: subs.length }, lines);
+  } catch {
+    return '';
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -94,7 +123,7 @@ const nodeNew = defineLeaf({
     summary: 'spawn a terminal worker onto the canvas as a background window — returns its node id',
     params: [
       { kind: 'stdin', name: 'prompt', required: true, constraint: 'First user message for the spawned node. Piped on stdin or passed as a positional.' },
-      { kind: 'flag', name: 'kind', type: 'string', required: false, default: 'general', constraint: 'Persona kind — match the work to the kind. See the <kinds> list below for every installed kind and when to use each. A nested sub-persona string (e.g. plan/reviewers/security) is also accepted.' },
+      { kind: 'flag', name: 'kind', type: 'string', required: false, default: 'general', constraint: 'Persona kind — match the work to the kind. The <kinds> list below names every installable kind and when to use each; the <sub-personas> block (when present) names the specialist sub-personas available to YOU, each spawnable by its full kind string (e.g. plan/reviewers/security).' },
       { kind: 'flag', name: 'mode', type: 'enum', choices: ['base', 'orchestrator'], required: false, default: 'base', constraint: 'Persona mode. base for a worker that finishes in one window; orchestrator to create the child directly as a sub-orchestrator (it boots with the orchestrator persona + a seeded roadmap and fans its scope out) — use it when the unit is too large for one window, e.g. a big review, instead of spawning a base worker and counting on it to promote itself.' },
       { kind: 'flag', name: 'cwd', type: 'path', required: false, constraint: 'Dir the node is pinned to. Defaults to the caller cwd.' },
       { kind: 'flag', name: 'name', type: 'string', required: false, constraint: 'Display name (tmux window + resume picker). Defaults to the kind.' },
@@ -616,7 +645,7 @@ const nodePromote = defineLeaf({
     name: 'node promote',
     summary: 'promote yourself to an orchestrator — do this when your task outgrows one context window (many phases to delegate and persist across refreshes); not for work that fits one window, and not merely because you spawned a child. Mode only — lifecycle stays as-is unless you pass --resident',
     params: [
-      { kind: 'flag', name: 'kind', type: 'string', required: false, constraint: 'Specialize as this kind of orchestrator. See the <kinds> list below for every installed kind and when to use each. Defaults to your current kind. Promoting from a generic kind? CHOOSE a concrete one — it sets the orchestrator persona you revive into.' },
+      { kind: 'flag', name: 'kind', type: 'string', required: false, constraint: 'Specialize as this kind of orchestrator. The <kinds> list below names every installable kind and when to use each; the <sub-personas> block (when present) names the specialist sub-personas available to YOU, spawnable by full kind string. Defaults to your current kind. Promoting from a generic kind? CHOOSE a concrete one — it sets the orchestrator persona you revive into.' },
       { kind: 'flag', name: 'resident', type: 'bool', required: false, constraint: 'ALSO flip lifecycle→resident: make the node interactable — it stays dormant, woken by inbox/human, and is never forced to submit a final. Omit to stay terminal/orchestrator (delegates + holds a roadmap, but still owes a final up the spine and reaps when done).' },
       { kind: 'flag', name: 'node', type: 'string', required: false, constraint: 'Node to promote. Defaults to the caller (CRTR_NODE_ID).' },
     ],
