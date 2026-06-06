@@ -8,7 +8,7 @@ export const DECK_SCHEMA_HINT =
   'Deck must match the humanloop deck schema: {title?, ' +
   'source?:{sessionName?,askedBy?,blockedSince?}, ' +
   'interactions:[{id,title,subtitle?,(body?|bodyPath?),options:[{id,label,' +
-  'description?,shortcut?}],multiSelect?,allowFreetext?,freetextLabel?,' +
+  'description?}],multiSelect?,allowFreetext?,freetextLabel?,' +
   "kind?:'notify'|'validation'|'decision'|'context'|'error'}]}.";
 
 export interface RunRecord {
