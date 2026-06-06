@@ -142,7 +142,7 @@ const nodeNew = defineLeaf({
     dynamicState: () => kindsStateBlock(),
     outputKind: 'object',
     effects: [
-      'Creates a node under ~/.crtr/nodes/<id>/ and indexes it in canvas.db.',
+      'Creates a node under ~/.crouter/canvas/nodes/<id>/ and indexes it in canvas.db.',
       'Default (managed child): parent auto-subscribes (active) and is woken on the child\'s pushes. With --root: no subscription — records a spawned_by edge for provenance only.',
       'Opens a tmux window running pi: a background (non-focus-stealing) window in the shared crtr session for a child; with --root, a new window in your current session (in-tmux) or the shared session (outside tmux), with the client switched to it.',
     ],

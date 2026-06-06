@@ -49,5 +49,5 @@ feed, daemon, commands) goes through `canvas.ts`; nothing else touches the db or
   go through the atomic row setters / `transition()`. The old cross-process
   lost-update race (daemon stamping `pi_pid` while a node flipped `status`) is
   structurally gone: each runtime field is its own atomic `UPDATE`, serialized by WAL.
-- `paths.ts` maps the entire `~/.crtr/` layout; `CRTR_HOME` overrides the root
+- `paths.ts` maps the entire `~/.crouter/canvas/` layout; `CRTR_HOME` overrides the root
   (tests/isolated runs). Resolve paths through it, never hand-join.

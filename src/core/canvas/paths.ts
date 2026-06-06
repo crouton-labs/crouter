@@ -1,6 +1,6 @@
-// The `~/.crtr/` layout. One global, cwd-agnostic home for the whole canvas.
+// The `~/.crouter/canvas/` layout. One global, cwd-agnostic home for the whole canvas.
 //
-//   ~/.crtr/
+//   ~/.crouter/canvas/
 //     canvas.db                 sqlite (WAL) — topology only (nodes + edges)
 //     nodes/<node_id>/
 //       meta.json               source of truth for the node's row
@@ -16,11 +16,17 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { mkdirSync } from 'node:fs';
+import { CRTR_DIR_NAME } from '../../types.js';
 
-/** Root of the global canvas home (`~/.crtr` unless `CRTR_HOME` is set). */
+/** Root of the global canvas home (`~/.crouter/canvas` unless `CRTR_HOME` is set).
+ *  Nested under the `.crouter` scope root so the whole runtime lives in one
+ *  visible top-level dir; `canvas/` keeps node-graph runtime state separate from
+ *  durable user content (skills/plugins/marketplaces/config) at the scope root. */
 export function crtrHome(): string {
   const override = process.env['CRTR_HOME'];
-  return override !== undefined && override !== '' ? override : join(homedir(), '.crtr');
+  return override !== undefined && override !== ''
+    ? override
+    : join(homedir(), CRTR_DIR_NAME, 'canvas');
 }
 
 export function canvasDbPath(): string {

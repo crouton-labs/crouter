@@ -101,7 +101,7 @@ const daemonStop = defineLeaf({
       throw new InputError({
         error: 'kill_failed',
         message: `failed to signal pid ${pid}: ${(err as Error).message}`,
-        next: 'The pidfile may be stale; remove ~/.crtr/crtrd.pid manually.',
+        next: 'The pidfile may be stale; remove ~/.crouter/canvas/crtrd.pid manually.',
       });
     }
   },

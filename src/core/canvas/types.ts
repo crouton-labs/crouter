@@ -1,7 +1,7 @@
 // The canvas vocabulary — the node + edge model the whole runtime hangs on.
 //
-// One global canvas (`~/.crtr/canvas.db`) holds the topology (nodes + edges);
-// each node's flesh lives on disk under `~/.crtr/nodes/<id>/`. A node's
+// One global canvas (`~/.crouter/canvas/canvas.db`) holds the topology (nodes +
+// edges); each node's flesh lives on disk under `~/.crouter/canvas/nodes/<id>/`. A node's
 // `meta.json` is the source of truth for its own row; the db is a queryable
 // index over those metas, plus the authoritative store for the mutable
 // `subscribes_to` edges (which no single meta owns).
