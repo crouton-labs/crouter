@@ -430,6 +430,16 @@ export function detachToBackground(nodeId: string, pane?: string): boolean {
   const session = nodeSession();
   ensureSession(session, row.cwd);
   const ok = breakPaneToSession(target, session);
+  if (ok) {
+    // The node left its viewport for the backstage: it is now generating but
+    // UNFOCUSED (Invariant P / §1.3 "evicted from a focus … generating →
+    // backstage, no focus"). Close any focus row it held so it does not linger
+    // as a phantom viewport — the pane %id survives the break, so the row would
+    // otherwise keep resolving (`focusByPane`/`listFocuses`). A pure detach has
+    // no successor, so it closes the row (cf. `demote`, which hands it off).
+    const f = focusOf(nodeId);
+    if (f !== null) closeFocusRow(f.focus_id);
+  }
   reconcile(nodeId); // presence now points at the crtr window
   return ok;
 }
@@ -702,7 +712,15 @@ export function focus(
   if (opts.newPane === true) {
     const opened = openFocus(callerPane, {});
     if (opened === null) return { focused: false, session: null, inPlace: false, revived: false };
-    return retargetFocus(opened.focus_id, nodeId, opts.revive);
+    const res = retargetFocus(opened.focus_id, nodeId, opts.revive);
+    // Failed to place the incoming node — reap the just-opened HOLDER pane + its
+    // focus row so a failed `--new-pane` leaves no orphan viewport (F4 / Invariant
+    // P). The success path already reaps the holder via the hot-swap.
+    if (!res.focused) {
+      if (opened.pane !== null) closePane(opened.pane);
+      closeFocusRow(opened.focus_id);
+    }
+    return res;
   }
 
   let f = focusByPane(callerPane);

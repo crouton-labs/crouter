@@ -34,6 +34,7 @@ import {
   focus as placementFocus,
   registerRootFocus,
   focusByPane,
+  detachToBackground,
   type Reviver,
 } from '../runtime/placement.js';
 import type { NodeMeta } from '../canvas/types.js';
@@ -260,5 +261,58 @@ test('focus front-door: round-trip open(register #1) → retarget in place → t
     assert.equal(getFocusByNode('R'), null, 'R yielded the viewport');
     // The focus followed the viewport: focusByPane on A's (now-in-viewport) pane resolves it.
     assert.equal(focusByPane(aPane)?.node_id, 'A', 'the focus row tracks A\'s pane');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression guards (review findings on HEAD=ccc3ee2): a detach/failed-open must
+// not leave a dangling focus row or an orphan viewport pane (Invariant P / F4).
+// ---------------------------------------------------------------------------
+
+test('detachToBackground: a FOCUSED node sent to the backstage CLOSES its focus row (Invariant P — no phantom viewport)', { skip: !hasTmux() }, async () => {
+  await withSessions('detach', async ({ user, back, userWindow }) => {
+    const prev = process.env['CRTR_NODE_SESSION'];
+    process.env['CRTR_NODE_SESSION'] = back; // detach relocates into THIS backstage session
+    try {
+      const focusPane = livePane(user, userWindow); // the node's foreground viewport pane
+      createNode(node('N', { pane: focusPane, tmux_session: user, window: userWindow, status: 'active', pi_pid: process.pid, home_session: back }));
+      openFocusRow('f1', focusPane, user, 'N'); // N is the focus occupant
+      assert.equal(getFocusByNode('N')?.focus_id, 'f1', 'precondition: N is focused');
+
+      const ok = detachToBackground('N', focusPane);
+
+      assert.equal(ok, true, 'the break to the backstage succeeded');
+      // The fix: N is now generating-but-UNFOCUSED, so its focus row is CLOSED.
+      assert.equal(getFocusByNode('N'), null, 'N no longer occupies any focus (row CLOSED — Invariant P)');
+      assert.equal(focusByPane(focusPane), null, 'NO phantom focus resolves on the relocated pane (%id survives the break)');
+      assert.equal(listFocuses().length, 0, 'no dangling focus rows remain');
+      // The pi keeps running — the pane is alive, just moved off-screen.
+      assert.equal(paneExistsReal(focusPane), true, 'N\'s pi keeps generating (pane alive, relocated not killed)');
+      assert.equal(paneSession(focusPane), back, 'N\'s pane physically moved to the backstage session');
+    } finally {
+      if (prev === undefined) delete process.env['CRTR_NODE_SESSION'];
+      else process.env['CRTR_NODE_SESSION'] = prev;
+    }
+  });
+});
+
+test('focus --new-pane: a FAILED retarget reaps the holder pane + focus row (no orphan viewport — F4/Invariant P)', { skip: !hasTmux() }, async () => {
+  await withSessions('newpane-fail', async ({ user, userWindow }) => {
+    const callerPane = livePane(user, userWindow); // the caller's pane we split beside
+    createNode(node('D', { status: 'active', pi_pid: null })); // D is DORMANT — no live pane
+    const winBefore = windowIds(user).length;
+    const panesIn = (s: string, w: string) =>
+      tmuxOut(['list-panes', '-t', `${s}:${w}`, '-F', '#{pane_id}']).split('\n').filter((x) => x !== '').length;
+    const panesBefore = panesIn(user, userWindow);
+
+    // A reviver that does NOTHING → D stays dormant, retargetFocus finds no live
+    // pin and returns focused:false. The just-opened holder must be reaped.
+    const noopRevive: Reviver = () => {};
+    const res = placementFocus('D', { pane: callerPane, newPane: true, revive: noopRevive });
+
+    assert.equal(res.focused, false, 'D could not be placed → the --new-pane focus failed');
+    assert.equal(listFocuses().length, 0, 'the just-opened focus row was REAPED (no phantom)');
+    assert.equal(panesIn(user, userWindow), panesBefore, 'the holder split pane was REAPED (no leaked sleep pane)');
+    assert.equal(windowIds(user).length, winBefore, 'no window leaked');
   });
 });
