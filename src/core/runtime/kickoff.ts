@@ -6,13 +6,16 @@
 // conversation already holds the context).
 //
 // Layout (the framing a revived node sees):
-//   <goal file=…>…</goal>                  the mandate it was spawned with
-//   <roadmap file=…>…</roadmap>            its evolving plan
+//   <roadmap file=…>…</roadmap>            its evolving plan — the source of truth
 //   <context-dir path=…>…</context-dir>    what artifacts exist on disk
 //   <feed>Awaiting N nodes … digest</feed> who it waits on + unread reports
 //   <yield-message>…</yield-message>       the note its prior self left on yield
 //
-// The goal + yield-message are companion files in the node's context dir; the
+// The roadmap (NOT the original spawn prompt) carries the goal on a refresh: its
+// frozen core holds goal + exit criteria, its body the live plan. context/
+// initial-prompt.md is NEVER injected into a node's prompts — it lives on disk
+// purely as a log of the original mandate; by the time a node is running it is
+// usually stale, and the roadmap is the doc the node keeps current. The
 // yield-message is one-shot (consumed on the next revive).
 
 import {
@@ -114,12 +117,66 @@ export function listContextDir(nodeId: string): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// Feed block — who the node is awaiting, plus a drained digest of unread
-// reports. Draining here advances the cursor: the revived node has now "read"
-// the feed, so a later `crtr feed read` shows only what arrives afterward.
+// Revive bearings — the CONSUMING half of a fresh revive.
+//
+// A fresh revive surfaces three one-shot things that are "read" by being shown:
+// the yield note (deleted on read), the unread feed (the cursor advances past
+// it), and any external persona drift (its ack is committed). Draining them is a
+// STATE MUTATION, kept OUT of buildReviveKickoff so that stays a PURE string
+// assembler. The revive paths call drainBearings ONCE, then hand the result to
+// buildReviveKickoff.
 // ---------------------------------------------------------------------------
 
-function feedBlock(nodeId: string): string {
+export interface ReviveBearings {
+  /** The one-shot yield note left by the prior self (already consumed/deleted). */
+  yieldMsg: string | null;
+  /** Coalesced digest of unread reports, or null when the feed was empty. The
+   *  cursor has already been advanced past these. */
+  unreadDigest: string | null;
+  /** Persona-transition guidance to surface when the node's role was changed
+   *  while it was away (its ack has already been committed), else null. */
+  driftGuidance: string | null;
+}
+
+/** Drain the one-shot revive bearings for `meta`: consume the yield note, advance
+ *  the feed cursor past the unread reports, and capture+commit any external
+ *  persona drift. The CONSUMING step of a fresh revive — the revive paths call it
+ *  ONCE, then pass the result to buildReviveKickoff (which is then pure; building
+ *  twice eats nothing). Calling drainBearings a second time would drain an
+ *  already-empty note/feed, so ONLY the revive paths call it. */
+export function drainBearings(meta: NodeMeta): ReviveBearings {
+  const nodeId = meta.node_id;
+
+  // Consume the one-shot yield note (deleted on read) BEFORE the kickoff lists
+  // the context dir, so it never shows up there.
+  const yieldMsg = consumeYieldMessage(nodeId);
+
+  // Drain the feed: read unread since the cursor and advance it past them, so a
+  // later `crtr feed read` shows only what arrives afterward.
+  const cursor = readCursor(nodeId);
+  const entries = readInboxSince(nodeId, cursor);
+  let unreadDigest: string | null = null;
+  if (entries.length > 0) {
+    writeCursor(nodeId, entries[entries.length - 1]!.ts);
+    unreadDigest = coalesce(entries);
+  }
+
+  // Capture + commit any external persona drift (the second of the two delivery
+  // sites). Committing the ack here is the mutation; the guidance is surfaced by
+  // the pure builder from this captured value.
+  const drift = personaDrift(nodeId);
+  let driftGuidance: string | null = null;
+  if (drift !== null) {
+    driftGuidance = drift.guidance;
+    commitPersonaAck(nodeId, drift.to);
+  }
+
+  return { yieldMsg, unreadDigest, driftGuidance };
+}
+
+/** Render the <feed> block PURELY: the live "awaiting" roster (a read) plus the
+ *  already-drained unread digest (from drainBearings). No cursor write here. */
+function feedBlock(nodeId: string, unreadDigest: string | null): string {
   // Awaiting = active subscriptions whose publisher is still live (active|idle).
   const awaiting = subscriptionsOf(nodeId)
     .filter((s) => s.active)
@@ -127,16 +184,27 @@ function feedBlock(nodeId: string): string {
     .filter((m): m is NodeMeta => m !== null && (m.status === 'active' || m.status === 'idle'));
 
   const lines: string[] = [];
-  lines.push(`Awaiting ${awaiting.length} node${awaiting.length === 1 ? '' : 's'}.`);
-  for (const m of awaiting) lines.push(`  - ${m.name} (${m.node_id}) — ${m.status}`);
-
-  const cursor = readCursor(nodeId);
-  const entries = readInboxSince(nodeId, cursor);
-  if (entries.length > 0) {
-    writeCursor(nodeId, entries[entries.length - 1]!.ts);
-    lines.push('', coalesce(entries));
+  if (awaiting.length > 0) {
+    const n = awaiting.length;
+    const subj = n === 1 ? 'it is' : 'they are';
+    const pron = n === 1 ? 'it' : 'they';
+    const verb = n === 1 ? 'pushes' : 'push';
+    // State aliveness + the automatic wake at the source. Bare status ("— active")
+    // left earlier revives unsure whether the worker was really live, so they
+    // burned a turn on `feed read`/`feed peek` to confirm. Asserting it here
+    // removes the reason to check.
+    lines.push(
+      `Awaiting ${n} node${n === 1 ? '' : 's'} — ${subj} alive and running right now, and will wake you the moment ${pron} ${verb}. The wake is automatic; nothing to check, poll, or verify.`,
+    );
+    for (const m of awaiting) lines.push(`  - ${m.name} (${m.node_id}) — ${m.status}`);
+    lines.push(
+      '',
+      unreadDigest ??
+        '(no unread reports yet — expected while they run: a worker leaves no pointer until it pushes, so an empty feed means still working, not stalled)',
+    );
   } else {
-    lines.push('', '(no unread reports)');
+    lines.push('Awaiting 0 nodes.');
+    lines.push('', unreadDigest ?? '(no unread reports)');
   }
 
   return `<feed>\n${lines.join('\n')}\n</feed>`;
@@ -146,16 +214,13 @@ function feedBlock(nodeId: string): string {
 // buildReviveKickoff — assemble the full fresh-revive first message.
 // ---------------------------------------------------------------------------
 
-/** Build the auto-injected first message for a FRESH revive of `meta`. Reads
- *  the node's goal, roadmap, context dir, feed, and one-shot yield message off
- *  disk and frames them so the revived node can rebuild its bearings in one
- *  turn. Side effects: consumes the yield message and advances the feed cursor
- *  (both are "read" by surfacing them here). */
-export function buildReviveKickoff(meta: NodeMeta): string {
+/** Assemble the auto-injected first message for a FRESH revive of `meta` from its
+ *  already-drained `bearings` (see drainBearings) plus pure on-disk reads of the
+ *  node's goal, roadmap, and context dir, framed so the revived node can rebuild
+ *  its bearings in one turn. PURE: no state mutation, so calling it twice yields
+ *  the same string and consumes nothing — drainBearings owns the one-shot reads. */
+export function buildReviveKickoff(meta: NodeMeta, bearings: ReviveBearings): string {
   const nodeId = meta.node_id;
-
-  // Consume the one-shot yield note first so it never shows in the dir listing.
-  const yieldMsg = consumeYieldMessage(nodeId);
 
   const parts: string[] = [
     `${REVIVE_KICKOFF_SENTINEL} — your previous in-memory ` +
@@ -163,11 +228,10 @@ export function buildReviveKickoff(meta: NodeMeta): string {
       'full bearings. Rebuild from it and continue toward your goal.',
   ];
 
-  const goal = readGoal(nodeId);
-  if (goal !== null && goal.trim() !== '') {
-    parts.push(`<goal file="${goalPath(nodeId)}">\n${goal.trim()}\n</goal>`);
-  }
-
+  // The roadmap is the source of truth on a fresh revive: its frozen core holds
+  // the goal/exit criteria, its body the live plan the node kept current. The
+  // original spawn prompt (context/initial-prompt.md) is deliberately NOT injected
+  // — it lives on disk only as a log, and by now it is usually stale.
   const roadmap = readRoadmap(nodeId);
   parts.push(
     `<roadmap file="${roadmapPath(nodeId)}">\n${
@@ -180,11 +244,11 @@ export function buildReviveKickoff(meta: NodeMeta): string {
     `<context-dir path="${contextDir(nodeId)}">\n${files.length > 0 ? files.join('\n') : '(empty)'}\n</context-dir>`,
   );
 
-  parts.push(feedBlock(nodeId));
+  parts.push(feedBlock(nodeId, bearings.unreadDigest));
 
   parts.push(
-    yieldMsg !== null
-      ? `<yield-message>\n${yieldMsg.trim()}\n</yield-message>`
+    bearings.yieldMsg !== null
+      ? `<yield-message>\n${bearings.yieldMsg.trim()}\n</yield-message>`
       : '<yield-message/>',
   );
 
@@ -205,16 +269,14 @@ export function buildReviveKickoff(meta: NodeMeta): string {
 
   // Persona-transition catch-up. If the node's mode/lifecycle was changed
   // EXTERNALLY while it was dormant (e.g. a human ran `crtr node lifecycle` /
-  // `node promote --node` on it), it never saw the turn_end injector. Surface
-  // the guidance for its new persona here and commit the ack — the second (and
-  // only other) delivery site. Idempotent: a clean fresh revive already has its
-  // ack committed, so this fires only on a real external change.
-  const drift = personaDrift(nodeId);
-  if (drift !== null) {
+  // `node promote --node` on it), it never saw the turn_end injector. drainBearings
+  // captured the guidance for its new persona and committed the ack (the second
+  // and only other delivery site); we just surface it. A clean fresh revive has
+  // no drift, so this is empty unless a real external change happened.
+  if (bearings.driftGuidance !== null) {
     parts.push(
-      `<persona-transition>\nYour role was changed while you were away. ${drift.guidance}\n</persona-transition>`,
+      `<persona-transition>\nYour role was changed while you were away. ${bearings.driftGuidance}\n</persona-transition>`,
     );
-    commitPersonaAck(nodeId, drift.to);
   }
 
   return parts.join('\n\n');

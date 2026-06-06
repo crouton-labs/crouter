@@ -17,23 +17,20 @@
 // Orchestrator addendum (resident orchestrators — i.e. nodes that have a
 // node-local memory store): the dir ALSO survives refresh cycles, so it is where
 // a future cycle of the orchestrator resumes; durable cross-goal lessons live in
-// the three scoped memory stores, whose indexes are inlined into <memory>.
+// the three scoped memory stores, whose index pointer lines are inlined into
+// <memory> (the how-to lives once in the kernel, not here).
 
 import { contextDir, getNode } from '../canvas/index.js';
 import {
   hasMemory,
   memoryDir,
-  memoryPath,
   readMemory,
   hasUserMemory,
   userMemoryDir,
-  userMemoryPath,
   readUserMemory,
   hasProjectMemory,
   projectMemoryDir,
-  projectMemoryPath,
   readProjectMemory,
-  projectKey,
 } from './memory.js';
 
 /** Base framing — present for every node. No path baked in: the caller carries
@@ -56,47 +53,43 @@ export function orchestratorContextNote(nodeId: string): string {
   );
 }
 
-/** One labeled store stanza inside <memory>: a scope heading + one-line blurb,
- *  the store's ABSOLUTE dir + index paths (so the node knows where to WRITE this
- *  kind), and the live index read fresh from disk (pointer lines only — detail
- *  files are NOT inlined; they load on demand). */
-function memoryStanza(label: string, blurb: string, dir: string, idx: string, index: string | null): string {
-  const body = index !== null && index.trim() !== '' ? index.trim() : '(store not seeded)';
-  return `[${label}] ${blurb}\n  dir: ${dir}\n  index: ${idx}\n${body}`;
+/** One labeled store stanza inside <memory>: a compact `label · dir` header (the
+ *  scope name + where to WRITE this kind of memory), then the LIVE pointer lines
+ *  extracted fresh from the store's index — only lines matching `- [...` — with
+ *  the index's how-to boilerplate dropped (it lives once in the kernel) and
+ *  detail files loaded on demand. Falls back to `(empty)` when the index carries
+ *  no pointers, which also covers the not-seeded / template-only case. */
+function memoryStanza(label: string, dir: string, index: string | null): string {
+  const pointers = (index ?? '')
+    .split('\n')
+    .filter((line) => /^\s*-\s*\[/.test(line))
+    .map((line) => line.trim());
+  const body = pointers.length > 0 ? pointers.join('\n') : '(empty)';
+  return `${label} · ${dir}\n${body}`;
 }
 
-/** The <memory> block (orchestrators only): the three scoped stores merged, each
- *  labeled with its scope, its absolute dir + index paths, and its index read
- *  fresh from disk. A memory's `type` decides which store it lands in — the
- *  mapping lives in the orchestration kernel; here we just show the node where
- *  each store is. user-global is always present; project rides in when the node
- *  has a project store; node-local is the gate, so always present. */
+/** The <memory> block (orchestrators only): the scoped stores merged, each a
+ *  `label · dir` header over its live index pointer lines. A memory's `type`
+ *  decides which store it lands in — the mapping + the how-to live once in the
+ *  orchestration kernel ("Your long-term memory"); here we carry only the live
+ *  data + a one-line pointer back to it. user-global rides in when the node has
+ *  a user store, project when it has a project store, node-local always (the
+ *  orchestrator gate). */
 export function buildMemoryBlock(nodeId: string, cwd: string): string {
   const stanzas: string[] = [];
   if (hasUserMemory()) {
-    stanzas.push(memoryStanza(
-      'user-global',
-      'who the human is and how they like to work — loaded into every orchestrator, everywhere.',
-      userMemoryDir(), userMemoryPath(), readUserMemory(),
-    ));
+    stanzas.push(memoryStanza('user-global', userMemoryDir(), readUserMemory()));
   }
   if (hasProjectMemory(cwd)) {
-    stanzas.push(memoryStanza(
-      'project',
-      `facts bound to this repo (key ${projectKey(cwd)}) — loaded into every orchestrator working here.`,
-      projectMemoryDir(cwd), projectMemoryPath(cwd), readProjectMemory(cwd),
-    ));
+    stanzas.push(memoryStanza('project', projectMemoryDir(cwd), readProjectMemory(cwd)));
   }
-  stanzas.push(memoryStanza(
-    'node-local',
-    'facts specific to THIS goal — they die with this node.',
-    memoryDir(nodeId), memoryPath(nodeId), readMemory(nodeId),
-  ));
+  stanzas.push(memoryStanza('node-local', memoryDir(nodeId), readMemory(nodeId)));
+  const n = stanzas.length;
   return (
     '<memory>\n' +
-    'Your long-term memory spans three scopes. Read each index below on wake; load a detail file on ' +
-    "demand. A memory's `type` decides its store (see \"Your long-term memory\" in your instructions); " +
-    'write each fact into the matching store\'s dir.\n\n' +
+    `Long-term memory, ${n} scope${n === 1 ? '' : 's'}. Each line ` +
+    '`- [Title](slug.md) — hook`; load a detail file by slug from the scope dir on demand. ' +
+    'Write a new fact to the scope matching its `type` (see "Your long-term memory").\n\n' +
     stanzas.join('\n\n') +
     '\n</memory>'
   );

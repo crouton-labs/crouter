@@ -3,10 +3,11 @@
 // One layout, three scopes. Each store is a `memory/` directory of one-fact
 // files (each with typed frontmatter and [[wikilinks]]) indexed by a single
 // MEMORY.md that holds one pointer line per memory and NEVER any content — the
-// architecture in examples/memory-instructions.md. The index is the load-bearing
-// read: a node's <crtr-context> bearings block inlines every applicable store's
-// index each brand-new chat (see canvas-context-intro), so the indexes must stay
-// lean; the detail files load on demand mid-session.
+// architecture in examples/memory-instructions.md. The pointer lines are the
+// load-bearing read: a node's <crtr-context> bearings block extracts every
+// applicable store's pointer lines each brand-new chat (see canvas-context-intro
+// + bearings), so the indexes must stay lean; the detail files load on demand
+// mid-session.
 //
 // The three scopes differ only in WHERE they live and HOW LONG they outlast a
 // node — the `type` taxonomy in each memory's frontmatter drives which store a
@@ -37,19 +38,16 @@ import { mangleCwd } from '../artifact.js';
 // ---------------------------------------------------------------------------
 
 /** Build the seed contents of a fresh MEMORY.md index. Deliberately tiny: the
- *  node reads it on every spawn-in and the how-to lives in the orchestrator
- *  kernel, not here. `holds` names what this store holds so the empty index
- *  already orients a fresh write. */
+ *  bearings block only ever extracts the pointer lines, so this prose never
+ *  rides into context — it's only for a human/agent opening the file directly,
+ *  and the how-to lives once in the orchestrator kernel ("Your long-term
+ *  memory"), not here. `holds` is a short scope hint so the empty index still
+ *  orients a fresh write. */
 function indexTemplate(holds: string): string {
-  return `# Memory
-
-Index of ${holds} — one line each (\`- [Title](slug.md) — hook\`). The detail
-lives in sibling files in this directory; load them on demand. Your bearings
-inline this index each spawn-in — read it on wake and keep it lean, never put
-memory content here.
-
-(no memories yet)
-`;
+  return (
+    '# memory index — one pointer line per memory (`- [Title](slug.md) — hook`); ' +
+    `how-to in "Your long-term memory". Holds ${holds}.\n\n(no memories yet)\n`
+  );
 }
 
 /** The node-local index template. Named export kept for callers/tests that

@@ -3,9 +3,10 @@
 //   2. seedMemory is idempotent (never clobbers an evolved memory).
 //   3. Worker bearings = shared-doc framing only (no <memory> block);
 //      orchestrator bearings add the across-cycles framing + a <memory> block
-//      that MERGES the applicable store indexes (content inlined, labeled by
-//      scope); promotion delivers that same orchestrator context-dir framing to
-//      a node that spawned base.
+//      that MERGES the applicable stores, each a `label · dir` header over its
+//      live index POINTER LINES only (the how-to boilerplate is dropped — it
+//      lives once in the kernel); promotion delivers that same orchestrator
+//      context-dir framing to a node that spawned base.
 //   4. canvas-context-intro injects the block as its own session message at
 //      session_start (before the first prompt), idempotent across resumes.
 //
@@ -30,7 +31,9 @@ import {
   seedMemory,
   hasMemory,
   MEMORY_TEMPLATE,
+  userMemoryDir,
   userMemoryPath,
+  projectMemoryDir,
   projectMemoryPath,
 } from '../runtime/memory.js';
 import registerCanvasContextIntro, {
@@ -90,33 +93,46 @@ test('worker bearings: shared-doc framing only, no orchestrator/memory framing',
   assert.match(block, /<\/crtr-context>/);
 });
 
-test('orchestrator bearings: across-cycles framing + a <memory> block that merges the index (content inlined)', () => {
+test('orchestrator bearings: across-cycles framing + a <memory> block whose body is the live pointer lines under `label · dir`', () => {
   const meta = spawnNode({ kind: 'general', cwd: '/tmp/work', parent: null });
   seedMemory(meta.node_id);
-  writeFileSync(memoryPath(meta.node_id), '# Memory\n\n- [Flaky build](flaky-build.md) — first run fails\n');
+  // The seeded index carries the how-to comment + the empty marker; an evolved
+  // index adds a pointer line. The block must render ONLY the pointer line.
+  writeFileSync(
+    memoryPath(meta.node_id),
+    '# memory index — one pointer line per memory; how-to in "Your long-term memory".\n\n- [Flaky build](flaky-build.md) — first run fails\n',
+  );
 
   const block = buildContextIntro(meta.node_id);
   assert.match(block, /shared document store, not a task tracker/, 'still carries the base framing');
   assert.match(block, /refresh cycles/, 'orchestrator gets the across-cycles framing');
   assert.match(block, /<memory>/, 'has a memory block');
-  assert.match(block, /\[node-local\]/, 'node-local store is labeled');
-  assert.ok(block.includes(memoryDir(meta.node_id)), 'names the node-local memory dir (where to write)');
-  assert.ok(block.includes(memoryPath(meta.node_id)), 'names the node-local index path');
-  assert.match(block, /Flaky build/, 'index content IS merged in (read fresh from disk)');
+  // (a) the store renders just its pointer line under a `label · dir` header.
+  assert.ok(block.includes(`node-local · ${memoryDir(meta.node_id)}`), 'compact `label · dir` header');
+  assert.match(block, /- \[Flaky build\]\(flaky-build\.md\) — first run fails/, 'the live pointer line is inlined');
+  // (c) no `index:` line, no absolute index path, no inlined how-to boilerplate.
+  assert.ok(!block.includes('index:'), 'no index: substring');
+  assert.ok(!block.includes(memoryPath(meta.node_id)), 'no absolute index (MEMORY.md) path');
+  assert.ok(!block.includes('how-to in'), 'the index how-to boilerplate is NOT inlined');
+  assert.ok(!block.includes('# memory index'), 'the index header comment is NOT inlined');
   assert.match(block, /<\/crtr-context>/);
 });
 
-test('orchestrator bearings: a promoted node merges all THREE store indexes, labeled by scope', () => {
+test('orchestrator bearings: a promoted node merges all THREE stores; template-only stores render (empty)', () => {
   const meta = spawnNode({ kind: 'general', cwd: '/tmp/work', parent: null });
-  promote(meta.node_id); // seeds user-global + project + node-local
+  promote(meta.node_id); // seeds user-global + project + node-local (all template-only)
 
   const block = buildContextIntro(meta.node_id);
-  for (const label of ['[user-global]', '[project]', '[node-local]']) {
-    assert.ok(block.includes(label), `merges the ${label} store`);
-  }
-  assert.ok(block.includes(userMemoryPath()), 'names the user-global index path');
-  assert.ok(block.includes(projectMemoryPath('/tmp/work')), 'names the project index path');
-  assert.ok(block.includes(memoryPath(meta.node_id)), 'names the node-local index path');
+  // Each scope present as a `label · dir` header.
+  assert.ok(block.includes(`user-global · ${userMemoryDir()}`), 'merges the user-global store');
+  assert.ok(block.includes(`project · ${projectMemoryDir('/tmp/work')}`), 'merges the project store');
+  assert.ok(block.includes(`node-local · ${memoryDir(meta.node_id)}`), 'merges the node-local store');
+  // (b) a template-only / not-yet-written store renders the (empty) marker.
+  assert.match(block, /user-global · .*\n\(empty\)/, 'template-only user store renders (empty)');
+  assert.equal(block.match(/\(empty\)/g)?.length, 3, 'all three template-only stores render (empty)');
+  // (c) no absolute index paths leak in.
+  assert.ok(!block.includes(userMemoryPath()), 'no user-global MEMORY.md path');
+  assert.ok(!block.includes(projectMemoryPath('/tmp/work')), 'no project MEMORY.md path');
   // The type→store mapping is taught by the kernel; the block points at it.
   assert.match(block, /type/, 'the block references the type that decides the store');
 });
