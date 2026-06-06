@@ -5,9 +5,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-import { createNode, getNode } from '../canvas/canvas.js';
+import { createNode, getNode, subscribe } from '../canvas/canvas.js';
 import { closeDb } from '../canvas/db.js';
 import { appendInbox } from '../feed/inbox.js';
+import { markBusy, clearBusy } from '../runtime/busy.js';
 import {
   superviseTick,
   isPidAlive,
@@ -181,8 +182,9 @@ test('pane GONE while its old window is still alive → the gone-branch fires (c
 
     // The window is alive, but the node is anchored on that dead pane. Under the
     // old window-keyed liveness this node would read healthy (window alive + live
-    // pid). Pane-keyed: the pane is gone → the crash branch fires. pi_session_id
-    // is set so it's a clean crash, not a boot-failure push.
+    // pid). Pane-keyed: the pane is gone → the gone-branch fires. The node is
+    // MID-GENERATION (busy marker present — agent_start touched it, agent_end
+    // never cleared it), so the gone-branch routes to crash → 'dead'.
     createNode(node('G', {
       pane: dead,
       tmux_session: session,
@@ -191,8 +193,66 @@ test('pane GONE while its old window is still alive → the gone-branch fires (c
       pi_session_id: 'booted',
       intent: null,
     }));
+    markBusy('G'); // pane killed inside a turn → genuine mid-run crash
     await superviseTick();
-    assert.equal(getNode('G')!.status, 'dead', 'a gone pane fires the gone-branch even with a live window + pid');
+    assert.equal(getNode('G')!.status, 'dead', 'a gone pane mid-generation fires the gone-branch → crash (dead)');
+    clearBusy('G');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Gone-pane routing: a pane-gone node in the crash branch is no longer an
+// unconditional 'dead'. It routes on what the node was DOING at pane-kill time:
+//   • mid-generation (busy marker PRESENT)               → crash  ('dead')
+//   • finished its turn, awaiting nothing live           → finalize ('done')
+//   • finished its turn, still awaiting a LIVE child     → crash  ('dead'), for now
+// (The mid-generation → dead leg is covered by node 'G' above.)
+// ---------------------------------------------------------------------------
+
+test('pane gone + booted + busy ABSENT + no live subscription → finalize (done): the pane was closed to dismiss a finished node', { skip: !hasTmux() }, async () => {
+  await withLivePane('fin1', async (session, window) => {
+    const sp = spawnSync('tmux', ['split-window', '-d', '-P', '-F', '#{pane_id}', '-t', `${session}:${window}`, 'sleep 600'], { encoding: 'utf8' });
+    const dead = (sp.stdout ?? '').trim();
+    spawnSync('tmux', ['kill-pane', '-t', dead], { stdio: 'ignore' });
+
+    // Booted (pi_session_id set), no busy marker (agent_end cleared it → the turn
+    // finished), and no subscription to any live node. Closing the pane was a
+    // dismissal of a node that already did its own work → finalize to 'done'.
+    createNode(node('FIN', {
+      pane: dead,
+      tmux_session: session,
+      window,
+      pi_pid: process.pid,
+      pi_session_id: 'booted',
+      intent: null,
+    }));
+    // no markBusy: the turn ended cleanly.
+    await superviseTick();
+    assert.equal(getNode('FIN')!.status, 'done', 'a finished, unsubscribed node whose pane was closed finalizes to done');
+  });
+});
+
+test('pane gone + booted + busy ABSENT but AWAITING a LIVE child → crash (dead), for now', { skip: !hasTmux() }, async () => {
+  await withLivePane('fin2', async (session, window) => {
+    const sp = spawnSync('tmux', ['split-window', '-d', '-P', '-F', '#{pane_id}', '-t', `${session}:${window}`, 'sleep 600'], { encoding: 'utf8' });
+    const dead = (sp.stdout ?? '').trim();
+    spawnSync('tmux', ['kill-pane', '-t', dead], { stdio: 'ignore' });
+
+    // A live child the parent is subscribed to: hasActiveLiveSubscription === true.
+    createNode(node('CHILD', { status: 'active', pi_session_id: 'booted' }));
+    createNode(node('PARENT', {
+      pane: dead,
+      tmux_session: session,
+      window,
+      pi_pid: process.pid,
+      pi_session_id: 'booted',
+      intent: null,
+    }));
+    subscribe('PARENT', 'CHILD', true); // active subscription to a LIVE node
+    // Parent finished its turn (no busy marker) but is still awaiting a live
+    // child → NOT a finalize. Routes to crash ('dead') for now.
+    await superviseTick();
+    assert.equal(getNode('PARENT')!.status, 'dead', 'a finished node still awaiting a live child crashes (dead), not finalizes');
   });
 });
 

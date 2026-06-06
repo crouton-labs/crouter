@@ -14,7 +14,11 @@
 //   • Pane gone + intent==='idle-release' → node freed its own pane while
 //     dormant; clear the stale window ref and revive (resume) when its inbox
 //     gains an unseen entry.
-//   • Pane gone + any other intent → crash: mark 'dead'.
+//   • Pane gone + any other intent → route on what the node was doing:
+//       - never-booted (pi_session_id null) → crash ('dead') + surface boot fail
+//       - mid-generation (busy marker present) → crash ('dead')
+//       - finished its turn, still awaiting a live child → crash ('dead'), for now
+//       - finished its turn, awaiting nothing live → finalize ('done')
 //   • Nodes with no tmux placement (inline roots) are skipped.
 //
 // Single-instance guarantee
@@ -36,10 +40,12 @@ import {
   getRow,
   setPresence,
   getNode,
+  hasActiveLiveSubscription,
   type NodeRow,
   type NodeMeta,
 } from '../core/canvas/index.js';
 import { transition } from '../core/runtime/lifecycle.js';
+import { isBusy } from '../core/runtime/busy.js';
 import { isNodePaneAlive, reconcile } from '../core/runtime/placement.js';
 import { reviveNode } from '../core/runtime/revive.js';
 import { pushUrgent } from '../core/feed/feed.js';
@@ -234,32 +240,52 @@ export async function superviseTick(now: number = Date.now()): Promise<void> {
         // (resume) the moment a subscribed worker delivers.
         setPresence(row.node_id, { tmux_session: row.tmux_session, window: null });
       } else {
-        // The pane vanished without the node completing or refreshing. Split the
-        // two ways that happens: a vehicle that NEVER BOOTED (pi exited before
-        // its first session_start, so pi_session_id is still null) versus a
-        // genuine mid-run CRASH (it had booted, so pi_session_id is set). Both
-        // are dead, but a never-booted node is a spawn failure the parent was
-        // never told about — surface it up the spine instead of dying quietly.
-        transition(row.node_id, 'crash');
-        // Boot-failed vs crashed turns on pi_session_id, an IDENTITY field — the
-        // one place this pass still reads meta. surfaceBootFailure also wants the
-        // full meta (name/kind) for its message.
+        // The pane vanished without the node yielding or releasing. Route on what
+        // the node was DOING at pane-kill time — not every gone pane is a death:
+        //   • never-booted (pi_session_id null) → crash + surface boot failure.
+        //     A spawn failure the parent was never told about — it had no turn to
+        //     finish, so it can never be a finalize. (Boot-failed vs crashed turns
+        //     on pi_session_id, an IDENTITY field — the one place this pass still
+        //     reads meta; surfaceBootFailure also wants name/kind for its message.)
+        //   • MID-GENERATION (busy marker present) → crash (→dead). agent_start
+        //     touched the marker and agent_end never cleared it ⇒ the pane was
+        //     killed inside a turn: a genuine mid-run death. (The pane is gone, so
+        //     pi is dead; we read isBusy WITHOUT the usual AND-pidAlive guard on
+        //     purpose — here a stale marker IS the proof it died mid-turn.)
+        //   • finished its turn (busy ABSENT) but still awaiting a LIVE child →
+        //     crash (→dead) for now. (This waiting-on-a-live-child case may later
+        //     route to a revivable-idle instead of a hard death.)
+        //   • finished its turn AND awaiting nothing live → finalize (→done): it
+        //     did its own work and the pane was closed to dismiss it.
         const meta = getNode(row.node_id);
-        if (meta !== null && meta.pi_session_id == null) {
+        const neverBooted = meta !== null && meta.pi_session_id == null;
+        if (
+          !neverBooted &&
+          !isBusy(row.node_id) &&
+          !hasActiveLiveSubscription(row.node_id)
+        ) {
+          transition(row.node_id, 'finalize');
           process.stderr.write(
-            `[crtrd] boot-failed ${row.node_id} (pane gone before pi ever started)\n`,
+            `[crtrd] done ${row.node_id} (pane gone after turn end, no live child)\n`,
           );
-          try {
-            await surfaceBootFailure(meta);
-          } catch (err) {
+        } else {
+          transition(row.node_id, 'crash');
+          if (neverBooted) {
             process.stderr.write(
-              `[crtrd] surfaceBootFailure ${row.node_id} error: ${(err as Error).message}\n`,
+              `[crtrd] boot-failed ${row.node_id} (pane gone before pi ever started)\n`,
+            );
+            try {
+              await surfaceBootFailure(meta as NodeMeta);
+            } catch (err) {
+              process.stderr.write(
+                `[crtrd] surfaceBootFailure ${row.node_id} error: ${(err as Error).message}\n`,
+              );
+            }
+          } else {
+            process.stderr.write(
+              `[crtrd] dead ${row.node_id} (pane gone, intent=${String(row.intent)})\n`,
             );
           }
-        } else {
-          process.stderr.write(
-            `[crtrd] dead ${row.node_id} (pane gone, intent=${String(row.intent)})\n`,
-          );
         }
       }
     } catch (err) {

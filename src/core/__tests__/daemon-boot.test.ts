@@ -8,6 +8,7 @@ import { createNode, getNode, subscribe } from '../canvas/canvas.js';
 import { closeDb } from '../canvas/db.js';
 import { readInboxSince } from '../feed/inbox.js';
 import { superviseTick } from '../../daemon/crtrd.js';
+import { markBusy, clearBusy } from '../runtime/busy.js';
 import type { NodeMeta } from '../canvas/types.js';
 
 let home: string;
@@ -94,6 +95,11 @@ test('a crash after boot is marked dead without a boot-failure push', async () =
     }),
   );
   spawnEdge('P2', 'C2');
+  // MID-GENERATION when the window vanished (busy marker present, agent_end
+  // never cleared it) → a genuine mid-run crash. Without the marker a booted,
+  // unsubscribed pane-gone node would FINALIZE to 'done' instead (it would read
+  // as a finished node dismissed) — see the gone-pane routing in crtrd.ts.
+  markBusy('C2');
 
   await superviseTick();
 
@@ -103,6 +109,7 @@ test('a crash after boot is marked dead without a boot-failure push', async () =
     0,
     'a real crash does not push a boot-failure pointer',
   );
+  clearBusy('C2');
 });
 
 // A still-booting node whose window is alive must be left untouched — boot is
