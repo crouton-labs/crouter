@@ -30,13 +30,15 @@
 import { writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { getNode, jobDir, updateNode, setStatus, setIntent, recordPid, subscribersOf } from '../core/canvas/index.js';
+import { getNode, jobDir, updateNode, recordPid, subscribersOf, closeFocusRow, setPresence } from '../core/canvas/index.js';
+import { transition } from '../core/runtime/lifecycle.js';
 import { evaluateStop } from '../core/runtime/stop-guard.js';
 import { personaDrift, commitPersonaAck } from '../core/runtime/persona.js';
-import { reviveInPlace, reviveNode } from '../core/runtime/revive.js';
+import { reviveInPlace } from '../core/runtime/revive.js';
 import { handleNewSession, markCleanExitDone } from '../core/runtime/reset.js';
-import { focusNodeInPlace, getFocus } from '../core/runtime/presence.js';
-import { windowAlive, paneLocation, currentTmux } from '../core/runtime/tmux.js';
+import { setFocus } from '../core/runtime/presence.js';
+import { focusOf, handFocusToManager, tearDownNode } from '../core/runtime/placement.js';
+import { setRemainOnExit } from '../core/runtime/tmux.js';
 
 // ---------------------------------------------------------------------------
 // Minimal PiLike interface (avoids hard dep on @earendil-works/*)
@@ -118,52 +120,6 @@ function lastAssistantMessage(messages: any[]): any | undefined {
     if (messages[i]?.role === 'assistant') return messages[i];
   }
   return undefined;
-}
-
-/** When a FOCUSED node is about to shut down (final or idle-release), bring its
- *  manager into the visible pane it currently occupies so the view travels UP
- *  the spine — instead of the visible window collapsing when this node's pi
- *  exits in it. A no-op unless this node is the one the user is looking at.
- *
- *  This is the swap-back guard the one-window-per-node model dropped: in-place
- *  focus (swap-pane) reintroduced shared pane slots, so a focused leaf that
- *  exits must hand its slot back to its manager rather than take it down.
- *  Best-effort throughout — never throws out of agent_end. */
-function restoreFocusToManager(nodeId: string): void {
-  try {
-    if (getFocus() !== nodeId) return; // not in view — nothing to restore
-
-    // SAFETY: only hand the visible slot to the manager when THIS pane is still
-    // alive — i.e. an orderly in-pi exit (/quit, Ctrl-D), where pi emits
-    // session_shutdown and tmux closes the pane only AFTER pi exits. An EXTERNAL
-    // `kill-pane` (tmux `prefix + x`, the menu's Kill, etc.) also reaches pi as
-    // SIGHUP → session_shutdown(reason:'quit'), indistinguishable by reason — but
-    // tmux has ALREADY destroyed this pane. Reviving the manager and swap-pane'ing
-    // it INTO a pane that is mid-teardown churns the layout and takes the visible
-    // session down with it. If the pane is gone, skip the swap entirely; the
-    // daemon's window-gone pass then tears the node down cleanly.
-    const pane = process.env['TMUX_PANE'] ?? currentTmux()?.pane;
-    if (pane === undefined || pane === '' || paneLocation(pane) === null) return;
-
-    const meta = getNode(nodeId);
-    if (meta === null) return;
-    const managerId = meta.parent ?? subscribersOf(nodeId)[0]?.node_id ?? null;
-    if (managerId === null || managerId === nodeId) return;
-    const manager = getNode(managerId);
-    if (manager === null) return;
-    // Revive a dormant manager so there is a live pane to swap into view (it is
-    // about to be woken by this node's push anyway).
-    if (!windowAlive(manager.tmux_session, manager.window)) {
-      try { reviveNode(managerId, { resume: true }); } catch { return; }
-    }
-    // Swap the manager into THIS (focused, exiting) node's pane slot. focus reads
-    // the caller pane from $TMUX_PANE — this stophook runs inside the exiting
-    // node's pi, so that is the visible pane. When this node's pi then exits, its
-    // pane lives on in the manager's old (background) window and closes there.
-    focusNodeInPlace(managerId);
-  } catch {
-    /* best-effort; never throw out of agent_end */
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -304,18 +260,25 @@ export function registerCanvasStophook(pi: PiLike): void {
   // ---------------------------------------------------------------------------
   // session_start — capture pi's session id, and detect `/new`.
   //
-  // pi exposes the session id via ctx.sessionManager.getSessionId() on every
-  // event context; session_start fires early, before any turns. We bind the
-  // FIRST session_start of this process as the boot (a fresh launch and a daemon
-  // revive are both new processes, so their first session_start is a boot, not
-  // a `/new`). A LATER session_start with a DIFFERENT id, in this same live
-  // process, can only mean the user ran `/new` — a brand-new conversation. For
-  // a root that means a brand-new graph: reset it (the `crtr`-again equivalent),
-  // then rebind. A reload reports the same id and is a no-op.
+  // pi tags each session_start with a `reason`: 'startup' on boot (a fresh
+  // launch or a daemon revive — both new processes), 'new' when the user runs
+  // `/new` (a brand-new conversation in the SAME process), and 'resume' /
+  // 'reload' / 'fork' for the in-place conversation swaps that keep the same
+  // node. We branch on that reason — NOT on a remembered session id.
+  //
+  // Why reason, not a closure flag: pi RE-ACTIVATES extensions on every session
+  // swap, so any id we stash on boot is reset to its initial value before the
+  // next session_start fires and can never observe the change — a `/new` then
+  // looks identical to a boot. (That is exactly the bug this replaced: `/new`
+  // silently fell back to an in-place reset instead of relaunching, so the node
+  // id + context dir never changed.) The event reason is delivered fresh on
+  // every fire and is immune to the re-activation.
+  //
+  // For a root, reason 'new' means a brand-new graph: relaunch (park the old
+  // root + boot a fresh node in this pane) or, with no pane, an in-place reset.
   // ---------------------------------------------------------------------------
-  let boundSessionId: string | null = null;
 
-  pi.on('session_start', (_event: any, ctx: any): void => {
+  pi.on('session_start', (event: any, ctx: any): void => {
     try {
       const id: unknown = ctx?.sessionManager?.getSessionId?.();
       if (typeof id !== 'string' || id === '') return;
@@ -326,44 +289,38 @@ export function registerCanvasStophook(pi: PiLike): void {
       const filed: unknown = ctx?.sessionManager?.getSessionFile?.();
       const sessionFile = typeof filed === 'string' && filed !== '' ? filed : null;
 
-      if (boundSessionId === null) {
-        // Boot: bind this process to its session id, record our OS pid (the
-        // daemon's liveness signal for inline roots whose window outlives pi),
-        // and CONFIRM any pending refresh-yield. Reaching session_start proves a
-        // fresh pi actually booted, so it is now safe to clear intent='refresh'.
-        // reviveInPlace deliberately leaves intent set: the detached respawn it
-        // dispatches can't confirm itself (it kills the caller mid-flight), so a
-        // real boot is the only thing allowed to clear it — otherwise a failed
-        // respawn would look identical to a successful one.
-        boundSessionId = id;
-        const existing = getNode(nodeId);
-        // Identity (session id/file) → meta; runtime (pid, intent) → atomic row
-        // setters. Reaching session_start proves a fresh pi booted, so a pending
-        // refresh-yield is now safe to clear.
-        updateNode(nodeId, {
-          pi_session_id: id,
-          pi_session_file: sessionFile,
-        });
-        recordPid(nodeId, process.pid);
-        if (existing?.intent === 'refresh') setIntent(nodeId, null);
+      // `/new` — a brand-new conversation in the same process. Route it: a
+      // non-root child refreshes its session id; a ROOT in a tmux pane RELAUNCHES
+      // (parks the old root + boots a fresh node in this pane via respawn-pane
+      // -k, which tears down THIS pi); a root with no pane falls back to an
+      // in-place reset. The relaunch's detached respawn may kill this pi before
+      // the lines after the call run — that's fine; do not rely on anything
+      // after handleNewSession.
+      if (event?.reason === 'new') {
+        try { handleNewSession(nodeId, id, process.env['TMUX_PANE'], {}, sessionFile); } catch { /* best-effort */ }
+        // Clear in-memory context-steering so the fresh conversation starts clean.
+        totalIn = 0;
+        totalOut = 0;
+        firedBands.clear();
         return;
       }
 
-      if (id === boundSessionId) return; // reload of the same conversation
-
-      // A new session id in the same process = `/new`. Route it: a non-root
-      // child refreshes its session id; a ROOT in a tmux pane RELAUNCHES (parks
-      // the old root + boots a fresh node in this pane via respawn-pane -k,
-      // which tears down THIS pi); a root with no pane falls back to an in-place
-      // reset. The relaunch's detached respawn may kill this pi before the
-      // lines after the call run — that's fine (same as the refresh-yield path);
-      // do not rely on anything after handleNewSession.
-      boundSessionId = id;
-      try { handleNewSession(nodeId, id, process.env['TMUX_PANE'], {}, sessionFile); } catch { /* best-effort */ }
-      // Clear in-memory context-steering so the fresh conversation starts clean.
-      totalIn = 0;
-      totalOut = 0;
-      firedBands.clear();
+      // Boot / startup / resume / reload / fork → (re)bind this process to its
+      // session id, record our OS pid (the daemon's liveness signal for inline
+      // roots whose window outlives pi), and CONFIRM any pending refresh-yield.
+      // Reaching session_start proves a fresh pi actually booted, so it is now
+      // safe to clear intent='refresh'. reviveInPlace deliberately leaves intent
+      // set: the detached respawn it dispatches can't confirm itself (it kills
+      // the caller mid-flight), so a real boot is the only thing allowed to clear
+      // it — otherwise a failed respawn would look identical to a successful one.
+      const existing = getNode(nodeId);
+      // Identity (session id/file) → meta; runtime (pid, intent) → atomic row setters.
+      updateNode(nodeId, {
+        pi_session_id: id,
+        pi_session_file: sessionFile,
+      });
+      recordPid(nodeId, process.pid);
+      if (existing?.intent === 'refresh') transition(nodeId, 'revive');
     } catch {
       /* best-effort; never surface from an extension handler */
     }
@@ -384,7 +341,11 @@ export function registerCanvasStophook(pi: PiLike): void {
   // ---------------------------------------------------------------------------
   pi.on('session_shutdown', (event: any, _ctx: any): void => {
     try {
-      if (markCleanExitDone(nodeId, event?.reason)) restoreFocusToManager(nodeId);
+      // Clean /quit (reason='quit') resolves the node to done; if it held the
+      // user's viewport, Q1-close it (tearDownNode kills the frozen focus pane +
+      // closes the focus row → returns the user to a shell, §1.5/flow (e)). pi is
+      // already exiting here, so killing its own pane is not a self-saw.
+      if (markCleanExitDone(nodeId, event?.reason)) tearDownNode(nodeId);
     } catch { /* best-effort; never throw out of an extension handler */ }
   });
 
@@ -486,7 +447,33 @@ export function registerCanvasStophook(pi: PiLike): void {
         //     transitions node.status → 'done' synchronously. Shut down cleanly.
         const node = getNode(nodeId);
         if (node?.status === 'done') {
-          restoreFocusToManager(nodeId);
+          // TRULY-DONE (pushed `final` this turn). If this node owns the user's
+          // viewport, its lifecycle successor takes the focus (§1.6):
+          // handFocusToManager hands the focus row to the manager (the node up
+          // the subscribes_to spine it reports to) and, when that manager's pi is
+          // LIVE in the backstage, synchronously swaps it into this now-frozen
+          // focus pane; a DORMANT manager is revived into the pane by the daemon
+          // on the `final` it just pushed — either way no new window, no taint.
+          // No manager (a root) or a manager already focused elsewhere → Q1-close
+          // this focus AND flip remain-on-exit OFF on %m's window so the pane
+          // closes when this pi exits (return-to-shell) instead of freezing into
+          // an orphan. We CANNOT closePane(%m) from inside %m (self-saw), but the
+          // pi is still alive mid-shutdown, so remain-on-exit-off is safe and
+          // makes tmux reap the pane on exit. An unfocused done node just shuts
+          // down (no pane anywhere, Invariant P). M is done → it owns no pane
+          // (Invariant P), so null its own presence in BOTH sub-branches before
+          // shutdown.
+          const f = focusOf(nodeId);
+          if (f !== null) {
+            const managerId = node.parent ?? subscribersOf(nodeId)[0]?.node_id ?? null;
+            if (!handFocusToManager(f.focus_id, managerId)) {
+              closeFocusRow(f.focus_id);
+              setFocus('');
+              const win = getNode(nodeId)?.window; // %m's window
+              if (win) setRemainOnExit(win, false); // Q1 return-to-shell
+            }
+          }
+          setPresence(nodeId, { pane: null, tmux_session: null, window: null }); // M done → owns no pane
           try { ctx?.shutdown?.(); } catch { /* ignore */ }
           return;
         }
@@ -542,9 +529,14 @@ export function registerCanvasStophook(pi: PiLike): void {
         // subscribed worker delivers. An 'attended' root never releases: the human
         // is its wake source, so we keep its window live and dormant.
         if (decision.reason === 'awaiting') {
-          setIntent(nodeId, 'idle-release');
-          setStatus(nodeId, 'idle');
-          restoreFocusToManager(nodeId);
+          // AWAITING = F3. transition('release') marks it idle-released. If this
+          // node is FOCUSED its pane FREEZES in place (remain-on-exit, armed at
+          // focus time) so the daemon can respawn-pane -k it back into the SAME
+          // focus pane when a worker pushes; if UNFOCUSED its backstage pane
+          // closes (dormant) and the daemon revives it into the backstage on the
+          // inbox. Both are the same release — tmux's per-window remain-on-exit
+          // decides freeze vs close. NO manager-takeover (awaiting ≠ done).
+          transition(nodeId, 'release');
           try { ctx?.shutdown?.(); } catch { /* ignore */ }
           return;
         }

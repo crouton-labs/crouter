@@ -124,7 +124,10 @@ let asksMap: Record<string, number> = {};
 
 const ASK_POLL_MS = 5_000;
 const RENDER_DEBOUNCE_MS = 150;
-const VIEWPORT_MAX = 30;
+/** pi's InteractiveMode.MAX_WIDGET_LINES — the hard cap on lines in a string
+ *  array widget; anything beyond it pi truncates with its own "... (widget
+ *  truncated)". Our GRAPH viewport stays at/under this and scrolls internally. */
+const PI_MAX_WIDGET_LINES = 10;
 const VIEWPORT_FALLBACK_ROWS = 30;
 
 // ---------------------------------------------------------------------------
@@ -332,6 +335,31 @@ function askBadge(id: string): string {
   return k > 0 ? ` ${YELLOW}⚑${k}${RESET}` : '';
 }
 
+/** Sort rank for sibling ordering — live nodes (active, then idle) ahead of
+ *  terminal ones, so sessions still running surface at the TOP of each child
+ *  group instead of being buried under finished/failed ones. */
+function statusRank(id: string): number {
+  switch (getNode(id)?.status) {
+    case 'active':   return 0;
+    case 'idle':     return 1;
+    case 'done':     return 2;
+    case 'canceled': return 3;
+    case 'dead':     return 4;
+    default:         return 5;
+  }
+}
+
+/** Direct children, live-first — the sibling order used both when flattening
+ *  the tree and when stepping into a subtree (`l`). Array.sort is stable, so
+ *  equal-status siblings keep their creation order. */
+function sortedChildIds(id: string): string[] {
+  try {
+    return subscriptionsOf(id).map((s) => s.node_id).sort((a, b) => statusRank(a) - statusRank(b));
+  } catch {
+    return [];
+  }
+}
+
 // ---------------------------------------------------------------------------
 // GRAPH model — flatten the local graph fold-aware. Rebuilt every render (cheap
 // sqlite reads) so a finished child / new spawn shows live; `collapsed` and the
@@ -358,7 +386,7 @@ function buildGraphModel(self: string): FlatRow[] {
       return;
     }
     visited.add(id);
-    const kids = subscriptionsOf(id).map((s) => s.node_id);
+    const kids = sortedChildIds(id);
     const connector = isRoot ? '' : isLast ? '└─ ' : '├─ ';
     rows.push({ id, hasKids: kids.length > 0, isSelf: id === self, branch: prefix + connector, cycle: false });
     if (collapsed.has(id)) return; // folded — don't descend
@@ -388,10 +416,13 @@ function renderGraphRow(r: FlatRow, isCursor: boolean): string {
   return r.isSelf ? reverseFill(line, fillWidth()) : truncate(line);
 }
 
-/** GRAPH viewport height, bounded by terminal rows (q3 fallback: a constant). */
-function viewportHeight(): number {
+/** Total lines the GRAPH widget may emit. pi hard-caps extension widgets at
+ *  MAX_WIDGET_LINES — anything past that pi truncates itself, eating our own
+ *  scroll chrome — so never exceed it (and shrink on a very short terminal).
+ *  The viewport scrolls WITHIN this cap as the cursor moves. */
+function graphWidgetBudget(): number {
   const rows = process.stdout.rows ?? VIEWPORT_FALLBACK_ROWS;
-  return Math.max(6, Math.min(rows - 6, VIEWPORT_MAX));
+  return Math.max(4, Math.min(PI_MAX_WIDGET_LINES, rows - 4));
 }
 
 const GRAPH_HINT = `${DIM}jk move · hl fold · ↵ focus · e expand · x kill · m mgr · esc${RESET}`;
@@ -526,9 +557,8 @@ export function registerCanvasNav(pi: PiLike): void {
 
     const reports = liveReports(nodeId);
     const lines: string[] = [];
-    // Header + rows only when there ARE reports — skip the low-value "↓ reports (0)".
+    // Report rows only — no "↓ reports (N)" header (the label carries no signal).
     if (reports.length > 0) {
-      lines.push(`${BOLD}↓ reports (${reports.length})${RESET}`);
       const nameW = Math.min(20, Math.max(...reports.map((id) => {
         const n = getNode(id);
         return (n !== null ? fullName(n) : shortId(id)).length;
@@ -566,10 +596,21 @@ export function registerCanvasNav(pi: PiLike): void {
     }
     cursorId = rows[cursorIdx]?.id ?? nodeId;
 
-    const viewportH = viewportHeight();
-    if (cursorIdx < scrollTop) scrollTop = cursorIdx;
-    if (cursorIdx >= scrollTop + viewportH) scrollTop = cursorIdx - viewportH + 1;
-    scrollTop = Math.max(0, Math.min(scrollTop, Math.max(0, rows.length - viewportH)));
+    // Budget WITHIN pi's widget cap (see graphWidgetBudget): reserve 1 line for
+    // the footer hint, up to 2 for the ↑/↓ "more" indicators, the rest for tree
+    // rows. The window then tracks the cursor, so j/k scrolls through the WHOLE
+    // list rather than hitting pi's hard truncation. Two passes settle the
+    // mutual dependency between "how many rows fit" and "are indicators shown".
+    const treeArea = Math.max(2, graphWidgetBudget() - 1);
+    let viewportH = treeArea;
+    for (let pass = 0; pass < 2; pass++) {
+      if (cursorIdx < scrollTop) scrollTop = cursorIdx;
+      if (cursorIdx >= scrollTop + viewportH) scrollTop = cursorIdx - viewportH + 1;
+      scrollTop = Math.max(0, Math.min(scrollTop, Math.max(0, rows.length - viewportH)));
+      const fit = treeArea - (scrollTop > 0 ? 1 : 0) - (scrollTop + viewportH < rows.length ? 1 : 0);
+      if (fit === viewportH) break;
+      viewportH = Math.max(1, fit);
+    }
     const end = Math.min(rows.length, scrollTop + viewportH);
 
     const lines: string[] = [];
@@ -704,7 +745,7 @@ export function registerCanvasNav(pi: PiLike): void {
       if (cur !== undefined && collapsed.has(cur.id)) {
         collapsed.delete(cur.id);
       } else if (cur !== undefined && cur.hasKids) {
-        const c = subscriptionsOf(cur.id)[0]?.node_id;
+        const c = sortedChildIds(cur.id)[0];
         if (c !== undefined) cursorId = c;
       }
       render();

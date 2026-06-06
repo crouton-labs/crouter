@@ -17,7 +17,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import registerCanvasStophook from '../canvas-stophook.js';
-import { createNode, subscribe, getNode } from '../../core/canvas/canvas.js';
+import { createNode, subscribe, getNode, setStatus } from '../../core/canvas/canvas.js';
+import { openFocusRow, getFocusByNode, getFocusById, listFocuses } from '../../core/canvas/focuses.js';
 import { closeDb } from '../../core/canvas/db.js';
 import { reportsDir } from '../../core/canvas/paths.js';
 import { readInboxSince } from '../../core/feed/inbox.js';
@@ -114,6 +115,159 @@ test('natural stop while awaiting a live worker → idle-release with NO push (n
   assert.equal(reportCount('mgr'), 0, 'NO report file written');
   assert.equal(readInboxSince('root').length, 0, 'NO inbox pointer fanned to subscriber');
   assert.equal(pi.injected.length, 0, 'no reprompt on a legitimate idle-release');
+  // §5.1 case 6 (awaiting + UNFOCUSED → idle-release, no focus): the awaiting
+  // branch must never create/touch a focus row. Non-vacuous: an impl that ran
+  // the done-branch handoff/openFocus on an idle-release would leave a row here.
+  assert.equal(listFocuses().length, 0, 'awaiting+unfocused leaves the focuses table empty');
+});
+
+// ---------------------------------------------------------------------------
+// §5.1 — the §1.7 agent_end branch map on the focuses table. Every assertion is
+// on the canvas focuses/runtime rows after firing agent_end (TMUX_PANE is
+// cleared in beforeEach, so the focus helpers in the handler are pure DB and the
+// '%pane' ids below are never read by tmux). status='done' is reached by setting
+// the runtime row directly (the branch reads getNode(nodeId).status).
+// ---------------------------------------------------------------------------
+
+test('§5.1.1 truly-done + focused + manager-not-focused → MANAGER TAKEOVER of the focus row', () => {
+  createNode(node('root', { parent: null, lifecycle: 'resident' }));
+  createNode(node('mgr', { parent: 'root', lifecycle: 'terminal', mode: 'orchestrator' }));
+  // M starts WITH a recorded LOCATION so the MINOR presence-null is observable.
+  createNode(node('M', { parent: 'mgr', lifecycle: 'terminal', pane: '%m', tmux_session: 'Suser', window: '@wm' }));
+  subscribe('mgr', 'M', true);
+  openFocusRow('fM', '%m', 'Suser', 'M');
+
+  process.env['CRTR_NODE_ID'] = 'M';
+  setStatus('M', 'done'); // pushed final this turn
+  const pi = makeFakePi();
+  registerCanvasStophook(pi as any);
+
+  let shutdown = false;
+  pi.fire('agent_end', stopEvent('done — pushed final'), { shutdown: () => { shutdown = true; } });
+
+  // managerId = M.parent = 'mgr' (not focused elsewhere, no live pane here → the
+  // DORMANT-takeover path) → handFocusToManager repoints fM's occupant M→mgr. The
+  // daemon later revives mgr INTO M's frozen focus pane. Non-vacuous: a no-op (no
+  // handoff) impl leaves M as occupant, so getFocusByNode('mgr') is null AND
+  // getFocusByNode('M') still names fM — both asserts fail.
+  assert.equal(getFocusByNode('mgr')?.focus_id, 'fM', 'focus row taken over by the manager');
+  assert.equal(getFocusByNode('M'), null, 'the finished node no longer occupies any focus');
+  assert.equal(shutdown, true, 'pi shut down after the handoff');
+  // MINOR: after a successful takeover M (done) owns no pane (Invariant P) — its
+  // own presence is nulled so two rows never reference %m. Non-vacuous: an impl
+  // that skips the done-path setPresence-null leaves getNode('M').pane === '%m'.
+  assert.equal(getNode('M')?.pane ?? null, null, 'the finished node\'s own LOCATION pane is nulled');
+  assert.equal(getNode('M')?.window ?? null, null, 'the finished node\'s window presence is nulled too');
+});
+
+test('§5.1.2 truly-done + focused + NO manager (root) → focus row CLOSED (Q1)', () => {
+  // R carries a LOCATION so the close-path presence-null is observable.
+  createNode(node('R', { parent: null, lifecycle: 'terminal', pane: '%r', tmux_session: 'Suser', window: '@wr' }));
+  openFocusRow('fR', '%r', 'Suser', 'R');
+
+  process.env['CRTR_NODE_ID'] = 'R';
+  setStatus('R', 'done');
+  const pi = makeFakePi();
+  registerCanvasStophook(pi as any);
+  pi.fire('agent_end', stopEvent('root done'), { shutdown: () => { /* swallow */ } });
+
+  // managerId = R.parent(null) ?? subscribersOf(R)[0](none) = null →
+  // handFocusToManager returns false → the close path: closeFocusRow(fR) +
+  // setRemainOnExit(%r's window, false) (return-to-shell) + null R's presence.
+  // Non-vacuous: a takeover-instead-of-close impl would leave the row present;
+  // an impl that skips the MINOR presence-null leaves getNode('R').pane === '%r'.
+  assert.equal(getFocusById('fR'), null, 'a manager-less finished focus is closed, not handed off');
+  assert.equal(listFocuses().length, 0, 'no focus rows survive');
+  assert.equal(getNode('R')?.pane ?? null, null, 'the finished root\'s own LOCATION pane is nulled (close path reaps)');
+});
+
+test('§5.1.3 truly-done + focused + manager ALREADY focused elsewhere → focus CLOSED, manager UNMOVED', () => {
+  createNode(node('root', { parent: null, lifecycle: 'resident' }));
+  createNode(node('mgr', { parent: 'root', lifecycle: 'terminal', mode: 'orchestrator' }));
+  createNode(node('M', { parent: 'mgr', lifecycle: 'terminal', pane: '%m', tmux_session: 'Sa', window: '@wm' }));
+  subscribe('mgr', 'M', true);
+  openFocusRow('fOther', '%o', 'Sb', 'mgr'); // mgr already on its OWN viewport
+  openFocusRow('fM', '%m', 'Sa', 'M');
+
+  process.env['CRTR_NODE_ID'] = 'M';
+  setStatus('M', 'done');
+  const pi = makeFakePi();
+  registerCanvasStophook(pi as any);
+  pi.fire('agent_end', stopEvent('M done'), { shutdown: () => { /* swallow */ } });
+
+  // handFocusToManager sees getFocusByNode('mgr') != null → returns false →
+  // closeFocusRow(fM). Non-vacuous: moving mgr would either repoint its focus_id
+  // to fM (and a wrong impl that didn't close fM would leave it present) or throw
+  // UNIQUE(node_id); this pins mgr's OTHER focus untouched and M's focus gone.
+  assert.equal(getFocusById('fM'), null, "M's focus is closed");
+  assert.equal(getFocusByNode('mgr')?.focus_id, 'fOther', "the manager's other viewport is NOT stolen");
+  // MINOR: M (done) is reaped on the close path — its own presence nulled.
+  // Non-vacuous: an impl that skips the done-path setPresence-null leaves
+  // getNode('M').pane === '%m'.
+  assert.equal(getNode('M')?.pane ?? null, null, "the finished node's own LOCATION pane is nulled");
+});
+
+test('§5.1.4 truly-done + UNFOCUSED → no focus row created/touched, shuts down (Invariant P)', () => {
+  createNode(node('mgr', { parent: null, lifecycle: 'terminal', mode: 'orchestrator' }));
+  createNode(node('M', { parent: 'mgr', lifecycle: 'terminal' }));
+  subscribe('mgr', 'M', true);
+
+  process.env['CRTR_NODE_ID'] = 'M';
+  setStatus('M', 'done');
+  const pi = makeFakePi();
+  registerCanvasStophook(pi as any);
+
+  let shutdown = false;
+  pi.fire('agent_end', stopEvent('done, never had a viewport'), { shutdown: () => { shutdown = true; } });
+
+  // focusOf(M) is null → the focus block is skipped entirely → just shutdown.
+  // Non-vacuous: an impl that created or handed off a focus row would leave
+  // listFocuses non-empty.
+  assert.equal(shutdown, true, 'an unfocused done node shuts down');
+  assert.equal(listFocuses().length, 0, 'no focus row was created or touched');
+});
+
+test('§5.1.5 awaiting + focused → idle-release FREEZE: the focus row SURVIVES untouched (F3)', () => {
+  createNode(node('root', { parent: null, lifecycle: 'resident' }));
+  createNode(node('mgr', { parent: 'root', lifecycle: 'terminal', mode: 'orchestrator' }));
+  createNode(node('worker', { parent: 'mgr', lifecycle: 'terminal', status: 'active' }));
+  subscribe('root', 'mgr', true);
+  subscribe('mgr', 'worker', true); // mgr awaits a live worker → idle-release
+  openFocusRow('fMgr', '%g', 'Suser', 'mgr');
+
+  process.env['CRTR_NODE_ID'] = 'mgr';
+  const pi = makeFakePi();
+  registerCanvasStophook(pi as any);
+  pi.fire('agent_end', stopEvent('still waiting on the worker'), { shutdown: () => { /* swallow */ } });
+
+  // The awaiting branch only transition('release')s — it must NOT close or
+  // repoint the focus (that is the done branch). Non-vacuous: a wrong impl that
+  // routed an idle-release through the done-branch handoff/close would change or
+  // remove fMgr.
+  assert.equal(getNode('mgr')?.intent, 'idle-release', 'mgr idle-released (frozen)');
+  assert.equal(getFocusByNode('mgr')?.focus_id, 'fMgr', 'the focus row is UNCHANGED — not closed, not handed off');
+});
+
+test('§5.1.7 resident attended (no live subs) → nothing happens; focus + status survive', () => {
+  createNode(node('root', { parent: null, lifecycle: 'resident' }));
+  openFocusRow('fR', '%r', 'Suser', 'root');
+
+  process.env['CRTR_NODE_ID'] = 'root';
+  const pi = makeFakePi();
+  registerCanvasStophook(pi as any);
+
+  let shutdown = false;
+  pi.fire('agent_end', stopEvent('I have wrapped up'), { shutdown: () => { shutdown = true; } });
+
+  // evaluateStop on a resident → reason 'dormant' (NOT 'awaiting'), so the
+  // awaiting branch is skipped and the handler does nothing: no release, no
+  // shutdown, no focus touch. Non-vacuous: an impl that idle-released a resident
+  // would flip status→idle / intent→idle-release; one that touched focus would
+  // change/remove fR.
+  assert.equal(getNode('root')?.status, 'active', 'a resident is never forced dormant');
+  assert.equal(getNode('root')?.intent ?? null, null, 'no idle-release intent on a resident');
+  assert.equal(getFocusByNode('root')?.focus_id, 'fR', 'focus row survives untouched');
+  assert.equal(shutdown, false, 'a resident attended node is not shut down');
 });
 
 test('refresh-yield (intent=refresh) writes NO push — silent to subscribers', () => {
