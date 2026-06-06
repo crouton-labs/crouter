@@ -15,14 +15,15 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { getNode, setPresence, type NodeMeta } from '../canvas/index.js';
+import { getNode, setPresence, updateNode, setFocusOccupant, fullName, type NodeMeta } from '../canvas/index.js';
 import { reportsDir } from '../canvas/paths.js';
 import { pushFinal } from '../feed/feed.js';
 import { spawnNode } from './nodes.js';
 import { buildLaunchSpec, buildPiArgv } from './launch.js';
-import { respawnPane, piCommand, paneLocation, nodeSession } from './tmux.js';
+import { piCommand, paneLocation, nodeSession } from './tmux.js';
 import { FRONT_DOOR_ENV } from './front-door.js';
 import { getFocus, setFocus } from './presence.js';
+import { focusOf, recycleFocusPane } from './placement.js';
 import { ensureDaemon } from '../../daemon/manage.js';
 
 export interface DemoteResult {
@@ -81,14 +82,16 @@ export async function demoteNode(nodeId: string, callerPane?: string): Promise<D
     finalized = true;
   } catch { /* recycle the pane even if the report failed */ }
 
-  // The demoted node no longer holds a window — the pane is being reclaimed.
-  try { setPresence(nodeId, { window: null, tmux_session: null }); } catch { /* best-effort */ }
-  if (getFocus() === nodeId) setFocus('');
+  // Capture M's focus viewport (if any) BEFORE nulling — the fresh root inherits
+  // it (the SAME focus row + pane). The demoted node no longer holds a pane: it is
+  // being reclaimed.
+  const f = focusOf(nodeId);
+  try { setPresence(nodeId, { pane: null, window: null, tmux_session: null }); } catch { /* best-effort */ }
 
   // 2 + 3. Recycle — boot a fresh resident root in the SAME pane.
   try { ensureDaemon(); } catch { /* daemon is best-effort */ }
   const loc = paneLocation(pane);
-  const { launch } = buildLaunchSpec('general', 'base');
+  const { launch } = buildLaunchSpec('general', 'base', { lifecycle: 'resident', hasManager: false });
   const root = spawnNode({
     kind: 'general',
     mode: 'base',
@@ -98,11 +101,20 @@ export async function demoteNode(nodeId: string, callerPane?: string): Promise<D
     parent: null,
     launch,
   });
-  if (loc !== null) setPresence(root.node_id, { tmux_session: loc.session, window: loc.window });
+  // REVIVE-HOME: a demote-recycled root's durable revive target is the session
+  // of the pane it was recycled into (the one place home_session is rewritten
+  // after birth). Falls back to the backstage when the pane can't be located.
+  updateNode(root.node_id, { home_session: loc?.session ?? nodeSession() });
+  // Hand the viewport to the fresh root: reuse M's focus row over the SAME pane
+  // (respawn-pane -k below keeps the %id), so the user keeps watching this slot.
+  if (f !== null) { try { setFocusOccupant(f.focus_id, root.node_id); setFocus(root.node_id); } catch { /* best-effort */ } }
+  else if (getFocus() === nodeId) setFocus('');
   const fresh = getNode(root.node_id) as NodeMeta;
   const inv = buildPiArgv(fresh);
   const env = { ...inv.env, CRTR_ROOT_SESSION: nodeSession(), [FRONT_DOOR_ENV]: '1' };
-  const ok = respawnPane({ pane, cwd: meta.cwd, env, command: piCommand(inv.argv) });
+  const ok = recycleFocusPane(root.node_id, pane, {
+    command: piCommand(inv.argv), env, cwd: meta.cwd, name: fullName(fresh), resuming: false,
+  });
 
   return { demoted: ok, finalized, newRoot: root.node_id, delivered };
 }

@@ -11,8 +11,10 @@ import { spawnChild } from '../core/runtime/spawn.js';
 import { promote, requestYield } from '../core/runtime/promote.js';
 import { writeYieldMessage } from '../core/runtime/kickoff.js';
 import { reviveNode } from '../core/runtime/revive.js';
-import { focusNodeInPlace } from '../core/runtime/presence.js';
+
 import { demoteNode } from '../core/runtime/demote.js';
+import { detachToBackground, focus as placementFocus } from '../core/runtime/placement.js';
+import { buildLaunchSpec } from '../core/runtime/launch.js';
 import { closeNode } from '../core/runtime/close.js';
 import { windowAlive, windowOfPane, currentTmux } from '../core/runtime/tmux.js';
 import { appendInbox, type InboxTier } from '../core/feed/inbox.js';
@@ -82,14 +84,14 @@ const nodeNew = defineLeaf({
       { kind: 'flag', name: 'cwd', type: 'path', required: false, constraint: 'Dir the node is pinned to. Defaults to the caller cwd.' },
       { kind: 'flag', name: 'name', type: 'string', required: false, constraint: 'Display name (tmux window + resume picker). Defaults to the kind.' },
       { kind: 'flag', name: 'parent', type: 'string', required: false, constraint: 'Parent node id. Defaults to the calling node (CRTR_NODE_ID).' },
-      { kind: 'flag', name: 'root', type: 'bool', required: false, constraint: 'Spawn an INDEPENDENT root instead of a managed child: no parent (top-level on the canvas), NO subscription back to you (you are NOT woken by it), resident lifecycle. It records spawned_by=you for provenance. When spawned from inside tmux it opens as an ADJACENT pane in your current window (side-by-side, not exiled to the shared crtr session) and is focused so it can be driven directly. Use for a node you hand off and do not manage (e.g. a sub-orchestrator a human will discuss with).' },
+      { kind: 'flag', name: 'root', type: 'bool', required: false, constraint: 'Spawn an INDEPENDENT root instead of a managed child: no parent (top-level on the canvas), NO subscription back to you (you are NOT woken by it), resident lifecycle. It records spawned_by=you for provenance and is brought forefront so it can be driven directly. Use for a node you hand off and do not manage (e.g. a sub-orchestrator a human will discuss with).' },
       { kind: 'flag', name: 'fork-from', type: 'string', required: false, constraint: 'FORK the new node from an existing pi conversation instead of starting it fresh: pass a node id (forks from that node\'s session), an absolute session `.jsonl` path, or a partial pi session uuid. pi copies that whole history into a NEW session for the child (the source is untouched), then the prompt is delivered as the next message — i.e. the child wakes up as a continuation of that conversation. Use to branch exploratory work off a node that already built up the context you need, instead of re-deriving it. One-shot at birth: the fork resumes its own session thereafter.' },
     ],
     output: [
       { name: 'node_id', type: 'string', required: true, constraint: 'The new node id.' },
       { name: 'name', type: 'string', required: true, constraint: 'Display name.' },
-      { name: 'window', type: 'string', required: false, constraint: 'tmux window id the node was placed in — a fresh background window for a child; the caller\'s own window (as an adjacent pane) for an in-tmux --root.' },
-      { name: 'session', type: 'string', required: true, constraint: 'The tmux session the node was placed in — the shared crtr session for a child; the caller\'s session for an in-tmux --root.' },
+      { name: 'window', type: 'string', required: false, constraint: 'tmux window id of the background window.' },
+      { name: 'session', type: 'string', required: true, constraint: 'The tmux session the node was placed in — the shared crtr session for a child; your current session for an in-tmux --root.' },
       { name: 'status', type: 'string', required: true, constraint: 'Always "active" on spawn.' },
       { name: 'follow_up', type: 'string', required: true, constraint: 'Decision road sign for the caller: the child runs independently and its finish wakes you on its own, so never wait or poll on it — either pick up other work now or end your turn. If you are an orchestrator already deep in context (>100k), it instead steers you to `crtr node yield` now so your fresh revive absorbs the child\'s result. Read it, then act.' },
     ],
@@ -97,7 +99,7 @@ const nodeNew = defineLeaf({
     effects: [
       'Creates a node under ~/.crtr/nodes/<id>/ and indexes it in canvas.db.',
       'Default (managed child): parent auto-subscribes (active) and is woken on the child\'s pushes. With --root: no subscription — records a spawned_by edge for provenance only.',
-      'Opens pi in tmux: a background (non-focus-stealing) window for a child; with --root from inside tmux, an adjacent pane split into the caller\'s current window (focused to drive), or its own window when spawned outside tmux.',
+      'Opens a tmux window running pi: a background (non-focus-stealing) window in the shared crtr session for a child; with --root, a new window in your current session (in-tmux) or the shared session (outside tmux), with the client switched to it.',
     ],
   },
   run: async (input) => {
@@ -121,7 +123,7 @@ const nodeNew = defineLeaf({
       session: res.session,
       status: res.node.status,
       follow_up: root
-        ? "Independent root spawned — it is NOT under you. You are not subscribed, so its finish will NOT wake you and it does not hold you alive; it carries spawned_by=you for lineage only. It opened as an adjacent pane in your current tmux window (focused) so it can be driven directly side-by-side. Hand it off and move on — you will not be notified of its progress."
+        ? "Independent root spawned — it is NOT under you. You are not subscribed, so its finish will NOT wake you and it does not hold you alive; it carries spawned_by=you for lineage only. It opened in its own window and the client was switched to it so it can be driven directly. Hand it off and move on — you will not be notified of its progress."
         : childFollowUp(parent ?? process.env['CRTR_NODE_ID']),
     };
   },
@@ -217,6 +219,7 @@ const nodeFocus = defineLeaf({
     summary: 'bring a node into your CURRENT pane in place (swap-pane) — the agent appears where you are instead of navigating you to its window',
     params: [
       { kind: 'positional', name: 'node', required: true, constraint: 'Node id to focus.' },
+      { kind: 'flag', name: 'new-pane', type: 'bool', required: false, constraint: 'Open the node in a NEW viewport SIDE-BY-SIDE with your current pane (a second focus) instead of swapping it into your pane. Two agents on screen at once (F4).' },
     ],
     output: [
       { name: 'focused', type: 'boolean', required: true, constraint: 'True when the node was brought into view.' },
@@ -225,20 +228,22 @@ const nodeFocus = defineLeaf({
       { name: 'in_place', type: 'boolean', required: true, constraint: 'True when the node was swapped into the caller pane; false when it fell back to window focus (no caller pane).' },
     ],
     outputKind: 'object',
-    effects: ['Swaps the node\'s pane into the caller\'s current pane (tmux swap-pane -d) and updates the focus pointer.', 'Falls back to select-window (+ switch-client across roots) when there is no caller pane.', 'Revives a dormant node (resume) if it has no live window, then focuses it.'],
+    effects: ['Swaps the node\'s pane into the caller\'s current pane (tmux swap-pane -d) and retargets the caller\'s focus to it (focus pointer updated).', 'With --new-pane: splits a new viewport beside the caller (a second live focus) instead of swapping in place.', 'Revives a dormant node (resume) into the backstage if it has no live pane, then swaps it into the focus.'],
   },
   run: async (input) => {
     const id = input['node'] as string;
     const node = getNode(id);
     if (node === null) throw new InputError({ error: 'not_found', message: `no node: ${id}`, next: 'List nodes with `crtr node inspect list`.' });
-    // A dormant node (done/dead/window released) has no live window — revive it
-    // (resume the saved conversation) so there is something to focus.
-    let revived = false;
-    if (!windowAlive(node.tmux_session, node.window)) {
-      try { reviveNode(id, { resume: true }); revived = true; } catch { /* fall through; focus reports focused:false */ }
-    }
-    const res = focusNodeInPlace(id);
-    return { focused: res.focused, session: res.session, revived, in_place: res.inPlace };
+    // Placement owns the whole act (§2.3): resolve the caller's focus (or open a
+    // new viewport with --new-pane), revive the target into the backstage if it
+    // is dormant, then hot-swap it onto the focus. The reviver is injected so
+    // placement need not import revive.ts.
+    const res = placementFocus(id, {
+      newPane: input['newPane'] === true,
+      callerNode: process.env['CRTR_NODE_ID'],
+      revive: (nid) => { reviveNode(nid, { resume: true }); },
+    });
+    return { focused: res.focused, session: res.session, revived: res.revived, in_place: res.inPlace };
   },
 });
 
@@ -269,7 +274,7 @@ export function nodeInPane(pane?: string): string | undefined {
 const nodeDemote = defineLeaf({
   name: 'demote',
   description: 'finish the agent in your pane + recycle it into a fresh root',
-  whenToUse: 'you are at an agent\'s pane and done with it: finish it cleanly and recycle the pane in one move — push its last message as a final report to everyone waiting on it, mark it done, then boot a fresh crtr root in the same pane to keep working. The human-driver way to end an agent and immediately start over in place. Use `node close` instead to tear a node and its subtree down WITHOUT finishing (no report, revivable), and `push final` when the agent should finish ITSELF from inside its own turn (Alt+C → d)',
+  whenToUse: 'you are at an agent\'s pane and done with it: finish it cleanly and recycle the pane in one move — push its last message as a final report to everyone waiting on it, mark it done, then boot a fresh crtr root in the same pane to keep working. The human-driver way to end an agent and immediately start over in place. Use `node close` instead to tear a node and its subtree down WITHOUT finishing (no report, revivable), and `push final` when the agent should finish ITSELF from inside its own turn',
   help: {
     name: 'node demote',
     summary: 'finish the agent in your current pane and recycle the pane — push its last message as a final report to everyone waiting on it, mark it done, then boot a fresh crtr root in the same pane',
@@ -430,12 +435,14 @@ const nodeCycle = defineLeaf({
     const target = getNode(targetId);
     if (target === null) return { focused: false, from: fromId };
 
-    // A live node may have had its window released — revive (resume) so there is
-    // a window to swap in, mirroring `node focus`.
-    if (!windowAlive(target.tmux_session, target.window)) {
-      try { reviveNode(targetId, { resume: true }); } catch { /* fall through */ }
-    }
-    const res = focusNodeInPlace(targetId, pane, fromId);
+    // Placement retargets the caller pane's focus to the neighbor (§2.3),
+    // reviving it into the backstage first if its pane was released. callerNode
+    // is the node we cycled AWAY from — the current occupant of the caller pane.
+    const res = placementFocus(targetId, {
+      pane,
+      callerNode: fromId,
+      revive: (nid) => { reviveNode(nid, { resume: true }); },
+    });
     return { focused: res.focused, node_id: targetId, name: target.name, from: fromId };
   },
   render: (r) =>
@@ -618,33 +625,55 @@ const nodePromote = defineLeaf({
 const nodeLifecycle = defineLeaf({
   name: 'lifecycle',
   description: 'switch a node between terminal and resident',
-  whenToUse: 'you want to flip a node\'s LIFECYCLE independent of its mode: make a node RESIDENT so it becomes interactable — it stays dormant, wakes on inbox/human, and is never forced to submit a final; or make a node TERMINAL so it owes a final result up the spine and reaps when done. Orthogonal to `node promote`, which changes MODE (base↔orchestrator), not lifecycle. The new-state guidance is injected automatically at the next turn boundary',
+  whenToUse: 'you want to flip a node\'s LIFECYCLE independent of its mode: make a node RESIDENT so it becomes interactable — it stays dormant, wakes on inbox/human, and is never forced to submit a final; or make a node TERMINAL so it owes a final result up the spine and reaps when done. Orthogonal to `node promote`, which changes MODE (base↔orchestrator), not lifecycle. The new-state guidance is injected automatically at the next turn boundary. Pass `--detach` to ALSO send a still-running agent to the background crtr session, freeing your pane while it finishes — the human-driver demote (Alt+C → d demotes in place) and detach (Alt+C → D demotes + backgrounds)',
   help: {
     name: 'node lifecycle',
-    summary: 'set a node\'s lifecycle axis — terminal (owes a final up the spine, reaps when done) or resident (interactable, stays dormant, woken by inbox/human, never forced to submit). Orthogonal to mode; promotion does not touch it',
+    summary: 'set a node\'s lifecycle axis — terminal (owes a final up the spine, reaps when done) or resident (interactable, stays dormant, woken by inbox/human, never forced to submit). Orthogonal to mode; promotion does not touch it. `--detach` also relocates a live agent to the background crtr session',
     params: [
       { kind: 'positional', name: 'lifecycle', required: true, constraint: 'terminal | resident.' },
-      { kind: 'flag', name: 'node', type: 'string', required: false, constraint: 'Node to change. Defaults to the caller (CRTR_NODE_ID).' },
+      { kind: 'flag', name: 'node', type: 'string', required: false, constraint: 'Node to change. Defaults to the node in --pane, else the caller (CRTR_NODE_ID).' },
+      { kind: 'flag', name: 'pane', type: 'string', required: false, constraint: 'tmux pane id whose node to change, when --node is omitted. Defaults to $TMUX_PANE. The Alt+C menu passes this for you.' },
+      { kind: 'flag', name: 'detach', type: 'bool', required: false, constraint: 'After flipping lifecycle, send the still-running agent to the background crtr session (break its pane out of the foreground). The pi keeps generating and — now terminal — pushes a final up the spine when done. The human-driver "I am done foregrounding this" move (Alt+C → D).' },
     ],
     output: [
       { name: 'node_id', type: 'string', required: true, constraint: 'The node.' },
       { name: 'lifecycle', type: 'string', required: true, constraint: 'Its new lifecycle (terminal | resident).' },
+      { name: 'detached', type: 'boolean', required: false, constraint: 'True when --detach relocated the agent to the background crtr session.' },
     ],
     outputKind: 'object',
-    effects: ['Sets lifecycle on the node meta.', 'The persona injector delivers the transition guidance at the next turn boundary (or on the node\'s next revive if it is dormant).'],
+    effects: ['Sets lifecycle on the node meta and rebuilds its launch spec so a future revive boots with the new lifecycle\'s prompt baked in.', 'The persona injector delivers the transition guidance at the next turn boundary (or on the node\'s next revive if it is dormant).', 'With --detach: relocates the agent\'s live pane to the background crtr session (break-pane) WITHOUT killing the pi — it keeps generating in the background.'],
   },
   run: async (input) => {
     const value = (input['lifecycle'] as string | undefined)?.trim().toLowerCase();
     if (value !== 'terminal' && value !== 'resident') {
       throw new InputError({ error: 'bad_lifecycle', message: `invalid lifecycle: ${value ?? ''}`, field: 'lifecycle', next: 'Pass `terminal` or `resident`.' });
     }
-    const id = (input['node'] as string | undefined) ?? process.env['CRTR_NODE_ID'];
-    if (id === undefined || id === '') throw new InputError({ error: 'no_node', message: 'no node (set CRTR_NODE_ID or pass --node)', next: 'Run from inside a node, or pass --node <id>.' });
+    // Resolve the node: explicit --node, else the node occupying --pane (the
+    // Alt+C menu passes #{pane_id}), else the caller (CRTR_NODE_ID).
+    const pane = (input['pane'] as string | undefined) ?? process.env['TMUX_PANE'];
+    let id = input['node'] as string | undefined;
+    if (id === undefined || id === '') id = nodeInPane(pane);
+    if (id === undefined || id === '') id = process.env['CRTR_NODE_ID'];
+    if (id === undefined || id === '') throw new InputError({ error: 'no_node', message: 'no node (set CRTR_NODE_ID, pass --node, or run from the agent\'s pane)', next: 'Run from inside a node, pass --node <id>, or --pane <pane>.' });
     if (getNode(id) === null) throw new InputError({ error: 'not_found', message: `no node: ${id}`, next: 'List nodes with `crtr node inspect list`.' });
-    const meta = updateNode(id, { lifecycle: value as Lifecycle });
-    return { node_id: meta.node_id, lifecycle: meta.lifecycle };
+    // Rebuild the launch spec so a future revive comes back with the new
+    // lifecycle's prompt baked in (the live session is steered by the persona
+    // injector; this fixes the static prompt the daemon replays). Spine is fixed
+    // by parent-ness, so it carries through unchanged.
+    const target = getNode(id)!;
+    const { launch } = buildLaunchSpec(target.kind, target.mode, {
+      lifecycle: value,
+      hasManager: target.parent !== null,
+    });
+    const meta = updateNode(id, { lifecycle: value as Lifecycle, launch });
+    // --detach: shove the still-running agent into the background crtr session,
+    // freeing the foreground pane. The pi is untouched (it keeps generating); now
+    // terminal, it pushes a final up the spine when it finishes.
+    let detached = false;
+    if (input['detach'] === true) detached = detachToBackground(id, pane);
+    return { node_id: meta.node_id, lifecycle: meta.lifecycle, detached };
   },
-  render: (r) => `<lifecycle node="${r['node_id']}" set="${r['lifecycle']}"/>`,
+  render: (r) => `<lifecycle node="${r['node_id']}" set="${r['lifecycle']}"${r['detached'] === true ? ' detached="true"' : ''}/>`,
 });
 
 // ---------------------------------------------------------------------------
@@ -700,7 +729,7 @@ export function registerNode(): BranchDef {
       model:
         'Every agent is a node in one directed graph (the canvas); `subscribes_to` is the spine — spawn a child and you auto-subscribe (active) to it, so its finish wakes you.\n\n' +
         'WHEN TO DELEGATE: hand any self-contained unit of work to a child instead of doing it inline — it keeps your own context window (your scarce resource) free for steering. Spawn independent units in PARALLEL; a wake with idle workers is wasted. Serialize only true dependencies, and never let two live children edit the same files.\n\n' +
-        'HOW: `crtr node new "<task>" --kind <kind>` returns a node id immediately and runs the worker in a background window. Match the kind to the work (see `node new -h`). You are woken when a child finishes; absorb what your children reported with `crtr feed read` (coalesced pointers — dereference the report paths that matter, don\'t act on a one-line summary). Integrate, then either delegate the next units or finish.\n\n' +
+        'HOW: `crtr node new "<task>" --kind <kind>` returns a node id immediately and runs the worker in a background window. Match the kind to the work (see `node new -h`). You are woken when a child finishes — the wake message ALREADY IS the coalesced digest (the watcher drains your inbox to wake you), so don\'t re-run `crtr feed read` to "open" it (it would read empty, the cursor already advanced); instead dereference the report paths in that digest that matter, don\'t act on a one-line label. (`crtr feed read` is for proactively polling before a wake, or inspecting a child\'s inbox via `--node`; `--all` re-reads history with full message bodies.) Integrate, then either delegate the next units or finish.\n\n' +
         'FINISH: a worker ends its own work with `crtr push final "<result>"` (writes the canonical result, marks done, closes the window) — stopping without it is not finishing. For a job too big for one context window, `node promote` to an orchestrator (holds a roadmap, delegates phases); when context fills, `node yield` to refresh against that roadmap.',
     },
     children: [nodeNew, nodeInspect, nodeFocus, nodeCycle, nodeDemote, nodeClose, nodeMsg, nodeSubscribe, nodeUnsubscribe, nodePromote, nodeLifecycle, nodeYield],

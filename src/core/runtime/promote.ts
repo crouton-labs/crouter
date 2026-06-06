@@ -19,7 +19,8 @@
 // Trigger is persistence-need (deliberate, or a refresh-yield with open work),
 // never the mere act of spawning a child.
 
-import { getNode, updateNode, setIntent, type NodeMeta } from '../canvas/index.js';
+import { getNode, updateNode, type NodeMeta } from '../canvas/index.js';
+import { transition } from './lifecycle.js';
 import { buildLaunchSpec } from './launch.js';
 import { hasRoadmap, seedRoadmap, roadmapPath } from './roadmap.js';
 import {
@@ -62,7 +63,13 @@ export function promote(nodeId: string, opts: { kind?: string; resident?: boolea
   // *next* revive comes back orchestrating in that kind (polymorph stage 2).
   // nodeEnv reads meta.{kind,mode}, so CRTR_KIND/CRTR_MODE flip immediately for
   // the live process's children too.
-  const { launch } = buildLaunchSpec(targetKind, 'orchestrator');
+  // Bake the node's post-promote lifecycle + spine into the rebuilt prompt:
+  // lifecycle becomes resident only when the caller asked (else it keeps its
+  // current value); spine is fixed by parent-ness (immutable).
+  const { launch } = buildLaunchSpec(targetKind, 'orchestrator', {
+    lifecycle: opts.resident === true ? 'resident' : node.lifecycle,
+    hasManager: node.parent !== null,
+  });
 
   // Seed a barebones roadmap scaffold if absent so the file exists for a
   // refresh. Pre-fill its Goal from the node's goal doc when present (set at
@@ -131,7 +138,7 @@ export function requestYield(nodeId: string, opts: { kind?: string } = {}): Yiel
   }
 
   // Mark the intent; the stophook enacts the shutdown, the daemon the revive.
-  setIntent(nodeId, 'refresh');
+  transition(nodeId, 'yield');
   const meta = getNode(nodeId) as NodeMeta;
   return { meta, promoted, willRefresh: true };
 }

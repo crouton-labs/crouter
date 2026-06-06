@@ -14,7 +14,7 @@ import { resolve as resolvePersona } from '../personas/index.js';
 import { nodeEnv } from './nodes.js';
 import { editorLabel } from '../canvas/index.js';
 import { nodeDir } from '../canvas/paths.js';
-import type { NodeMeta, LaunchSpec, Mode } from '../canvas/index.js';
+import type { NodeMeta, LaunchSpec, Mode, Lifecycle } from '../canvas/index.js';
 
 // ---------------------------------------------------------------------------
 // The two canvas pi-extensions every node loads. They self-gate on the live
@@ -69,14 +69,19 @@ export function normalizeModel(model: string): string {
 // Build the launch spec from {kind, mode}
 // ---------------------------------------------------------------------------
 
-/** Compose a node's full pi launch recipe from its persona. The two canvas
- *  extensions are always first; persona-declared extensions follow. */
+/** Compose a node's full pi launch recipe from its persona. The system prompt
+ *  is composed from FOUR inputs: kind×mode (the persona body) plus lifecycle
+ *  (terminal/resident — the finish contract) and spine position (hasManager —
+ *  whether the push-up family is taught at all). Callers pass the authoritative
+ *  lifecycle + hasManager (`parent !== null`) so a polymorph/flip rebuilds the
+ *  prompt faithfully. The two canvas extensions are always first; persona-
+ *  declared extensions follow. */
 export function buildLaunchSpec(
   kind: string,
   mode: Mode,
-  opts: { extraEnv?: Record<string, string> } = {},
+  opts: { lifecycle: Lifecycle; hasManager: boolean; extraEnv?: Record<string, string> },
 ): { launch: LaunchSpec; lifecycle: 'terminal' | 'resident'; skills: string[] } {
-  const p = resolvePersona(kind, mode);
+  const p = resolvePersona(kind, mode, { lifecycle: opts.lifecycle, hasManager: opts.hasManager });
   const launch: LaunchSpec = {
     model: p.model !== undefined ? normalizeModel(p.model) : undefined,
     tools: p.tools,
