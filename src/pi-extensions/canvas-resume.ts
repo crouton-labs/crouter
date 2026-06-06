@@ -1,27 +1,25 @@
 // canvas-resume.ts — pi extension registering the /resume-node canvas command.
 //
-//   /resume-node  — open a TREE-SHAPED picker over the WHOLE canvas (every root,
-//     INCLUDING DORMANT nodes: done / idle / dead / canceled) rendered with tree
-//     glyphs (├─ / └─) + a status tag + name + short id, then revive the chosen
-//     node by shelling `crtr node focus <id>` (fire-and-forget). Reviving dormant
-//     nodes is the entire point, so — unlike the BASE/GRAPH chrome and
-//     renderForest()'s live-only (active|idle) filter — this walks ALL roots
-//     and ALL statuses.
+//   /resume-node  — open the full-screen canvas navigator (`crtr canvas browse`)
+//     as a tmux popup. The navigator owns the screen (tabs / auto-collapsed tree
+//     / `/` super-search / cwd scope / sort / preview) and, on Enter, focuses the
+//     chosen node back INTO this pane via `crtr node focus --pane`. The popup is
+//     scoped to THIS node's cwd by default (pass --cwd) so you see the nodes from
+//     the dir you're working in first; toggle to All dirs inside with `c`.
 //
 //   The name is literally `resume-node`, NOT `resume`, to avoid clashing with
 //   pi's built-in /resume.
 //
+// crtr ONLY runs inside tmux (see crouter/CLAUDE.md) — there is no non-tmux
+// fallback picker. Outside tmux the command notifies and no-ops.
+//
 // ⚠ DESYNC — why `crtr node focus` is the ONLY sanctioned open
-//   `crtr node focus <id>` routes through reviveNode() (src/core/runtime/
-//   revive.ts), the ONLY sanctioned launcher of `pi --session <file>`: it sets
-//   CRTR_NODE_ID + the `-e` canvas extensions and runs transition('revive').
-//   A RAW `pi --session <file>` has NEITHER → every canvas hook is inert: the
-//   stophook never records pi_pid / clears intent / marks done, no inbox-watcher
-//   wakes it, and transition('revive') never runs so the row stays dormant.
-//   Worst case (idle + intent=idle-release) the daemon can't see the raw pi (no
-//   pi_pid) and DOUBLE-SPAWNS a second pi on the same .jsonl, corrupting the
-//   conversation. A UI must therefore NEVER spawn `pi --session` directly — it
-//   opens nodes via `crtr node focus` / `crtr canvas revive`.
+//   `crtr node focus <id>` (which `canvas browse` shells on Enter) routes through
+//   reviveNode() (src/core/runtime/revive.ts), the ONLY sanctioned launcher of
+//   `pi --session <file>`: it sets CRTR_NODE_ID + the `-e` canvas extensions and
+//   runs transition('revive'). A RAW `pi --session <file>` has NEITHER → every
+//   canvas hook is inert and the daemon can DOUBLE-SPAWN onto the same .jsonl.
+//   A UI must therefore NEVER spawn `pi --session` directly.
 //
 // INERT when CRTR_NODE_ID is absent (a plain pi session, not a canvas node).
 //
@@ -31,19 +29,14 @@
 
 import { execFile } from 'node:child_process';
 
-import { getNode, listNodes, subscriptionsOf, fullName } from '../core/canvas/index.js';
-import type { NodeMeta, NodeStatus } from '../core/canvas/index.js';
-
 // ---------------------------------------------------------------------------
 // Minimal Pi interface (avoids a hard dep on @earendil-works/*). Signatures
 // sourced from pi-coding-agent's dist/core/extensions/types.d.ts:
 //   registerCommand(name, { description?, handler })
-//   ctx.mode: "tui" | "rpc" | "json" | "print"  (guard "tui" before ui.select)
-//   ctx.ui.select(title, options) -> Promise<string | undefined>
+//   ctx.mode: "tui" | "rpc" | "json" | "print"  (guard "tui" before the popup)
 // ---------------------------------------------------------------------------
 
 interface CommandUI {
-  select(title: string, options: string[]): Promise<string | undefined>;
   notify(message: string, type?: 'info' | 'warning' | 'error'): void;
 }
 
@@ -59,100 +52,12 @@ interface PiLike {
   ): void;
 }
 
-// ---------------------------------------------------------------------------
-// Forest rendering — one line per node across the WHOLE canvas, with a parallel
-// ids[] array so the chosen line maps back to its node_id. Plain unicode glyphs
-// (no ANSI) so the line renders cleanly inside pi's select dialog.
-// ---------------------------------------------------------------------------
-
-const STATUS_GLYPH: Record<NodeStatus, string> = {
-  active:   '●',
-  idle:     '○',
-  done:     '✓',
-  dead:     '✗',
-  canceled: '⊘',
-};
-
-function shortId(id: string): string {
-  return id.slice(0, 8);
+/** Single-quote a string for safe interpolation into a `sh -c` command line —
+ *  tmux runs the display-popup trailing string through the shell, so a cwd with
+ *  spaces or quotes must be escaped. */
+function shellQuote(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
 }
-
-/** `<glyph> <status> <name> [<kind>/<mode>] (<shortid>)` — a status TAG + name
- *  + short id, prefixed with the tree branch. Best-effort on a missing meta. */
-function nodeLabel(nodeId: string, branch: string): string {
-  const node = getNode(nodeId);
-  if (node === null) return `${branch}? <missing ${shortId(nodeId)}>`;
-  const glyph = STATUS_GLYPH[node.status] ?? '?';
-  return `${branch}${glyph} ${node.status} ${fullName(node)} [${node.kind}/${node.mode}] (${shortId(nodeId)})`;
-}
-
-/** Sort rank for roots — live first (active, then idle), dormant after. Keeps
- *  the picker oriented while still listing every dormant root. */
-function statusRank(status: NodeStatus): number {
-  switch (status) {
-    case 'active':   return 0;
-    case 'idle':     return 1;
-    case 'done':     return 2;
-    case 'canceled': return 3;
-    case 'dead':     return 4;
-    default:         return 5;
-  }
-}
-
-interface Forest {
-  lines: string[];
-  ids: string[];
-}
-
-/** Recursively render the subscription subtree rooted at `nodeId` into the
- *  parallel lines/ids arrays. Mirrors render.ts walkTree but keeps lines and
- *  ids strictly 1:1 (a cycle back-ref still maps to its real node, so selecting
- *  it just focuses that node — harmless). Cycle-safe via `visited`. */
-function walkSubtree(
-  nodeId: string,
-  indent: string,
-  connector: string,
-  visited: Set<string>,
-  out: Forest,
-): void {
-  if (visited.has(nodeId)) {
-    out.lines.push(`${indent}${connector}↺ ${shortId(nodeId)} (cycle)`);
-    out.ids.push(nodeId);
-    return;
-  }
-  visited.add(nodeId);
-  out.lines.push(nodeLabel(nodeId, `${indent}${connector}`));
-  out.ids.push(nodeId);
-
-  // Drop kind:'human' children: a human-ask node is a control-plane deck, not a
-  // pi conversation — it has no session, so reviving it (the whole point of this
-  // picker) boots a confused blank "you have been revived" pi. They're never a
-  // resume target, so they never belong in the picker.
-  const children = subscriptionsOf(nodeId).filter((c) => getNode(c.node_id)?.kind !== 'human');
-  // Root rows carry no connector; children of a last-child get clear space, of a
-  // mid-child a continued spine — exactly render.ts walkTree's prefix math.
-  const childIndent = indent + (connector === '' ? '' : connector === '└─ ' ? '   ' : '│  ');
-  for (let i = 0; i < children.length; i++) {
-    const isLast = i === children.length - 1;
-    walkSubtree(children[i]!.node_id, childIndent, isLast ? '└─ ' : '├─ ', visited, out);
-  }
-}
-
-/** The whole-canvas forest: EVERY root (parent === null, ANY status) and its
- *  subtree, flattened to parallel label/id arrays. */
-function buildForest(): Forest {
-  const out: Forest = { lines: [], ids: [] };
-  const visited = new Set<string>();
-  const roots = listNodes()
-    .filter((n) => n.parent === null)
-    .sort((a, b) => statusRank(a.status) - statusRank(b.status));
-  for (const r of roots) walkSubtree(r.node_id, '', '', visited, out);
-  return out;
-}
-
-// ---------------------------------------------------------------------------
-// Extension
-// ---------------------------------------------------------------------------
 
 /**
  * Register the /resume-node command on `pi`.
@@ -166,9 +71,9 @@ export function registerCanvasResume(pi: PiLike): void {
   if (typeof pi.registerCommand !== 'function') return;
 
   pi.registerCommand('resume-node', {
-    description: 'Open the canvas navigator (search/tabs/tree) and resume the chosen node',
+    description: 'Open the canvas navigator (search/scope/sort/tree) and resume the chosen node',
     handler: async (_args: string, ctx: CommandCtx): Promise<void> => {
-      // The popup / select() are terminal-only — guard the run mode before either.
+      // The popup is terminal-only — guard the run mode before opening it.
       if (ctx.mode !== 'tui') {
         try { ctx.ui.notify('/resume-node needs the interactive TUI', 'warning'); } catch { /* best-effort */ }
         return;
@@ -176,54 +81,26 @@ export function registerCanvasResume(pi: PiLike): void {
 
       const origPane = process.env['TMUX_PANE'];
 
-      // In tmux → open the full-screen canvas navigator as a popup. It owns the
-      // screen (tabs / auto-collapsed tree / `/` search) and, on Enter, focuses
-      // the chosen node back INTO this pane via `crtr node focus --pane`. Fire-
-      // and-forget: tmux runs the trailing string through sh -c, and the popup
-      // closes itself when browse exits.
+      // crtr only runs in tmux: open the full-screen canvas navigator as a popup.
+      // It owns the screen and, on Enter, focuses the chosen node back INTO this
+      // pane via `crtr node focus --pane`. Fire-and-forget: tmux runs the trailing
+      // string through sh -c, and the popup closes itself when browse exits.
       if (process.env['TMUX'] !== undefined && origPane !== undefined && origPane !== '') {
+        // Scope the navigator to this node's cwd by default (the dir pi runs in).
+        const cwd = shellQuote(process.cwd());
+        const cmd = `crtr canvas browse --return-pane ${origPane} --cwd ${cwd}`;
         try {
           execFile(
             'tmux',
-            ['display-popup', '-E', '-w', '90%', '-h', '85%', `crtr canvas browse --return-pane ${origPane}`],
+            ['display-popup', '-E', '-w', '90%', '-h', '85%', cmd],
             (): void => { /* best-effort: popup is self-contained */ },
           );
         } catch { /* best-effort */ }
         return;
       }
 
-      // Not in tmux → keep the flat tree picker fallback so non-tmux pi still works.
-      let forest: Forest;
-      try {
-        forest = buildForest();
-      } catch {
-        try { ctx.ui.notify('resume: could not read the canvas', 'error'); } catch { /* best-effort */ }
-        return;
-      }
-      if (forest.lines.length === 0) {
-        try { ctx.ui.notify('No nodes on the canvas to resume.', 'info'); } catch { /* best-effort */ }
-        return;
-      }
-
-      const choice = await ctx.ui.select('Resume which node?', forest.lines);
-      if (choice === undefined) return; // cancelled / timed out
-
-      const idx = forest.lines.indexOf(choice);
-      const targetId = idx >= 0 ? forest.ids[idx] : undefined;
-      if (targetId === undefined) return;
-
-      // The ONLY sync-safe open: route through reviveNode via `crtr node focus`.
-      // Fire-and-forget — `node focus` swaps the target into THIS pane, replacing
-      // the current pi, so the callback may never run (best-effort notify only).
-      try {
-        execFile('crtr', ['node', 'focus', targetId], (err): void => {
-          if (err != null) {
-            try { ctx.ui.notify(`resume failed: focus ${shortId(targetId)}`, 'error'); } catch { /* best-effort */ }
-          }
-        });
-      } catch {
-        /* best-effort */
-      }
+      // Not in tmux → crtr is tmux-only, so there is nothing to fall back to.
+      try { ctx.ui.notify('/resume-node needs tmux', 'warning'); } catch { /* best-effort */ }
     },
   });
 }

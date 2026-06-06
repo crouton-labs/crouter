@@ -25,6 +25,13 @@ export const browseLeaf: LeafDef = defineLeaf({
         required: false,
         constraint: 'tmux pane id to focus the chosen node INTO (set by the /resume-node popup so the node lands back in your pi pane). Default: this pane.',
       },
+      {
+        kind: 'flag',
+        name: 'cwd',
+        type: 'string',
+        required: false,
+        constraint: 'directory to scope the navigator to by default — only nodes spawned from this dir show until you toggle to All dirs (c). The /resume-node popup passes the launching node\'s cwd. Default: the invocation cwd.',
+      },
     ],
     output: [],
     outputKind: 'object',
@@ -35,6 +42,7 @@ export const browseLeaf: LeafDef = defineLeaf({
     ],
   },
   run: async (input) => {
-    await runBrowse({ returnPane: input['returnPane'] as string | undefined });
+    const cwd = (input['cwd'] as string | undefined) ?? process.cwd();
+    await runBrowse({ returnPane: input['returnPane'] as string | undefined, cwd });
   },
 });

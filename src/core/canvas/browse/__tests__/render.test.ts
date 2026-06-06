@@ -9,7 +9,7 @@ import { renderFrame, detectColorCaps, type ColorCaps, type RenderState } from '
 // ── Fixture ───────────────────────────────────────────────────────────────────
 
 function row(node_id: string, name: string, status: NodeStatus, opts: Partial<DashboardRow> = {}): DashboardRow {
-  return { node_id, name, status, kind: 'general', mode: 'base', ctx_tokens: 0, asks: 0, ...opts };
+  return { node_id, name, status, kind: 'general', mode: 'base', ctx_tokens: 0, asks: 0, cwd: '/tmp/proj', created: '2026-01-01T00:00:00.000Z', ...opts };
 }
 
 const ROWS: DashboardRow[] = [
@@ -42,6 +42,9 @@ function state(over: Partial<RenderState> = {}): RenderState {
     query: '',
     search: false,
     totalNodes: t.nodes.size,
+    cwdScope: null,
+    sort: 'tree',
+    preview: false,
     ...over,
   };
 }

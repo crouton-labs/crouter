@@ -9,6 +9,7 @@
 // `pi --session` directly (see canvas-resume.ts header for the desync hazard).
 
 import { execFileSync } from 'node:child_process';
+import { resolve } from 'node:path';
 
 import { dashboardRowsAll, renderForest } from '../render.js';
 import { listNodes, subscriptionsOf } from '../canvas.js';
@@ -19,8 +20,8 @@ import {
   parseKeypress,
   type Key,
 } from './terminal.js';
-import { buildTree, flatten, TABS, type Tab, type Tree, type VisibleRow } from './model.js';
-import { renderFrame, detectColorCaps, type ColorCaps } from './render.js';
+import { buildTree, flatten, TABS, SORTS, type Tab, type Tree, type VisibleRow, type SortMode } from './model.js';
+import { renderFrame, detectColorCaps, headerHeight, PREVIEW_HEIGHT, type ColorCaps } from './render.js';
 
 interface BrowseState {
   tab: Tab;
@@ -29,21 +30,24 @@ interface BrowseState {
   query: string;
   search: boolean;
   scrollOffset: number;
+  /** Active cwd-scope filter; null = All dirs. Toggled with `c`. */
+  cwdScope: string | null;
+  /** Ordering — tree / relevance / recency. Cycled with `s`. */
+  sort: SortMode;
+  /** Bottom preview panel visibility. Toggled with `p`. */
+  preview: boolean;
 }
 
-/** Header lines renderFrame draws above the body — title + tabs + [search/filter
- *  line] + separator. A committed (non-search) query keeps its own indicator
- *  line, so scroll math must count it too. Must match render.ts's layout. */
-function headerLines(search: boolean, hasQuery: boolean): number {
-  return 2 + (search || hasQuery ? 1 : 0) + 1;
-}
-
-function viewportHeight(rowsTotal: number, search: boolean, hasQuery: boolean): number {
+/** Viewport (body) height = total rows minus the header renderFrame draws (see
+ *  render.ts headerHeight), the footer, and the preview panel when shown. Kept
+ *  in lockstep with render.ts via the shared headerHeight/PREVIEW_HEIGHT. */
+function viewportHeight(rowsTotal: number, search: boolean, previewOn: boolean): number {
   const rows = Math.max(8, rowsTotal);
-  return Math.max(1, rows - headerLines(search, hasQuery) - 1 /* footer */);
+  const previewH = previewOn ? PREVIEW_HEIGHT : 0;
+  return Math.max(1, rows - headerHeight(search) - 1 /* footer */ - previewH);
 }
 
-export async function runBrowse(opts: { returnPane?: string } = {}): Promise<void> {
+export async function runBrowse(opts: { returnPane?: string; cwd?: string } = {}): Promise<void> {
   // No TTY → print the static forest and exit 0 (no raw mode).
   if (!process.stdin.isTTY) {
     process.stdout.write(renderForest() + '\n');
@@ -60,6 +64,11 @@ export async function runBrowse(opts: { returnPane?: string } = {}): Promise<voi
   const tree: Tree = buildTree(rows, rootIds, (id) => subscriptionsOf(id).map((s) => s.node_id));
   const totalNodes = tree.nodes.size;
 
+  // Default cwd scope = the dir browse was launched from (the request). The popup
+  // / command passes --cwd; resolve it so it compares cleanly against stored cwds.
+  // null when unknown → All dirs (the toggle's other state).
+  const launchCwd = opts.cwd !== undefined && opts.cwd.trim() !== '' ? resolve(opts.cwd) : null;
+
   const state: BrowseState = {
     tab: 'All',
     cursor: 0,
@@ -70,6 +79,9 @@ export async function runBrowse(opts: { returnPane?: string } = {}): Promise<voi
     query: '',
     search: false,
     scrollOffset: 0,
+    cwdScope: launchCwd, // default: this dir
+    sort: 'tree',
+    preview: true,       // default ON (decision)
   };
 
   let visible: VisibleRow[] = [];
@@ -102,7 +114,13 @@ export async function runBrowse(opts: { returnPane?: string } = {}): Promise<voi
   };
 
   const recompute = (keepId?: string): void => {
-    visible = flatten(tree, { collapsed: state.collapsed, tab: state.tab, query: state.query });
+    visible = flatten(tree, {
+      collapsed: state.collapsed,
+      tab: state.tab,
+      query: state.query,
+      cwdScope: state.cwdScope,
+      sort: state.sort,
+    });
     if (keepId !== undefined) {
       const idx = visible.findIndex((v) => v.id === keepId);
       if (idx >= 0) state.cursor = idx;
@@ -113,13 +131,18 @@ export async function runBrowse(opts: { returnPane?: string } = {}): Promise<voi
 
   const flush = (): void => {
     const size = getTerminalSize();
-    const viewport = viewportHeight(size.rows, state.search, state.query !== '');
+    const previewOn = state.preview && visible.length > 0;
+    const viewport = viewportHeight(size.rows, state.search, previewOn);
     // Keep the cursor inside the viewport window.
     if (state.cursor < state.scrollOffset) state.scrollOffset = state.cursor;
     if (state.cursor >= state.scrollOffset + viewport) state.scrollOffset = state.cursor - viewport + 1;
     if (state.scrollOffset < 0) state.scrollOffset = 0;
     const frame = renderFrame(
-      { tree, visible, tab: state.tab, cursor: state.cursor, scrollOffset: state.scrollOffset, query: state.query, search: state.search, totalNodes },
+      {
+        tree, visible, tab: state.tab, cursor: state.cursor, scrollOffset: state.scrollOffset,
+        query: state.query, search: state.search, totalNodes,
+        cwdScope: state.cwdScope, sort: state.sort, preview: state.preview,
+      },
       size,
       caps,
     );
@@ -142,10 +165,29 @@ export async function runBrowse(opts: { returnPane?: string } = {}): Promise<voi
     recompute();
   };
 
+  // Cycle sort (tree → relevance → recency), keeping the selected node put.
+  const cycleSort = (): void => {
+    const keep = curRow()?.id;
+    const i = SORTS.indexOf(state.sort);
+    state.sort = SORTS[(i + 1) % SORTS.length]!;
+    recompute(keep);
+  };
+
+  // Toggle cwd scope between the launch dir and All dirs (no-op if launch dir
+  // is unknown — stays All dirs). Keeps the selected node put when still in view.
+  const toggleScope = (): void => {
+    const keep = curRow()?.id;
+    state.cwdScope = state.cwdScope === null ? launchCwd : null;
+    recompute(keep);
+  };
+
   const onKeySearch = (input: string, key: Key): void => {
     if (key.escape) {
+      // Cancel the search: drop the query AND the relevance ranking it switched
+      // on, returning to the tree.
       state.search = false;
       state.query = '';
+      state.sort = 'tree';
       recompute();
       flush();
       return;
@@ -248,10 +290,17 @@ export async function runBrowse(opts: { returnPane?: string } = {}): Promise<voi
       return;
     }
 
-    // Search.
+    // Sort / scope / preview.
+    if (input === 's') { cycleSort(); flush(); return; }
+    if (input === 'c') { toggleScope(); flush(); return; }
+    if (input === 'p') { state.preview = !state.preview; flush(); return; }
+
+    // Search. Starting a search ranks by relevance (decision) so the best prompt/
+    // name match floats to the top as you type.
     if (input === '/') {
       state.search = true;
       state.query = '';
+      state.sort = 'relevance';
       state.cursor = 0;
       state.scrollOffset = 0;
       recompute();
@@ -266,8 +315,13 @@ export async function runBrowse(opts: { returnPane?: string } = {}): Promise<voi
     }
   };
 
-  // Boot.
+  // Boot. If the launch dir holds NO nodes, the default this-dir scope would show
+  // a blank canvas — fall back to All dirs so browse is never empty on open.
   recompute();
+  if (visible.length === 0 && state.cwdScope !== null) {
+    state.cwdScope = null;
+    recompute();
+  }
   setupTerminal();
   flush();
 

@@ -15,7 +15,7 @@ import { buildTree, flatten, fuzzyMatch, tabPredicate, TABS } from '../model.js'
 //   lonely (idle)             ← straggler: in rows, no edge reaches it, not a root
 
 function row(node_id: string, name: string, status: NodeStatus, asks = 0): DashboardRow {
-  return { node_id, name, status, kind: 'general', mode: 'base', ctx_tokens: 0, asks };
+  return { node_id, name, status, kind: 'general', mode: 'base', ctx_tokens: 0, asks, cwd: '/tmp/proj', created: '2026-01-01T00:00:00.000Z' };
 }
 
 const ROWS: DashboardRow[] = [

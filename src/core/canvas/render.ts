@@ -18,7 +18,7 @@ import { join } from 'node:path';
 
 import { getNode, listNodes, subscriptionsOf, view } from './canvas.js';
 import { fullName } from './labels.js';
-import { jobDir } from './paths.js';
+import { jobDir, contextDir } from './paths.js';
 import { countAsks } from './attention.js';
 import type { NodeStatus } from './types.js';
 
@@ -212,6 +212,33 @@ export interface DashboardRow {
   mode: string;
   ctx_tokens: number;
   asks: number;
+  /** The dir the node is pinned to (its cwd). Drives the browser's cwd-scope
+   *  filter + the All-dirs basename cue. */
+  cwd: string;
+  /** ISO 8601 birth timestamp — drives the recency sort + the relative-age cue. */
+  created: string;
+  /** The node's spawn prompt (context/initial-prompt.md), trimmed + capped. Only
+   *  populated by dashboardRowsAll (the browser snapshot) — the dashboard leaf
+   *  leaves it undefined to avoid a file read per node. Indexed by super-search
+   *  and shown in the preview panel. */
+  goal?: string;
+}
+
+/** The spawn prompt, read straight off disk (canvas-home state) and capped so a
+ *  giant initial-prompt.md can't bloat the snapshot. Mirrors how telemetry is
+ *  read here directly rather than via the runtime layer (which would invert the
+ *  canvas→runtime dependency). Never throws. */
+const GOAL_CAP = 4096;
+function readGoalText(nodeId: string): string | undefined {
+  try {
+    const p = join(contextDir(nodeId), 'initial-prompt.md');
+    if (!existsSync(p)) return undefined;
+    const body = readFileSync(p, 'utf8').trim();
+    if (body === '') return undefined;
+    return body.length > GOAL_CAP ? body.slice(0, GOAL_CAP) : body;
+  } catch {
+    return undefined;
+  }
 }
 
 /** One row per node visible in the sub-DAG of `rootId` (including root). */
@@ -229,6 +256,8 @@ export function dashboardRows(rootId: string): DashboardRow[] {
       mode: node.mode,
       ctx_tokens: tel.tokens_in ?? 0,
       asks: countAsks(id),
+      cwd: node.cwd,
+      created: node.created,
     }];
   });
 }
@@ -248,6 +277,9 @@ export function dashboardRowsAll(): DashboardRow[] {
       mode: row.mode,
       ctx_tokens: tel.tokens_in ?? 0,
       asks: countAsks(row.node_id),
+      cwd: row.cwd,
+      created: row.created,
+      goal: readGoalText(row.node_id),
     }];
   });
 }

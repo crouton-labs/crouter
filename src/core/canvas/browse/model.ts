@@ -16,6 +16,18 @@ export type Tab = 'All' | 'Live' | 'Dormant' | 'Flagged';
 
 export const TABS: readonly Tab[] = ['All', 'Live', 'Dormant', 'Flagged'] as const;
 
+// ---------------------------------------------------------------------------
+// Sort modes
+// ---------------------------------------------------------------------------
+
+/** How the visible rows are ordered.
+ *    tree      — spanning-tree order, ancestors shown for context (the default).
+ *    relevance — FLAT list, best query match first (super-search).
+ *    recency   — FLAT list, newest `created` first. */
+export type SortMode = 'tree' | 'relevance' | 'recency';
+
+export const SORTS: readonly SortMode[] = ['tree', 'relevance', 'recency'] as const;
+
 /** Does a node belong to this tab's slice?
  *    All      — every node.
  *    Live     — active | idle.
@@ -158,13 +170,53 @@ function shortId(id: string): string {
   return id.slice(0, 8);
 }
 
-/** Does this row match the live query across name | kind | short-id? */
-function queryMatch(query: string, row: DashboardRow): boolean {
+/** Does this row match the live query? Super-search spans name (which already
+ *  folds in the pi-generated description), kind, short-id, AND the spawn prompt
+ *  (`row.goal`). Empty query matches everything. */
+export function queryMatch(query: string, row: DashboardRow): boolean {
   if (query === '') return true;
   return (
     fuzzyMatch(query, row.name) ||
     fuzzyMatch(query, row.kind) ||
-    fuzzyMatch(query, shortId(row.node_id))
+    fuzzyMatch(query, shortId(row.node_id)) ||
+    (row.goal !== undefined && fuzzyMatch(query, row.goal))
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Relevance scoring (super-search)
+// ---------------------------------------------------------------------------
+
+/** Score how well `query` matches one field, 0 (no match) → 1 (exact). Tiers:
+ *  exact > prefix > word-boundary substring > interior substring > subsequence.
+ *  An interior match decays slightly the later it starts so leading matches win. */
+export function fieldScore(query: string, text: string): number {
+  if (query === '' || text === '') return 0;
+  const q = query.toLowerCase();
+  const t = text.toLowerCase();
+  const idx = t.indexOf(q);
+  if (idx === 0) return t.length === q.length ? 1 : 0.85;          // exact | prefix
+  if (idx > 0) {
+    const prev = t[idx - 1] ?? '';
+    const boundary = /[\s_\-/.:]/.test(prev) ? 0.1 : 0;            // word-boundary bonus
+    return 0.55 + boundary - Math.min(0.2, idx / 400);             // interior, decays late
+  }
+  return fuzzyMatch(q, t) ? 0.2 : 0;                                // scattered subsequence
+}
+
+/** Per-field weights — name (handle + description) dominates, the spawn prompt
+ *  is the long-tail super-search field. */
+const FIELD_WEIGHTS = { name: 4, kind: 2, id: 1, goal: 1.5 } as const;
+
+/** Weighted relevance of a row to the query across all searched fields. 0 means
+ *  no field matched (excluded from relevance results, same as `queryMatch`). */
+export function scoreRow(query: string, row: DashboardRow): number {
+  if (query === '') return 0;
+  return (
+    FIELD_WEIGHTS.name * fieldScore(query, row.name) +
+    FIELD_WEIGHTS.kind * fieldScore(query, row.kind) +
+    FIELD_WEIGHTS.id * fieldScore(query, shortId(row.node_id)) +
+    FIELD_WEIGHTS.goal * (row.goal !== undefined ? fieldScore(query, row.goal) : 0)
   );
 }
 
@@ -184,6 +236,18 @@ export interface FlattenOpts {
   collapsed: Set<string>;
   tab: Tab;
   query: string;
+  /** cwd-scope filter: only rows pinned to this dir are directly-matched. null /
+   *  undefined = All dirs (no cwd filter). Like the tab predicate, it gates the
+   *  matched set — ancestors from other dirs still render dimmed for tree context. */
+  cwdScope?: string | null;
+  /** Ordering. `tree` keeps the spanning tree + ancestor context; `relevance` /
+   *  `recency` produce a FLAT ranked list of directly-matched rows. */
+  sort?: SortMode;
+}
+
+/** Is this row inside the active cwd scope? No scope (null/undefined) = All dirs. */
+export function cwdMatch(scope: string | null | undefined, row: DashboardRow): boolean {
+  return scope === null || scope === undefined || row.cwd === scope;
 }
 
 /**
@@ -199,12 +263,31 @@ export interface FlattenOpts {
  * always reachable.
  */
 export function flatten(tree: Tree, opts: FlattenOpts): VisibleRow[] {
-  const { collapsed, tab, query } = opts;
+  const { collapsed, tab, query, cwdScope, sort = 'tree' } = opts;
 
-  // 1. Directly-matched nodes.
+  // 1. Directly-matched nodes: tab predicate AND cwd scope AND query.
   const matched = new Set<string>();
   for (const [id, node] of tree.nodes) {
-    if (tabPredicate(tab, node.row) && queryMatch(query, node.row)) matched.add(id);
+    if (tabPredicate(tab, node.row) && cwdMatch(cwdScope, node.row) && queryMatch(query, node.row)) {
+      matched.add(id);
+    }
+  }
+
+  // FLAT ranked modes (relevance / recency): no tree, no ancestors — just the
+  // directly-matched rows in ranked order. Relevance falls back to recency when
+  // the query is empty (every score would be 0).
+  if (sort !== 'tree') {
+    const ids = [...matched];
+    const createdOf = (id: string): string => tree.nodes.get(id)?.row.created ?? '';
+    const byRecency = (a: string, b: string): number => createdOf(b).localeCompare(createdOf(a));
+    if (sort === 'recency' || query === '') {
+      ids.sort(byRecency);
+    } else {
+      const score = new Map<string, number>();
+      for (const id of ids) score.set(id, scoreRow(query, tree.nodes.get(id)!.row));
+      ids.sort((a, b) => (score.get(b)! - score.get(a)!) || byRecency(a, b));
+    }
+    return ids.map((id) => ({ id, depth: 0, hasChildren: false, collapsed: false, matched: true }));
   }
 
   // 2. Ancestors of matches (for tree context + force-expand under query).
