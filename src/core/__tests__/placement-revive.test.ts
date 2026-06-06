@@ -33,7 +33,7 @@ import { openFocusRow, getFocusByNode, getFocusById } from '../canvas/focuses.js
 import { closeDb } from '../canvas/db.js';
 import { reviveTarget, reviveIntoPlacement, reconcileFocus } from '../runtime/placement.js';
 import { reviveInPlace } from '../runtime/revive.js';
-import type { RespawnPaneOpts } from '../runtime/tmux.js';
+import type { RespawnPaneOpts } from '../runtime/placement.js';
 import type { FocusRow, NodeMeta } from '../canvas/types.js';
 
 let home: string;

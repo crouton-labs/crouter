@@ -163,8 +163,8 @@ test('Step 7: closing a FOCUSED node closes its focus row + nulls its pane (tear
   closeNode('N');
 
   // tearDownNode closes the focus row the node occupied and nulls its LOCATION.
-  // Non-vacuous: pre-Step-7 close used closeWindow/setFocus('') and never touched
-  // the focuses table, so getFocusByNode('N') would still return fN.
+  // Non-vacuous: pre-Step-7 close used closeWindow and never touched the focuses
+  // table, so getFocusByNode('N') would still return fN.
   assert.equal(getFocusByNode('N'), null, 'focus row closed by tearDownNode');
   assert.equal(getNode('N')!.pane ?? null, null, 'pane nulled (pane-keyed teardown)');
   assert.equal(getNode('N')!.status, 'canceled', 'node canceled as before');

@@ -155,8 +155,8 @@ export function closeNode(rootId: string): CloseNodeResult {
 
       // 2) Tear the node off its placement (pane-keyed): close any focus row it
       //    occupies, kill its PANE (the window closes once its last pane goes, so
-      //    sibling nodes the user co-located in one window survive), null its
-      //    LOCATION, and clear focus.ptr if it was the current focus.
+      //    sibling nodes the user co-located in one window survive), and null its
+      //    LOCATION (closing the focus row is the record — no pointer to clear).
       tearDownNode(id);
 
       // 3) Leave the resume notice AFTER the watcher is gone, so it survives.

@@ -10,6 +10,7 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import { readConfig } from '../config.js';
+import { nodeSession } from './nodes.js';
 
 // ---------------------------------------------------------------------------
 // Shell quoting + tmux invocation
@@ -31,15 +32,6 @@ function tmux(args: string[]): { ok: boolean; stdout: string; stderr: string } {
 
 export function inTmux(): boolean {
   return process.env['TMUX'] !== undefined && process.env['TMUX'] !== '';
-}
-
-/** The single, shared tmux session that ALL canvas node windows live in.
- *  Overridable with CRTR_NODE_SESSION (default `crtr`). Every root and every
- *  child opens a window here rather than cluttering the user's own working
- *  session — switch to it to browse the whole live graph, ignore it otherwise. */
-export function nodeSession(): string {
-  const v = process.env['CRTR_NODE_SESSION'];
-  return v !== undefined && v !== '' ? v : 'crtr';
 }
 
 export interface TmuxLocation {
@@ -324,8 +316,23 @@ export function respawnPane(opts: RespawnPaneOpts): boolean {
 // pi command assembly
 // ---------------------------------------------------------------------------
 
-/** Turn a pi argv array into a single shell command string. */
-export function piCommand(argv: string[], binary = 'pi'): string {
+/** Turn a pi argv array into a single shell command string.
+ *
+ *  The binary defaults to `CRTR_PI_BINARY` when that env var is set, else the
+ *  literal `pi`. This is a TEST-ONLY substitution seam: when CRTR_PI_BINARY is
+ *  unset (every production path) the behavior is byte-identical to exec'ing
+ *  `pi`. The integration-test harness points it at a deterministic fake-pi
+ *  vehicle so a real `crtr node new` reaches the fake instead of the LLM `pi`,
+ *  without any dependence on tmux/shell PATH inheritance — the substitution is
+ *  baked into the command string at build time, in the process that calls
+ *  piCommand. An explicit `binary` arg still overrides the env (no caller passes
+ *  one today). The value may be a multi-word launcher (e.g. `node --import
+ *  tsx/esm host.ts`); only the argv entries are shell-quoted, so a multi-word
+ *  binary is spliced verbatim ahead of them. */
+export function piCommand(
+  argv: string[],
+  binary = process.env['CRTR_PI_BINARY'] ?? 'pi',
+): string {
   return [binary, ...argv.map(shellQuote)].join(' ');
 }
 
@@ -354,7 +361,7 @@ export function windowAlive(
 }
 
 // ---------------------------------------------------------------------------
-// Focus helpers (used by the presence layer)
+// Focus helpers (used by the placement layer)
 // ---------------------------------------------------------------------------
 
 /** Activate a window within its session (same-session navigation). Equivalent

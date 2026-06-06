@@ -1,9 +1,9 @@
 // placement.ts — the Placement MODEL layer (Steps 3–5).
 //
 // Above tmux.ts (the Surface/driver), below the daemon and the runtime ops. This
-// is the first module under the §2.1 rule: "only placement.ts / tmux-chrome.ts
-// import the tmux driver." (The import-lint is warn-only until Step 8, so the
-// other direct importers staying is fine for now.)
+// is the sanctioned model-over-driver under the §2.1 rule: "only placement.ts /
+// tmux-chrome.ts import the tmux driver" (enforced by the §5.1 import-lint). Every
+// other runtime/command module reaches the driver through placement's re-exports.
 //
 // Responsibilities, all keyed on the durable tmux `%pane_id` (§1.2/§2.4, Q6):
 //
@@ -54,7 +54,6 @@ import {
   respawnPaneSync,
   respawnPaneDetached,
   breakPaneToSession,
-  nodeSession,
   splitWindow,
   swapPaneInPlace,
   setRemainOnExit,
@@ -66,15 +65,30 @@ import {
   switchClient,
   selectWindow,
 } from './tmux.js';
-import { homeSessionOf, newNodeId } from './nodes.js';
-import { setFocus, getFocus } from './presence.js';
+import { homeSessionOf, nodeSession, newNodeId } from './nodes.js';
 
 // Re-export the durable REVIVE-HOME read so placement is the one front door for
-// "where does this node live." Step 1 put the implementation in nodes.ts; the
-// presence.ts→placement.ts consolidation (Steps 6/8) is where it physically
-// moves — until then placement just re-exports it (no churn).
+// "where does this node live."
 export { homeSessionOf };
 export type { FocusRow };
+
+// Placement is the sanctioned model-over-driver (§2.1): non-placement runtime /
+// command modules that legitimately need a raw driver verb get it from here, so
+// the §5.1 lint can hold "only placement.ts / tmux-chrome.ts import tmux.ts".
+export {
+  piCommand,
+  paneLocation,
+  currentTmux,
+  inTmux,
+  ensureSession,
+  openNodeWindow,
+  focusWindow,
+  windowAlive,
+  windowOfPane,
+  respawnPane,
+} from './tmux.js';
+export type { RespawnPaneOpts } from './tmux.js';
+export { nodeSession } from './nodes.js';
 
 // ---------------------------------------------------------------------------
 // Focus reads (Step 4) — COMPOSE over the canvas focuses table (§2.3/§4).
@@ -84,12 +98,10 @@ export type { FocusRow };
 // way it composes setPresence. A node occupies at most one focus (UNIQUE
 // node_id, Q5), so focusOf returns a single row.
 //
-// NOTE on openFocus: §2.3/§4 list `openFocus` (split-window + setRemainOnExit +
-// openFocusRow) under Step 4, but it is NOT CALLED until Step 6 (root-boot focus
-// #1 + `node focus --new-pane`). The tmux-composing half is therefore DEFERRED
-// to Step 6; Step 4 ships only the canvas setter `openFocusRow` + these reads +
-// the focus.ptr dual-write bridge (presence.ts). retargetFocus /
-// reviveIntoPlacement are likewise Steps 5/6, not here.
+// The `focuses` table (canvas/focuses.ts) is the CANONICAL focus store — there is
+// no focus.ptr file and no dual-write bridge. openFocus / retargetFocus /
+// registerRootFocus / handFocusToManager write focus rows directly; these reads
+// compose over them.
 // ---------------------------------------------------------------------------
 
 /** The focus a node occupies, or null. UNIQUE(node_id) ⇒ at most one. */
@@ -535,7 +547,7 @@ export function openFocus(callerPane: string, opts: { newWindow?: boolean } = {}
  *  `remain-on-exit` so a clean exit FREEZES the pane rather than detaching the
  *  terminal (F1). A background `--root` does NOT call this (§6): it stays a plain
  *  window until the user `node focus`es it. No-op when the pane or this node is
- *  already a focus. Mirrors focus.ptr via setFocus (the transitional bridge). */
+ *  already a focus. The focus row IS the record — no pointer to mirror. */
 export function registerRootFocus(
   nodeId: string,
   pane: string,
@@ -549,7 +561,6 @@ export function registerRootFocus(
   const focusId = newFocusId();
   openFocusRow(focusId, pane, session, nodeId);
   armRemainOnExit(window);
-  setFocus(nodeId);
   return getFocusById(focusId);
 }
 
@@ -565,7 +576,7 @@ export function registerRootFocus(
  *      (cross-session swap confirmed by the spike).
  *    - outgoing still generating → backstage (F2); else reap its now-backstage
  *      pane (Invariant P). A holder occupant (no node row) is always reaped.
- *  Arms remain-on-exit on the viewport (F3) and mirrors focus.ptr (setFocus). */
+ *  Arms remain-on-exit on the viewport (F3); the focus row is the record. */
 export function retargetFocus(focusId: string, incoming: string, revive: Reviver): FocusResult {
   let f = getFocusById(focusId);
   if (f === null) return { focused: false, session: null, inPlace: false, revived: false };
@@ -610,7 +621,6 @@ export function retargetFocus(focusId: string, incoming: string, revive: Reviver
     const loc = paneLocation(pin);
     commitFocusTxn(f.focus_id, incoming, pin, loc, outgoing, { kind: 'kill' }, null, null);
     armRemainOnExit(loc?.window);
-    setFocus(incoming);
     return { focused: true, session: loc?.session ?? f.session, inPlace: true, revived };
   }
 
@@ -628,7 +638,6 @@ export function retargetFocus(focusId: string, incoming: string, revive: Reviver
   // commit (a tmux side effect, outside the txn).
   if (action.kind === 'kill') closePane(focusPane);
   armRemainOnExit(pinLoc?.window);
-  setFocus(incoming);
   return { focused: true, session: pinLoc?.session ?? f.session, inPlace: true, revived };
 }
 
@@ -674,8 +683,8 @@ function commitFocusTxn(
  *    - else → retarget the caller pane's focus IN PLACE (`focusByPane`); if the
  *      caller's pane is not yet a viewport, adopt it as one (occupied by whatever
  *      node sits there now — `callerNode`, else resolved by pane).
- *    - no caller pane (not in tmux) → best-effort: mirror focus.ptr, report
- *      not-in-place. */
+ *    - no caller pane (not in tmux) → best-effort: reconcile + report status,
+ *      not-in-place (no viewport to swap into). */
 export function focus(
   nodeId: string,
   opts: { pane?: string; newPane?: boolean; callerNode?: string; revive: Reviver },
@@ -685,8 +694,7 @@ export function focus(
 
   const callerPane = opts.pane ?? process.env['TMUX_PANE'] ?? currentTmux()?.pane;
   if (callerPane === undefined || callerPane === '') {
-    // Not in tmux — no viewport to swap into. Mirror the pointer; report status.
-    setFocus(nodeId);
+    // Not in tmux — no viewport to swap into. Reconcile and report status.
     reconcile(nodeId);
     return { focused: isNodePaneAlive(nodeId), session: meta.tmux_session ?? null, inPlace: false, revived: false };
   }
@@ -700,7 +708,6 @@ export function focus(
   let f = focusByPane(callerPane);
   if (f === null) f = ensureFocusAtPane(callerPane, opts.callerNode);
   if (f === null) {
-    setFocus(nodeId);
     return { focused: false, session: meta.tmux_session ?? null, inPlace: false, revived: false };
   }
   return retargetFocus(f.focus_id, nodeId, opts.revive);
@@ -734,7 +741,7 @@ function ensureFocusAtPane(pane: string, callerNode?: string): FocusRow | null {
  *  Reconcile first (follow a manual move / backfill a legacy pane), close the
  *  focus row it occupies (if any), kill its pane (pane-keyed via the durable
  *  `%id` — the window collapses once its last pane goes), and null its LOCATION.
- *  Mirrors focus.ptr when this node was the current focus. Best-effort tmux; the
+ *  The focus row close is the record. Best-effort tmux; the
  *  DB writes always land. The pane kill is the sole teardown unit (Q1/§6: a
  *  split-pane focus returns its space to the surviving split; a standalone-window
  *  focus closes the window). */
@@ -746,7 +753,6 @@ export function tearDownNode(nodeId: string): void {
   const pane = row?.pane ?? f?.pane ?? null;
   if (pane !== null && paneExists(pane)) closePane(pane);
   setPresence(nodeId, { pane: null, tmux_session: null, window: null });
-  if (getFocus() === nodeId) setFocus('');
 }
 
 /** Demote's in-pane relaunch (§2.3, flow (e)): respawn `nodeId`'s launch into an
@@ -796,7 +802,6 @@ export function handFocusToManager(focusId: string, managerId: string | null): b
   if (f === null || managerId === f.node_id) return false;
   if (getFocusByNode(managerId) !== null) return false; // manager already focused elsewhere
   setFocusOccupant(focusId, managerId);
-  setFocus(managerId);
 
   // MAJOR 1 — LIVE backstage manager → swap it into the focus slot now. DORMANT
   // managers (no live pane / dead pi) fall through unchanged: the daemon revives
@@ -810,6 +815,20 @@ export function handFocusToManager(focusId: string, managerId: string | null): b
     }
   }
   return true; // still "took focus" — caller doesn't close
+}
+
+/** Q1 close-to-shell for a truly-done focused node with no successor (§1.6 /
+ *  flow (b)): close its focus row and DISARM the pane's
+ *  freeze (`remain-on-exit` off) so it reaps when the finishing pi exits. The
+ *  stophook calls this instead of `tearDownNode` because it runs INSIDE the pane
+ *  it is closing: it cannot `closePane` its own pane (self-saw), but it is still
+ *  alive to disarm the freeze, so the pane closes on exit (return-to-shell)
+ *  rather than freezing into an orphan. (Keeps the stophook off the tmux driver,
+ *  §2.1.) */
+export function closeFocusToShell(focusId: string, nodeId: string): void {
+  closeFocusRow(focusId);
+  const win = getNode(nodeId)?.window;
+  if (win != null && win !== '') setRemainOnExit(win, false);
 }
 
 // ---------------------------------------------------------------------------
@@ -864,6 +883,5 @@ export function spreadNode(
   }
 
   const focused = switchClient(targetSession) && selectWindow(targetSession, targetWindow);
-  setFocus(targetId);
   return { window: targetWindow, session: targetSession, joined, focused };
 }

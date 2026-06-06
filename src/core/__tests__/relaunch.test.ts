@@ -19,6 +19,7 @@ import {
   listNodes,
 } from '../canvas/canvas.js';
 import { closeDb } from '../canvas/db.js';
+import { getFocusByNode, openFocusRow } from '../canvas/focuses.js';
 import { reportsDir, inboxPath, contextDir } from '../canvas/paths.js';
 import { roadmapPath } from '../runtime/roadmap.js';
 import {
@@ -27,7 +28,6 @@ import {
   markCleanExitDone,
   reapDescendants,
 } from '../runtime/reset.js';
-import { getFocus } from '../runtime/presence.js';
 import { renderForest } from '../canvas/render.js';
 import type { NodeMeta, NodeStatus } from '../canvas/types.js';
 
@@ -102,6 +102,7 @@ test('relaunchRoot parks the old root (done, edges intact, no wipe) and mints a 
   createNode(node('grand', { parent: 'child' }));
   subscribe('root', 'child', true);
   subscribe('child', 'grand', true);
+  openFocusRow('fRoot', '%root', 'crtr', 'root'); // the old root occupies focus #1
 
   // Working state on the old root that parking must PRESERVE (no wipe).
   writeFileSync(roadmapPath('root'), '# Roadmap\nold goal\n');
@@ -154,7 +155,9 @@ test('relaunchRoot parks the old root (done, edges intact, no wipe) and mints a 
   assert.ok(fresh?.launch, 'a fresh base launch spec was written');
   assert.equal(readdirSync(contextDir(newId)).length, 0, 'fresh empty context dir');
 
-  assert.equal(getFocus(), newId, 'focus follows content to the new root');
+  // Focus follows content: the focus row the old root held now shows the new root.
+  assert.equal(getFocusByNode(newId)?.focus_id, 'fRoot', 'focus row repointed to the new root');
+  assert.equal(getFocusByNode('root'), null, 'old root no longer occupies the focus');
 });
 
 // ---------------------------------------------------------------------------
@@ -172,6 +175,7 @@ test('handleNewSession on a root with a pane returns path:relaunch + parks old, 
   }));
   createNode(node('child', { parent: 'root' }));
   subscribe('root', 'child', true);
+  openFocusRow('fRoot', '%root', 'crtr', 'root'); // the old root occupies focus #1
 
   const respawn = okRespawn();
   const res = handleNewSession('root', 'newsess', 'test-pane', { relaunchRootInPane: respawn.fn });
@@ -195,7 +199,7 @@ test('handleNewSession on a root with a pane returns path:relaunch + parks old, 
   assert.equal(fresh?.parent, null, 'new node is a root');
   assert.equal(fresh?.status, 'active', 'fresh root active');
   assert.equal(fresh?.spawned_by, 'root', 'audit-only successor link to old root');
-  assert.equal(getFocus(), res.newNodeId, 'focus follows to the fresh root');
+  assert.equal(getFocusByNode(res.newNodeId!)?.focus_id, 'fRoot', 'focus row repointed to the fresh root');
 });
 
 // ---------------------------------------------------------------------------
@@ -297,6 +301,7 @@ test('a respawn dispatch failure rolls the whole transaction back and degrades t
     tmux_session: 'crtr',
     window: '@3',
   }));
+  openFocusRow('fRoot', '%root', 'crtr', 'root'); // the old root occupies focus #1
 
   const respawn = throwingRespawn();
   const res = handleNewSession('root', 'newsess', 'test-pane', { relaunchRootInPane: respawn.fn });
@@ -320,7 +325,8 @@ test('a respawn dispatch failure rolls the whole transaction back and degrades t
   assert.equal(listNodes({ status: ['dead'] }).length, 0, 'no dead zombie — new node row rolled back');
   assert.equal(listNodes().length, 1, 'only the old root row exists — the mint was fully undone');
 
-  assert.equal(getFocus(), 'root', 'focus restored to the old root');
+  // The focus repoint was INSIDE the txn, so ROLLBACK restored the old occupant.
+  assert.equal(getFocusByNode('root')?.focus_id, 'fRoot', 'focus row restored to the old root (rollback undid the repoint)');
 });
 
 // ---------------------------------------------------------------------------

@@ -9,8 +9,7 @@
 //     not-already-focused manager; false (caller closes the focus) in each of the
 //     three guard cases. Each guard is asserted distinctly.
 //   • tearDownNode(nodeId) — close/reset teardown: close the focus row it
-//     occupies, null its LOCATION, and clear focus.ptr when it was the current
-//     focus.
+//     occupies and null its LOCATION.
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -22,7 +21,6 @@ import { createNode, getNode } from '../canvas/canvas.js';
 import { openFocusRow, getFocusByNode, getFocusById } from '../canvas/focuses.js';
 import { closeDb } from '../canvas/db.js';
 import { handFocusToManager, tearDownNode } from '../runtime/placement.js';
-import { setFocus, getFocus } from '../runtime/presence.js';
 import type { NodeMeta } from '../canvas/types.js';
 
 let home: string;
@@ -191,10 +189,9 @@ test('handFocusToManager: DORMANT manager (dead pane) → occupant repointed, NO
 // tearDownNode (pure DB; no tmux — pane is null so closePane never runs).
 // ---------------------------------------------------------------------------
 
-test('tearDownNode: closes the focus row, nulls the LOCATION, and clears focus.ptr', () => {
+test('tearDownNode: closes the focus row M occupied and nulls its LOCATION', () => {
   createNode(node('M', { pane: null, window: null }));
-  openFocusRow('fM', null, 'Sa', 'M');
-  setFocus('M'); // M is the current focus.ptr
+  openFocusRow('fM', null, 'Sa', 'M'); // M occupies a focus row
 
   tearDownNode('M');
 
@@ -203,8 +200,6 @@ test('tearDownNode: closes the focus row, nulls the LOCATION, and clears focus.p
   assert.equal(m.pane ?? null, null, 'pane nulled');
   assert.equal(m.window ?? null, null, 'window nulled');
   assert.equal(m.tmux_session ?? null, null, 'session nulled');
-  const cur = getFocus();
-  assert.ok(cur === null || cur === '', 'focus.ptr cleared (M was the current focus)');
   // Non-vacuous: an impl that skips closeFocusRow leaves fM → getFocusByNode('M')
-  // is non-null; one that skips the setFocus('') clear leaves focus.ptr at 'M'.
+  // is non-null.
 });

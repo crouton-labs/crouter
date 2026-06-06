@@ -18,12 +18,10 @@ import { join } from 'node:path';
 import { getNode, setPresence, updateNode, setFocusOccupant, fullName, type NodeMeta } from '../canvas/index.js';
 import { reportsDir } from '../canvas/paths.js';
 import { pushFinal } from '../feed/feed.js';
-import { spawnNode } from './nodes.js';
+import { spawnNode, nodeSession } from './nodes.js';
 import { buildLaunchSpec, buildPiArgv } from './launch.js';
-import { piCommand, paneLocation, nodeSession } from './tmux.js';
 import { FRONT_DOOR_ENV } from './front-door.js';
-import { getFocus, setFocus } from './presence.js';
-import { focusOf, recycleFocusPane } from './placement.js';
+import { focusOf, recycleFocusPane, piCommand, paneLocation } from './placement.js';
 import { ensureDaemon } from '../../daemon/manage.js';
 
 export interface DemoteResult {
@@ -107,8 +105,7 @@ export async function demoteNode(nodeId: string, callerPane?: string): Promise<D
   updateNode(root.node_id, { home_session: loc?.session ?? nodeSession() });
   // Hand the viewport to the fresh root: reuse M's focus row over the SAME pane
   // (respawn-pane -k below keeps the %id), so the user keeps watching this slot.
-  if (f !== null) { try { setFocusOccupant(f.focus_id, root.node_id); setFocus(root.node_id); } catch { /* best-effort */ } }
-  else if (getFocus() === nodeId) setFocus('');
+  if (f !== null) { try { setFocusOccupant(f.focus_id, root.node_id); } catch { /* best-effort */ } }
   const fresh = getNode(root.node_id) as NodeMeta;
   const inv = buildPiArgv(fresh);
   const env = { ...inv.env, CRTR_ROOT_SESSION: nodeSession(), [FRONT_DOOR_ENV]: '1' };

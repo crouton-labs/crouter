@@ -1,9 +1,8 @@
 // Run with: node --import tsx/esm --test src/core/__tests__/focuses.test.ts
 //
-// STEP 4 of the placement/focus migration: the `focuses` table + canvas setters
-// + placement reads + the transitional focus.ptr dual-write bridge. Purely
-// ADDITIVE: the table is populated in lockstep with the legacy `focus.ptr`, but
-// nothing reads it as authority yet (that switch is Step 6). Covers:
+// The `focuses` table (canvas.db, migration v6) + its canvas setters + the
+// placement reads that compose over them. The table is the CANONICAL focus store
+// — there is no focus.ptr file and no dual-write bridge. Covers:
 //   - migration v6 adds `focuses` to a fresh db (and a legacy v5 db migrates up);
 //     idempotent / forward-only on re-run + re-open
 //   - canvas setters/reads round-trip: open / setOccupant / setPane / close;
@@ -13,11 +12,9 @@
 //   - independent focus rows don't contend
 //   - placement focusOf / isFocused / focusByPane / focusedNodes / listFocuses
 //     agree with the rows
-//   - dual-write: setFocus populates the table; getFocus falls back to the table
-//     when focus.ptr is absent; setFocus('') clears both
 import { test, before, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, existsSync, unlinkSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -33,7 +30,7 @@ import {
   listFocuses,
 } from '../canvas/focuses.js';
 import { openDb, closeDb, migrate, MIGRATIONS } from '../canvas/db.js';
-import { canvasDbPath, ensureHome, crtrHome } from '../canvas/paths.js';
+import { canvasDbPath, ensureHome } from '../canvas/paths.js';
 import {
   focusOf,
   isFocused,
@@ -41,12 +38,8 @@ import {
   focusedNodes,
   listFocuses as placementListFocuses,
 } from '../runtime/placement.js';
-import { setFocus, getFocus } from '../runtime/presence.js';
 
 let home: string;
-// Saved/restored so the bridge always exercises its deterministic no-tmux path
-// regardless of whether the suite is run from inside a tmux session.
-let savedTmux: string | undefined;
 
 function userVersion(db: DatabaseSync): number {
   return (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
@@ -61,8 +54,6 @@ function tableNames(db: DatabaseSync): string[] {
 before(() => {
   home = mkdtempSync(join(tmpdir(), 'crtr-focuses-'));
   process.env['CRTR_HOME'] = home;
-  savedTmux = process.env['TMUX'];
-  delete process.env['TMUX'];
 });
 
 beforeEach(() => {
@@ -74,7 +65,6 @@ after(() => {
   closeDb();
   rmSync(home, { recursive: true, force: true });
   delete process.env['CRTR_HOME'];
-  if (savedTmux !== undefined) process.env['TMUX'] = savedTmux;
 });
 
 // ---------------------------------------------------------------------------
@@ -263,63 +253,4 @@ test('placement focus reads agree with the focus rows', () => {
     placementListFocuses().map((f) => f.node_id),
     ['A', 'B'],
   );
-});
-
-// ---------------------------------------------------------------------------
-// Dual-write bridge — setFocus populates the table; getFocus falls back to the
-// table when focus.ptr is absent; setFocus('') clears both.
-// ---------------------------------------------------------------------------
-
-function focusPtrPath(): string {
-  return join(crtrHome(), 'focus.ptr');
-}
-
-test('setFocus populates the focuses table in lockstep with focus.ptr', () => {
-  openDb();
-  setFocus('A');
-  assert.equal(getFocus(), 'A', 'focus.ptr reads back');
-  const row = getFocusByNode('A');
-  assert.ok(row, 'a canonical focus row mirrors the current focus');
-  assert.equal(row?.node_id, 'A');
-  assert.equal(isFocused('A'), true, 'placement.isFocused agrees');
-  assert.deepEqual(focusOf('A')?.node_id, 'A', 'placement.focusOf agrees with getFocus');
-
-  // Re-focusing a different node re-points the SAME canonical row (no stray rows,
-  // UNIQUE(node_id) upheld).
-  setFocus('B');
-  assert.equal(getFocus(), 'B');
-  assert.equal(getFocusByNode('A'), null, 'the old occupant is dropped');
-  assert.equal(getFocusByNode('B')?.node_id, 'B');
-  assert.equal(listFocuses().length, 1, 'still exactly one canonical row');
-});
-
-test('getFocus falls back to the table when focus.ptr is absent', () => {
-  openDb();
-  setFocus('A'); // writes both focus.ptr and the canonical row
-  // Simulate a missing pointer (a writer that reached only the table, or a lost
-  // file): delete focus.ptr and confirm getFocus recovers the focus from the row.
-  if (existsSync(focusPtrPath())) unlinkSync(focusPtrPath());
-  assert.equal(getFocus(), 'A', 'getFocus recovers the focus from the table');
-});
-
-test("setFocus('') clears both the pointer and the canonical focus row", () => {
-  openDb();
-  setFocus('A');
-  assert.equal(getFocus(), 'A');
-  assert.ok(getFocusByNode('A'), 'precondition: row present');
-
-  setFocus('');
-  assert.equal(getFocus(), null, 'getFocus is null after clear (ptr empty, no row)');
-  assert.equal(getFocusByNode('A'), null, 'the canonical row was closed');
-  assert.deepEqual(listFocuses(), [], 'no focus rows remain');
-});
-
-test('a focus row written directly (no focus.ptr) is visible through getFocus + placement', () => {
-  openDb();
-  // A writer that reached only the table (the canonical bridge row), with no
-  // focus.ptr on disk at all.
-  openFocusRow('__focus_ptr__', null, null, 'X');
-  assert.ok(!existsSync(focusPtrPath()), 'precondition: no focus.ptr file');
-  assert.equal(getFocus(), 'X', 'getFocus falls back to the canonical row');
-  assert.equal(isFocused('X'), true);
 });

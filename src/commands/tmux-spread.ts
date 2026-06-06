@@ -10,15 +10,14 @@
 // meta.{tmux_session,window} goes stale — `windowAlive` would then report it
 // dormant and the daemon would spuriously revive it. After each join we
 // re-derive the child's location from its (stable) pane id and updateNode it,
-// mirroring the swap fix-up in presence.ts.
+// mirroring the swap fix-up in placement.ts.
 
 import { defineLeaf } from '../core/command.js';
 import type { LeafDef } from '../core/command.js';
 import { InputError } from '../core/io.js';
 import { readConfig } from '../core/config.js';
 import { reviveNode } from '../core/runtime/revive.js';
-import { isNodePaneAlive, spreadNode } from '../core/runtime/placement.js';
-import { inTmux } from '../core/runtime/tmux.js';
+import { isNodePaneAlive, spreadNode, inTmux } from '../core/runtime/placement.js';
 import { nodeInPane } from './node.js';
 import { getNode, subscriptionsOf } from '../core/canvas/index.js';
 

@@ -23,7 +23,7 @@ import { defineLeaf } from '../core/command.js';
 import type { LeafDef } from '../core/command.js';
 import { InputError } from '../core/io.js';
 import { readConfig } from '../core/config.js';
-import { sendKeysEnter } from '../core/runtime/tmux.js';
+import { sendKeysEnter } from '../core/runtime/tmux-chrome.js';
 import { nodeInPane } from './node.js';
 import {
   getNode,

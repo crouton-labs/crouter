@@ -19,7 +19,7 @@ import { createNode, getNode, updateNode } from '../canvas/canvas.js';
 import { nodeMetaPath } from '../canvas/paths.js';
 import { closeDb } from '../canvas/db.js';
 import { resolveBirthSession, homeSessionOf } from '../runtime/nodes.js';
-import { nodeSession } from '../runtime/tmux.js';
+import { nodeSession } from '../runtime/nodes.js';
 import { relaunchRoot } from '../runtime/reset.js';
 import { demoteNode } from '../runtime/demote.js';
 import type { NodeMeta } from '../canvas/types.js';

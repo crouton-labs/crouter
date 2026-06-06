@@ -11,29 +11,27 @@
 
 import { spawnSync } from 'node:child_process';
 import { FRONT_DOOR_ENV } from './front-door.js';
-import { spawnNode, currentNodeContext, nodeEnv, resolveBirthSession } from './nodes.js';
+import { spawnNode, currentNodeContext, nodeEnv, resolveBirthSession, nodeSession } from './nodes.js';
 import { buildLaunchSpec, buildPiArgv } from './launch.js';
 import { writeGoal } from './kickoff.js';
 import { hasRoadmap, seedRoadmap } from './roadmap.js';
 import { seedMemory, seedUserMemory, seedProjectMemory } from './memory.js';
 import { generateSessionName } from './naming.js';
+import { installMenuBinding, installNavBindings } from './tmux-chrome.js';
+import { setPresence, updateNode, getNode, fullName, type NodeMeta, type Mode, type Lifecycle } from '../canvas/index.js';
 import {
+  registerRootFocus,
   ensureSession,
   openNodeWindow,
   piCommand,
   currentTmux,
   inTmux,
-  nodeSession,
   focusWindow,
-  installMenuBinding,
-  installNavBindings,
-} from './tmux.js';
-import { setPresence, updateNode, getNode, fullName, type NodeMeta, type Mode, type Lifecycle } from '../canvas/index.js';
-import { registerRootFocus } from './placement.js';
+} from './placement.js';
 import { transition } from './lifecycle.js';
 import { ensureDaemon } from '../../daemon/manage.js';
 
-// All node windows live in one shared session — see `nodeSession()` in tmux.js.
+// All node windows live in one shared session — see `nodeSession()` in nodes.js.
 
 // ---------------------------------------------------------------------------
 // bootRoot — the front door

@@ -26,6 +26,11 @@ feed, daemon, commands) goes through `canvas.ts`; nothing else touches the db or
 - The `subscribes_to` **edges** are db-authoritative: no meta owns them (mutable,
   many concurrent writers — what WAL is for). `rebuildIndex()` rebuilds rows only;
   edges are left intact (`spawned_by` is re-derived from each meta).
+- The **`focuses`** table (`focuses.ts`, migration v6) is likewise db-authoritative
+  and the CANONICAL focus store — canvas.db is "topology + focuses". One row per
+  durable on-screen viewport, keyed on the tmux `%pane_id`, `node_id` UNIQUE. There
+  is no `focus.ptr` file and no dual-write bridge; placement composes over the
+  atomic setters (`openFocusRow`/`setFocusOccupant`/`setFocusPane`/`closeFocusRow`).
 
 ## Vocabulary (types.ts)
 - Two orthogonal axes every node carries: **mode** (base↔orchestrator) ×

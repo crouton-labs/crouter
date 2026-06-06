@@ -4,7 +4,8 @@
 // "topology + focuses", so the focus-row SQL lives here beside the node+edge
 // model, never in the runtime layer. A FOCUS is one durable on-screen viewport
 // bound to one node; the table is PLURAL (many focuses across windows/sessions),
-// the generalization of the old single `focus.ptr`.
+// the generalization of the old single focus pointer. It is the CANONICAL focus
+// store — there is no focus.ptr file and no dual-write bridge.
 //
 // placement.ts COMPOSES over these atomic setters/reads (the same way it calls
 // setPresence) — it never runs raw focus SQL itself.
@@ -83,8 +84,8 @@ export function getFocusByPane(pane: string): FocusRow | null {
   return r ? focusFrom(r) : null;
 }
 
-/** A focus by its stable id, or null. (Used by the transitional focus.ptr
- *  dual-write bridge to read back its single canonical row; removed in Step 8.) */
+/** A focus by its stable id, or null. Used by placement to read a row back by id
+ *  (handFocusToManager / retargetFocus / registerRootFocus). */
 export function getFocusById(focus_id: string): FocusRow | null {
   const r = openDb()
     .prepare('SELECT * FROM focuses WHERE focus_id = ?')

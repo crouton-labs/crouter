@@ -223,9 +223,8 @@ function addPaneColumn(db: DatabaseSync): void {
  *  viewport (Q7 widens canvas.db from "topology" to "topology + focuses"). Each
  *  row is anchored on the durable tmux `%pane_id`; `session` is a derived cache
  *  reconciled from the pane; `node_id` is UNIQUE so a node occupies at most one
- *  focus (Q5). Additive, forward-only — nothing reads it as authority yet (Step 4
- *  populates it in lockstep with the legacy `focus.ptr` via a transitional
- *  dual-write; the switch to table-as-authority lands in Step 6). */
+ *  focus (Q5). The focuses table is the CANONICAL focus store — there is no
+ *  focus.ptr file and no dual-write bridge; placement writes focus rows directly. */
 function addFocusesTable(db: DatabaseSync): void {
   db.exec(`
 CREATE TABLE IF NOT EXISTS focuses (

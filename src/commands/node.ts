@@ -13,10 +13,9 @@ import { writeYieldMessage } from '../core/runtime/kickoff.js';
 import { reviveNode } from '../core/runtime/revive.js';
 
 import { demoteNode } from '../core/runtime/demote.js';
-import { detachToBackground, focus as placementFocus } from '../core/runtime/placement.js';
+import { detachToBackground, focus as placementFocus, windowAlive, windowOfPane, currentTmux } from '../core/runtime/placement.js';
 import { buildLaunchSpec } from '../core/runtime/launch.js';
 import { closeNode } from '../core/runtime/close.js';
-import { windowAlive, windowOfPane, currentTmux } from '../core/runtime/tmux.js';
 import { appendInbox, type InboxTier } from '../core/feed/inbox.js';
 import { availableKinds } from '../core/personas/index.js';
 import {

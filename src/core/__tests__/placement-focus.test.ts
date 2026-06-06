@@ -1,12 +1,11 @@
 // Run with: node --import tsx/esm --test src/core/__tests__/placement-focus.test.ts
 //
 // STEP 6 of the placement/focus migration: retargetFocus / openFocus / focus +
-// remain-on-exit + root-boot focus #1 + the focus.ptr bridge staying consistent.
+// remain-on-exit + root-boot focus #1.
 //
 // Two proof tiers (mirrors placement-revive.test.ts):
-//   1. PURE (no tmux): outgoingDisposition (backstage-vs-kill) and the focus.ptr
-//      dual-write bridge piggybacking on a real focus row WITHOUT clobbering it
-//      (the Step-6 bridge fix). Each is provably non-vacuous (a wrong impl fails).
+//   1. PURE (no tmux): outgoingDisposition (backstage-vs-kill). Provably
+//      non-vacuous (a wrong impl fails).
 //   2. Gated real-tmux: the hot-swap itself — screen position invariant (ZERO new
 //      user windows), the two post-swap LOCATIONs, outgoing backstaged (still
 //      generating) vs reaped (dormant), the Q5 vacate-old-focus path, openFocus
@@ -15,7 +14,7 @@
 //      a live server; gated {skip:!hasTmux()} like §5.2.
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, existsSync, unlinkSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -28,7 +27,6 @@ import {
   listFocuses,
 } from '../canvas/focuses.js';
 import { closeDb } from '../canvas/db.js';
-import { crtrHome } from '../canvas/paths.js';
 import {
   outgoingDisposition,
   retargetFocus,
@@ -38,7 +36,6 @@ import {
   focusByPane,
   type Reviver,
 } from '../runtime/placement.js';
-import { setFocus, getFocus } from '../runtime/presence.js';
 import type { NodeMeta } from '../canvas/types.js';
 
 let home: string;
@@ -97,32 +94,6 @@ test('outgoingDisposition: a HOLDER / vanished node (no row) → KILL (never bac
   // A wrong impl that backstaged a holder would leak a sleep pane into crtr.
   assert.deepEqual(outgoingDisposition({ exists: false, generating: true }), { kind: 'kill' });
   assert.deepEqual(outgoingDisposition({ exists: false, generating: false }), { kind: 'kill' });
-});
-
-// ---------------------------------------------------------------------------
-// 1b. PURE: the focus.ptr dual-write bridge PIGGYBACKS on a real focus row
-// (Step-6 fix) — setFocus must NOT clobber the pane-correct row retargetFocus
-// wrote. The OLD bridge closed `existing` unconditionally, replacing the real
-// row with a `__focus_ptr__` row; asserting the focus_id survives fails it.
-// ---------------------------------------------------------------------------
-
-test('focus.ptr bridge: setFocus piggybacks on a REAL focus row (never clobbers it)', () => {
-  // Simulate a real row written by retargetFocus/openFocus (a non-bridge id).
-  openFocusRow('real-f', '%a', 'Suser', 'A');
-  setFocus('A'); // the consistency mirror retargetFocus calls at the end
-
-  assert.equal(getFocus(), 'A', 'focus.ptr names the node');
-  const row = getFocusByNode('A');
-  assert.ok(row, 'A still occupies a focus');
-  assert.equal(row?.focus_id, 'real-f', 'the REAL row survived (not replaced by a bridge row)');
-  assert.equal(row?.pane, '%a', 'the pane-correct row is intact');
-  assert.equal(listFocuses().length, 1, 'no duplicate bridge row was inserted (UNIQUE node_id)');
-});
-
-test('focus.ptr bridge: a plain setFocus (no real row) still creates the bridge row + getFocus reads it', () => {
-  setFocus('Z');
-  if (existsSync(join(crtrHome(), 'focus.ptr'))) unlinkSync(join(crtrHome(), 'focus.ptr'));
-  assert.equal(getFocus(), 'Z', 'getFocus falls back to the canonical bridge row when the ptr is gone');
 });
 
 // ---------------------------------------------------------------------------
@@ -205,7 +176,7 @@ test('retargetFocus: outgoing GENERATING → backstaged; the viewport stays put 
     assert.equal(paneExistsReal(focusPane), true, 'R\'s pane is alive (NOT reaped — it is still generating)');
     assert.equal(paneSession(focusPane), back, 'R\'s pane physically moved to the backstage');
     assert.equal(getNode('R')!.tmux_session, back, 'R\'s LOCATION session is the backstage');
-    assert.equal(getFocus(), 'A', 'focus.ptr followed the retarget');
+    assert.equal(focusByPane(backPane)?.node_id, 'A', 'the focus row tracks A after the retarget');
   });
 });
 

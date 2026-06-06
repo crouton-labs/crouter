@@ -24,11 +24,21 @@ import {
   type Lifecycle,
   type LaunchSpec,
 } from '../canvas/index.js';
-import { nodeSession } from './tmux.js';
 
 /** Generate a node id in the same shape as job ids (time-sortable + random). */
 export function newNodeId(): string {
   return `${Date.now().toString(36)}-${randomBytes(4).toString('hex')}`;
+}
+
+/** The single, shared tmux session that ALL canvas node windows live in.
+ *  Overridable with CRTR_NODE_SESSION (default `crtr`). Every root and every
+ *  child opens a window here rather than cluttering the user's own working
+ *  session — switch to it to browse the whole live graph, ignore it otherwise.
+ *  Pure policy (env only, no tmux call), so it lives in the node layer, not the
+ *  driver; the tmux driver imports it from here for installMenuBinding's use. */
+export function nodeSession(): string {
+  const v = process.env['CRTR_NODE_SESSION'];
+  return v !== undefined && v !== '' ? v : 'crtr';
 }
 
 // ---------------------------------------------------------------------------

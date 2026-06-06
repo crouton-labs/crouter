@@ -27,8 +27,16 @@ import { transition } from './lifecycle.js';
 import { buildPiArgv } from './launch.js';
 import { buildReviveKickoff, drainBearings } from './kickoff.js';
 import { FRONT_DOOR_ENV } from './front-door.js';
-import { piCommand, respawnPane, nodeSession, type RespawnPaneOpts } from './tmux.js';
-import { reviveIntoPlacement, reconcile, isNodePaneAlive, homeSessionOf } from './placement.js';
+import {
+  reviveIntoPlacement,
+  reconcile,
+  isNodePaneAlive,
+  homeSessionOf,
+  piCommand,
+  respawnPane,
+  type RespawnPaneOpts,
+} from './placement.js';
+import { nodeSession } from './nodes.js';
 
 /** signal-0 liveness probe for a pi pid (mirrors the daemon's isPidAlive). A
  *  null pid (legacy / never-booted) reads dead. */

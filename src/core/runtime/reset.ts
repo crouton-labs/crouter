@@ -25,6 +25,7 @@ import {
   updateNode,
   setPresence,
   clearPid,
+  setFocusOccupant,
   subscriptionsOf,
   unsubscribe,
   view,
@@ -34,12 +35,10 @@ import {
   openDb,
 } from '../canvas/index.js';
 import { transition } from './lifecycle.js';
-import { paneLocation, nodeSession } from './tmux.js';
-import { tearDownNode } from './placement.js';
+import { paneLocation, tearDownNode, focusOf } from './placement.js';
 import { buildLaunchSpec } from './launch.js';
 import { roadmapPath } from './roadmap.js';
-import { spawnNode, newNodeId } from './nodes.js';
-import { setFocus } from './presence.js';
+import { spawnNode, newNodeId, nodeSession } from './nodes.js';
 import { relaunchRootInPane } from './revive.js';
 
 // ---------------------------------------------------------------------------
@@ -211,7 +210,6 @@ export function handleNewSession(
     if (result === null) return { path: 'noop' }; // defensive guard hit (e.g. rapid double /new)
     return { path: 'relaunch', newNodeId: result.newNodeId };
   } catch {
-    setFocus(nodeId);
     resetRoot(nodeId, newSessionId, newSessionFile);
     return { path: 'reset-root' };
   }
@@ -248,7 +246,8 @@ export function relaunchRoot(
   // back, leaving the old root EXACTLY as it was (no hand-rolled compensation).
   // Only the *detached* respawn (the async pane kill) lands outside the txn — it
   // must, since it kills this caller, and by then COMMIT has made the new state
-  // durable. setFocus is a file write, not in the txn; the catch restores it.
+  // durable. The focus repoint (step 4) is INSIDE the txn, so a ROLLBACK undoes
+  // it automatically — there is no file to restore.
   const db = openDb();
   db.exec('BEGIN');
   try {
@@ -282,8 +281,11 @@ export function relaunchRoot(
     transition(oldId, 'reap');
     setPresence(oldId, { window: null, tmux_session: null });
 
-    // 4) Focus follows content (file write — restored by the catch on rollback).
-    setFocus(newId);
+    // 4) Focus follows content: repoint the old root's focus row to the new root
+    //    (same pane — respawn-pane -k below keeps the %id). Inside the txn → the
+    //    ROLLBACK path restores the old occupant automatically (no file to restore).
+    const oldFocus = focusOf(oldId);
+    if (oldFocus !== null) setFocusOccupant(oldFocus.focus_id, newId);
 
     // 5) Re-exec pi in this pane bound to newId; the dispatch is the LAST thing
     //    inside the txn. If it throws the txn rolls back (old root untouched); on
@@ -298,7 +300,8 @@ export function relaunchRoot(
     // on-disk dir (ensureNodeDirs). With no row, prune never sees it — so remove
     // the orphan dir here, otherwise it is permanent disk litter on this rare path.
     try { rmSync(nodeDir(newId), { recursive: true, force: true }); } catch { /* */ }
-    try { setFocus(oldId); } catch { /* */ } // focus is a file op, outside the txn
+    // The focus repoint was inside the txn; ROLLBACK already restored the old
+    // occupant — nothing to undo here.
     throw err instanceof Error ? err : new Error(String(err));
   }
 

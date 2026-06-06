@@ -10,9 +10,9 @@
 //      redesign kills. This guards the bug's blast radius and should pass today.
 //
 //   2. The §5.1 "only placement.ts / tmux-chrome.ts import tmux.ts" lint guard
-//      (SKIPPED — warn only this step): placement.ts does not exist yet and many
-//      modules still import the driver directly, so this CANNOT pass until the
-//      migration completes. It flips to a hard assertion in Step 8.
+//      (ENFORCED as of Step 8): every other module reaches the driver through
+//      placement's re-exports or the tmux-chrome seam, so the only direct
+//      importers are placement.ts + tmux-chrome.ts (tmux.ts itself excluded).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
@@ -76,11 +76,10 @@ test('§2.2 driver invariant: every placement verb in tmux.ts passes an explicit
 });
 
 // ---------------------------------------------------------------------------
-// Lint guard — §5.1. WARN ONLY this step. Skipped because it cannot pass yet:
-// placement.ts (the sole sanctioned importer) does not exist, and the driver is
-// still imported directly by the runtime/daemon/command/stophook modules the
-// migration has not yet routed through placement. Step 8 deletes the skip and
-// turns the body into the enforced boundary.
+// Lint guard — §5.1, ENFORCED. The driver (tmux.ts) is imported ONLY by
+// placement.ts (the sanctioned model-over-driver, which re-exports the verbs
+// other modules need) and the tmux-chrome.ts chrome seam. Every other module —
+// runtime, daemon, commands, stophook, AND tests — must route through those.
 // ---------------------------------------------------------------------------
 
 /** Every `.ts` file under `src` (recursively), excluding nothing. */
@@ -108,7 +107,6 @@ function importsDriver(file: string): boolean {
 
 test(
   '§5.1 lint: only placement.ts / tmux-chrome.ts import the tmux driver',
-  { skip: 'WARN-ONLY in Step 2 — placement.ts does not exist yet and many modules still import tmux.ts directly. Step 8 flips this to a hard error.' },
   () => {
     const offenders = allTsFiles(SRC_ROOT)
       .filter((f) => !ALLOWED_IMPORTERS.has(basename(f)))

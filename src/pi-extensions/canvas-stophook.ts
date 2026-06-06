@@ -30,15 +30,13 @@
 import { writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { getNode, jobDir, updateNode, recordPid, subscribersOf, closeFocusRow, setPresence } from '../core/canvas/index.js';
+import { getNode, jobDir, updateNode, recordPid, subscribersOf, setPresence } from '../core/canvas/index.js';
 import { transition } from '../core/runtime/lifecycle.js';
 import { evaluateStop } from '../core/runtime/stop-guard.js';
 import { personaDrift, commitPersonaAck } from '../core/runtime/persona.js';
 import { reviveInPlace } from '../core/runtime/revive.js';
 import { handleNewSession, markCleanExitDone } from '../core/runtime/reset.js';
-import { setFocus } from '../core/runtime/presence.js';
-import { focusOf, handFocusToManager, tearDownNode } from '../core/runtime/placement.js';
-import { setRemainOnExit } from '../core/runtime/tmux.js';
+import { focusOf, handFocusToManager, tearDownNode, closeFocusToShell } from '../core/runtime/placement.js';
 
 // ---------------------------------------------------------------------------
 // Minimal PiLike interface (avoids hard dep on @earendil-works/*)
@@ -467,10 +465,9 @@ export function registerCanvasStophook(pi: PiLike): void {
           if (f !== null) {
             const managerId = node.parent ?? subscribersOf(nodeId)[0]?.node_id ?? null;
             if (!handFocusToManager(f.focus_id, managerId)) {
-              closeFocusRow(f.focus_id);
-              setFocus('');
-              const win = getNode(nodeId)?.window; // %m's window
-              if (win) setRemainOnExit(win, false); // Q1 return-to-shell
+              // Q1 return-to-shell, self-saw-safe: close the focus row + disarm the
+              // pane's freeze so it reaps on exit (we can't closePane our own pane).
+              closeFocusToShell(f.focus_id, nodeId);
             }
           }
           setPresence(nodeId, { pane: null, tmux_session: null, window: null }); // M done → owns no pane

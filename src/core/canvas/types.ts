@@ -184,7 +184,7 @@ export interface Edge {
 /** A FOCUS row as stored in the `focuses` table (canvas.db, migration v6): one
  *  durable on-screen viewport the user looks at, bound to one node. Plural —
  *  many focuses live at once across windows and sessions (the plural
- *  generalization of the old single `focus.ptr`). Anchored on the durable tmux
+ *  generalization of the old single focus pointer). Anchored on the durable tmux
  *  `%pane_id`; `session` is a derived cache reconciled from the pane. `node_id`
  *  is UNIQUE — a node occupies at most one focus (Q5). */
 export interface FocusRow {
