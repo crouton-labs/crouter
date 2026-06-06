@@ -187,14 +187,9 @@ function renderEntry(e: InboxEntry): string {
  *     [<kind>]                                ← ref-less msg: full body inlined
  *       <body line>
  *     …
- *
- * A header line announces the total count and instructs the receiver to
- * dereference only what matters.
  */
 export function coalesce(entries: InboxEntry[]): string {
   if (entries.length === 0) return '(inbox empty)';
-
-  const header = `${entries.length} update${entries.length === 1 ? '' : 's'} since last read — dereference what matters.\n`;
 
   // Group by `from` (null → 'system').
   const groups = new Map<string, InboxEntry[]>();
@@ -210,5 +205,5 @@ export function coalesce(entries: InboxEntry[]): string {
     sections.push(`From ${sender} — ${items.length} update${items.length === 1 ? '' : 's'}:\n${lines.join('\n')}`);
   }
 
-  return header + sections.join('\n\n');
+  return sections.join('\n\n');
 }
