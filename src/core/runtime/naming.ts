@@ -2,7 +2,7 @@
 // handle for the editor label.
 //
 // A node's editor label is `<kind> (<mode>) <name> <cycle>` (see editorLabel in
-// launch.ts). The `<name>` is a 2-4 word kebab-case "description" derived from
+// launch.ts). The `<name>` is a 3-5 word kebab-case "description" derived from
 // the first prompt by asking pi headlessly (`pi -p`), persisted on the node's
 // meta so it survives revives and shows in every cycle.
 //
@@ -30,16 +30,19 @@ const PROMPT_CAP = 2000;
 const NAME_TIMEOUT_MS = 20_000;
 
 const NAME_SYSTEM_PROMPT =
-  'You name coding-agent work sessions. Given the user\'s first task, reply with ONLY ' +
-  'a concise 2-4 word name in kebab-case: lowercase words joined by single hyphens ' +
-  '(e.g. `refactor-auth-flow`, `add-csv-export`). No punctuation, quotes, prose, or ' +
-  'trailing text — output the name and nothing else.';
+  'You name coding-agent work sessions. This name is a label used to identify the ' +
+  'session at a glance among many other concurrent programming sessions, so it must ' +
+  'describe what the task is about. Reply with ONLY a concise 3-5 word name in ' +
+  'kebab-case: lowercase words joined by single hyphens (e.g. `refactor-auth-token-flow`, ' +
+  '`add-csv-export-endpoint`). No punctuation, quotes, prose, or trailing text. ' +
+  'Output JUST the name, nothing else.';
 
-/** Wrap the raw task text in an instruction + delimited block so the model
- *  never mistakes the prompt's own content for the instruction. The prompt is
- *  capped first, so the closing tag is always present. */
+/** Put the raw task text FIRST in a delimited block, then the instruction, so the
+ *  model reads the content before being told what to do and never mistakes the
+ *  prompt's own text for the instruction. The prompt is capped first, so the
+ *  closing tag is always present. */
 function nameUserPrompt(prompt: string): string {
-  return `From the following initial prompt, name this session:\n\n<prompt>\n${prompt.slice(0, PROMPT_CAP)}\n</prompt>`;
+  return `<prompt>\n${prompt.slice(0, PROMPT_CAP)}\n</prompt>\n\nName this session based on the task above. The name should describe what the task is about, so it can be identified among many other programming sessions. Output JUST the name, nothing else.`;
 }
 
 /** A short stop-word set so the local-slug fallback skips filler words. */
@@ -49,9 +52,9 @@ const STOPWORDS = new Set([
   'please', 'can', 'you', 'i', 'we', 'my', 'our', 'me', 'so', 'then',
 ]);
 
-/** Coerce arbitrary text into a 2-4 word kebab-case name, or '' if nothing
+/** Coerce arbitrary text into a 3-5 word kebab-case name, or '' if nothing
  *  usable survives. Lowercases, keeps [a-z0-9], collapses everything else to a
- *  single hyphen, and clamps to the first 4 words. */
+ *  single hyphen, and clamps to the first 5 words. */
 export function sanitizeSessionName(raw: string): string {
   const firstLine = (raw ?? '').split('\n').map((l) => l.trim()).find((l) => l !== '') ?? '';
   const words = firstLine
@@ -59,7 +62,7 @@ export function sanitizeSessionName(raw: string): string {
     .replace(/[^a-z0-9]+/g, '-')
     .split('-')
     .filter((w) => w !== '');
-  return words.slice(0, 4).join('-');
+  return words.slice(0, 5).join('-');
 }
 
 /** Local fallback: derive a name straight from the prompt (no pi call). Drops
