@@ -13,9 +13,8 @@ import { join } from 'node:path';
 import {
   reportsDir,
   subscribersOf,
-  setStatus,
-  setIntent,
 } from '../canvas/index.js';
+import { transition } from '../runtime/lifecycle.js';
 import { appendInbox } from './inbox.js';
 import { appendPassive } from './passive.js';
 import type { InboxTier } from './inbox.js';
@@ -138,8 +137,7 @@ export async function push(nodeId: string, opts: PushOpts): Promise<PushResult> 
 
   // (c) Finalise node when kind === 'final'.
   if (kind === 'final') {
-    setStatus(nodeId, 'done');
-    setIntent(nodeId, 'done');
+    transition(nodeId, 'finalize');
   }
 
   return { reportPath, deliveredTo };
