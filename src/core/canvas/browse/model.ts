@@ -137,6 +137,23 @@ export function fuzzyMatch(query: string, text: string): boolean {
   return qi === q.length;
 }
 
+/** Indices in `text` consumed by a greedy left-to-right subsequence match of
+ *  `query` — the same walk as `fuzzyMatch`, but returning WHICH chars matched so
+ *  the renderer can highlight them. Empty set when `query` is empty OR does not
+ *  fully match (no partial highlights). */
+export function matchIndices(query: string, text: string): Set<number> {
+  const out = new Set<number>();
+  if (query === '') return out;
+  const q = query.toLowerCase();
+  const t = text.toLowerCase();
+  let qi = 0;
+  for (let ti = 0; ti < t.length && qi < q.length; ti++) {
+    if (t[ti] === q[qi]) { out.add(ti); qi++; }
+  }
+  if (qi < q.length) out.clear(); // no full match → no highlight
+  return out;
+}
+
 function shortId(id: string): string {
   return id.slice(0, 8);
 }

@@ -20,7 +20,7 @@ import {
   type Key,
 } from './terminal.js';
 import { buildTree, flatten, TABS, type Tab, type Tree, type VisibleRow } from './model.js';
-import { renderFrame } from './render.js';
+import { renderFrame, detectColorCaps, type ColorCaps } from './render.js';
 
 interface BrowseState {
   tab: Tab;
@@ -74,6 +74,9 @@ export async function runBrowse(opts: { returnPane?: string } = {}): Promise<voi
 
   let visible: VisibleRow[] = [];
 
+  // Color capability is fixed for the session (it's a property of the tty/env).
+  const caps: ColorCaps = detectColorCaps();
+
   // Restore the terminal exactly once, however we leave (quit, resume, crash).
   let restored = false;
   const cleanup = (): void => {
@@ -118,6 +121,7 @@ export async function runBrowse(opts: { returnPane?: string } = {}): Promise<voi
     const frame = renderFrame(
       { tree, visible, tab: state.tab, cursor: state.cursor, scrollOffset: state.scrollOffset, query: state.query, search: state.search, totalNodes },
       size,
+      caps,
     );
     process.stdout.write(frame);
   };
