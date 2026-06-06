@@ -111,22 +111,34 @@ test(
       // idle-release despite holding the same live sub that would release a
       // terminal node.
       await h.stop(B);
+      // MINOR-2: asserting a NON-event (B must NOT idle-release) cannot be a single
+      // immediate read — h.stop() resolves once agent_end is RECORDED, BEFORE the
+      // handler completes, so a regression where the resident 'dormant' branch
+      // wrongly ran transition('release') + ctx.shutdown() asynchronously would
+      // still observe the pre-release state and false-pass. Instead POLL-STABLE:
+      // sample repeatedly across a real settle (a daemon tick partway, so the
+      // handler + a full superviseTick have both run) and assert the invariant
+      // holds on EVERY sample. A regression that idle-releases within the window
+      // is caught the moment it flips.
       {
-        const b = h.node(B)!;
-        assert.equal(b.status, 'active', 'resident B stays ACTIVE on stop (dormant, not released)');
-        assert.equal(b.intent ?? null, null, 'resident B has NO idle-release intent');
-        assert.equal(h.paneAlive(B), true, 'resident B keeps its live pi/pane (no shutdown)');
-      }
-
-      // The daemon must NOT release a live resident node either — a superviseTick
-      // sees B active + pane-alive + pid-alive → handleLiveWindow 'leave'.
-      await h.tick();
-      {
-        const b = h.node(B)!;
-        assert.equal(b.status, 'active', 'daemon leaves the live resident node active');
-        assert.equal(b.intent ?? null, null, 'daemon does NOT idle-release a resident node');
-        assert.equal(h.paneAlive(B), true, 'pi/pane still alive after a tick');
-        assert.equal(h.status(C), 'active', 'C untouched');
+        const deadline = Date.now() + 2_000;
+        let ticked = false;
+        for (;;) {
+          const b = h.node(B)!;
+          assert.equal(b.status, 'active', 'resident B stays ACTIVE on stop (dormant, not released)');
+          assert.equal(b.intent ?? null, null, 'resident B has NO idle-release intent');
+          assert.equal(h.paneAlive(B), true, 'resident B keeps its live pi/pane (no shutdown)');
+          assert.equal(h.status(C), 'active', 'C untouched while B is dormant-resident');
+          // Drive a real daemon decision pass midway: a superviseTick sees B
+          // active + pane-alive + pid-alive → handleLiveWindow 'leave'. If the
+          // daemon wrongly released a resident node, the next sample catches it.
+          if (!ticked) {
+            await h.tick();
+            ticked = true;
+          }
+          if (Date.now() >= deadline) break;
+          await new Promise((r) => setTimeout(r, 100));
+        }
       }
 
       // --- FLIP 2: resident → TERMINAL (live), on the now-resident live node. ---

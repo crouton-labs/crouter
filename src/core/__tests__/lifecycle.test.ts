@@ -76,19 +76,11 @@ test('finalize: illegal from done|dead|canceled → throws, status untouched', (
 });
 
 // ---------------------------------------------------------------------------
-// reap → done + intent cleared, legal from ANY status (forced teardown)
-// ---------------------------------------------------------------------------
-test('reap: any status → done + intent cleared', () => {
-  for (const from of ALL) {
-    mk(`n_${from}`, from, 'refresh');
-    const m = transition(`n_${from}`, 'reap');
-    assert.equal(m.status, 'done', `reap from ${from}`);
-    assert.equal(m.intent, null, `reap from ${from} clears intent`);
-  }
-});
-
-// ---------------------------------------------------------------------------
-// cancel → canceled + intent cleared, legal from ANY status
+// cancel → canceled + intent cleared, legal from ANY status (forced teardown).
+// A5 (human-confirmed 2026-06-06): the `reap` event was COLLAPSED into `cancel`
+// — they were identical (status differed only; both intent=null, from=ANY, no
+// side effects in transition()). Every external reap (close cascade AND
+// reset/relaunch) now routes through `cancel`; `done` is reserved for finalize.
 // ---------------------------------------------------------------------------
 test('cancel: any status → canceled + intent cleared', () => {
   for (const from of ALL) {
@@ -188,7 +180,7 @@ test('boot: illegal from done|dead|canceled → throws', () => {
 // unknown node → throws for every event
 // ---------------------------------------------------------------------------
 test('transition on an unknown node throws', () => {
-  for (const ev of ['finalize', 'reap', 'cancel', 'crash', 'yield', 'release', 'revive', 'boot'] as const) {
+  for (const ev of ['finalize', 'cancel', 'crash', 'yield', 'release', 'revive', 'boot'] as const) {
     assert.throws(() => transition('ghost', ev), /unknown node/);
   }
 });

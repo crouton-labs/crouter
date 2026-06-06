@@ -6,7 +6,7 @@
 // behave like re-running `crtr` we have two strategies:
 //
 //   • relaunchRoot (option C) — for a ROOT in a tmux pane: PARK the old root
-//     (mark done, keep its id/edges/pi_session_id intact as history), mint a
+//     (mark canceled, keep its id/edges/pi_session_id intact as history), mint a
 //     FRESH node id, and re-exec pi in the current pane bound to the new id.
 //     The old id never changes meaning; external refs stay valid.
 //   • resetRoot (fallback) — for a non-root child (session-id refresh only) or
@@ -15,7 +15,8 @@
 // Termination semantics: a pi that ends cleanly resolves its node to `done`
 // (markCleanExitDone); only a true crash leaves it `dead`. A force-kill
 // (closeWindow / respawn-pane -k) fires NO clean session_shutdown, so reaped
-// descendants are marked `done` explicitly here.
+// descendants are marked `canceled` explicitly here (A5: an externally-reaped
+// node did not finish its own work — done is reserved for finalize).
 //
 // Best-effort throughout: a tmux/fs failure on one node never aborts the reset.
 
@@ -45,26 +46,29 @@ import { relaunchRootInPane } from './revive.js';
 // reapDescendants — tear down a root's descendant sub-DAG (shared helper)
 // ---------------------------------------------------------------------------
 
-/** Reap the descendant sub-DAG of `rootId`: mark each **done** (the user moved
- *  on — a clean teardown, NOT a fault) + clear intent FIRST, then kill its
+/** Reap the descendant sub-DAG of `rootId`: mark each **canceled** (the user
+ *  moved on — a clean teardown, NOT a fault) + clear intent FIRST, then kill its
  *  window (closes the daemon revive race). Edges are LEFT INTACT — descendants
  *  keep parent=rootId. No wipe. Returns the reaped ids.
  *
- *  Why `done`, and why marking is STILL explicit: a `closeWindow`/`respawn-pane
- *  -k` kill is abrupt and fires NO clean `session_shutdown`, so the general
- *  quit→done rule does NOT auto-resolve a force-killed descendant — we mark it
- *  `done` here. Shared by relaunchRoot (option C) and resetRoot's in-place
- *  fallback, so both leave their descendants `done`. */
+ *  Why `canceled` (A5, human-confirmed 2026-06-06): an externally-reaped node —
+ *  whether via `node close` OR a root reset/relaunch — did not finish its OWN
+ *  work, so it unifies on `canceled`; `done` is reserved for finalize. Why
+ *  marking is STILL explicit: a `closeWindow`/`respawn-pane -k` kill is abrupt
+ *  and fires NO clean `session_shutdown`, so the general quit→done rule does NOT
+ *  auto-resolve a force-killed descendant — we mark it `canceled` here via the
+ *  same `cancel` event the close cascade uses. Shared by relaunchRoot (option C)
+ *  and resetRoot's in-place fallback, so both leave their descendants `canceled`. */
 export function reapDescendants(rootId: string): string[] {
   const reaped: string[] = [];
   for (const id of view(rootId)) {
     try {
       // Reap BEFORE tearing down the placement (the crash-safety invariant the
-      // `reap` event encodes): a non-supervised status + cleared intent first, so
+      // `cancel` event encodes): a non-supervised status + cleared intent first, so
       // the daemon can't revive a descendant mid-teardown. tearDownNode then
       // closes any focus row it held, kills its pane (pane-keyed), and nulls its
       // LOCATION.
-      transition(id, 'reap');
+      transition(id, 'cancel');
       tearDownNode(id);
       reaped.push(id);
     } catch {
@@ -79,7 +83,7 @@ export function reapDescendants(rootId: string): string[] {
 // ---------------------------------------------------------------------------
 
 export interface ResetRootResult {
-  /** Descendant node ids torn down (window killed + marked done). */
+  /** Descendant node ids torn down (window killed + marked canceled). */
   reaped: string[];
   /** Direct subscriptions dropped off the root. */
   detached: string[];
@@ -111,7 +115,7 @@ export function resetRoot(
     return { reaped: [], detached: [], reset: false };
   }
 
-  // 1) Reap the descendant sub-DAG (mark done + kill windows; shared helper).
+  // 1) Reap the descendant sub-DAG (mark canceled + kill windows; shared helper).
   const reaped = reapDescendants(nodeId);
 
   // 2) Detach the root's own subscriptions so its view is empty.
@@ -227,7 +231,7 @@ export function relaunchRoot(
 ): { newNodeId: string } | null {
   const oldMeta = getNode(oldId);
   if (oldMeta === null || oldMeta.parent != null) return null; // defensive: not a root
-  if (oldMeta.status === 'done') return null;                  // defensive: already parked (rapid double /new)
+  if (oldMeta.status === 'canceled') return null;              // defensive: already parked (rapid double /new)
 
   const respawn = deps.relaunchRootInPane ?? relaunchRootInPane;
 
@@ -251,7 +255,7 @@ export function relaunchRoot(
   const db = openDb();
   db.exec('BEGIN');
   try {
-    // 1) Reap descendants (mark done + kill windows, keep edges, no wipe).
+    // 1) Reap descendants (mark canceled + kill windows, keep edges, no wipe).
     reapDescendants(oldId);
 
     // 2) Create the fresh root node (new id, empty context dir via
@@ -275,10 +279,11 @@ export function relaunchRoot(
     updateNode(newId, { home_session: loc.session ?? nodeSession() });
     clearPid(newId);               // no pi yet → daemon 'leave' until boot records the pid
 
-    // 3) Park the old root: reap (done + intent cleared) and detach its window so
-    //    it never claims the pane, but KEEP pi_session_id (resumable),
-    //    parent=null, and all edges.
-    transition(oldId, 'reap');
+    // 3) Park the old root: cancel (canceled + intent cleared) and detach its
+    //    window so it never claims the pane, but KEEP pi_session_id (resumable),
+    //    parent=null, and all edges. A5: a superseded old root did not finish its
+    //    own work — it unifies on `canceled` like every other external reap.
+    transition(oldId, 'cancel');
     setPresence(oldId, { window: null, tmux_session: null });
 
     // 4) Focus follows content: repoint the old root's focus row to the new root

@@ -17,8 +17,16 @@
 // "flip status to a non-supervised value + clear intent BEFORE killing the
 // window" — the daemon only ever revives active|idle nodes, so a teardown must
 // leave the node done/canceled first to close the revive race. That invariant is
-// now the DEFINITION of the `reap`/`cancel` events: callers flip via transition()
+// now the DEFINITION of the `cancel` event: callers flip via transition()
 // and only THEN kill the window.
+//
+// Unification (A5, human-confirmed 2026-06-06): an externally-reaped node — torn
+// down because the user moved on (close cascade) OR because a root reset/relaunch
+// superseded it — ends `canceled`, NOT `done`. `done` is reserved for a node that
+// finished its OWN work (finalize). The old `reap` event (→ done) was identical to
+// `cancel` in every field and side effect once unified on status, so it was
+// COLLAPSED into `cancel`; reset.ts's reapDescendants + relaunchRoot park-old now
+// route through `cancel`.
 //
 // Layering note: lifecycle.ts is runtime, but it is the canvas write surface's
 // `transition` verb (the only writer of status+intent), so it owns its atomic
@@ -34,8 +42,7 @@ import type { NodeMeta, NodeStatus, ExitIntent } from '../canvas/types.js';
  *  of from-statuses it is legal from. */
 export type LifecycleEvent =
   | 'finalize'  // → done, intent='done'       (push --final / job complete / clean quit)
-  | 'reap'      // → done, intent cleared       (reapDescendants / relaunch park)
-  | 'cancel'    // → canceled, intent cleared    (node close cascade)
+  | 'cancel'    // → canceled, intent cleared    (node close cascade · reapDescendants · relaunch park-old)
   | 'crash'     // → dead, intent unchanged      (daemon: window gone, no yield/release)
   | 'yield'     // intent='refresh', status unchanged (requestYield / relaunch new-node safety net)
   | 'release'   // → idle, intent='idle-release'       (idle-release: free the window, wake on inbox)
@@ -62,9 +69,9 @@ const LIVE: readonly NodeStatus[] = ['active', 'idle'];
 const TRANSITIONS: Readonly<Record<LifecycleEvent, TransitionSpec>> = {
   // feed.push(final) · queue.cancelJob · markCleanExitDone (clean quit).
   finalize: { status: 'done', intent: 'done', from: LIVE },
-  // reapDescendants · relaunchRoot park-old. Forced teardown → done, intent cleared.
-  reap: { status: 'done', intent: null, from: ANY },
-  // closeNode cascade. Forced teardown → canceled, intent cleared.
+  // closeNode cascade · reapDescendants · relaunchRoot park-old. Forced teardown
+  // of a node that did NOT finish its own work → canceled, intent cleared. (A5:
+  // done is reserved for finalize; every external reap unifies on canceled.)
   cancel: { status: 'canceled', intent: null, from: ANY },
   // daemon superviseTick: window gone with no yield/release intent. Intent KEPT
   // (the dead log line still reports it).

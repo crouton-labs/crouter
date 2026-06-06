@@ -77,9 +77,18 @@ test('resetRoot empties the root view, reaps descendants, and wipes working stat
   assert.equal(view('root').length, 0, 'root view is empty after reset');
   assert.equal(subscriptionsOf('root').length, 0, 'no outgoing edges remain');
 
-  // Descendants are done (clean teardown, not a fault; daemon skips them).
-  assert.equal(getNode('child')?.status, 'done');
-  assert.equal(getNode('grand')?.status, 'done');
+  // Descendants are CANCELED (A5, human-confirmed 2026-06-06): an externally-
+  // reaped node — via reset/relaunch OR close — did not finish its OWN work, so
+  // it unifies on `canceled`; `done` is reserved for finalize. Daemon skips them.
+  assert.equal(getNode('child')?.status, 'canceled');
+  assert.equal(getNode('grand')?.status, 'canceled');
+  // Regression: a reset-reaped descendant ends EXACTLY {canceled, null} — byte-
+  // for-byte identical to the close path (mirrors cascade-close.test.ts's tuple).
+  assert.deepEqual(
+    { status: getNode('grand')?.status, intent: getNode('grand')?.intent ?? null },
+    { status: 'canceled', intent: null },
+    'reset-reaped descendant: (status,intent) === (canceled, null), same as close',
+  );
 
   // Working state wiped.
   assert.equal(existsSync(roadmapPath('root')), false, 'roadmap wiped');
@@ -128,7 +137,7 @@ test('Step 7: resetRoot reaps a FOCUSED descendant through tearDownNode (closes 
   // getFocusByNode('desc') would still return fD.
   assert.equal(getFocusByNode('desc'), null, 'descendant focus row closed by tearDownNode');
   const d = getNode('desc')!;
-  assert.equal(d.status, 'done', 'descendant reaped (done)');
+  assert.equal(d.status, 'canceled', 'descendant reaped (canceled — A5 unified)');
   assert.equal(d.pane ?? null, null, 'descendant pane nulled');
   assert.equal(d.tmux_session ?? null, null, 'descendant session nulled');
 });
@@ -148,10 +157,10 @@ test('reaped descendants keep their meta on disk (orphaned, not deleted)', () =>
 
   resetRoot('root', 'new');
 
-  // The node record persists (we detach + mark done, we don't delete the node).
+  // The node record persists (we detach + mark canceled, we don't delete the node).
   const child = getNode('child');
   assert.ok(child, 'child meta still on disk');
-  assert.equal(child?.status, 'done');
+  assert.equal(child?.status, 'canceled');
   // It is just unreachable from the root.
   assert.equal(view('root').length, 0);
 });

@@ -221,6 +221,11 @@ export async function createHarness(opts: HarnessOpts = {}): Promise<Harness> {
 
   // Pre-create the isolated session on the DEFAULT server so teardown always
   // has a target and `node new`'s ensureSession no-ops.
+  // ISOLATION ASSUMPTION (see header + MINOR-6): isolation is by SESSION NAME on
+  // the DEFAULT tmux server only. The runtime CLI shells `tmux` with no `-L`, so
+  // a custom-socket server (`tmux -L foo`) would be invisible to it; this harness
+  // therefore assumes the default socket and only ever kill-sessions, never the
+  // server.
   spawnSync('tmux', ['new-session', '-d', '-s', session, '-c', CROUTER, 'sleep 100000'], {
     stdio: 'ignore',
   });

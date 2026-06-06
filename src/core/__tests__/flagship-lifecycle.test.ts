@@ -15,10 +15,30 @@
 //   B spawns child D; D finishes; B pushes its final up to A.
 //
 // 2×2 coverage (mode {base,orchestrator} × lifecycle {terminal,resident}):
-//   • base×resident       — A at birth
+//   • base×resident       — A's PERSISTED ROW SHAPE at S1 (a harness-set fixture,
+//                           NOT a real bootRoot — see S1 + MINOR-1 caveat below).
+//                           The resident BEHAVIOR (does not idle-release) is
+//                           exercised faithfully in live-mutation.test.ts.
 //   • orchestrator×resident — A after promote (top-level orchestrator)
-//   • base×terminal       — B/C/D workers
+//   • base×terminal       — B/C/D workers (GENUINE managed-child birth at S3)
 //   • orchestrator×terminal — B after promote (sub-orchestrator)
+//
+// ── Known coverage boundaries (DELIBERATE, documented gaps) ────────────────
+// This flagship + the live-mutation/cascade/subscription siblings cover the
+// HAPPY-PATH lifecycle and the live-mutation axis faithfully. The following
+// fault/grace/focus paths are OUT OF SCOPE for the faithful tier in this pass
+// (some are backstopped at the in-process unit tier, cited):
+//   • crash → dead (a vehicle that boots then its pane vanishes mid-run) — unit:
+//     daemon-liveness.test.ts "pane GONE … crash → dead".
+//   • boot-failure push (a vehicle that never boots → surfaceBootFailure urgent
+//     push up the spine) — no faithful coverage here.
+//   • focused-FREEZE (F3: a focused-dormant node frozen via remain-on-exit,
+//     pane-alive but pi-dead) — unit: daemon-liveness.test.ts "idle-release +
+//     live (frozen) pane …"; the grace-window double-spawn guard around it is
+//     exercised faithfully in grace-clock.test.ts.
+//   • node lifecycle --detach (A3: orphaned-focus-row hazard) — untested.
+//   • node msg / focus / cycle wake of a dormant node (A7) — untested faithfully.
+// These are intentional boundaries, not oversights.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -38,13 +58,23 @@ test(
     const h: Harness = await createHarness({ sessionPrefix: 'crtr-flagship' });
     try {
       // ===================================================================
-      // S1 — A is born: base × RESIDENT (the user's front door / root).
+      // S1 — A's PERSISTED ROW SHAPE: base × RESIDENT (the user's front door).
+      //   ⚠ MINOR-1 caveat: this is NOT a real root birth. The harness mints A
+      //   via in-process createNode over a hand-built meta whose defaults ARE
+      //   mode:'base'/lifecycle:'resident' — the REAL birth/boot path (bootRoot)
+      //   execs pi inline and never returns, so it is structurally unreachable
+      //   from the harness (harness-design Wall #7). These four asserts therefore
+      //   PIN THE PERSISTED ROW SHAPE the rest of the scenario builds on — they
+      //   do NOT prove the real resident-birth path. The resident-at-birth 2×2
+      //   quadrant is out of reach; the resident *behavior* (no idle-release) is
+      //   exercised faithfully in live-mutation.test.ts, and the genuine real
+      //   birth of a managed child (→ terminal) IS exercised at S3 below.
       // ===================================================================
       const A = h.spawnRoot('top-level orchestrator');
       {
         const a = h.node(A)!;
-        assert.equal(a.mode, 'base', 'A born base');
-        assert.equal(a.lifecycle, 'resident', 'A born resident (root)');
+        assert.equal(a.mode, 'base', 'A row shape: base');
+        assert.equal(a.lifecycle, 'resident', 'A row shape: resident (fixture, not a real boot)');
         assert.equal(a.status, 'active', 'A active');
         assert.equal(a.intent ?? null, null, 'A no intent');
       }
@@ -193,15 +223,18 @@ test(
       const turnInjected = await h.waitFor(
         () => {
           const fresh = h.injected(B).slice(injBeforeTurn);
-          const steer = fresh.find((e) => e.deliverAs === 'steer');
+          // MINOR-3: match the steer by CONTENT (/ORCHESTRATOR/i), not deliverAs
+          // alone — mirroring live-mutation.test.ts's orchestrationSteers() — so
+          // this pins the orchestration guidance specifically, not "some steer."
+          const steer = fresh.find((e) => e.deliverAs === 'steer' && /ORCHESTRATOR/i.test(e.content));
           const reprompt = fresh.find((e) => e.content.includes(STALL_REPROMPT));
           return steer && reprompt ? fresh : null;
         },
         { timeoutMs: 15_000, label: 'B turn injected persona-drift steer + stall reprompt' },
       );
       assert.ok(
-        turnInjected.some((e) => e.deliverAs === 'steer'),
-        'turn_end injected the base→orchestrator persona-drift guidance (steer)',
+        turnInjected.some((e) => e.deliverAs === 'steer' && /ORCHESTRATOR/i.test(e.content)),
+        'turn_end injected the base→orchestrator persona-drift guidance (steer with ORCHESTRATOR content)',
       );
       assert.ok(
         turnInjected.some((e) => e.content.includes(STALL_REPROMPT)),
