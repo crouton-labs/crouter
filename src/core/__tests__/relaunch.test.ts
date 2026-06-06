@@ -88,7 +88,7 @@ after(() => {
 // #1 — relaunchRoot parks the old root, keeps edges, creates a fresh root
 // ---------------------------------------------------------------------------
 
-test('relaunchRoot parks the old root (done, edges intact, no wipe) and mints a fresh root', () => {
+test('relaunchRoot parks the old root (canceled, edges intact, no wipe) and mints a fresh root', () => {
   createNode(node('root', {
     parent: null,
     lifecycle: 'resident',
@@ -119,9 +119,9 @@ test('relaunchRoot parks the old root (done, edges intact, no wipe) and mints a 
   // Respawn was dispatched against the NEW node in the given pane.
   assert.deepEqual(respawn.calls, [{ nodeId: newId, pane: 'test-pane' }]);
 
-  // Old root: parked done, window detached, pi_session_id UNCHANGED (resumable).
+  // Old root: parked canceled, window detached, pi_session_id UNCHANGED (resumable).
   const old = getNode('root');
-  assert.equal(old?.status, 'done', 'old root parked done');
+  assert.equal(old?.status, 'canceled', 'old root parked canceled');
   assert.equal(old?.window, null, 'old root window detached');
   assert.equal(old?.tmux_session, null, 'old root tmux_session detached');
   assert.equal(old?.intent, null, 'old root intent cleared');
@@ -129,9 +129,9 @@ test('relaunchRoot parks the old root (done, edges intact, no wipe) and mints a 
   assert.equal(old?.pi_session_file, '/abs/root-sess.jsonl', 'pi_session_file preserved (resumable by path)');
   assert.equal(old?.parent, null, 'old root stays a root');
 
-  // Descendants: DONE (not dead), but edges intact.
-  assert.equal(getNode('child')?.status, 'done', 'child marked done (not a fault)');
-  assert.equal(getNode('grand')?.status, 'done', 'grand marked done (not a fault)');
+  // Descendants: CANCELED (not dead), but edges intact.
+  assert.equal(getNode('child')?.status, 'canceled', 'child marked canceled (not a fault)');
+  assert.equal(getNode('grand')?.status, 'canceled', 'grand marked canceled (not a fault)');
   assert.deepEqual(subscriptionsOf('root').map((s) => s.node_id), ['child'], 'root→child edge intact');
   assert.deepEqual(subscriptionsOf('child').map((s) => s.node_id), ['grand'], 'child→grand edge intact');
 
@@ -190,10 +190,10 @@ test('handleNewSession on a root with a pane returns path:relaunch + parks old, 
 
   // Parked-old + fresh-new end state.
   const old = getNode('root');
-  assert.equal(old?.status, 'done', 'old root parked done');
+  assert.equal(old?.status, 'canceled', 'old root parked canceled');
   assert.equal(old?.window, null, 'old root window detached');
   assert.equal(old?.pi_session_id, 'root-sess', 'pi_session_id preserved (resumable)');
-  assert.equal(getNode('child')?.status, 'done', 'descendant reaped done');
+  assert.equal(getNode('child')?.status, 'canceled', 'descendant reaped canceled');
 
   const fresh = getNode(res.newNodeId!);
   assert.equal(fresh?.parent, null, 'new node is a root');
@@ -246,7 +246,7 @@ test('handleNewSession on a root with no pane falls back to in-place resetRoot',
   assert.equal(root?.lifecycle, 'resident');
   assert.equal(root?.pi_session_id, 'newsess');
   assert.equal(view('root').length, 0, 'root view emptied');
-  assert.equal(getNode('child')?.status, 'done', 'descendant marked done');
+  assert.equal(getNode('child')?.status, 'canceled', 'descendant marked canceled');
   assert.equal(existsSync(roadmapPath('root')), false, 'working state wiped');
 });
 
@@ -262,13 +262,13 @@ test('a second relaunchRoot on an already-parked root is a no-op', () => {
   assert.ok(first !== null, 'first /new parks + relaunches');
   const afterFirst = listNodes().length;
 
-  // Old root is now `done`; a second session_start in the dying old pi must
+  // Old root is now `canceled`; a second session_start in the dying old pi must
   // no-op (no second parked node, no zombie new node).
   const second = relaunchRoot('root', 'test-pane', { relaunchRootInPane: respawn.fn });
   assert.equal(second, null, 'second relaunch is a no-op');
   assert.equal(listNodes().length, afterFirst, 'no second new node minted');
   assert.equal(respawn.calls.length, 1, 'respawn dispatched only once');
-  assert.equal(getNode('root')?.status, 'done', 'old root unchanged (still parked)');
+  assert.equal(getNode('root')?.status, 'canceled', 'old root unchanged (still parked)');
 });
 
 // ---------------------------------------------------------------------------
@@ -284,7 +284,7 @@ test('relaunchRoot on a childless root: reap is a no-op, new node minted', () =>
   const res = relaunchRoot('root', 'test-pane', { relaunchRootInPane: respawn.fn });
 
   assert.ok(res !== null, 'new node minted without throwing');
-  assert.equal(getNode('root')?.status, 'done', 'old root parked');
+  assert.equal(getNode('root')?.status, 'canceled', 'old root parked');
   assert.equal(getNode(res!.newNodeId)?.status, 'active', 'fresh root active');
 });
 
