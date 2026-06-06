@@ -108,6 +108,22 @@ export function spawnAndDetach(opts: DetachOptions): DetachResult {
   }
   const paneId = split.stdout.trim();
 
+  // Force `remain-on-exit off` at PANE scope on the new pane. remain-on-exit is
+  // a pane option (tmux 3.x) inherited from the window-scoped value, and the
+  // canvas runtime arms `remain-on-exit on` on a node's vehicle/focus WINDOW
+  // (F3 freeze, see runtime/tmux.ts setRemainOnExit). A split-window pane opened
+  // into that window inherits the `on`, so the humanloop TUI pane would linger
+  // as a dead pane ("pane is dead (status 0, …)") when `crtr human _run` exits 0
+  // instead of closing. Overriding at pane scope destroys this pane on clean
+  // exit WITHOUT touching the window's value (focus freeze still works) or the
+  // user's global config. Best-effort: harmless no-op on tmux where the option
+  // is window-only.
+  if (paneId !== '') {
+    spawnSync('tmux', ['set-option', '-p', '-t', paneId, 'remain-on-exit', 'off'], {
+      stdio: 'ignore',
+    });
+  }
+
   // Schedule self-kill of the originating pane.
   scheduleKillCurrentPane(opts.killAfterSeconds);
 

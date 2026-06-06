@@ -20,9 +20,17 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { join } from 'node:path';
 
-import { crtrHome, getNode, setPresence } from '../canvas/index.js';
+import {
+  crtrHome,
+  getNode,
+  getRow,
+  openFocusRow,
+  closeFocusRow,
+  getFocusById,
+  getFocusByNode,
+} from '../canvas/index.js';
 import type { NodeMeta } from '../canvas/index.js';
-import { selectWindow, switchClient, windowAlive, currentTmux, paneOfWindow, swapPaneInPlace, paneLocation } from './tmux.js';
+import { selectWindow, switchClient, windowAlive, currentTmux, inTmux } from './tmux.js';
 
 // ---------------------------------------------------------------------------
 // Focus pointer
@@ -33,7 +41,9 @@ function focusPtrPath(): string {
   return join(crtrHome(), 'focus.ptr');
 }
 
-/** Persist `nodeId` as the currently focused node. Best-effort; never throws. */
+/** Persist `nodeId` as the currently focused node. Best-effort; never throws.
+ *  Also maintains the transitional focus.ptr↔focuses-table dual-write bridge
+ *  (see below) so Step 6 can flip reads to the table with no data gap. */
 export function setFocus(nodeId: string): void {
   try {
     const p = focusPtrPath();
@@ -42,16 +52,97 @@ export function setFocus(nodeId: string): void {
   } catch {
     /* focus pointer is best-effort; never surface */
   }
+  syncBridgeFocusRow(nodeId); // Step-4 dual-write bridge (REMOVED in Step 8)
 }
 
-/** Read the currently focused node id, or null if the pointer is absent or
- *  empty (no active focus). Best-effort; never throws. */
+/** Read the currently focused node id, or null if there is no active focus.
+ *  Reads `focus.ptr` first; FALLS BACK to the canonical focuses row (the bridge,
+ *  below) when the pointer is absent/empty — so a reader sees the same focus
+ *  whichever store a writer reached. Best-effort; never throws. */
 export function getFocus(): string | null {
   try {
     const raw = readFileSync(focusPtrPath(), 'utf8').trim();
-    return raw !== '' ? raw : null;
+    if (raw !== '') return raw;
+  } catch {
+    /* pointer absent — fall through to the table */
+  }
+  // Bridge fallback: the canonical focus row's occupant (Step-8 removal).
+  try {
+    return getFocusById(BRIDGE_FOCUS_ID)?.node_id ?? null;
   } catch {
     return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Transitional focus.ptr ↔ focuses-table dual-write bridge.
+//
+// THROWAWAY — DELETED IN STEP 8. Today `focus.ptr` owns the single "current"
+// focus. Step 4 stands up the plural `focuses` table but nothing reads it as
+// authority yet (that switch is Step 6). To populate it in lockstep WITHOUT a
+// behavior change, every `setFocus` ALSO writes one canonical focus row that
+// mirrors `focus.ptr`, and `getFocus` falls back to it. Step 6 replaces
+// focusNodeInPlace with retargetFocus/openFocus, which write pane-correct focus
+// rows directly — then this bridge (and focus.ptr) is removed.
+// ---------------------------------------------------------------------------
+
+/** The fixed focus_id of the one canonical row that mirrors `focus.ptr`. */
+const BRIDGE_FOCUS_ID = '__focus_ptr__';
+
+/** Best-effort pane/session for the canonical focus row. A bare `setFocus(id)`
+ *  only carries a node id, but a focus row wants pane+session. Resolve them
+ *  READ-ONLY from the node's already-stored LOCATION (`row.pane`/`tmux_session`),
+ *  else from the caller's current tmux pane (`currentTmux`).
+ *
+ *  DELIBERATE DEVIATION from the design's "run reconcile(nodeId) first": reconcile
+ *  WRITES node presence via setPresence, and `setFocus` has many non-focus callers
+ *  (reset/close/demote/tmux-spread). Reconciling on every setFocus would mutate
+ *  their nodes' LOCATION as an invisible side-effect of a dual-write that is
+ *  supposed to change NOTHING this step. So the bridge reads, never reconciles;
+ *  best-effort is fine THIS step (nothing reads the row as authority until Step 6,
+ *  which replaces these writers with pane-correct retargetFocus/openFocus). */
+function resolveBridgePaneSession(nodeId: string): { pane: string | null; session: string | null } {
+  try {
+    const row = getRow(nodeId);
+    if (row?.pane != null && row.pane !== '') {
+      return { pane: row.pane, session: row.tmux_session ?? null };
+    }
+    if (inTmux()) {
+      const cur = currentTmux();
+      if (cur) return { pane: cur.pane, session: cur.session };
+    }
+  } catch {
+    /* best-effort */
+  }
+  return { pane: null, session: null };
+}
+
+/** Mirror the current focus into the single canonical focuses row. `''` closes
+ *  it (focus cleared). Otherwise re-point the row at `nodeId`: drop the prior
+ *  canonical row and any row already holding `nodeId` (UNIQUE(node_id) safety)
+ *  before re-inserting. All best-effort — a failure here must never break a
+ *  setFocus caller or the build. */
+function syncBridgeFocusRow(nodeId: string): void {
+  try {
+    if (nodeId === '') {
+      closeFocusRow(BRIDGE_FOCUS_ID);
+      return;
+    }
+    // Step 6: retargetFocus/openFocus now write REAL (pane-correct) focus rows.
+    // If one already shows this node, the table is already authoritative —
+    // focus.ptr (the file, written above) names the node and getFocus's fallback
+    // reads the real row. Drop any stale bridge row and PIGGYBACK on the real
+    // one; never duplicate-insert (UNIQUE node_id) or clobber it.
+    const real = getFocusByNode(nodeId);
+    if (real !== null && real.focus_id !== BRIDGE_FOCUS_ID) {
+      closeFocusRow(BRIDGE_FOCUS_ID);
+      return;
+    }
+    const { pane, session } = resolveBridgePaneSession(nodeId);
+    closeFocusRow(BRIDGE_FOCUS_ID);
+    openFocusRow(BRIDGE_FOCUS_ID, pane, session, nodeId);
+  } catch {
+    /* dual-write is best-effort; never surface */
   }
 }
 
@@ -105,80 +196,4 @@ export function focusNode(nodeId: string): { focused: boolean; session: string |
   const windowOk = selectWindow(session, window);
 
   return { focused: clientOk && windowOk, session };
-}
-
-/** Focus a node IN PLACE: bring its pane into the caller's current pane slot
- *  (swap-pane) instead of navigating the client to the node's own window. This
- *  is the default for `crtr node focus` and the nav-chrome spine jump — the
- *  agent appears where you are.
- *
- *  Falls back to window focus when there is no caller pane (not inside tmux) or
- *  the target pane can't be resolved. `inPlace` reports which path ran. */
-export function focusNodeInPlace(
-  nodeId: string,
-  callerPane?: string,
-  callerNodeId?: string,
-): { focused: boolean; session: string | null; inPlace: boolean } {
-  const meta = getNode(nodeId);
-
-  // Always write the pointer so the dashboard reflects intent even on failure.
-  setFocus(nodeId);
-
-  if (meta === null || !nodeLive(meta)) {
-    return { focused: false, session: meta?.tmux_session ?? null, inPlace: false };
-  }
-
-  const session = meta.tmux_session as string;
-  const window = meta.window as string;
-  const pane = callerPane ?? process.env['TMUX_PANE'] ?? currentTmux()?.pane;
-
-  // No caller pane (not in tmux) — best we can do is bring the window forefront.
-  if (pane === undefined || pane === '') {
-    const ok = switchClient(session) && selectWindow(session, window);
-    return { focused: ok, session, inPlace: false };
-  }
-
-  const targetPane = paneOfWindow(session, window);
-  if (targetPane === null) {
-    const ok = switchClient(session) && selectWindow(session, window);
-    return { focused: ok, session, inPlace: false };
-  }
-  if (targetPane === pane) return { focused: true, session, inPlace: true }; // already here
-
-  // The session + window the caller's pane currently sits in — the slot the
-  // target's pane is about to be swapped INTO. Capture BOTH fields, not just
-  // the window: an inline root adopts the user's own tmux session while its
-  // children live in the shared `crtr` session, so the caller and target can
-  // sit in DIFFERENT sessions and swap-pane crosses the session boundary.
-  const callerLoc = paneLocation(pane);
-
-  const ok = swapPaneInPlace(targetPane, pane);
-
-  // Keep the canvas (session, window) mapping in sync with the physical swap.
-  // swap-pane exchanges the two PANES between their slots (pane ids are stable,
-  // window/session are the slot, and a swap can cross sessions): after it the
-  // target's pane occupies the caller's slot and the caller's pane occupies the
-  // target's old slot. Re-point BOTH fields on BOTH nodes. Updating only
-  // `window` after a CROSS-SESSION swap leaves tmux_session naming the wrong
-  // session, so the (session, window) pair points at a window that isn't there:
-  // windowAlive() then reports the live node dormant, and the next focus tries
-  // to revive it — relaunching pi against a stale window, which drops you on the
-  // session selector. That was the broken "go back up to the parent" path
-  // (root in the user's session ↔ child in the `crtr` session). Window ids are
-  // server-global, so a differing window id is a reliable "panes moved" signal.
-  if (ok && callerLoc !== null && callerLoc.window !== window) {
-    // The focused node's pane now sits in the caller's old slot.
-    try { setPresence(nodeId, { tmux_session: callerLoc.session, window: callerLoc.window }); } catch { /* best-effort */ }
-    // The caller is the node running this focus (its pi process owns callerPane).
-    // Its pane moved to the target's old slot (session, window), so re-point it
-    // there. Prefer an explicit id (the `node cycle` tmux binding runs outside
-    // any pi, so CRTR_NODE_ID is unset there) and fall back to the env for
-    // `node focus`.
-    const cnid = callerNodeId ?? process.env['CRTR_NODE_ID'];
-    if (cnid !== undefined && cnid.trim() !== '' && cnid !== nodeId) {
-      try { setPresence(cnid, { tmux_session: session, window }); } catch { /* best-effort */ }
-    }
-  }
-
-  return { focused: ok, session, inPlace: true };
 }

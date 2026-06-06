@@ -94,7 +94,8 @@ export interface OpenWindowOpts {
 
 /** Open a background window for a node and run `command` in it. `-d` keeps it
  *  detached so it doesn't steal focus or become the current window. Returns the
- *  new window id.
+ *  new window id AND the pane id it created (the durable `%pane_id`, LOCATION's
+ *  anchor) — callers that only need the window destructure `.window`.
  *
  *  Target is `${session}:` (trailing colon = the session, no window index) plus
  *  `-a` (insert after the current window) so tmux allocates the next free index.
@@ -103,15 +104,18 @@ export interface OpenWindowOpts {
  *  "create window failed: index N in use" whenever the active window is not the
  *  last one (common when base-index is 0 but the live window sits at index 1).
  *  `-a` also keeps node windows off index 0, which is reserved for the optional
- *  dashboard. */
-export function openNodeWindow(opts: OpenWindowOpts): string | null {
+ *  dashboard. The explicit `-t ${session}:` target is the §2.2 HARD DRIVER
+ *  INVARIANT — never let new-window fall back to tmux's global current session. */
+export function openNodeWindow(
+  opts: OpenWindowOpts,
+): { window: string; pane: string } | null {
   const r = tmux([
     'new-window',
     '-d',
     '-a',
     '-P',
     '-F',
-    '#{window_id}',
+    '#{window_id}\t#{pane_id}',
     '-t',
     `${opts.session}:`,
     '-n',
@@ -121,42 +125,49 @@ export function openNodeWindow(opts: OpenWindowOpts): string | null {
     ...envFlags(opts.env),
     opts.command,
   ]);
-  return r.ok ? r.stdout : null;
+  if (!r.ok) return null;
+  const [window, pane] = r.stdout.split('\t');
+  if (window === undefined || window === '' || pane === undefined || pane === '') {
+    return null;
+  }
+  return { window, pane };
 }
 
-export interface SplitPaneOpts {
-  /** The pane to split — the caller's current pane. */
-  pane: string;
+export interface SplitWindowOpts {
   cwd: string;
   env: Record<string, string>;
   /** The full command to run in the new pane (already a shell string). */
   command: string;
-  /** 'h' → side-by-side (left/right); 'v' → stacked (top/bottom). Default 'h'. */
-  direction?: 'h' | 'v';
+  /** Stack the new pane below instead of beside (default: beside, `-h`). */
+  vertical?: boolean;
 }
 
-/** Split `pane` and run `command` in the new ADJACENT pane, within the SAME
- *  window. Unlike openNodeWindow (which exiles the node to its own background
- *  window in the shared session), this keeps the new node BESIDE the caller so
- *  the two can be driven side-by-side. No `-d`, so split-window makes the new
- *  pane active — bringing the spawned node forefront. Returns the new pane id,
- *  or null if tmux fails. */
-export function splitPane(opts: SplitPaneOpts): string | null {
-  const dir = opts.direction === 'v' ? '-v' : '-h';
+/** Split `targetPane`'s window, opening a NEW pane beside it running `command`,
+ *  and return the new pane id (the durable `%id`). The ONLY new-pane-beside verb
+ *  (Q3: a focus opened side-by-side). `-d` keeps the caller's pane active; `-h`
+ *  makes the split side-by-side (left/right), the default for a focus viewport.
+ *
+ *  §2.2 HARD DRIVER INVARIANT: `targetPane` is REQUIRED — a bare `split-window`
+ *  would split tmux's global current pane, which can leak a pane into an
+ *  unrelated user session (the exact bug this design kills). The explicit
+ *  `-t <targetPane>` makes the destination structurally un-leakable. Returns
+ *  null if tmux fails. */
+export function splitWindow(targetPane: string, opts: SplitWindowOpts): string | null {
   const r = tmux([
     'split-window',
-    dir,
+    '-d',
+    ...(opts.vertical === true ? [] : ['-h']),
     '-P',
     '-F',
     '#{pane_id}',
     '-t',
-    opts.pane,
+    targetPane,
     '-c',
     opts.cwd,
     ...envFlags(opts.env),
     opts.command,
   ]);
-  return r.ok ? r.stdout : null;
+  return r.ok && r.stdout !== '' ? r.stdout : null;
 }
 
 /** Bring a node's window forefront. Switches client across roots when needed. */
@@ -199,14 +210,44 @@ export function windowOfPane(pane: string): string | null {
   return r.ok && r.stdout !== '' ? r.stdout : null;
 }
 
-/** The session + window a pane currently lives in. Used by demote to place the
- *  recycled root's meta on the pane it respawns into. Null if tmux fails. */
+/** The session + window a pane currently lives in (`display-message -p -t %id`).
+ *  The §2.4 reconciliation read-back: resolve a node's/focus's CURRENT
+ *  window/session from its durable pane id before any act, so crtr follows a
+ *  manual `move-pane`/`join-pane`/`break-pane` instead of fighting it. Null if
+ *  the pane is gone or tmux fails. */
 export function paneLocation(pane: string): { session: string; window: string } | null {
   const r = tmux(['display-message', '-p', '-t', pane, '#{session_name}\t#{window_id}']);
   if (!r.ok) return null;
   const [session, window] = r.stdout.split('\t');
   if (session === undefined || session === '' || window === undefined || window === '') return null;
   return { session, window };
+}
+
+/** Does this pane id still exist? A `display-message` probe on the `%id` — the
+ *  v3 PRIMARY liveness probe (§1.2/§2.2), replacing window-existence so a user
+ *  moving a pane to another window/session never reads as "gone". True iff tmux
+ *  knows the pane.
+ *
+ *  NOTE: `display-message -p -t <gone-pane>` EXITS 0 with EMPTY output (it does
+ *  not error on an unresolvable pane target) — so an `.ok` check alone would
+ *  report a dead pane as alive, defeating the whole point of pane-existence
+ *  liveness. We therefore require the echoed `#{pane_id}` to equal the requested
+ *  pane: a live pane echoes its own id, a gone/bogus one yields empty. */
+export function paneExists(pane: string): boolean {
+  const r = tmux(['display-message', '-p', '-t', pane, '#{pane_id}']);
+  return r.ok && r.stdout === pane;
+}
+
+/** Relocate a pane into another session as its own window WITHOUT killing the
+ *  process in it — `break-pane -d` moves the pane out of its current window (the
+ *  pi keeps generating) into a fresh window in `session`; `-d` leaves the caller's
+ *  client where it is rather than following the pane to the background, and `-a`
+ *  allocates the next free window index (same dodge as openNodeWindow). The
+ *  "detach to background" driver behind `node lifecycle --detach`. Best-effort;
+ *  false if tmux refuses (e.g. the pane is gone). The caller reconciles presence
+ *  so the canvas follows the move. */
+export function breakPaneToSession(pane: string, session: string): boolean {
+  return tmux(['break-pane', '-d', '-a', '-s', pane, '-t', `${session}:`]).ok;
 }
 
 /** Swap `targetPane` into `callerPane`'s layout slot, IN PLACE. `-d` keeps the
@@ -228,35 +269,55 @@ export interface RespawnPaneOpts {
   command: string;
 }
 
-/** Re-exec a command in an EXISTING pane, in place. `-k` kills the pane's
- *  current process (e.g. a yielding pi) and starts `command` in the same pane
- *  — the window/pane survives, so an interactive session is never dropped to a
- *  shell and no window churns. Used by refresh-yield.
- *
- *  Spawned DETACHED (own process group, unref'd) so the request reaches the
- *  tmux server even though killing the pane tears down the caller's own pi.
- *  Returns true once the request was dispatched. */
-export function respawnPane(opts: RespawnPaneOpts): boolean {
+/** The `respawn-pane -k` argv for `opts`. `-k` kills the pane's current process
+ *  (e.g. a yielding pi) and re-execs `command` in the SAME pane, preserving its
+ *  `%id` (§1.5 F3: a frozen focus pane resumes in place, no new window). The
+ *  explicit `-t opts.pane` is the §2.2 HARD DRIVER INVARIANT — respawn must name
+ *  its target pane, never tmux's global current pane. */
+function respawnPaneArgs(opts: RespawnPaneOpts): string[] {
+  return [
+    'respawn-pane',
+    '-k',
+    '-c',
+    opts.cwd,
+    ...envFlags(opts.env),
+    '-t',
+    opts.pane,
+    opts.command,
+  ];
+}
+
+/** Re-exec a command in an EXISTING pane, in place — DETACHED. Spawned in its own
+ *  process group (unref'd) so the request reaches the tmux server even though
+ *  `-k` tears down the caller's own pi mid-flight. Used when a node respawns ITS
+ *  OWN pane (refresh-yield): the dispatch can't be awaited because it kills the
+ *  awaiter. Returns true once the request was dispatched. */
+export function respawnPaneDetached(opts: RespawnPaneOpts): boolean {
   try {
-    const child = spawn(
-      'tmux',
-      [
-        'respawn-pane',
-        '-k',
-        '-c',
-        opts.cwd,
-        ...envFlags(opts.env),
-        '-t',
-        opts.pane,
-        opts.command,
-      ],
-      { detached: true, stdio: 'ignore' },
-    );
+    const child = spawn('tmux', respawnPaneArgs(opts), {
+      detached: true,
+      stdio: 'ignore',
+    });
     child.unref();
     return true;
   } catch {
     return false;
   }
+}
+
+/** Re-exec a command in an EXISTING pane, in place — SYNCHRONOUS. Runs the
+ *  `respawn-pane` to completion and reports the real exit status. Used when the
+ *  caller is NOT the pane being respawned (e.g. the daemon resuming a frozen
+ *  focus pane), so it can confirm the respawn landed. Returns true on success. */
+export function respawnPaneSync(opts: RespawnPaneOpts): boolean {
+  return tmux(respawnPaneArgs(opts)).ok;
+}
+
+/** @deprecated Use respawnPaneDetached. Retained so existing refresh-yield
+ *  callers stay green while the placement layer migrates onto the explicit
+ *  sync/detached split. */
+export function respawnPane(opts: RespawnPaneOpts): boolean {
+  return respawnPaneDetached(opts);
 }
 
 // ---------------------------------------------------------------------------
@@ -333,6 +394,16 @@ export function setWindowOption(window: string, name: string, value: string): bo
   return tmux(['set-window-option', '-t', window, name, value]).ok;
 }
 
+/** Toggle `remain-on-exit` on a window (§1.5 F3). `on` keeps a focus pane on
+ *  screen after its pi exits — the viewport survives (F1), the final transcript
+ *  is preserved, and `respawn-pane -k` can resurrect the node into the SAME pane
+ *  id. NOTE (§1.5/§2.5, spike-confirmed): a dead/frozen pane is reaped only by
+ *  `kill-pane`/`respawn-pane`, NEVER by toggling this off — the toggle does not
+ *  reap an already-dead pane. Best-effort; never throws. */
+export function setRemainOnExit(window: string, on: boolean): boolean {
+  return tmux(['set-window-option', '-t', window, 'remain-on-exit', on ? 'on' : 'off']).ok;
+}
+
 /** Type a literal (e.g. a `/graph` slash command) into a pane and press Enter
  *  (`tmux send-keys -t <pane> '<text>' Enter`). Requires the pane's editor be
  *  empty, same limitation as the menu's `/promote` item. Best-effort. */
@@ -349,10 +420,10 @@ export function sendKeysEnter(pane: string, text: string): boolean {
 
 /** Reserved mnemonic keys owned by the built-in menu items below — a custom
  *  `prefixBind` may not claim these (the built-in item wins). */
-const RESERVED_MENU_KEYS = new Set(['o', 'd', 'x', 'b']);
+const RESERVED_MENU_KEYS = new Set(['o', 'd', 'D', 'x', 'b']);
 
 /** Bind Alt+C to the crouter action menu. Best-effort; false if tmux fails.
- *  The built-in items (promote/demote/close/browse) are static; the canvas-nav
+ *  The built-in items (promote/demote/detach/close/browse) are static; the canvas-nav
  *  chords (graph/manager/expand/report-N + any custom prefixBind) are appended
  *  from `canvasNav.prefixBinds`, each routed through `crtr canvas chord` (or, for
  *  the `__graph__` sentinel, a `send-keys '/graph'`) so the menu stays static
@@ -365,7 +436,12 @@ export function installMenuBinding(): boolean {
     // the slash command delivers the orchestration guidance into the node's
     // context, which a bare `run-shell` (output discarded) could not.
     { name: 'promote to orchestrator',    key: 'o', cmd: `send-keys -t '#{pane_id}' '/promote' Enter` },
-    { name: 'finish agent + recycle pane', key: 'd', cmd: `run-shell "crtr node demote --pane '#{pane_id}'"` },
+    // `d` demotes the agent to TERMINAL in place: no finalize, no kill — it keeps
+    // running where it is, and because it is now terminal it is forced to push a
+    // final up the spine when it finishes. `D` ALSO detaches it to the background
+    // `crtr` session (frees the pane; the pi keeps generating). Neither ends it.
+    { name: 'demote to terminal',          key: 'd', cmd: `run-shell "crtr node lifecycle terminal --pane '#{pane_id}' >/dev/null 2>&1"` },
+    { name: 'detach to background',        key: 'D', cmd: `run-shell "crtr node lifecycle terminal --pane '#{pane_id}' --detach >/dev/null 2>&1"` },
     // Close cascades down the subscribes_to spine (kills the subtree's windows,
     // marks them canceled); revivable. Output discarded — the keypress just acts.
     { name: 'close agent + subtree',       key: 'x', cmd: `run-shell "crtr node close --pane '#{pane_id}' >/dev/null 2>&1"` },

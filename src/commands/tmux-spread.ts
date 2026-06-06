@@ -17,26 +17,10 @@ import type { LeafDef } from '../core/command.js';
 import { InputError } from '../core/io.js';
 import { readConfig } from '../core/config.js';
 import { reviveNode } from '../core/runtime/revive.js';
-import { setFocus } from '../core/runtime/presence.js';
-import {
-  inTmux,
-  windowAlive,
-  paneOfWindow,
-  paneLocation,
-  joinPane,
-  selectLayout,
-  setWindowOption,
-  switchClient,
-  selectWindow,
-} from '../core/runtime/tmux.js';
+import { isNodePaneAlive, spreadNode } from '../core/runtime/placement.js';
+import { inTmux } from '../core/runtime/tmux.js';
 import { nodeInPane } from './node.js';
-import { getNode, subscriptionsOf, setPresence, fullName } from '../core/canvas/index.js';
-import type { NodeMeta } from '../core/canvas/index.js';
-
-/** Re-read a node's meta after a revive so we see its fresh window/session. */
-function freshMeta(id: string): NodeMeta | null {
-  return getNode(id);
-}
+import { getNode, subscriptionsOf } from '../core/canvas/index.js';
 
 export const tmuxSpreadLeaf: LeafDef = defineLeaf({
   name: 'tmux-spread',
@@ -102,22 +86,17 @@ export const tmuxSpreadLeaf: LeafDef = defineLeaf({
       });
     }
 
-    // 1. Revive the target if it has no live window, then re-read its location.
-    let target = freshMeta(id) as NodeMeta;
-    if (!windowAlive(target.tmux_session, target.window)) {
+    // 1. Revive the target if it has no live pane (placement is pane-keyed).
+    if (!isNodePaneAlive(id)) {
       try { reviveNode(id, { resume: true }); } catch { /* fall through */ }
-      target = freshMeta(id) as NodeMeta;
     }
-    const targetSession = target.tmux_session ?? undefined;
-    const targetWindow = target.window ?? undefined;
-    if (targetSession === undefined || targetWindow === undefined || !windowAlive(targetSession, targetWindow)) {
+    if (!isNodePaneAlive(id)) {
       throw new InputError({
         error: 'no_window',
         message: `could not open a live window for ${id}`,
         next: 'Try `crtr canvas revive <id>` then retry.',
       });
     }
-    const targetPane = paneOfWindow(targetSession, targetWindow);
 
     // 2. Live children, capped: the target owns one pane, so up to max-1 join.
     const max = readConfig('user').max_panes_per_window;
@@ -131,45 +110,22 @@ export const tmuxSpreadLeaf: LeafDef = defineLeaf({
     const selected = liveChildren.slice(0, budget);
     const overflow = liveChildren.slice(budget);
 
-    // 3. Join each selected child's pane into the target window; fix up its
-    //    canvas record to the new location so the daemon won't revive it.
-    const joined: string[] = [];
+    // 3. Revive any dormant selected child so it has a live pane, then hand the
+    //    join + pane-fix-up (reconcile FOLLOWS each joined pane) + layout + focus
+    //    to placement.
     for (const cid of selected) {
-      let child = getNode(cid);
-      if (child === null) continue;
-      if (!windowAlive(child.tmux_session, child.window)) {
+      if (!isNodePaneAlive(cid)) {
         try { reviveNode(cid, { resume: true }); } catch { /* skip on failure */ }
-        child = getNode(cid);
-        if (child === null) continue;
       }
-      if (child.tmux_session == null || child.window == null) continue;
-      const childPane = paneOfWindow(child.tmux_session, child.window);
-      if (childPane === null || childPane === targetPane) continue;
-      if (!joinPane(childPane, targetWindow)) continue;
-      // The pane id is stable across the move; re-derive its new window/session.
-      const loc = paneLocation(childPane);
-      if (loc !== null) {
-        try { setPresence(cid, { tmux_session: loc.session, window: loc.window }); } catch { /* best-effort */ }
-      }
-      joined.push(cid);
     }
-
-    // 4. Target wide on the left, children stacked on the right.
-    if (joined.length > 0) {
-      setWindowOption(targetWindow, 'main-pane-width', '60%');
-      selectLayout(targetWindow, 'main-vertical');
-    }
-
-    // 5. Grab focus.
-    const focused = switchClient(targetSession) && selectWindow(targetSession, targetWindow);
-    setFocus(id);
+    const spread = spreadNode(id, selected);
 
     return {
-      window: targetWindow,
-      session: targetSession,
-      children_joined: joined,
+      window: spread.window,
+      session: spread.session,
+      children_joined: spread.joined,
       overflow,
-      focused,
+      focused: spread.focused,
     };
   },
   render: (r) =>
