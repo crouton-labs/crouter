@@ -271,23 +271,39 @@ function managerOf(id: string): string | undefined {
   try { return subscribersOf(id)[0]?.node_id; } catch { return undefined; }
 }
 
-/** Live reports (active|idle) of a node — the DOWN set in BASE. */
-function liveReports(id: string): string[] {
+/** A kind:'human' node is a control-plane ASK (a humanloop deck on the human's
+ *  screen), NOT a pi conversation — it has no session, so focusing/reviving it
+ *  boots a confused blank "you have been revived" pi. Its pending-ask signal
+ *  already rides the ⚑ badge on the ASKING node (attention.ts attributes asks by
+ *  source.nodeId, never to the human node), so the row carries no signal of its
+ *  own. Drop it from every navigable list (the tree, BASE reports, child counts,
+ *  subtree expansion) so it can never be selected. */
+function isHumanAsk(id: string): boolean {
+  return getNode(id)?.kind === 'human';
+}
+
+/** A node's direct children that are navigable conversations — human-ask nodes
+ *  dropped. The one place the nav chrome enumerates children. */
+function convoChildIds(id: string): string[] {
   try {
-    return subscriptionsOf(id)
-      .map((s) => s.node_id)
-      .filter((cid) => {
-        const st = getNode(cid)?.status;
-        return st === 'active' || st === 'idle';
-      });
+    return subscriptionsOf(id).map((s) => s.node_id).filter((cid) => !isHumanAsk(cid));
   } catch {
     return [];
   }
 }
 
-/** All direct children (edges) — used for the ⤳ badge and fold counts. */
+/** Live reports (active|idle) of a node — the DOWN set in BASE. */
+function liveReports(id: string): string[] {
+  return convoChildIds(id).filter((cid) => {
+    const st = getNode(cid)?.status;
+    return st === 'active' || st === 'idle';
+  });
+}
+
+/** Direct navigable children — used for the ⤳ badge and fold counts (human-ask
+ *  nodes excluded, so the count matches what the tree actually shows). */
 function childCount(id: string): number {
-  try { return subscriptionsOf(id).length; } catch { return 0; }
+  return convoChildIds(id).length;
 }
 
 /** Climb first-manager edges from `self` to the ancestry root (cycle-guarded). */
@@ -307,13 +323,13 @@ function climbRoot(self: string): string {
 function subtreeIds(root: string): string[] {
   const out: string[] = [];
   const seen = new Set<string>([root]);
-  const q = subscriptionsOf(root).map((s) => s.node_id);
+  const q = convoChildIds(root);
   while (q.length > 0) {
     const id = q.shift() as string;
     if (seen.has(id)) continue;
     seen.add(id);
     out.push(id);
-    for (const s of subscriptionsOf(id)) if (!seen.has(s.node_id)) q.push(s.node_id);
+    for (const cid of convoChildIds(id)) if (!seen.has(cid)) q.push(cid);
   }
   return out;
 }
@@ -353,11 +369,7 @@ function statusRank(id: string): number {
  *  the tree and when stepping into a subtree (`l`). Array.sort is stable, so
  *  equal-status siblings keep their creation order. */
 function sortedChildIds(id: string): string[] {
-  try {
-    return subscriptionsOf(id).map((s) => s.node_id).sort((a, b) => statusRank(a) - statusRank(b));
-  } catch {
-    return [];
-  }
+  return convoChildIds(id).sort((a, b) => statusRank(a) - statusRank(b));
 }
 
 // ---------------------------------------------------------------------------

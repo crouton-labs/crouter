@@ -233,6 +233,17 @@ const nodeFocus = defineLeaf({
     const id = input['node'] as string;
     const node = getNode(id);
     if (node === null) throw new InputError({ error: 'not_found', message: `no node: ${id}`, next: 'List nodes with `crtr node inspect list`.' });
+    // A kind:'human' node is a control-plane ASK (a humanloop deck on the human's
+    // screen), NOT a pi conversation — it has no session. Reviving one boots a
+    // confused blank "you have been revived" pi, so refuse rather than focus it.
+    // (The nav/resume UIs already hide human nodes; this guards a hand-typed id.)
+    if (node.kind === 'human') {
+      throw new InputError({
+        error: 'not_focusable',
+        message: `node ${id} is a human-ask (kind:human), not a conversation — it has no pi session to focus.`,
+        next: `The pending question is already on the human's screen; see it with \`crtr human list\` / \`crtr human inbox\`, or retract it with \`crtr human cancel ${id}\`.`,
+      });
+    }
     // Placement owns the whole act (§2.3): resolve the caller's focus (or open a
     // new viewport with --new-pane), revive the target into the backstage if it
     // is dormant, then hot-swap it onto the focus. The reviver is injected so

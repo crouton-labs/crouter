@@ -124,7 +124,11 @@ function walkSubtree(
   out.lines.push(nodeLabel(nodeId, `${indent}${connector}`));
   out.ids.push(nodeId);
 
-  const children = subscriptionsOf(nodeId);
+  // Drop kind:'human' children: a human-ask node is a control-plane deck, not a
+  // pi conversation — it has no session, so reviving it (the whole point of this
+  // picker) boots a confused blank "you have been revived" pi. They're never a
+  // resume target, so they never belong in the picker.
+  const children = subscriptionsOf(nodeId).filter((c) => getNode(c.node_id)?.kind !== 'human');
   // Root rows carry no connector; children of a last-child get clear space, of a
   // mid-child a continued spine — exactly render.ts walkTree's prefix math.
   const childIndent = indent + (connector === '' ? '' : connector === '└─ ' ? '   ' : '│  ');
