@@ -3,15 +3,18 @@
 // Sole responsibility: supervise tmux window exit and revive nodes. No
 // orchestration logic lives here. The daemon is a process-lifecycle watcher.
 //
-// Model
+// Model (v3: liveness is PANE-existence, not window-existence — a manual
+// move-pane/join-pane/break-pane must never read as a node death)
 //   • Poll every intervalMs (default 2000ms).
-//   • For each active|idle node: check whether its tmux window is still alive.
-//   • Window alive → healthy, skip.
-//   • Window gone + intent==='refresh' → fresh respawn (node asked to yield).
-//   • Window gone + intent==='idle-release' → node freed its own pane while
+//   • For each active|idle node: check whether its tmux PANE is still alive
+//     (isNodePaneAlive; window-existence is only a legacy/no-pane fallback).
+//   • Pane alive → reconcile its LOCATION (follow any manual move; lazy-backfill
+//     a legacy row's pane), then judge pi liveness — healthy, skip otherwise.
+//   • Pane gone + intent==='refresh' → fresh respawn (node asked to yield).
+//   • Pane gone + intent==='idle-release' → node freed its own pane while
 //     dormant; clear the stale window ref and revive (resume) when its inbox
 //     gains an unseen entry.
-//   • Window gone + any other intent → crash: mark 'dead'.
+//   • Pane gone + any other intent → crash: mark 'dead'.
 //   • Nodes with no tmux placement (inline roots) are skipped.
 //
 // Single-instance guarantee
@@ -31,13 +34,13 @@ import { crtrHome } from '../core/canvas/paths.js';
 import {
   listNodes,
   getRow,
-  setStatus,
   setPresence,
   getNode,
   type NodeRow,
   type NodeMeta,
 } from '../core/canvas/index.js';
-import { windowAlive } from '../core/runtime/tmux.js';
+import { transition } from '../core/runtime/lifecycle.js';
+import { isNodePaneAlive, reconcile } from '../core/runtime/placement.js';
 import { reviveNode } from '../core/runtime/revive.js';
 import { pushUrgent } from '../core/feed/feed.js';
 import { readInboxSince, readCursor } from '../core/feed/inbox.js';
@@ -50,7 +53,7 @@ import { readInboxSince, readCursor } from '../core/feed/inbox.js';
  *  slow-but-healthy launch. The cost of that optimism: a pi that dies before its
  *  first session_start (so `pi_session_id` was never recorded) is invisible —
  *  the parent believes its child is running. When the daemon later finds the
- *  window gone with no session ever bound, it errors LOUDLY up the spine: an
+ *  pane gone with no session ever bound, it errors LOUDLY up the spine: an
  *  urgent push so the parent learns the child failed to launch instead of just
  *  seeing a silent `dead`. */
 async function surfaceBootFailure(meta: NodeMeta): Promise<void> {
@@ -79,11 +82,11 @@ const unhealthySince = new Map<string, number>();
 
 export type LivenessVerdict = 'leave' | 'pending' | 'revive';
 
-/** Decide what to do with a node whose tmux window is alive, from its pi
+/** Decide what to do with a node whose tmux pane is alive, from its pi
  *  liveness and how long it's been dead. Pure — the time-and-tmux side effects
  *  live in handleLiveWindow; this is the unit-testable core.
  *    piPidAlive: true=alive, false=dead, null=no pid recorded (legacy node, or a
- *      relaunch in flight) — leave those to the window-gone pass.
+ *      relaunch in flight) — leave those to the pane-gone pass.
  *    deadFor: ms since first observed dead, or null on the first observation. */
 export function livenessVerdict(piPidAlive: boolean | null, deadFor: number | null): LivenessVerdict {
   if (piPidAlive !== false) return 'leave';
@@ -91,12 +94,20 @@ export function livenessVerdict(piPidAlive: boolean | null, deadFor: number | nu
   return 'revive';
 }
 
-/** A node whose tmux window is alive: window-existence does NOT prove pi is
+/** A node whose tmux PANE is alive: pane-existence does NOT prove pi is
  *  alive (an inline root runs pi under a persistent login shell that survives
  *  pi's death), so gauge liveness on the recorded pid and revive a dead pi once
  *  it's been dead past the grace window. */
 function handleLiveWindow(row: NodeRow, now: number): void {
   const id = row.node_id;
+  // A deliberately-frozen focused-dormant node (intent=idle-release) keeps its
+  // pane alive via remain-on-exit (F3, §3c). Do NOT grace-revive it here — it is
+  // waiting for a worker's inbox push, which the second pass delivers. Grace-
+  // reviving would pre-empt that and churn the frozen focus pane.
+  if (row.intent === 'idle-release') {
+    unhealthySince.delete(id);
+    return;
+  }
   const pid = row.pi_pid;
   const piPidAlive = pid == null ? null : isPidAlive(pid);
 
@@ -119,7 +130,7 @@ function handleLiveWindow(row: NodeRow, now: number): void {
   // pi_pid, so the next tick won't re-fire on this stale pid.
   const resume = row.intent !== 'refresh';
   process.stderr.write(
-    `[crtrd] revive ${id} (pi dead, window alive, intent=${String(row.intent)})\n`,
+    `[crtrd] revive ${id} (pi dead, pane alive, intent=${String(row.intent)})\n`,
   );
   reviveNode(id, { resume });
 }
@@ -194,17 +205,24 @@ export async function superviseTick(now: number = Date.now()): Promise<void> {
       // the row — no per-node getNode re-read. Only the boot-failure split below
       // still needs identity (pi_session_id), read on demand there.
 
-      // Nodes without tmux placement are inline roots — not daemon-managed.
-      if (row.tmux_session == null || row.window == null) continue;
+      // Nodes with no tmux placement at all are inline roots — not daemon-
+      // managed. Pane-anchored: a node still counts as placed if it has a pane
+      // even when its derived window/session cache is null.
+      if (row.tmux_session == null && row.window == null && row.pane == null) continue;
 
-      if (windowAlive(row.tmux_session, row.window)) {
-        // Window is up — but that alone doesn't mean pi is. Check the pid.
-        handleLiveWindow(row, now);
+      if (isNodePaneAlive(row)) {
+        // The pane is up — but that alone doesn't mean pi is. Reconcile first
+        // (follow any manual pane move, and lazy-backfill a legacy row's pane
+        // from its live window), then judge pi liveness off the fresh row. The
+        // alive-gate means reconcile here only ever FOLLOWS/backfills — never
+        // nulls the LOCATION out from under the gone-branches below.
+        reconcile(row.node_id);
+        handleLiveWindow(getRow(row.node_id) ?? row, now);
         continue;
       }
 
-      // Window is gone. Branch on why.
-      unhealthySince.delete(row.node_id); // window-gone path owns it now
+      // The pane is gone. Branch on why.
+      unhealthySince.delete(row.node_id); // pane-gone path owns it now
       if (row.intent === 'refresh') {
         // The node set intent=refresh before stopping — a clean yield. Respawn
         // fresh so it re-reads its roadmap/context dir.
@@ -216,20 +234,20 @@ export async function superviseTick(now: number = Date.now()): Promise<void> {
         // (resume) the moment a subscribed worker delivers.
         setPresence(row.node_id, { tmux_session: row.tmux_session, window: null });
       } else {
-        // Window vanished without the node completing or refreshing. Split the
+        // The pane vanished without the node completing or refreshing. Split the
         // two ways that happens: a vehicle that NEVER BOOTED (pi exited before
         // its first session_start, so pi_session_id is still null) versus a
         // genuine mid-run CRASH (it had booted, so pi_session_id is set). Both
         // are dead, but a never-booted node is a spawn failure the parent was
         // never told about — surface it up the spine instead of dying quietly.
-        setStatus(row.node_id, 'dead');
+        transition(row.node_id, 'crash');
         // Boot-failed vs crashed turns on pi_session_id, an IDENTITY field — the
         // one place this pass still reads meta. surfaceBootFailure also wants the
         // full meta (name/kind) for its message.
         const meta = getNode(row.node_id);
         if (meta !== null && meta.pi_session_id == null) {
           process.stderr.write(
-            `[crtrd] boot-failed ${row.node_id} (window gone before pi ever started)\n`,
+            `[crtrd] boot-failed ${row.node_id} (pane gone before pi ever started)\n`,
           );
           try {
             await surfaceBootFailure(meta);
@@ -240,7 +258,7 @@ export async function superviseTick(now: number = Date.now()): Promise<void> {
           }
         } else {
           process.stderr.write(
-            `[crtrd] dead ${row.node_id} (window gone, intent=${String(row.intent)})\n`,
+            `[crtrd] dead ${row.node_id} (pane gone, intent=${String(row.intent)})\n`,
           );
         }
       }
@@ -263,10 +281,11 @@ export async function superviseTick(now: number = Date.now()): Promise<void> {
       const r = getRow(row.node_id);
       if (r === null) continue;
       if (r.status !== 'idle' || r.intent !== 'idle-release') continue;
-      // If a window is somehow alive, the in-process watcher owns delivery.
-      if (r.window != null && windowAlive(r.tmux_session ?? '', r.window)) {
-        continue;
-      }
+      // The in-process inbox-watcher only owns delivery while pi is actually LIVE.
+      // A frozen focused-dormant pane (remain-on-exit, F3) is pane-ALIVE but
+      // pi-DEAD — no watcher — so the daemon must wake it. Gate the skip on pi
+      // liveness, NOT pane presence (which would skip a frozen pane forever, §3c).
+      if (r.pi_pid != null && isPidAlive(r.pi_pid)) continue;
 
       const entries = readInboxSince(row.node_id, readCursor(row.node_id));
       if (entries.length > 0) {
