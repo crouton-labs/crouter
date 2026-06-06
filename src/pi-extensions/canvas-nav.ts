@@ -599,11 +599,19 @@ export function registerCanvasNav(pi: PiLike): void {
     // Budget WITHIN pi's widget cap (see graphWidgetBudget): reserve 1 line for
     // the footer hint, up to 2 for the ↑/↓ "more" indicators, the rest for tree
     // rows. The window then tracks the cursor, so j/k scrolls through the WHOLE
-    // list rather than hitting pi's hard truncation. Two passes settle the
-    // mutual dependency between "how many rows fit" and "are indicators shown".
+    // list rather than hitting pi's hard truncation. The passes settle the
+    // mutual dependency between "how many rows fit" and "are indicators shown":
+    // each ↑/↓ indicator steals a tree row, which can push the cursor out of
+    // view, which moves the window, which changes whether an indicator shows.
+    // This needs up to 3 passes to converge (an indicator appearing shrinks the
+    // window, the smaller window re-homes scrollTop, that re-home can toggle the
+    // *other* indicator). Bailing early (the old 2-pass cap) left the cursor one
+    // row off-screen for a single keypress near the bottom — the arrow vanished
+    // and only the NEXT press scrolled. 4 passes always settles to a stable,
+    // cursor-visible window.
     const treeArea = Math.max(2, graphWidgetBudget() - 1);
     let viewportH = treeArea;
-    for (let pass = 0; pass < 2; pass++) {
+    for (let pass = 0; pass < 4; pass++) {
       if (cursorIdx < scrollTop) scrollTop = cursorIdx;
       if (cursorIdx >= scrollTop + viewportH) scrollTop = cursorIdx - viewportH + 1;
       scrollTop = Math.max(0, Math.min(scrollTop, Math.max(0, rows.length - viewportH)));
