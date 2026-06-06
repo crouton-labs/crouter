@@ -96,12 +96,156 @@ function backfillRuntime(db: DatabaseSync): void {
   }
 }
 
+/** v4 — edges referential integrity (IRREVERSIBLE table rebuild). Rebuild the
+ *  `edges` table so `from_id`/`to_id` are FOREIGN KEYs to `nodes(node_id)` with
+ *  `ON DELETE CASCADE`: after this, deleting a node can NEVER orphan an edge —
+ *  the schema GCs them, so prune (and any future delete) doesn't have to. The
+ *  cargo-cult `PRAGMA foreign_keys = ON` (openDb) finally enforces something.
+ *
+ *  GOTCHA — pre-existing orphan edges. Nothing ever deleted a node before this
+ *  phase, but manual dir removals / failed spawns can have left `edges` whose
+ *  endpoint has no `nodes` row. Copying those into the FK-constrained table
+ *  would violate the constraint, so the rebuild runs with `foreign_keys = OFF`
+ *  (it MUST be toggled in autocommit — a no-op inside a txn) and the
+ *  INSERT…SELECT FILTERS orphans: only edges whose BOTH endpoints have a row
+ *  survive. `PRAGMA foreign_key_check` then confirms the rebuilt table is clean,
+ *  and a row-count assertion guards that every NON-orphan edge is preserved.
+ *
+ *  CRASH-SAFETY — the whole rebuild is one transaction. A throw ROLLs it back to
+ *  the pre-v4 state (the `edges_new` scratch table and all copies vanish) and
+ *  `user_version` stays at 3, so the next open re-runs v4 cleanly: no half-state.
+ *  Even a crash between COMMIT and the version bump is safe — re-running v4 over
+ *  an already-rebuilt (clean) `edges` is idempotent in effect. */
+function edgesForeignKeyCascade(db: DatabaseSync): void {
+  // Degenerate db with no `edges` table (a real db always has it — v1 created it
+  // — but a hand-seeded fixture may not). Nothing to rebuild; create the
+  // FK-shaped table fresh so the schema still converges, then we're done.
+  const hasEdges =
+    db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'edges'")
+      .get() !== undefined;
+  if (!hasEdges) {
+    db.exec(`
+CREATE TABLE edges (
+  type     TEXT NOT NULL,
+  from_id  TEXT NOT NULL,
+  to_id    TEXT NOT NULL,
+  active   INTEGER NOT NULL DEFAULT 1,
+  created  TEXT NOT NULL,
+  PRIMARY KEY (type, from_id, to_id),
+  FOREIGN KEY (from_id) REFERENCES nodes(node_id) ON DELETE CASCADE,
+  FOREIGN KEY (to_id)   REFERENCES nodes(node_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_edges_to   ON edges(type, to_id);
+CREATE INDEX IF NOT EXISTS idx_edges_from ON edges(type, from_id);
+`);
+    return;
+  }
+
+  // FK enforcement must be toggled OUTSIDE a transaction (a no-op within one).
+  db.exec('PRAGMA foreign_keys = OFF;');
+  try {
+    // Non-orphan edges that MUST survive the rebuild (both endpoints present).
+    const expected = (
+      db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM edges
+           WHERE from_id IN (SELECT node_id FROM nodes)
+             AND to_id   IN (SELECT node_id FROM nodes)`,
+        )
+        .get() as { n: number }
+    ).n;
+
+    db.exec('BEGIN');
+    try {
+      db.exec(`
+CREATE TABLE edges_new (
+  type     TEXT NOT NULL,
+  from_id  TEXT NOT NULL,
+  to_id    TEXT NOT NULL,
+  active   INTEGER NOT NULL DEFAULT 1,
+  created  TEXT NOT NULL,
+  PRIMARY KEY (type, from_id, to_id),
+  FOREIGN KEY (from_id) REFERENCES nodes(node_id) ON DELETE CASCADE,
+  FOREIGN KEY (to_id)   REFERENCES nodes(node_id) ON DELETE CASCADE
+);
+INSERT INTO edges_new (type, from_id, to_id, active, created)
+  SELECT type, from_id, to_id, active, created FROM edges
+  WHERE from_id IN (SELECT node_id FROM nodes)
+    AND to_id   IN (SELECT node_id FROM nodes);
+DROP TABLE edges;
+ALTER TABLE edges_new RENAME TO edges;
+CREATE INDEX IF NOT EXISTS idx_edges_to   ON edges(type, to_id);
+CREATE INDEX IF NOT EXISTS idx_edges_from ON edges(type, from_id);
+`);
+
+      // Row-count assertion: every non-orphan edge preserved across the rebuild.
+      const after = (
+        db.prepare('SELECT COUNT(*) AS n FROM edges').get() as { n: number }
+      ).n;
+      if (after !== expected) {
+        throw new Error(
+          `edges FK rebuild lost rows: expected ${expected} non-orphan edge(s), got ${after}`,
+        );
+      }
+
+      // Belt-and-suspenders: the rebuilt table must hold no FK violations (the
+      // orphan filter above should guarantee this).
+      const violations = db.prepare('PRAGMA foreign_key_check').all();
+      if (violations.length > 0) {
+        throw new Error(
+          `edges FK rebuild left ${violations.length} foreign-key violation(s)`,
+        );
+      }
+
+      db.exec('COMMIT');
+    } catch (e) {
+      db.exec('ROLLBACK');
+      throw e;
+    }
+  } finally {
+    db.exec('PRAGMA foreign_keys = ON;');
+  }
+}
+
+/** v5 — additive runtime column `pane`: LOCATION's authoritative handle, the
+ *  durable tmux `%pane_id` a node's pane is anchored on. Unlike the derived
+ *  `window`/`tmux_session` cache (v2), the pane id survives a user
+ *  `move-pane`/`join-pane`/`break-pane` and window renumbering, so a later step
+ *  reconciles window/session FROM it and uses pane-existence for liveness.
+ *  Defaults NULL — nothing reads it until the placement layer lands, so this
+ *  observes no behavior change. Additive, forward-only. */
+function addPaneColumn(db: DatabaseSync): void {
+  db.exec(`ALTER TABLE nodes ADD COLUMN pane TEXT;`);
+}
+
+/** v6 — the `focuses` table: durable, PLURAL on-screen viewports, one row per
+ *  viewport (Q7 widens canvas.db from "topology" to "topology + focuses"). Each
+ *  row is anchored on the durable tmux `%pane_id`; `session` is a derived cache
+ *  reconciled from the pane; `node_id` is UNIQUE so a node occupies at most one
+ *  focus (Q5). Additive, forward-only — nothing reads it as authority yet (Step 4
+ *  populates it in lockstep with the legacy `focus.ptr` via a transitional
+ *  dual-write; the switch to table-as-authority lands in Step 6). */
+function addFocusesTable(db: DatabaseSync): void {
+  db.exec(`
+CREATE TABLE IF NOT EXISTS focuses (
+  focus_id  TEXT PRIMARY KEY,   -- stable internal id for the viewport
+  pane      TEXT,               -- the durable %pane_id realizing the focus
+  session   TEXT,               -- derived cache of the user session (reconciled from pane)
+  node_id   TEXT NOT NULL UNIQUE -- the node shown; UNIQUE → a node occupies <=1 focus
+);
+`);
+}
+
 /** The ordered migration list. Index `i` is migration version `i + 1`; the db's
  *  `user_version` tracks how many have been applied. Append only. */
 export const MIGRATIONS: ReadonlyArray<(db: DatabaseSync) => void> = [
   /* v1 */ baselineSchema,
   /* v2 */ addRuntimeColumns,
   /* v3 */ backfillRuntime,
+  /* v4 */ edgesForeignKeyCascade,
+  /* v5 */ addPaneColumn,
+  /* v6 */ addFocusesTable,
 ];
 
 /** Bring `db` up to the latest schema version. Reads `user_version`, runs each
@@ -131,6 +275,8 @@ export function openDb(): DatabaseSync {
   ensureHome();
   const db = new DatabaseSync(path);
   db.exec('PRAGMA journal_mode = WAL;');
+  // Load-bearing as of migration v4: the edges→nodes FK (ON DELETE CASCADE)
+  // needs this ON at the deleting connection so a node delete reaps its edges.
   db.exec('PRAGMA foreign_keys = ON;');
   db.exec('PRAGMA busy_timeout = 5000;');
   migrate(db);

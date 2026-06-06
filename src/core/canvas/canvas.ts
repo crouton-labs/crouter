@@ -11,6 +11,7 @@ import {
   writeFileSync,
   renameSync,
   readdirSync,
+  rmSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import { openDb } from './db.js';
@@ -34,8 +35,8 @@ import type {
 // ---------------------------------------------------------------------------
 // meta.json (durable identity — the source of truth for what PERSISTS)
 //
-// One authoritative store per fact: meta.json holds NodeIdentity only; the five
-// runtime fields (status, intent, pi_pid, window, tmux_session) are
+// One authoritative store per fact: meta.json holds NodeIdentity only; the six
+// runtime fields (status, intent, pi_pid, window, tmux_session, pane) are
 // authoritative in the WAL'd `nodes` row, each mutated by one atomic setter
 // below. getNode() hydrates the two back into the historical NodeMeta view.
 // ---------------------------------------------------------------------------
@@ -45,7 +46,7 @@ import type {
 const IDENTITY_KEYS: ReadonlyArray<keyof NodeIdentity> = [
   'node_id', 'name', 'description', 'cycles', 'created', 'cwd', 'kind', 'mode',
   'lifecycle', 'persona_ack', 'parent', 'spawned_by', 'passive_default',
-  'pi_session_id', 'pi_session_file', 'launch',
+  'home_session', 'pi_session_id', 'pi_session_file', 'launch',
 ];
 
 /** Project any node object down to its durable-identity subset. */
@@ -82,7 +83,7 @@ function writeMeta(meta: NodeIdentity): void {
 // ---------------------------------------------------------------------------
 
 /** Upsert the IDENTITY columns of a node's row. ON CONFLICT updates identity
- *  ONLY — runtime columns (status/intent/pi_pid/window/tmux_session) are left
+ *  ONLY — runtime columns (status/intent/pi_pid/window/tmux_session/pane) are left
  *  exactly as they are, so re-indexing or an identity edit never disturbs live
  *  state. A fresh insert takes the schema defaults for runtime. */
 function upsertRow(meta: NodeIdentity): void {
@@ -115,13 +116,14 @@ function seedRow(meta: NodeMeta): void {
     .prepare(
       `INSERT INTO nodes
          (node_id, name, kind, mode, lifecycle, cwd, parent, created,
-          status, intent, pi_pid, "window", tmux_session)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          status, intent, pi_pid, "window", tmux_session, pane)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(node_id) DO UPDATE SET
          name=excluded.name, kind=excluded.kind, mode=excluded.mode,
          lifecycle=excluded.lifecycle, cwd=excluded.cwd, parent=excluded.parent,
          status=excluded.status, intent=excluded.intent, pi_pid=excluded.pi_pid,
-         "window"=excluded."window", tmux_session=excluded.tmux_session`,
+         "window"=excluded."window", tmux_session=excluded.tmux_session,
+         pane=excluded.pane`,
     )
     .run(
       meta.node_id,
@@ -137,6 +139,7 @@ function seedRow(meta: NodeMeta): void {
       meta.pi_pid ?? null,
       meta.window ?? null,
       meta.tmux_session ?? null,
+      meta.pane ?? null,
     );
 }
 
@@ -155,6 +158,7 @@ function rowFrom(r: Record<string, unknown>): NodeRow {
     pi_pid: (r['pi_pid'] as number | null) ?? null,
     window: (r['window'] as string | null) ?? null,
     tmux_session: (r['tmux_session'] as string | null) ?? null,
+    pane: (r['pane'] as string | null) ?? null,
   };
 }
 
@@ -163,7 +167,7 @@ function rowFrom(r: Record<string, unknown>): NodeRow {
 function runtimeFromRow(nodeId: string): Partial<NodeMeta> | null {
   const r = openDb()
     .prepare(
-      'SELECT status, intent, pi_pid, "window", tmux_session FROM nodes WHERE node_id = ?',
+      'SELECT status, intent, pi_pid, "window", tmux_session, pane FROM nodes WHERE node_id = ?',
     )
     .get(nodeId) as Record<string, unknown> | undefined;
   if (r === undefined) return null;
@@ -173,6 +177,7 @@ function runtimeFromRow(nodeId: string): Partial<NodeMeta> | null {
     pi_pid: (r['pi_pid'] as number | null) ?? null,
     window: (r['window'] as string | null) ?? null,
     tmux_session: (r['tmux_session'] as string | null) ?? null,
+    pane: (r['pane'] as string | null) ?? null,
   };
 }
 
@@ -209,6 +214,17 @@ export function getRow(nodeId: string): NodeRow | null {
   return r ? rowFrom(r) : null;
 }
 
+/** The node row whose durable LOCATION pane is `pane`, or null. Lets placement
+ *  resolve "who sits in this pane" by the first-class `%pane_id` handle (e.g.
+ *  to adopt a caller's pane as a focus). pane is not UNIQUE in the schema, but a
+ *  live pane backs at most one node, so this returns the single match. */
+export function getRowByPane(pane: string): NodeRow | null {
+  const r = openDb()
+    .prepare('SELECT * FROM nodes WHERE pane = ?')
+    .get(pane) as Record<string, unknown> | undefined;
+  return r ? rowFrom(r) : null;
+}
+
 /** Merge an IDENTITY patch into a node's meta.json and re-index its identity
  *  columns. Identity has a single writer per node, so this read-modify-write is
  *  safe (the contended runtime fields were moved out — see the atomic setters
@@ -240,14 +256,19 @@ export function setIntent(nodeId: string, intent: ExitIntent): void {
   openDb().prepare('UPDATE nodes SET intent = ? WHERE node_id = ?').run(intent ?? null, nodeId);
 }
 
-/** Set a node's tmux presence (session + window) in one atomic write. */
+/** Set a node's tmux presence in one atomic write: the durable LOCATION anchor
+ *  `pane` (the `%pane_id`) plus its derived cache (`tmux_session` + `window`).
+ *  All three move together — `pane` joins the others inside the single UPDATE so
+ *  a move never half-writes the location. `pane` is optional: a caller that does
+ *  not yet track it (every caller, until the placement layer lands) writes null,
+ *  which is harmless because nothing reads `pane` yet. */
 export function setPresence(
   nodeId: string,
-  presence: { tmux_session?: string | null; window?: string | null },
+  presence: { tmux_session?: string | null; window?: string | null; pane?: string | null },
 ): void {
   openDb()
-    .prepare('UPDATE nodes SET tmux_session = ?, "window" = ? WHERE node_id = ?')
-    .run(presence.tmux_session ?? null, presence.window ?? null, nodeId);
+    .prepare('UPDATE nodes SET tmux_session = ?, "window" = ?, pane = ? WHERE node_id = ?')
+    .run(presence.tmux_session ?? null, presence.window ?? null, presence.pane ?? null, nodeId);
 }
 
 /** Record the live pi pid (daemon liveness signal). Atomic single-column write. */
@@ -390,7 +411,7 @@ export function hasActiveLiveSubscription(nodeId: string): boolean {
 
 /** Rebuild node rows from on-disk metas (the db node table is a derived index).
  *  Only the IDENTITY columns are rebuilt — they are a projection of meta. The
- *  runtime columns (status/intent/pi_pid/window/tmux_session) are NOT in meta
+ *  runtime columns (status/intent/pi_pid/window/tmux_session/pane) are NOT in meta
  *  and NOT re-derivable from it: they describe live process/presence state, so
  *  an existing row keeps them and a freshly re-created row takes the schema's
  *  quiescent defaults (status='active', the rest null). The daemon reconciles
@@ -399,12 +420,93 @@ export function hasActiveLiveSubscription(nodeId: string): boolean {
  *  re-derived from each meta's `spawned_by` (fallback: `parent` for legacy metas). */
 export function rebuildIndex(): void {
   if (!existsSync(nodesRoot())) return;
+  // Collect every on-disk meta first, then index in TWO passes. Under the
+  // edges→nodes FK (migration v4), a `spawned_by` edge insert whose endpoint
+  // row isn't present yet violates the constraint — so ALL node rows must exist
+  // before ANY edge is added.
+  const metas: NodeIdentity[] = [];
   for (const id of readdirSync(nodesRoot())) {
     if (!existsSync(join(nodeDir(id), 'meta.json'))) continue;
     const meta = readMeta(id);
     if (!meta) continue;
-    upsertRow(meta);
-    const prov = meta.spawned_by ?? meta.parent;
-    if (prov) recordSpawn(meta.node_id, prov);
+    metas.push(meta);
   }
+  // Pass 1 — upsert every node row (the edge endpoints).
+  for (const meta of metas) upsertRow(meta);
+  // Pass 2 — add the audit-only `spawned_by` provenance edges. Skip any whose
+  // provenance node has no on-disk meta (a deleted/pruned ancestor): the FK
+  // would reject it, and an orphan provenance edge is exactly what v4 makes
+  // unrepresentable.
+  const known = new Set(metas.map((m) => m.node_id));
+  for (const meta of metas) {
+    const prov = meta.spawned_by ?? meta.parent;
+    if (prov && known.has(prov)) recordSpawn(meta.node_id, prov);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Retention / GC
+// ---------------------------------------------------------------------------
+
+/** A node selected for pruning (or that would be, under --dry-run). */
+export interface PrunedNode {
+  node_id: string;
+  status: NodeStatus;
+  created: string;
+}
+
+export interface PruneResult {
+  /** The nodes pruned (or, under dryRun, the nodes that WOULD be pruned). */
+  pruned: PrunedNode[];
+  dryRun: boolean;
+}
+
+/** Retention sweep: remove TERMINAL nodes (status dead | done | canceled) whose
+ *  `created` is older than `ttlDays`, bounding the otherwise-unbounded growth of
+ *  node rows + dirs. The edges→nodes FK (`ON DELETE CASCADE`, migration v4) GCs
+ *  each pruned node's edges automatically; the on-disk `nodes/<id>/` dir is
+ *  removed too. Live nodes are NEVER touched: active | idle are the daemon's
+ *  domain, a DISJOINT status set, so prune and supervision can't interfere.
+ *
+ *  The row deletes run in ONE transaction (so the sweep is all-or-nothing); the
+ *  dir removals follow after COMMIT — the fs isn't transactional, and by then the
+ *  rows are gone, so a re-run never re-finds a half-deleted node. `dryRun`
+ *  reports the candidate set and deletes NOTHING. */
+export function pruneNodes(opts: { ttlDays: number; dryRun?: boolean }): PruneResult {
+  const dryRun = opts.dryRun ?? false;
+  const cutoff = new Date(Date.now() - opts.ttlDays * 86_400_000).toISOString();
+  const db = openDb();
+  const candidates = (
+    db
+      .prepare(
+        `SELECT node_id, status, created FROM nodes
+         WHERE status IN ('dead', 'done', 'canceled') AND created < ?
+         ORDER BY created`,
+      )
+      .all(cutoff) as Array<Record<string, unknown>>
+  ).map((r): PrunedNode => ({
+    node_id: r['node_id'] as string,
+    status: r['status'] as NodeStatus,
+    created: r['created'] as string,
+  }));
+
+  if (dryRun || candidates.length === 0) return { pruned: candidates, dryRun };
+
+  // One transactioned sweep — delete the rows; the FK cascades their edges.
+  db.exec('BEGIN');
+  try {
+    const del = db.prepare('DELETE FROM nodes WHERE node_id = ?');
+    for (const c of candidates) del.run(c.node_id);
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+
+  // Remove each pruned node's on-disk dir (best-effort, after COMMIT).
+  for (const c of candidates) {
+    rmSync(nodeDir(c.node_id), { recursive: true, force: true });
+  }
+
+  return { pruned: candidates, dryRun };
 }

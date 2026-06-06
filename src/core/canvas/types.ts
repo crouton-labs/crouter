@@ -78,6 +78,16 @@ export interface NodeIdentity {
   spawned_by?: string | null;
   /** New subscriptions this node opens default to passive when true. */
   passive_default?: boolean;
+  /** REVIVE-HOME — the tmux session a node is (re)opened into when it must
+   *  generate but is NOT focused (the durable revive target, distinct from the
+   *  live LOCATION held by the runtime `tmux_session`). Set once at birth
+   *  (managed child → the shared backstage `nodeSession()`; inline root → the
+   *  adopted caller session; independent `--root` → the caller session), and
+   *  rewritten only by demote-recycle. Durable identity (like `cwd`), never
+   *  touched by a focus swap — this is what keeps a background revive off the
+   *  user's session. Legacy metas omit it; readers default to
+   *  `tmux_session ?? nodeSession()` (see `homeSessionOf`). */
+  home_session?: string;
   /** The pi session id for `--session <id>` revival. */
   pi_session_id?: string | null;
   /** Absolute path to pi's session `.jsonl` file, captured at session_start via
@@ -115,9 +125,19 @@ export interface NodeRuntime {
   pi_pid?: number | null;
   /** Presence: the tmux session (its root's home) and window this node renders
    *  in while active. Cleared when the node goes done/dead and its window closes.
-   *  The row IS the presence registry (one atomic setPresence per move). */
+   *  The row IS the presence registry (one atomic setPresence per move).
+   *  v3: a DERIVED CACHE of `pane`'s current location — reconciled from the pane,
+   *  never trusted when a user move could have desynced them. */
   tmux_session?: string | null;
   window?: string | null;
+  /** LOCATION's authoritative handle — the durable tmux `%pane_id` this node's
+   *  pane is anchored on. tmux preserves it across `move-pane`/`join-pane`/
+   *  `break-pane` and window renumbering, so `window`/`tmux_session` above are a
+   *  cache reconciled from it and pane-existence is the liveness probe. A
+   *  not-focused + not-generating node has `pane = null` (no pane). Authoritative
+   *  in the row exactly like `window`/`tmux_session` — a RUNTIME field, NOT meta
+   *  identity — written by the one atomic `setPresence` UPDATE. */
+  pane?: string | null;
 }
 
 /** The hydrated node view `getNode()` returns: durable identity (from meta.json)
@@ -144,6 +164,8 @@ export interface NodeRow {
   pi_pid: number | null;
   window: string | null;
   tmux_session: string | null;
+  /** The durable LOCATION handle (the tmux `%pane_id`); see NodeRuntime.pane. */
+  pane: string | null;
 }
 
 /** An edge as stored. For `subscribes_to`, `from` is the subscriber and `to`
@@ -157,6 +179,23 @@ export interface Edge {
    *  passive = accumulate pointers, no wake. */
   active: boolean;
   created: string;
+}
+
+/** A FOCUS row as stored in the `focuses` table (canvas.db, migration v6): one
+ *  durable on-screen viewport the user looks at, bound to one node. Plural —
+ *  many focuses live at once across windows and sessions (the plural
+ *  generalization of the old single `focus.ptr`). Anchored on the durable tmux
+ *  `%pane_id`; `session` is a derived cache reconciled from the pane. `node_id`
+ *  is UNIQUE — a node occupies at most one focus (Q5). */
+export interface FocusRow {
+  /** Stable internal id for the viewport (the table's primary key). */
+  focus_id: string;
+  /** The durable `%pane_id` realizing the focus, or null before it is placed. */
+  pane: string | null;
+  /** Derived cache of the user session the pane lives in (reconciled from pane). */
+  session: string | null;
+  /** The node this focus shows. UNIQUE → a node occupies ≤1 focus. */
+  node_id: string;
 }
 
 /** A subscription as seen from one endpoint. */

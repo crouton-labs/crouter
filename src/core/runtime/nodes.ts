@@ -24,10 +24,52 @@ import {
   type Lifecycle,
   type LaunchSpec,
 } from '../canvas/index.js';
+import { nodeSession } from './tmux.js';
 
 /** Generate a node id in the same shape as job ids (time-sortable + random). */
 export function newNodeId(): string {
   return `${Date.now().toString(36)}-${randomBytes(4).toString('hex')}`;
+}
+
+// ---------------------------------------------------------------------------
+// REVIVE-HOME (home_session) — the durable session a node is (re)opened into
+// ---------------------------------------------------------------------------
+
+/** Resolve the tmux session a freshly-born node's window/pane opens into — and
+ *  thus its durable REVIVE-HOME (`home_session`). Pure so the birth decision is
+ *  unit-testable without a live tmux:
+ *    - managed background child  (`adoptCaller=false`) → the shared backstage:
+ *      the inherited `CRTR_ROOT_SESSION`, else `nodeSession()` (`crtr`).
+ *    - independent `--root` / inline front door (`adoptCaller=true`) → the
+ *      caller's CURRENT session when inside tmux (`here`), else the backstage.
+ *  This is exactly the session each birth site already places the node into;
+ *  centralizing it keeps `home_session` and the actual placement in lockstep. */
+export function resolveBirthSession(opts: {
+  /** True for an independent root or the inline front door (both adopt the
+   *  caller's session); false for a managed background child. */
+  adoptCaller: boolean;
+  /** The caller's current tmux location, or null when not inside tmux. */
+  here: { session: string } | null;
+  /** The inherited CRTR_ROOT_SESSION (the backstage the subtree flows into). */
+  rootSession?: string | null;
+}): string {
+  const backstage =
+    opts.rootSession !== undefined && opts.rootSession !== null && opts.rootSession !== ''
+      ? opts.rootSession
+      : nodeSession();
+  if (opts.adoptCaller && opts.here !== null) return opts.here.session;
+  return backstage;
+}
+
+/** A node's durable REVIVE-HOME, with the legacy back-compat default. Nodes born
+ *  before `home_session` existed have no such field in meta — they fall back to
+ *  their last live LOCATION (`tmux_session`), then to the shared backstage
+ *  (`nodeSession()`). The defaulted read for the placement layer; a present
+ *  `home_session` is always returned verbatim. */
+export function homeSessionOf(nodeId: string): string {
+  const meta = getNode(nodeId);
+  if (meta === null) return nodeSession();
+  return meta.home_session ?? meta.tmux_session ?? nodeSession();
 }
 
 // ---------------------------------------------------------------------------
