@@ -18,9 +18,15 @@
 // alt+c is a tmux display-menu (not a pi key), so prefix chords (m/e/1-9/custom)
 // are tmux menu items that route through `crtr canvas chord`.
 //
-// Two selection signals, both NO_COLOR-safe:
-//   SELF row = reverse video (ESC[7m), full width — an attribute, not a color.
-//   CURSOR   = ▸ + bold on the row. Status stays on the colored dot.
+// Selection / liveness signals:
+//   CURSOR (selected) = reverse-video bar (ESC[7m), full width — an attribute,
+//                       not a colour, so it reads under NO_COLOR. Plus a ▸ caret.
+//   ACTIVE (running)  = a coloured background bar (status 'active'); the dot
+//                       glyph still carries the signal where colour is stripped.
+//   SELF              = bold name — a quiet "you are here" marker.
+//
+// Folding is auto by default: a branch stays COLLAPSED unless its subtree holds
+// a running ('active') agent or self. h/l override that per-node and persist.
 //
 // ⚑K pending-asks is PER-NODE, inline on each waiting node's own row (manager,
 // reports, tree rows; self shows a trailing ⚑ line in BASE). ⤳M direct-children
@@ -101,10 +107,13 @@ let liveUnsub: (() => void) | undefined;
 type View = 'base' | 'graph';
 let view: View = 'base';
 
-/** Fold state — node ids whose children are hidden in GRAPH. Survives renders
- *  AND BASE↔GRAPH toggles. Keyed by id so a topology change never corrupts it;
- *  stale ids are harmless (ignored when absent). */
-const collapsed = new Set<string>();
+/** Manual fold OVERRIDES in GRAPH, keyed by id (so a topology change can't
+ *  corrupt them; stale ids are ignored). They override the default policy —
+ *  collapsed UNLESS the subtree holds a running ('active') agent or self (see
+ *  computeDefaultExpanded). `h` collapses → userCollapsed; `l` expands →
+ *  userExpanded. Both survive renders AND BASE↔GRAPH toggles. */
+const userCollapsed = new Set<string>();
+const userExpanded = new Set<string>();
 
 /** GRAPH cursor (a node id, not an index — indices shift as topology changes). */
 let cursorId: string | undefined;
@@ -132,10 +141,10 @@ const VIEWPORT_FALLBACK_ROWS = 30;
 
 // ---------------------------------------------------------------------------
 // ANSI styling. pi renders embedded escapes in widget lines and measures width
-// ANSI-aware, so raw escapes are safe and need no pi-tui dependency. Selection
-// uses theme-agnostic ATTRIBUTES (reverse / bold), never colour alone, so it
-// reads under NO_COLOR and on any background; status uses the standard 8 colors
-// on the dot only.
+// ANSI-aware, so raw escapes are safe and need no pi-tui dependency. The cursor
+// (selected row) uses a theme-agnostic ATTRIBUTE (reverse), so it reads under
+// NO_COLOR; the active-row tint is a background COLOUR, but the differing dot
+// glyph (●/○/✓/✗) keeps the running signal even where colour is stripped.
 // ---------------------------------------------------------------------------
 
 const ESC = '\x1b[';
@@ -143,6 +152,9 @@ const RESET = `${ESC}0m`;
 const BOLD = `${ESC}1m`;
 const DIM = `${ESC}2m`;
 const REVERSE = `${ESC}7m`;
+/** Dark-green background bar marking a running ('active') node — distinct from
+ *  the cursor's reverse-video bar; chosen so default-fg text stays readable. */
+const BG_ACTIVE = `${ESC}48;5;22m`;
 const GREEN = `${ESC}32m`;
 const RED = `${ESC}31m`;
 const YELLOW = `${ESC}33m`;
@@ -201,15 +213,16 @@ function fillWidth(): number {
   return Math.max(20, Math.min((process.stdout.columns ?? 80) - 2, 180));
 }
 
-/** Wrap `content` in a full-width reverse-video bar. REVERSE is re-asserted
- *  after every embedded RESET so a colored cell (the status dot) doesn't punch
- *  a hole in the bar; the visible width is padded out to `width`; the line
- *  closes with a real RESET. */
-function reverseFill(content: string, width: number): string {
+/** Wrap `content` in a full-width background bar opened by `open` (REVERSE for
+ *  the cursor, BG_ACTIVE for a running node). `open` is re-asserted after every
+ *  embedded RESET so a coloured cell (the status dot) can't punch a hole in the
+ *  bar; the visible width is padded out to `width`; the line closes with a real
+ *  RESET so the style never bleeds into the editor below. */
+function fillBar(content: string, width: number, open: string): string {
   const clipped = truncate(content, width);
-  const reasserted = clipped.replace(/\x1b\[0m/g, `${RESET}${REVERSE}`);
+  const reasserted = clipped.replace(/\x1b\[0m/g, `${RESET}${open}`);
   const pad = Math.max(0, width - visibleWidth(clipped));
-  return `${REVERSE}${reasserted}${' '.repeat(pad)}${RESET}`;
+  return `${open}${reasserted}${' '.repeat(pad)}${RESET}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -374,34 +387,60 @@ function sortedChildIds(id: string): string[] {
 
 // ---------------------------------------------------------------------------
 // GRAPH model — flatten the local graph fold-aware. Rebuilt every render (cheap
-// sqlite reads) so a finished child / new spawn shows live; `collapsed` and the
-// cursor id are the only persisted state.
+// sqlite reads) so a finished child / new spawn shows live; the manual fold
+// overrides and the cursor id are the only persisted state.
 // ---------------------------------------------------------------------------
 
 interface FlatRow {
   id: string;
   hasKids: boolean;
   isSelf: boolean;
-  branch: string; // tree connector prefix drawn before the caret/dot
-  cycle: boolean; // a re-encountered id (back-ref), not recursed into
+  branch: string;     // tree connector prefix drawn before the caret/dot
+  cycle: boolean;     // a re-encountered id (back-ref), not recursed into
+  collapsed: boolean; // currently folded (default policy or manual override)
+}
+
+/** Default fold policy: which nodes auto-EXPAND. A node expands only when one
+ *  of its child subtrees holds a running ('active') agent or self — so the path
+ *  to any live agent (and to you) is revealed while quiescent branches stay
+ *  folded. One bottom-up O(N) pass from the ancestry root; cycle-guarded. */
+function computeDefaultExpanded(root: string, self: string): Set<string> {
+  const expand = new Set<string>();
+  const seen = new Set<string>();
+  // Returns whether subtree(id), INCLUDING id, holds an active node or self.
+  const visit = (id: string): boolean => {
+    if (seen.has(id)) return id === self || getNode(id)?.status === 'active';
+    seen.add(id);
+    let childRevealing = false;
+    for (const c of convoChildIds(id)) if (visit(c)) childRevealing = true;
+    if (childRevealing) expand.add(id); // a descendant is worth revealing → unfold id
+    return childRevealing || id === self || getNode(id)?.status === 'active';
+  };
+  visit(root);
+  return expand;
 }
 
 function buildGraphModel(self: string): FlatRow[] {
   const rootId = climbRoot(self);
+  const defaultExpanded = computeDefaultExpanded(rootId, self);
+  // userExpanded / userCollapsed override the auto policy; absent → policy decides.
+  const isFolded = (id: string): boolean =>
+    userExpanded.has(id) ? false : userCollapsed.has(id) ? true : !defaultExpanded.has(id);
   const rows: FlatRow[] = [];
   const visited = new Set<string>();
 
   const walk = (id: string, prefix: string, isRoot: boolean, isLast: boolean): void => {
     if (visited.has(id)) {
       const connector = isRoot ? '' : isLast ? '└─ ' : '├─ ';
-      rows.push({ id, hasKids: false, isSelf: id === self, branch: prefix + connector, cycle: true });
+      rows.push({ id, hasKids: false, isSelf: id === self, branch: prefix + connector, cycle: true, collapsed: false });
       return;
     }
     visited.add(id);
     const kids = sortedChildIds(id);
+    const folded = isFolded(id);
     const connector = isRoot ? '' : isLast ? '└─ ' : '├─ ';
-    rows.push({ id, hasKids: kids.length > 0, isSelf: id === self, branch: prefix + connector, cycle: false });
-    if (collapsed.has(id)) return; // folded — don't descend
+    rows.push({ id, hasKids: kids.length > 0, isSelf: id === self, branch: prefix + connector, cycle: false, collapsed: folded });
+    if (folded) return; // folded — don't descend
     const childPrefix = isRoot ? '' : prefix + (isLast ? '   ' : '│  ');
     for (let i = 0; i < kids.length; i++) walk(kids[i]!, childPrefix, false, i === kids.length - 1);
   };
@@ -410,22 +449,28 @@ function buildGraphModel(self: string): FlatRow[] {
   return rows;
 }
 
-/** Render one GRAPH row. SELF → reverse fill; CURSOR → ▸ + bold caret/name. */
+/** Render one GRAPH row. CURSOR (selected) → reverse-video bar; an ACTIVE
+ *  (running) node → a coloured background bar; SELF → bold name. The cursor
+ *  outranks the active tint when both land on the same row. */
 function renderGraphRow(r: FlatRow, isCursor: boolean): string {
+  const wrap = (line: string, active: boolean): string =>
+    isCursor ? fillBar(line, fillWidth(), REVERSE)
+    : active ? fillBar(line, fillWidth(), BG_ACTIVE)
+    : truncate(line);
   if (r.cycle) {
     const line = `${r.branch}  ${DIM}↺ ${shortId(r.id)}${RESET}`;
-    return r.isSelf ? reverseFill(line, fillWidth()) : truncate(line);
+    return wrap(line, false);
   }
   const node = getNode(r.id);
   const dot = coloredGlyph(node);
   const rawName = node !== null ? fullName(node) : shortId(r.id);
-  const name = isCursor ? `${BOLD}${rawName}${RESET}` : rawName;
+  const name = r.isSelf ? `${BOLD}${rawName}${RESET}` : rawName;
   const kind = `${DIM}${node?.kind ?? ''}${RESET}`;
   const tokens = `${DIM}${tokensCell(r.id)}${RESET}`;
   const caret = isCursor ? `${BOLD}▸${RESET} ` : '  ';
-  const fold = r.hasKids && collapsed.has(r.id) ? ` ${DIM}[+${childCount(r.id)}]${RESET}` : '';
+  const fold = r.hasKids && r.collapsed ? ` ${DIM}[+${childCount(r.id)}]${RESET}` : '';
   const line = `${r.branch}${caret}${dot} ${name} ${kind} ${tokens}${childBadge(node)}${fold}${askBadge(r.id)}`;
-  return r.isSelf ? reverseFill(line, fillWidth()) : truncate(line);
+  return wrap(line, node?.status === 'active');
 }
 
 /** Total lines the GRAPH widget may emit. pi hard-caps extension widgets at
@@ -752,8 +797,9 @@ export function registerCanvasNav(pi: PiLike): void {
     if (isPlain(data, 'G')) { cursorId = rows[rows.length - 1]?.id ?? cursorId; render(); return { consume: true }; }
 
     if (isPlain(data, 'h')) {
-      if (cur !== undefined && cur.hasKids && !collapsed.has(cur.id)) {
-        collapsed.add(cur.id);
+      if (cur !== undefined && cur.hasKids && !cur.collapsed) {
+        userCollapsed.add(cur.id);
+        userExpanded.delete(cur.id);
       } else {
         const p = managerOf(cursorId ?? nodeId);
         if (p !== undefined && rows.some((r) => r.id === p)) cursorId = p;
@@ -762,8 +808,9 @@ export function registerCanvasNav(pi: PiLike): void {
       return { consume: true };
     }
     if (isPlain(data, 'l')) {
-      if (cur !== undefined && collapsed.has(cur.id)) {
-        collapsed.delete(cur.id);
+      if (cur !== undefined && cur.collapsed && cur.hasKids) {
+        userExpanded.add(cur.id);
+        userCollapsed.delete(cur.id);
       } else if (cur !== undefined && cur.hasKids) {
         const c = sortedChildIds(cur.id)[0];
         if (c !== undefined) cursorId = c;
