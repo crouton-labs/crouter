@@ -427,7 +427,7 @@ export function sendKeysEnter(pane: string, text: string): boolean {
 
 /** Reserved mnemonic keys owned by the built-in menu items below — a custom
  *  `prefixBind` may not claim these (the built-in item wins). */
-const RESERVED_MENU_KEYS = new Set(['o', 'd', 'D', 'x', 'b']);
+const RESERVED_MENU_KEYS = new Set(['o', 'r', 'd', 'D', 'x', 'b']);
 
 /** Bind Alt+C to the crouter action menu. Best-effort; false if tmux fails.
  *  The built-in items (promote/demote/detach/close/browse) are static; the canvas-nav
@@ -443,6 +443,10 @@ export function installMenuBinding(): boolean {
     // the slash command delivers the orchestration guidance into the node's
     // context, which a bare `run-shell` (output discarded) could not.
     { name: 'promote to orchestrator',    key: 'o', cmd: `send-keys -t '#{pane_id}' '/promote' Enter` },
+    // Resume types `/resume-node` into the agent's pane: the slash command opens
+    // a whole-canvas picker (incl. dormant nodes) and revives the choice via
+    // `crtr node focus` — the only sync-safe open (routes through reviveNode).
+    { name: 'resume node',                 key: 'r', cmd: `send-keys -t '#{pane_id}' '/resume-node' Enter` },
     // `d` demotes the agent to TERMINAL in place: no finalize, no kill — it keeps
     // running where it is, and because it is now terminal it is forced to push a
     // final up the spine when it finishes. `D` ALSO detaches it to the background
