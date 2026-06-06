@@ -1,16 +1,19 @@
 // Run: node --import tsx/esm --test src/core/__tests__/persona-subkind.test.ts
 //
-// Scoped persona sub-kinds: a kind owns specialist reviewer personas at
-// `<kind>/reviewers/<name>/base.md`, enumerated by `subKindsFor(kind)` and
+// Scoped persona sub-personas: a kind has specialist reviewer personas at
+// `<kind>/reviewers/<name>/PERSONA.md`, enumerated by `subPersonasFor(kind)` and
 // rendered into that kind's composed prompt (and nowhere else) by `resolve`.
-// Visibility = membership: only `plan` sees the `plan/reviewers/*` menu; the
-// sub-kinds never pollute the global `availableKinds()` list; and a sub-kind
-// itself boots as a real composed persona with the terminal finish contract.
+// Visibility = membership (the sub-persona's `availableTo`, default = its
+// top-level ancestor kind): only `plan` sees the `plan/reviewers/*` menu; the
+// `reviewers/` grouping dir is transparent so the kind string keeps it; the
+// sub-personas never pollute the global `availableKinds()` list; and a
+// sub-persona itself boots as a real composed persona with the terminal finish
+// contract.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { resolve } from '../personas/resolve.js';
-import { subKindsFor, availableKinds } from '../personas/loader.js';
+import { subPersonasFor, availableKinds } from '../personas/loader.js';
 
 const PLAN_REVIEWER_KINDS = [
   'plan/reviewers/architecture-fit',
@@ -20,30 +23,30 @@ const PLAN_REVIEWER_KINDS = [
   'plan/reviewers/security',
 ];
 
-const MENU_HEADER = 'Reviewer sub-kinds you may spawn';
+const MENU_HEADER = 'Sub-personas you may spawn';
 
-test('subKindsFor("plan") returns the five reviewers sorted, each with a non-empty summary', () => {
-  const subs = subKindsFor('plan');
+test('subPersonasFor("plan") returns the five reviewers sorted, each with a non-empty whenToUse', () => {
+  const subs = subPersonasFor('plan');
   assert.deepEqual(
     subs.map((s) => s.kind),
     PLAN_REVIEWER_KINDS,
-    'the five plan reviewer kind strings in sorted order',
+    'the five plan reviewer kind strings in sorted order — the transparent reviewers/ dir keeps the full kind path',
   );
   for (const s of subs) {
-    assert.ok(s.summary.length > 0, `${s.kind} carries a non-empty summary`);
+    assert.ok(s.whenToUse.length > 0, `${s.kind} carries a non-empty whenToUse`);
   }
 });
 
-test('sub-kinds do not recurse and absent rosters yield []', () => {
-  assert.deepEqual(subKindsFor('explore'), [], 'explore owns no reviewers/');
+test('availability is membership: a kind with no available sub-personas yields []', () => {
+  assert.deepEqual(subPersonasFor('explore'), [], 'no sub-persona is availableTo explore');
   assert.deepEqual(
-    subKindsFor('plan/reviewers/security'),
+    subPersonasFor('plan/reviewers/security'),
     [],
-    'a sub-kind owns no nested reviewers/ — no recursion',
+    'the five reviewers default availableTo:[plan] — none are available to a reviewer kind',
   );
 });
 
-test('availableKinds() contains no plan/reviewers/* — sub-kinds never pollute the global list', () => {
+test('availableKinds() contains no plan/reviewers/* — sub-personas never pollute the global list', () => {
   const kinds = availableKinds();
   for (const k of PLAN_REVIEWER_KINDS) {
     assert.ok(!kinds.includes(k), `${k} must not appear in availableKinds()`);

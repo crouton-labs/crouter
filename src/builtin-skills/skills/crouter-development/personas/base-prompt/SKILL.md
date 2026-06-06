@@ -1,15 +1,15 @@
 ---
 name: crouter-development/personas/base-prompt
 type: playbook
-description: How to write a base persona prompt (base.md) — the system prompt for a single-window worker node. Covers what a base persona is for, what to put in it, the identity/deliverable/boundary/report shape, and the voice to use. Use when writing or revising a <kind>/base.md.
-keywords: [base persona, base.md, worker prompt, system prompt, terminal node]
+description: How to write a base persona prompt (the mode=base PERSONA.md) — the system prompt for a single-window worker node. Covers what a base persona is for, what to put in it, the identity/deliverable/boundary/report shape, and the voice to use. Use when writing or revising a <kind>/PERSONA.md.
+keywords: [base persona, PERSONA.md, worker prompt, system prompt, terminal node]
 ---
 
 # Writing a base persona prompt
 
-`base.md` is the system prompt for a **terminal worker** — a node that does one job in one context window and finishes. Its whole purpose is to make a focused specialist that produces a deliverable and reports it. This skill is the philosophy of what belongs in a base persona; for file mechanics and frontmatter, see `[[crouter-development/personas]]`.
+`PERSONA.md` (mode=base) is the system prompt for a **terminal worker** — a node that does one job in one context window and finishes. Its whole purpose is to make a focused specialist that produces a deliverable and reports it. This skill is the philosophy of what belongs in a base persona; for file mechanics and frontmatter, see `[[crouter-development/personas]]`.
 
-Audience: LLM agents writing a `<kind>/base.md`.
+Audience: LLM agents writing a `<kind>/PERSONA.md`.
 
 ## What a base persona is for
 

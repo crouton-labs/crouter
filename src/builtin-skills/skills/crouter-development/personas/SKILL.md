@@ -1,8 +1,8 @@
 ---
 name: crouter-development/personas
 type: playbook
-description: How to define a custom node kind (persona) for crtr — base/orchestrator files, the frontmatter contract, scope resolution and overrides, and how to write the prose. Use when adding a new `--kind`, overriding a builtin agent, or debugging persona resolution.
-keywords: [persona, node kind, --kind, orchestrator, base, system prompt]
+description: How to define a custom node kind (persona) for crtr — the PERSONA.md/orchestrator files, the frontmatter contract (incl. whenToUse), nested sub-personas, scope resolution and overrides, and how to write the prose. Use when adding a new `--kind`, overriding a builtin agent, or debugging persona resolution.
+keywords: [persona, node kind, --kind, orchestrator, PERSONA.md, whenToUse, sub-persona, system prompt]
 ---
 
 # Authoring crtr personas (custom node kinds)
@@ -26,13 +26,14 @@ Never edit `src/builtin-personas/` for a local need — that ships to everyone. 
 ```
 <root>/personas/
 ├── <kind>/
-│   ├── base.md               # worker persona (mode=base)
-│   └── orchestrator.md       # orchestrator persona (mode=orchestrator) — optional
-├── orchestration-kernel.md   # shared; @include-d by orchestrator files
-└── runtime-base.md           # shared; prepended to EVERY persona automatically
+│   ├── PERSONA.md            # worker persona (mode=base)
+│   ├── orchestrator.md      # orchestrator persona (mode=orchestrator) — optional
+│   └── <sub>/PERSONA.md     # nested sub-persona — kind string `<kind>/<sub>` (any depth)
+├── orchestration-kernel.md  # shared; @include-d by orchestrator files
+└── runtime-base.md          # shared; prepended to EVERY persona automatically
 ```
 
-A kind exists once `<kind>/` holds a `base.md` **or** `orchestrator.md`. `crtr node new --kind <x>` validates against the discovered set and errors with the valid list — your fast existence check.
+The role-body file is **`PERSONA.md`** (not `base.md` — that layout was retired). A kind exists once `<kind>/` holds a `PERSONA.md` **or** `orchestrator.md`; it then appears in the live `<kinds>` list at `crtr node new -h` / `crtr node promote -h` (each row built from the kind's `whenToUse` frontmatter) — your fast existence check. Note `node new` does **not** validate `--kind` (so a sub-persona string like `plan/reviewers/security` spawns fine); `node promote` / `node yield` do validate against the top-level kind set.
 
 ## Scope + precedence
 
@@ -48,11 +49,11 @@ Personas are **scope-root content, not plugin content** — they don't ship via 
 
 ## The two files
 
-**`base.md`** — the worker. Second person. State scope → method → deliverable, and end by reporting via `crtr push final`. Default lifecycle `terminal` (finishes in one window). → how to write one: `[[crouter-development/personas/base-prompt]]`.
+**`PERSONA.md`** — the worker (mode=base). Second person. State scope → method → deliverable, and end by reporting via `crtr push final`. Default lifecycle `terminal` (finishes in one window). → how to write one: `[[crouter-development/personas/base-prompt]]`.
 
 **`orchestrator.md`** — the owner that delegates to children and never does the work itself. Name the child kinds it drives and set per-phase exit criteria. **Must end with `@include orchestration-kernel.md`** — the loader inlines it; without it the orchestrator boots with no fan-out protocol. Default lifecycle `resident`. → how to write one: `[[crouter-development/personas/orchestrator-prompt]]`.
 
-If a kind has only `base.md`, `--mode orchestrator` composes `base.md body + kernel` and forces `resident` — so write `orchestrator.md` only when the worker and owner prose genuinely differ.
+If a kind has only `PERSONA.md`, `--mode orchestrator` composes `PERSONA.md body + kernel` and forces `resident` — so write `orchestrator.md` only when the worker and owner prose genuinely differ.
 
 ## Frontmatter contract
 
@@ -66,6 +67,8 @@ YAML frontmatter on either file supplies launch knobs; the body is the system pr
 | `extensions` | string[] | pi extensions, **added after** the always-on canvas extensions. |
 | `skills` | string[] | skills attached at launch. |
 | `roadmapSkill` | string | orchestrator only — a skill whose body is injected as roadmap-shaping guidance when the node runs as an orchestrator. |
+| `whenToUse` | string | on a `<kind>/PERSONA.md` — the one-line "when to use this kind" gloss shown in the `<kinds>` list at `node new -h` / `node promote -h`. |
+| `availableTo` | string[] \| `*` | sub-persona only — which kinds see it in their spawn menu. Default: its top-level ancestor kind. `*` / `all` = every kind. |
 
 `resolve()` never throws: a missing/empty persona falls back to `"You are a <kind> agent…"` defaults, so a node always boots. `runtime-base.md` (the push/finish/delegate/feed/ask protocol) is prepended to every persona — **don't restate it in the body.**
 
@@ -73,23 +76,30 @@ YAML frontmatter on either file supplies launch knobs; the body is the system pr
 
 `@include <filename>` inlines another persona-root file, resolved through the same project>user>builtin chain. Used for `orchestration-kernel.md`; drop an `orchestration-kernel.md` at user/project scope to change orchestrator protocol fleet-wide.
 
+## Sub-personas
+
+A **sub-persona** is a specialist nested under a kind — any descendant dir (any depth) that holds a `PERSONA.md`, e.g. `plan/reviewers/security/PERSONA.md`. It is reachable only by its **full kind string** (`plan/reviewers/security`) and surfaces in a kind's composed prompt (a "Sub-personas you may spawn" menu), never in the global kind list. Intermediate dirs without a `PERSONA.md` (e.g. `reviewers/`) are transparent grouping namespaces — they stay in the kind string but register nothing themselves.
+
+Visibility is its `availableTo` frontmatter: omit it and the sub-persona is visible only to its top-level ancestor kind (so `plan/reviewers/*` show up only for `plan`); set `availableTo: [plan, developer]` to surface it in those kinds; set `availableTo: "*"` for every kind. Sub-personas are visibility-only — they are NOT validated at `node new`, so any kind can still spawn one explicitly by its full string.
+
 ## Dev loop
 
 ```bash
 mkdir -p ~/.crouter/personas/researcher
-$EDITOR ~/.crouter/personas/researcher/base.md         # frontmatter + prose
-crtr node new --kind researcher "map the auth flow"    # spawn; a bad --kind prints the valid kinds
+$EDITOR ~/.crouter/personas/researcher/PERSONA.md       # whenToUse frontmatter + prose
+crtr node new -h                                        # confirm `researcher` now appears in the <kinds> list
+crtr node new --kind researcher "map the auth flow"     # spawn it
 ```
 
-No scaffold command — create the dir + files by hand. Copy a builtin (`explore/base.md`, `developer/orchestrator.md`) as a starting template.
+No scaffold command — create the dir + files by hand. Copy a builtin (`explore/PERSONA.md`, `developer/orchestrator.md`) as a starting template.
 
 ## Failure modes
 
 - **Orchestrator with no `@include orchestration-kernel.md`** — boots without the fan-out protocol; can't delegate. Always include it.
 - **Restating runtime-base** — the push/finish/delegate protocol is already prepended. Duplicating it wastes context and drifts out of sync.
-- **`lifecycle: resident` on a worker `base.md`** — the node never finishes. Reserve `resident` for interactive/long-lived kinds.
+- **`lifecycle: resident` on a worker `PERSONA.md`** — the node never finishes. Reserve `resident` for interactive/long-lived kinds.
 - **Editing `src/builtin-personas/` for a local need** — ships to everyone. Override at user/project scope.
-- **Kind not listed after creating the dir** — neither `base.md` nor `orchestrator.md` is present, or the filename is wrong. The dir alone doesn't register a kind.
+- **Kind not listed after creating the dir** — neither `PERSONA.md` nor `orchestrator.md` is present, or the filename is wrong (it must be exactly `PERSONA.md` — `base.md` no longer registers a kind). The dir alone doesn't register a kind.
 
 ## Related
 

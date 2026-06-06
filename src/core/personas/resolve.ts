@@ -4,23 +4,23 @@
  *
  * Composition rules:
  *   mode==='base'
- *     → load <kind>/base.md; if missing fall back to general defaults.
+ *     → load <kind>/PERSONA.md; if missing fall back to general defaults.
  *
  *   mode==='orchestrator'
  *     → prefer <kind>/orchestrator.md (which must embed the kernel via
  *       @include orchestration-kernel.md — inlined by the loader).
  *       If no orchestrator.md exists for this kind, compose:
- *         <kind>/base.md body  +  '\n\n'  +  kernel body
- *       If even the base is missing, fall back to general defaults + kernel.
+ *         <kind>/PERSONA.md body  +  '\n\n'  +  kernel body
+ *       If even the PERSONA.md is missing, fall back to general defaults + kernel.
  *
  * Frontmatter from whichever file is the primary source (orchestrator.md >
- * base.md) supplies model/skills/extensions/tools. Lifecycle and spine position
+ * PERSONA.md) supplies model/skills/extensions/tools. Lifecycle and spine position
  * are INPUTS (the caller decides them — root/child, terminal/resident), not
  * derived here; they select the lifecycle/spine protocol fragments spliced
  * ahead of the persona body.
  */
 
-import { loadPersona, loadKernel, loadRuntimeBase, loadSpineFragment, loadLifecycleFragment, subKindsFor } from './loader.js';
+import { loadPersona, loadKernel, loadRuntimeBase, loadSpineFragment, loadLifecycleFragment, subPersonasFor } from './loader.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -58,17 +58,19 @@ function fallbackBasePrompt(kind: string): string {
  *  fragment (report-up vs. silent, keyed on whether the node has a manager),
  *  then the lifecycle fragment (finish-with-`push final` vs. dormant/wake). The
  *  kind×mode persona body follows after a rule. Empty fragments drop out. */
-/** Render the "sub-kinds you may spawn" menu for a kind that owns a roster.
- *  Returns '' when the kind owns none. Data-driven: one line per sub-kind, its
- *  spawn string + its `summary`. Adding a roster file makes it appear here. */
-function renderSubKindMenu(kind: string): string {
-  const subs = subKindsFor(kind);
+/** Render the "sub-personas you may spawn" menu for a kind that has any
+ *  available to it. Returns '' when none are. Data-driven: one line per
+ *  sub-persona, its spawn string + its `whenToUse`. A sub-persona surfaces here
+ *  for a kind when its `availableTo` includes that kind (default: its own
+ *  top-level ancestor) or is the wildcard. */
+function renderSubPersonaMenu(kind: string): string {
+  const subs = subPersonasFor(kind);
   if (subs.length === 0) return '';
-  const lines = subs.map((s) => `- \`${s.kind}\` — ${s.summary}`);
+  const lines = subs.map((s) => `- \`${s.kind}\` — ${s.whenToUse}`);
   return [
-    '## Reviewer sub-kinds you may spawn',
+    '## Sub-personas you may spawn',
     '',
-    `These specialist reviewers exist only in the ${kind} kind's world — no other kind sees them. Spawn one with \`crtr node new --kind <sub-kind> "<scope>"\`, giving it only its scope, never your suspicions: a reviewer handed a hint anchors on it instead of finding problems independently.`,
+    `These specialist sub-personas are available to the ${kind} kind. Spawn one with \`crtr node new --kind <sub> "<scope>"\`, giving it only its scope, never your suspicions: a reviewer handed a hint anchors on it instead of finding problems independently.`,
     '',
     ...lines,
   ].join('\n');
@@ -80,7 +82,7 @@ function composeProtocol(
   lifecycle: 'terminal' | 'resident',
   hasManager: boolean,
 ): string {
-  const menu = renderSubKindMenu(kind);
+  const menu = renderSubPersonaMenu(kind);
   const body = menu ? `${personaPrompt}\n\n${menu}` : personaPrompt;
   const protocol = [
     loadRuntimeBase(),

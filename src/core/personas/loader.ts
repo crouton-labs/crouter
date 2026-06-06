@@ -5,9 +5,10 @@
  * Resolution order (highest → lowest precedence): project > user > builtin.
  *
  * Layout on disk:
- *   <root>/personas/<kind>/base.md
+ *   <root>/personas/<kind>/PERSONA.md
  *   <root>/personas/<kind>/orchestrator.md
  *   <root>/personas/orchestration-kernel.md
+ *   <root>/personas/<kind>/<...>/PERSONA.md   (nested sub-personas)
  *
  * The builtin root is src/builtin-personas (or dist/builtin-personas in the
  * compiled build), resolved relative to this module — mirrors the pattern used
@@ -68,7 +69,7 @@ function personaSearchRoots(): string[] {
 
 /**
  * Find the first existing file across the scope roots.
- * `relativePath` is relative to each root (e.g. 'general/base.md').
+ * `relativePath` is relative to each root (e.g. 'general/PERSONA.md').
  */
 function resolveFile(relativePath: string): string | null {
   for (const root of personaSearchRoots()) {
@@ -107,6 +108,9 @@ function inlineIncludes(body: string): string {
 // Public API
 // ---------------------------------------------------------------------------
 
+/** The role-body filename for every kind/sub-persona (replaces legacy base.md). */
+const PERSONA_FILE = 'PERSONA.md';
+
 export interface LoadedPersona {
   /** Raw, uncoerced frontmatter key/value record (null when no frontmatter). */
   frontmatter: Record<string, unknown> | null;
@@ -121,7 +125,8 @@ export interface LoadedPersona {
  * On success, `@include` directives in the body are resolved and inlined.
  */
 export function loadPersona(kind: string, mode: 'base' | 'orchestrator'): LoadedPersona | null {
-  const relativePath = `${kind}/${mode}.md`;
+  // base → PERSONA.md (the role body); orchestrator → its sibling orchestrator.md.
+  const relativePath = mode === 'orchestrator' ? `${kind}/orchestrator.md` : `${kind}/PERSONA.md`;
   const filePath = resolveFile(relativePath);
   if (!filePath) return null;
 
@@ -189,9 +194,11 @@ export function loadSpineFragment(hasManager: boolean): string {
 }
 
 /**
- * Enumerate the kinds with at least one persona file (base.md or
+ * Enumerate the kinds with at least one persona file (PERSONA.md or
  * orchestrator.md) across all scope roots (project/user/builtin). Used to
- * validate a requested `--kind` and to list the valid choices.
+ * validate a requested `--kind` and to list the valid choices. Only the
+ * IMMEDIATE children of each root count — nested sub-personas never pollute
+ * the global kind list (see subPersonasFor).
  */
 export function availableKinds(): string[] {
   const kinds = new Set<string>();
@@ -200,7 +207,7 @@ export function availableKinds(): string[] {
     for (const entry of readdirSync(root, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
       const dir = join(root, entry.name);
-      if (existsSync(join(dir, 'base.md')) || existsSync(join(dir, 'orchestrator.md'))) {
+      if (existsSync(join(dir, PERSONA_FILE)) || existsSync(join(dir, 'orchestrator.md'))) {
         kinds.add(entry.name);
       }
     }
@@ -208,42 +215,100 @@ export function availableKinds(): string[] {
   return [...kinds].sort();
 }
 
-const REVIEWERS_SUBDIR = 'reviewers';
+/**
+ * The one-line "when to use this node type" gloss for `kind`, read from its
+ * `<kind>/PERSONA.md` `whenToUse` frontmatter (resolved project > user >
+ * builtin). Returns '' when the kind has no PERSONA.md or no `whenToUse`.
+ * Drives the dynamic kind list in `node new -h` / `node promote -h`.
+ */
+export function kindWhenToUse(kind: string): string {
+  const filePath = resolveFile(`${kind}/${PERSONA_FILE}`);
+  if (!filePath) return '';
+  const { data } = parseFrontmatterGeneric(readFileSync(filePath, 'utf8'));
+  return data && typeof data['whenToUse'] === 'string' ? (data['whenToUse'] as string) : '';
+}
 
-export interface SubKind {
+export interface SubPersona {
   /** Full kind string to spawn, e.g. 'plan/reviewers/security'. */
   kind: string;
   /** Leaf name, e.g. 'security'. */
   name: string;
-  /** One-line "what it reviews", from the sub-kind base.md `summary` frontmatter (or ''). */
-  summary: string;
+  /** One-line "when to use", from the sub-persona PERSONA.md `whenToUse` frontmatter (or ''). */
+  whenToUse: string;
+}
+
+/** Recursively yield every dir under `dir` (inclusive) that holds a PERSONA.md,
+ *  with `relKind` = the dir's path relative to the scope root (slash-joined).
+ *  Dirs WITHOUT a PERSONA.md (e.g. a `reviewers/` grouping namespace) are
+ *  transparent — they yield nothing themselves but are still descended into,
+ *  so `plan/reviewers/security` keeps that exact kind string. */
+function* walkPersonaDirs(dir: string, relParts: string[]): Generator<{ relKind: string; file: string }> {
+  const file = join(dir, PERSONA_FILE);
+  if (existsSync(file)) yield { relKind: relParts.join('/'), file };
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) yield* walkPersonaDirs(join(dir, entry.name), [...relParts, entry.name]);
+  }
+}
+
+/** Parse a sub-persona's `availableTo` frontmatter into its availability set.
+ *  Returns the wildcard sentinel `'*'` for `"*"`/`"all"` (scalar or in an
+ *  array), an explicit list of kind strings when present, else the default
+ *  `[topKind]` (the top-level ancestor kind). */
+function parseAvailableTo(data: Record<string, unknown> | null, topKind: string): string[] | '*' {
+  const isWild = (s: string): boolean => {
+    const t = s.trim().toLowerCase();
+    return t === '*' || t === 'all';
+  };
+  const v = data ? data['availableTo'] : undefined;
+  if (v === undefined) return [topKind];
+  if (typeof v === 'string') return isWild(v) ? '*' : [v];
+  if (Array.isArray(v)) {
+    const arr = v.filter((x): x is string => typeof x === 'string');
+    if (arr.some(isWild)) return '*';
+    return arr.length > 0 ? arr : [topKind];
+  }
+  return [topKind];
 }
 
 /**
- * Enumerate the reviewer sub-kinds owned by `parentKind` — the specialist
- * personas at `<root>/<parentKind>/reviewers/<name>/base.md`, scanned across all
- * scope roots (project > user > builtin; highest precedence wins per name).
+ * Enumerate the sub-personas AVAILABLE TO `kind` — the nested specialist
+ * personas (e.g. `plan/reviewers/security`) a `kind` node may spawn, surfaced
+ * in its composed prompt (resolve.ts) and nowhere else.
  *
- * Sub-kinds are intentionally NOT global kinds: `availableKinds()` scans only the
- * immediate children of each persona root, so `<parentKind>/reviewers/*` never
- * leaks into the global list. A sub-kind is reachable only by its full kind
- * string and is surfaced only in its parent kind's composed prompt (resolve.ts).
- * Kind-parametric: any kind owns a roster simply by adding
- * `<kind>/reviewers/<name>/base.md` — no code change.
+ * A sub-persona is any descendant dir (ANY depth) under a top-level kind dir
+ * that holds a PERSONA.md, EXCLUDING the top-level PERSONA.md itself. Its
+ * availability is its `availableTo` frontmatter: an explicit list of kind
+ * strings, or the wildcard `"*"`/`"all"` (visible to every kind); absent, it
+ * defaults to its own top-level ancestor kind. So the five `plan/reviewers/*`
+ * (no `availableTo`) are visible only to `plan`, while a sub-persona under
+ * `developer/` can declare `availableTo: [plan]` to surface in plan's menu —
+ * which is why ALL top-level kinds' descendants are scanned, not just `<kind>/`.
+ *
+ * Sub-personas are intentionally NOT global kinds: `availableKinds()` scans only
+ * the immediate children of each root, so a nested sub-persona never leaks into
+ * the global list; it is reachable only by its full kind string. Precedence is
+ * project > user > builtin keyed on the FULL kind string — the highest root that
+ * defines a given kind string wins (and owns its `availableTo`).
  */
-export function subKindsFor(parentKind: string): SubKind[] {
-  const byName = new Map<string, SubKind>();
+export function subPersonasFor(kind: string): SubPersona[] {
+  const seen = new Set<string>(); // full kind strings already resolved (higher root won)
+  const out: SubPersona[] = [];
   for (const root of personaSearchRoots()) {
-    const dir = join(root, parentKind, REVIEWERS_SUBDIR);
-    if (!existsSync(dir)) continue;
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (!entry.isDirectory() || byName.has(entry.name)) continue; // higher root already won
-      const baseFile = join(dir, entry.name, 'base.md');
-      if (!existsSync(baseFile)) continue;
-      const { data } = parseFrontmatterGeneric(readFileSync(baseFile, 'utf8'));
-      const summary = data && typeof data['summary'] === 'string' ? (data['summary'] as string) : '';
-      byName.set(entry.name, { kind: `${parentKind}/${REVIEWERS_SUBDIR}/${entry.name}`, name: entry.name, summary });
+    if (!existsSync(root)) continue;
+    for (const top of readdirSync(root, { withFileTypes: true })) {
+      if (!top.isDirectory()) continue;
+      const topKind = top.name;
+      for (const { relKind, file } of walkPersonaDirs(join(root, topKind), [topKind])) {
+        if (relKind === topKind) continue; // the top-level PERSONA.md is the kind itself, not a sub-persona
+        if (seen.has(relKind)) continue; // a higher root already resolved this kind string
+        seen.add(relKind);
+        const { data } = parseFrontmatterGeneric(readFileSync(file, 'utf8'));
+        const availableTo = parseAvailableTo(data, topKind);
+        if (availableTo !== '*' && !availableTo.includes(kind)) continue;
+        const whenToUse = data && typeof data['whenToUse'] === 'string' ? (data['whenToUse'] as string) : '';
+        out.push({ kind: relKind, name: relKind.split('/').pop()!, whenToUse });
+      }
     }
   }
-  return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+  return out.sort((a, b) => a.kind.localeCompare(b.kind));
 }

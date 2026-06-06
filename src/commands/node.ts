@@ -17,7 +17,8 @@ import { detachToBackground, focus as placementFocus, windowAlive, windowOfPane,
 import { buildLaunchSpec } from '../core/runtime/launch.js';
 import { closeNode } from '../core/runtime/close.js';
 import { appendInbox, type InboxTier } from '../core/feed/inbox.js';
-import { availableKinds } from '../core/personas/index.js';
+import { availableKinds, kindWhenToUse } from '../core/personas/index.js';
+import { stateBlock } from '../core/help.js';
 import {
   getNode,
   updateNode,
@@ -64,6 +65,21 @@ function assertKind(kind: string): void {
   }
 }
 
+/** A live `<kinds count=N>` state element — one `<kind> — <whenToUse>` line per
+ *  installed top-level persona kind (project > user > builtin), lazily built so
+ *  it reflects the caller's cwd/project scope. Appended to `node new -h` and
+ *  `node promote -h` so custom kinds appear in help. Soft-fails via the renderer. */
+function kindsStateBlock(): string {
+  const kinds = availableKinds();
+  const lines = kinds
+    .map((k) => {
+      const w = kindWhenToUse(k);
+      return w ? `${k} — ${w}` : k;
+    })
+    .join('\n');
+  return stateBlock('kinds', { count: kinds.length }, lines);
+}
+
 // ---------------------------------------------------------------------------
 // node new — spawn a terminal worker as a background window under the root
 // ---------------------------------------------------------------------------
@@ -78,7 +94,7 @@ const nodeNew = defineLeaf({
     summary: 'spawn a terminal worker onto the canvas as a background window — returns its node id',
     params: [
       { kind: 'stdin', name: 'prompt', required: true, constraint: 'First user message for the spawned node. Piped on stdin or passed as a positional.' },
-      { kind: 'flag', name: 'kind', type: 'string', required: false, default: 'general', constraint: 'Persona kind — match the work: explore (map/investigate a codebase), spec (write a spec), design (architect a solution), plan (break work into steps), developer (implement a change), review (validate/critique), general (anything else).' },
+      { kind: 'flag', name: 'kind', type: 'string', required: false, default: 'general', constraint: 'Persona kind — match the work to the kind. See the <kinds> list below for every installed kind and when to use each. A nested sub-persona string (e.g. plan/reviewers/security) is also accepted.' },
       { kind: 'flag', name: 'mode', type: 'enum', choices: ['base', 'orchestrator'], required: false, default: 'base', constraint: 'Persona mode. base for a worker that finishes in one window; orchestrator to create the child directly as a sub-orchestrator (it boots with the orchestrator persona + a seeded roadmap and fans its scope out) — use it when the unit is too large for one window, e.g. a big review, instead of spawning a base worker and counting on it to promote itself.' },
       { kind: 'flag', name: 'cwd', type: 'path', required: false, constraint: 'Dir the node is pinned to. Defaults to the caller cwd.' },
       { kind: 'flag', name: 'name', type: 'string', required: false, constraint: 'Display name (tmux window + resume picker). Defaults to the kind.' },
@@ -94,6 +110,7 @@ const nodeNew = defineLeaf({
       { name: 'status', type: 'string', required: true, constraint: 'Always "active" on spawn.' },
       { name: 'follow_up', type: 'string', required: true, constraint: 'Decision road sign for the caller: the child runs independently and its finish wakes you on its own, so never wait or poll on it — either pick up other work now or end your turn. If you are an orchestrator already deep in context (>100k), it instead steers you to `crtr node yield` now so your fresh revive absorbs the child\'s result. Read it, then act.' },
     ],
+    dynamicState: () => kindsStateBlock(),
     outputKind: 'object',
     effects: [
       'Creates a node under ~/.crtr/nodes/<id>/ and indexes it in canvas.db.',
@@ -599,7 +616,7 @@ const nodePromote = defineLeaf({
     name: 'node promote',
     summary: 'promote yourself to an orchestrator — do this when your task outgrows one context window (many phases to delegate and persist across refreshes); not for work that fits one window, and not merely because you spawned a child. Mode only — lifecycle stays as-is unless you pass --resident',
     params: [
-      { kind: 'flag', name: 'kind', type: 'string', required: false, constraint: 'Specialize as this kind of orchestrator: developer (own feature delivery), review, spec, design, plan, explore, general. Defaults to your current kind. Promoting from a generic kind? CHOOSE a concrete one — it sets the orchestrator persona you revive into.' },
+      { kind: 'flag', name: 'kind', type: 'string', required: false, constraint: 'Specialize as this kind of orchestrator. See the <kinds> list below for every installed kind and when to use each. Defaults to your current kind. Promoting from a generic kind? CHOOSE a concrete one — it sets the orchestrator persona you revive into.' },
       { kind: 'flag', name: 'resident', type: 'bool', required: false, constraint: 'ALSO flip lifecycle→resident: make the node interactable — it stays dormant, woken by inbox/human, and is never forced to submit a final. Omit to stay terminal/orchestrator (delegates + holds a roadmap, but still owes a final up the spine and reaps when done).' },
       { kind: 'flag', name: 'node', type: 'string', required: false, constraint: 'Node to promote. Defaults to the caller (CRTR_NODE_ID).' },
     ],
@@ -615,6 +632,7 @@ const nodePromote = defineLeaf({
       { name: 'user_memory_path', type: 'string', required: true, constraint: 'Absolute path to your USER-GLOBAL memory index (<crtrHome>/memory/MEMORY.md) — who the human is, how they like to work; loaded into every orchestrator everywhere.' },
       { name: 'project_memory_path', type: 'string', required: true, constraint: 'Absolute path to your PROJECT memory index (<crtrHome>/projects/<key>/memory/MEMORY.md) — facts bound to this repo; loaded into every orchestrator working here.' },
     ],
+    dynamicState: () => kindsStateBlock(),
     outputKind: 'object',
     effects: ['Flips mode→orchestrator + kind→chosen (lifecycle unchanged unless --resident, which also flips lifecycle→resident); rewrites the launch spec to that kind\'s orchestrator persona; seeds context/roadmap.md scaffold + all three scoped memory stores (user-global, project, node-local) if absent.', 'Your new-role guidance is injected automatically at the turn boundary by the persona injector — the command no longer returns it.'],
   },

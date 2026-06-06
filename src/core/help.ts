@@ -185,6 +185,12 @@ export interface LeafHelp {
   /** Every persistent change the command makes to the world. For read-only
    *  leaves use exactly: ["None. Read-only."] */
   effects: string[];
+  /** Bounded runtime aggregate as a complete self-named state element (build it
+   *  with stateBlock), e.g. `<kinds count="7">…</kinds>`. Lazily evaluated at
+   *  render time so it reflects the caller's cwd/project scope; appended after
+   *  the schema. Renderer soft-fails to omission if it returns null or throws.
+   *  Mirrors BranchHelp.dynamicState. */
+  dynamicState?: () => string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -451,6 +457,14 @@ export function renderLeafArgv(h: LeafHelp): string {
   lines.push('Effects');
   for (const e of h.effects) {
     lines.push(`  ${e}`);
+  }
+
+  // Optional bounded runtime-state block (e.g. the live <kinds> list), appended
+  // after the schema. Soft-fails to omission on null/throw, mirroring renderBranch.
+  const state = evalDynamic(h.dynamicState);
+  if (state !== null) {
+    lines.push('');
+    lines.push(state);
   }
 
   return lines.join('\n');
