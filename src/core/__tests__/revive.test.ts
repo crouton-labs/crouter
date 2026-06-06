@@ -180,12 +180,16 @@ function windowCount(session: string): number {
   return (r.stdout ?? '').trim().split('\n').filter((s) => s !== '').length;
 }
 
-test('reviveNode no-ops when the node window is already alive (double-revive guard)', { skip: !hasTmux() }, async () => {
+test('reviveNode no-ops when the node pane is alive AND its pi is LIVE (double-revive guard)', { skip: !hasTmux() }, async () => {
   await withLiveWindow('guard', async (session, window) => {
+    // pi_pid = this process: a genuinely LIVE pi. The guard now keys on pane-
+    // alive AND pi-alive (Step 7), so this models "another path already revived
+    // it" — a no-op (re-launching would double-spawn onto the same session file).
     createNode(node('M', {
       tmux_session: session,
       window,
       cycles: 3,
+      pi_pid: process.pid,
       pi_session_id: 'uuid-1',
       pi_session_file: '/abs/m.jsonl',
     }));
@@ -199,4 +203,50 @@ test('reviveNode no-ops when the node window is already alive (double-revive gua
     assert.equal(windowCount(session), before, 'no new window opened');
     assert.equal(getNode('M')?.cycles, 3, 'cycle counter NOT bumped (guard returned early)');
   });
+});
+
+test('reviveNode PROCEEDS when the pane is alive but the pi is DEAD (F3 frozen-pane resume)', { skip: !hasTmux() }, async () => {
+  // The Step-7 guard fix: a FROZEN focus pane (remain-on-exit) is pane-alive but
+  // pi-DEAD — the resume-into-focus case. The OLD pane-only guard would no-op
+  // here (the bug that left a frozen focused-dormant node stuck); the new guard
+  // gates on pi liveness too, so reviveNode proceeds (bumps the cycle counter).
+  await withLiveWindow('frozen', async (session, window) => {
+    createNode(node('M', {
+      tmux_session: session,
+      window,
+      cycles: 3,
+      pi_pid: 0x7ffffffe, // implausible/dead pid → a frozen pane with no live pi
+      pi_session_id: 'uuid-1',
+      pi_session_file: '/abs/m.jsonl',
+    }));
+    reviveNode('M', { resume: true });
+    assert.equal(getNode('M')?.cycles, 4, 'cycle counter BUMPED — the guard did NOT short-circuit a frozen pane');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step 5 (§5.3): reviveNode DELEGATES placement to reviveIntoPlacement — a
+// non-focused node targets its home_session, NEVER its (focus-tainted)
+// tmux_session. This is the reviveNode-level bug-kill proof. Gated to run when
+// tmux is ABSENT, so openNodeWindow no-ops (returns null) and no real pi is
+// launched — the placement DECISION (session + LOCATION) is set synchronously
+// regardless of whether a window actually opens, so the assertions are exact.
+// (The WITH-tmux window-placement behaviour is proven in placement-revive.test.ts.)
+// ---------------------------------------------------------------------------
+
+test('reviveNode delegates to home_session for a non-focused node, IGNORING the tainted tmux_session (§5.3)', { skip: hasTmux() }, async () => {
+  const back = `crtr-back-${process.pid}`;
+  const tainted = `crtr-user-${process.pid}`; // the focus taint that must be ignored
+  // A non-focused child: home_session is the backstage; tmux_session was tainted
+  // to a user session by a prior focus and never corrected. No focus row exists.
+  createNode(node('M', { home_session: back, tmux_session: tainted, window: '@7', pane: null }));
+
+  const res = reviveNode('M', { resume: false });
+
+  assert.equal(res.session, back, 'revive targets home_session, not the tainted user session');
+  assert.notEqual(res.session, tainted, 'NEVER the tainted tmux_session');
+  const m = getNode('M')!;
+  assert.equal(m.tmux_session, back, 'LOCATION repointed to the backstage (taint overwritten)');
+  assert.equal(m.window, null, 'no tmux present → openNodeWindow no-op, window null (decision still recorded)');
+  assert.equal(m.cycles, 1, 'a real (non-guard) revive bumped the cycle counter');
 });

@@ -11,7 +11,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { FRONT_DOOR_ENV } from './front-door.js';
-import { spawnNode, currentNodeContext, nodeEnv } from './nodes.js';
+import { spawnNode, currentNodeContext, nodeEnv, resolveBirthSession } from './nodes.js';
 import { buildLaunchSpec, buildPiArgv } from './launch.js';
 import { writeGoal } from './kickoff.js';
 import { hasRoadmap, seedRoadmap } from './roadmap.js';
@@ -20,7 +20,6 @@ import { generateSessionName } from './naming.js';
 import {
   ensureSession,
   openNodeWindow,
-  splitPane,
   piCommand,
   currentTmux,
   inTmux,
@@ -29,7 +28,9 @@ import {
   installMenuBinding,
   installNavBindings,
 } from './tmux.js';
-import { setPresence, getNode, setStatus, fullName, type NodeMeta, type Mode, type Lifecycle } from '../canvas/index.js';
+import { setPresence, updateNode, getNode, fullName, type NodeMeta, type Mode, type Lifecycle } from '../canvas/index.js';
+import { registerRootFocus } from './placement.js';
+import { transition } from './lifecycle.js';
 import { ensureDaemon } from '../../daemon/manage.js';
 
 // All node windows live in one shared session — see `nodeSession()` in tmux.js.
@@ -55,7 +56,7 @@ export function bootRoot(opts: BootRootOpts): NodeMeta {
   const kind = opts.kind ?? 'general';
   // A born-resident root starts in base mode; it earns the orchestrator persona
   // the first time it delegates (or on promotion). Resident lifecycle either way.
-  const { launch } = buildLaunchSpec(kind, 'base');
+  const { launch } = buildLaunchSpec(kind, 'base', { lifecycle: 'resident', hasManager: false });
   // A root opened WITH a prompt gets its editor name now (so the first pi
   // session already carries it). A bare root has no prompt yet — the
   // goal-capture extension names it from the first message (async, next cycle).
@@ -93,8 +94,20 @@ export function bootRoot(opts: BootRootOpts): NodeMeta {
   // sees it alive). But its children spawn into the shared global session via
   // CRTR_ROOT_SESSION — they never clutter the user's working session.
   const here = currentTmux();
-  const adopted = here?.session ?? session;
-  setPresence(meta.node_id, { tmux_session: adopted, window: here?.window ?? null });
+  const adopted = resolveBirthSession({ adoptCaller: true, here, rootSession: undefined });
+  setPresence(meta.node_id, { tmux_session: adopted, window: here?.window ?? null, pane: here?.pane ?? null });
+  // REVIVE-HOME: the inline root's durable revive target is the session it
+  // adopts (the caller's when inside tmux, else the shared backstage). Set once
+  // at birth, alongside the live LOCATION above.
+  updateNode(meta.node_id, { home_session: adopted });
+  // Root boot registers focus #1 (§2.6): the FOREGROUND inline root owns the
+  // user's viewport, so its OWN pane becomes a durable focus (remain-on-exit so
+  // a clean exit freezes rather than detaching the terminal). A background
+  // `--root` (spawnChild) does NOT — it stays a plain window until the user
+  // focuses it (§6). Only possible inside tmux (a pane to anchor on).
+  if (here) {
+    try { registerRootFocus(meta.node_id, here.pane, adopted, here.window); } catch { /* best-effort */ }
+  }
   const withSession = getNode(meta.node_id) as NodeMeta;
   const inv = buildPiArgv(withSession, { prompt: opts.prompt });
   const env = { ...process.env, ...inv.env, CRTR_ROOT_SESSION: session, [FRONT_DOOR_ENV]: '1' } as NodeJS.ProcessEnv;
@@ -175,7 +188,10 @@ export function spawnChild(opts: SpawnChildOpts): SpawnChildResult {
   // reaps when done. A child born as an orchestrator is terminal/orchestrator
   // (delegates + holds a roadmap, but still reports up), NOT resident.
   const lifecycle: Lifecycle = root ? 'resident' : 'terminal';
-  const { launch } = buildLaunchSpec(opts.kind, mode);
+  // Spine: a managed child reports up to its spawner (has a manager); an
+  // independent root sits top-of-spine with nobody to push to. Mirrors the
+  // `parent` set below (root ? null : spawner), so hasManager === parent!==null.
+  const { launch } = buildLaunchSpec(opts.kind, mode, { lifecycle, hasManager: !root });
   // Name the worker from its task now, so its first editor label carries it.
   const meta = spawnNode({
     kind: opts.kind,
@@ -217,57 +233,49 @@ export function spawnChild(opts: SpawnChildOpts): SpawnChildResult {
     seedMemory(meta.node_id);
   }
 
-  // The shared global session for this node's CHILDREN: inherited from the
-  // parent's CRTR_ROOT_SESSION, else the default node session. A managed child
-  // also OPENS here; an adjacent-pane root does not (its own pane sits in the
-  // caller's window — see below) but still seeds this so ITS descendants flow to
-  // the shared session via CRTR_ROOT_SESSION rather than cluttering the caller.
-  let session = process.env['CRTR_ROOT_SESSION'];
-  if (session === undefined || session === '') session = nodeSession();
+  // A managed CHILD lands in the shared global session: inherited from the
+  // parent's CRTR_ROOT_SESSION, else the default node session. A --root spawned
+  // from inside tmux instead opens its window in the CALLER'S CURRENT session,
+  // so it appears where the spawner is working rather than exiled to a separate
+  // crtr session. Either way the root's OWN descendants still flow to the shared
+  // session (childSession) via CRTR_ROOT_SESSION, to keep the subtree from
+  // cluttering the user's session.
+  const rootSessionEnv = process.env['CRTR_ROOT_SESSION'];
+  const here = root ? currentTmux() : null;
+  // The shared backstage the whole subtree flows into (this child's own
+  // CRTR_ROOT_SESSION): the inherited root session, else the default `crtr`.
+  const childSession = resolveBirthSession({ adoptCaller: false, here, rootSession: rootSessionEnv });
+  // Where THIS node's window opens — and its durable REVIVE-HOME. A managed
+  // child lands in the backstage; a --root adopts the caller's current session
+  // when inside tmux, so it appears where the spawner is working.
+  const session = resolveBirthSession({ adoptCaller: root, here, rootSession: rootSessionEnv });
   ensureSession(session, opts.cwd);
+  // REVIVE-HOME set once at birth: a managed child's revive target is the
+  // backstage, never a user session — this is what keeps a background revive
+  // off the user's screen (the focus taint cannot reach it).
+  updateNode(meta.node_id, { home_session: session });
 
   const inv = buildPiArgv(meta, { prompt: opts.prompt, forkFrom });
-  const env = { ...inv.env, CRTR_ROOT_SESSION: session, [FRONT_DOOR_ENV]: '1' };
+  const env = { ...inv.env, CRTR_ROOT_SESSION: childSession, [FRONT_DOOR_ENV]: '1' };
   const command = piCommand(inv.argv);
 
-  // An independent root spawned from inside a live tmux pane lands as an
-  // ADJACENT pane in the caller's window — driven side-by-side rather than
-  // exiled to its own background window in the shared crtr session. Its own
-  // children still flow to `session` (CRTR_ROOT_SESSION above). Both nodes then
-  // share one window; the daemon distinguishes their liveness by per-node
-  // pi_pid (same model as `canvas tmux-spread`). Falls through to the
-  // background-window path when not in tmux (no pane to split).
-  const here = root ? currentTmux() : null;
-  if (root && here !== null) {
-    const pane = splitPane({ pane: here.pane, cwd: opts.cwd, env, command });
-    if (pane === null) {
-      setStatus(meta.node_id, 'dead');
-      throw new Error(
-        `failed to split a tmux pane for ${meta.node_id} (${meta.name}) beside ${here.pane} — the node was not started.`,
-      );
-    }
-    // The split stays in the caller's window — track the node there. split-window
-    // already made the new pane active; ensure that window is the client's
-    // current one too (the caller may be a background window) so the root is
-    // forefront and ready to drive.
-    setPresence(meta.node_id, { tmux_session: here.session, window: here.window });
-    const saved = getNode(meta.node_id) as NodeMeta;
-    try { focusWindow(here.session, here.window); } catch { /* best-effort */ }
-    return { node: saved, window: here.window, session: here.session };
-  }
-
-  const window = openNodeWindow({
+  // openNodeWindow now returns {window, pane}; pane is unused until the
+  // placement layer lands, so destructure the window and proceed unchanged.
+  const opened = openNodeWindow({
     session,
     name: fullName(meta),
     cwd: opts.cwd,
     env,
     command,
   });
+  const window = opened?.window ?? null;
 
   // Two-stage failure model. Opening the window is instant and definitive, so a
-  // failure here is reported SYNCHRONOUSLY: mark the node dead (so it isn't a
-  // zombie 'active' the daemon can't reap — it has no window to watch) and throw
-  // so `crtr node new` exits non-zero with a clear message for the caller.
+  // failure here is reported SYNCHRONOUSLY: crash the node (so it isn't a zombie
+  // 'active' the daemon can't reap — it has no window to watch) and throw so
+  // `crtr node new` exits non-zero with a clear message for the caller. The node
+  // is still 'active' from spawnNode, so transition('crash') is a legal from-LIVE
+  // move — the last scattered node-status write, now through the lifecycle machine.
   //
   // pi BOOTING inside the window, by contrast, is inherently slow (and slower
   // under load), so we stay optimistic and return status='active' the instant
@@ -275,7 +283,7 @@ export function spawnChild(opts: SpawnChildOpts): SpawnChildResult {
   // is caught by the daemon — it surfaces the boot failure up the spine rather
   // than letting the node die silently (see crtrd.ts surfaceBootFailure).
   if (window === null) {
-    setStatus(meta.node_id, 'dead');
+    transition(meta.node_id, 'crash');
     throw new Error(
       `failed to open a tmux window for ${meta.node_id} (${meta.name}) in session '${session}' — the node was not started.`,
     );
@@ -283,9 +291,8 @@ export function spawnChild(opts: SpawnChildOpts): SpawnChildResult {
 
   setPresence(meta.node_id, { tmux_session: session, window });
   const saved = getNode(meta.node_id) as NodeMeta;
-  // A root spawned OUTSIDE tmux still wants forefront — bring its window up.
-  // (An in-tmux root took the adjacent-pane path above.) A child stays a
-  // background window.
+  // A root is spawned to be driven directly — bring it forefront so whoever
+  // asked for it picks up the conversation. A child stays a background window.
   if (root) {
     try { focusWindow(session, window); } catch { /* best-effort */ }
   }

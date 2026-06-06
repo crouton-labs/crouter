@@ -23,8 +23,6 @@ import { existsSync, rmSync } from 'node:fs';
 import {
   getNode,
   updateNode,
-  setStatus,
-  setIntent,
   setPresence,
   clearPid,
   subscriptionsOf,
@@ -32,8 +30,12 @@ import {
   view,
   reportsDir,
   inboxPath,
+  nodeDir,
+  openDb,
 } from '../canvas/index.js';
-import { closeWindow, windowAlive, paneLocation } from './tmux.js';
+import { transition } from './lifecycle.js';
+import { paneLocation, nodeSession } from './tmux.js';
+import { tearDownNode } from './placement.js';
 import { buildLaunchSpec } from './launch.js';
 import { roadmapPath } from './roadmap.js';
 import { spawnNode, newNodeId } from './nodes.js';
@@ -58,16 +60,13 @@ export function reapDescendants(rootId: string): string[] {
   const reaped: string[] = [];
   for (const id of view(rootId)) {
     try {
-      const dmeta = getNode(id);
-      // Mark done + clear intent BEFORE killing the window: the daemon revives
-      // on a window-gone + intent==='refresh' (or 'idle-release'), so flipping
-      // to a non-supervised status before the window dies closes the race where
-      // a descendant mid-yield gets revived as we tear it down.
-      setStatus(id, 'done');
-      setIntent(id, null);
-      if (dmeta !== null && windowAlive(dmeta.tmux_session, dmeta.window)) {
-        closeWindow(dmeta.window as string);
-      }
+      // Reap BEFORE tearing down the placement (the crash-safety invariant the
+      // `reap` event encodes): a non-supervised status + cleared intent first, so
+      // the daemon can't revive a descendant mid-teardown. tearDownNode then
+      // closes any focus row it held, kills its pane (pane-keyed), and nulls its
+      // LOCATION.
+      transition(id, 'reap');
+      tearDownNode(id);
       reaped.push(id);
     } catch {
       /* one bad node never aborts the reap */
@@ -105,12 +104,10 @@ export function resetRoot(
   // Only roots own a graph in the "ran crtr again" sense.
   if (meta.parent != null) {
     if (newSessionId !== undefined) {
-      try {
-        updateNode(nodeId, {
-          pi_session_id: newSessionId,
-          ...(newSessionFile !== undefined ? { pi_session_file: newSessionFile } : {}),
-        });
-      } catch { /* */ }
+      updateNode(nodeId, {
+        pi_session_id: newSessionId,
+        ...(newSessionFile !== undefined ? { pi_session_file: newSessionFile } : {}),
+      });
     }
     return { reaped: [], detached: [], reset: false };
   }
@@ -121,12 +118,8 @@ export function resetRoot(
   // 2) Detach the root's own subscriptions so its view is empty.
   const detached: string[] = [];
   for (const sub of subscriptionsOf(nodeId)) {
-    try {
-      unsubscribe(nodeId, sub.node_id);
-      detached.push(sub.node_id);
-    } catch {
-      /* */
-    }
+    unsubscribe(nodeId, sub.node_id);
+    detached.push(sub.node_id);
   }
 
   // 3) Wipe the root's working state (reports / inbox / roadmap).
@@ -149,21 +142,16 @@ export function resetRoot(
   //    Re-seed persona_ack to the fresh persona so the pristine `/new`
   //    conversation never gets a spurious mode/lifecycle transition steer (the
   //    persona injector compares against this ack).
-  try {
-    const { launch } = buildLaunchSpec(meta.kind, 'base');
-    updateNode(nodeId, {
-      mode: 'base',
-      lifecycle: 'resident',
-      persona_ack: { mode: 'base', lifecycle: 'resident' },
-      launch,
-      ...(newSessionId !== undefined ? { pi_session_id: newSessionId } : {}),
-      ...(newSessionFile !== undefined ? { pi_session_file: newSessionFile } : {}),
-    });
-    setIntent(nodeId, null);
-    setStatus(nodeId, 'active');
-  } catch {
-    /* */
-  }
+  const { launch } = buildLaunchSpec(meta.kind, 'base', { lifecycle: 'resident', hasManager: false });
+  updateNode(nodeId, {
+    mode: 'base',
+    lifecycle: 'resident',
+    persona_ack: { mode: 'base', lifecycle: 'resident' },
+    launch,
+    ...(newSessionId !== undefined ? { pi_session_id: newSessionId } : {}),
+    ...(newSessionFile !== undefined ? { pi_session_file: newSessionFile } : {}),
+  });
+  transition(nodeId, 'revive');
 
   return { reaped, detached, reset: true };
 }
@@ -245,57 +233,72 @@ export function relaunchRoot(
 
   const respawn = deps.relaunchRootInPane ?? relaunchRootInPane;
 
-  // 1) Reap descendants (mark done + kill windows, keep edges, no wipe).
-  reapDescendants(oldId);
-
-  // 2) Resolve where the new pi will live (pane authoritative; fall back to old
-  //    meta when paneLocation can't resolve, e.g. outside a live tmux server).
+  // Resolve where the new pi will live (pane authoritative; fall back to old
+  // meta when paneLocation can't resolve, e.g. outside a live tmux server).
   const loc = paneLocation(pane) ?? {
     session: oldMeta.tmux_session ?? null,
     window: oldMeta.window ?? null,
   };
-
-  // 3) Create the fresh root node (new id, empty context dir via ensureNodeDirs).
   const newId = newNodeId();
-  const { launch } = buildLaunchSpec(oldMeta.kind, 'base');
-  spawnNode({
-    kind: oldMeta.kind,
-    mode: 'base',
-    lifecycle: 'resident',
-    cwd: oldMeta.cwd,
-    name: oldMeta.kind,
-    parent: null,
-    spawnedBy: oldId,            // audit-only successor link; does NOT touch the spine
-    nodeId: newId,
-    launch,
-  });
-  setStatus(newId, 'active');
-  setIntent(newId, 'refresh');   // safety net: if the pane dies before boot, daemon revives in a new window
-  setPresence(newId, { tmux_session: loc.session, window: loc.window });
-  clearPid(newId);               // no pi yet → daemon 'leave' until boot records the pid
+  const { launch } = buildLaunchSpec(oldMeta.kind, 'base', { lifecycle: 'resident', hasManager: false });
 
-  // 4) Park the old root. done + detach its window so it never claims the pane,
-  //    but KEEP pi_session_id (resumable), parent=null, and all edges.
-  setStatus(oldId, 'done');
-  setIntent(oldId, null);
-  setPresence(oldId, { window: null, tmux_session: null });
-
-  // 5) Focus follows content.
-  setFocus(newId);
-
-  // 6) Re-exec pi in this pane bound to newId. Detached respawn kills THIS pi.
+  // Park-old + mint-new is the single most fragile spot in the runtime, so it is
+  // ONE atomic unit: every ROW write below runs inside a sqlite transaction. A
+  // failure anywhere — including the respawn DISPATCH — rolls the whole thing
+  // back, leaving the old root EXACTLY as it was (no hand-rolled compensation).
+  // Only the *detached* respawn (the async pane kill) lands outside the txn — it
+  // must, since it kills this caller, and by then COMMIT has made the new state
+  // durable. setFocus is a file write, not in the txn; the catch restores it.
+  const db = openDb();
+  db.exec('BEGIN');
   try {
+    // 1) Reap descendants (mark done + kill windows, keep edges, no wipe).
+    reapDescendants(oldId);
+
+    // 2) Create the fresh root node (new id, empty context dir via
+    //    ensureNodeDirs) seeded active; `yield` adds the refresh safety net so
+    //    that if the pane dies before boot the daemon revives it in a new window.
+    spawnNode({
+      kind: oldMeta.kind,
+      mode: 'base',
+      lifecycle: 'resident',
+      cwd: oldMeta.cwd,
+      name: oldMeta.kind,
+      parent: null,
+      spawnedBy: oldId,            // audit-only successor link; does NOT touch the spine
+      nodeId: newId,
+      launch,
+    });
+    transition(newId, 'yield');    // active (from spawn) + intent=refresh safety net
+    setPresence(newId, { tmux_session: loc.session, window: loc.window });
+    // REVIVE-HOME: the relaunched root's durable revive target is the session
+    // of the pane it is respawned into (same pane-recycle rule as demote).
+    updateNode(newId, { home_session: loc.session ?? nodeSession() });
+    clearPid(newId);               // no pi yet → daemon 'leave' until boot records the pid
+
+    // 3) Park the old root: reap (done + intent cleared) and detach its window so
+    //    it never claims the pane, but KEEP pi_session_id (resumable),
+    //    parent=null, and all edges.
+    transition(oldId, 'reap');
+    setPresence(oldId, { window: null, tmux_session: null });
+
+    // 4) Focus follows content (file write — restored by the catch on rollback).
+    setFocus(newId);
+
+    // 5) Re-exec pi in this pane bound to newId; the dispatch is the LAST thing
+    //    inside the txn. If it throws the txn rolls back (old root untouched); on
+    //    success we COMMIT and the async detached kill of this pane lands after.
     respawn(newId, pane);
+    db.exec('COMMIT');
   } catch (err) {
-    // Dispatch failed — the live pi never died. Roll back so it keeps working
-    // as the old root (caller degrades to resetRoot).
-    try {
-      setStatus(oldId, 'active');
-      setIntent(oldId, oldMeta.intent ?? null);
-      setPresence(oldId, { window: loc.window, tmux_session: loc.session });
-    } catch { /* */ }
-    try { setStatus(newId, 'dead'); } catch { /* */ } // daemon ignores it
-    try { setFocus(oldId); } catch { /* */ }
+    // Dispatch failed (or a write threw) — the live pi never died. Roll the whole
+    // transaction back so the old root is FULLY restored, then degrade.
+    try { db.exec('ROLLBACK'); } catch { /* */ }
+    // The rolled-back new node's row is gone, but spawnNode already scaffolded its
+    // on-disk dir (ensureNodeDirs). With no row, prune never sees it — so remove
+    // the orphan dir here, otherwise it is permanent disk litter on this rare path.
+    try { rmSync(nodeDir(newId), { recursive: true, force: true }); } catch { /* */ }
+    try { setFocus(oldId); } catch { /* */ } // focus is a file op, outside the txn
     throw err instanceof Error ? err : new Error(String(err));
   }
 
@@ -317,6 +320,6 @@ export function markCleanExitDone(nodeId: string, reason: unknown): boolean {
   if (meta === null) return false;
   if (meta.status !== 'active' && meta.status !== 'idle') return false; // already done/dead/canceled
   if (meta.intent != null) return false;                      // refresh / idle-release in flight
-  setStatus(nodeId, 'done');
+  transition(nodeId, 'finalize');
   return true;
 }

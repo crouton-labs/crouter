@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { createNode, getNode, subscribe } from '../canvas/canvas.js';
+import { openFocusRow, getFocusByNode } from '../canvas/focuses.js';
 import { closeDb } from '../canvas/db.js';
 import { closeNode } from '../runtime/close.js';
 import { readInboxSince } from '../feed/inbox.js';
@@ -51,7 +52,7 @@ after(() => {
 test('closes the root and its exclusive descendants; spares a shared node', () => {
   // N ─▶ A ─▶ C        (A, C exclusive to the N subtree)
   // N ─▶ B ◀─ M        (B also subscribed to by external manager M)
-  for (const id of ['N', 'A', 'B', 'C', 'M']) createNode(node(id));
+  for (const id of ['N', 'A', 'B', 'C', 'M']) createNode(node(id, { pane: `%${id.toLowerCase()}` }));
   spawnEdge('N', 'A');
   spawnEdge('N', 'B');
   spawnEdge('A', 'C');
@@ -62,13 +63,17 @@ test('closes the root and its exclusive descendants; spares a shared node', () =
   assert.deepEqual([...res.closed].sort(), ['A', 'C', 'N']);
   assert.deepEqual(res.spared, ['B']);
 
-  // Closed nodes → canceled, intent cleared, presence dropped.
+  // Closed nodes → canceled, intent cleared, presence (incl. the pane) dropped.
   for (const id of ['N', 'A', 'C']) {
     const m = getNode(id)!;
     assert.equal(m.status, 'canceled', `${id} canceled`);
     assert.equal(m.intent, null, `${id} intent cleared`);
     assert.equal(m.window ?? null, null, `${id} window cleared`);
     assert.equal(m.tmux_session ?? null, null, `${id} session cleared`);
+    // Step 7: tearDownNode is pane-keyed and nulls the durable pane handle too.
+    // Non-vacuous: each node was given a pane (`%n`/`%a`/`%c`) above, so an impl
+    // that didn't route close through tearDownNode would leave it set.
+    assert.equal(m.pane ?? null, null, `${id} pane cleared`);
   }
   // Spared node and the unrelated manager are untouched.
   assert.equal(getNode('B')!.status, 'active');
@@ -149,4 +154,18 @@ test('closing a leaf node closes only itself', () => {
 
 test('throws on an unknown node', () => {
   assert.throws(() => closeNode('ghost'), /unknown node/);
+});
+
+test('Step 7: closing a FOCUSED node closes its focus row + nulls its pane (tearDownNode)', () => {
+  createNode(node('N', { pane: '%x' }));
+  openFocusRow('fN', '%x', 'Sa', 'N');
+
+  closeNode('N');
+
+  // tearDownNode closes the focus row the node occupied and nulls its LOCATION.
+  // Non-vacuous: pre-Step-7 close used closeWindow/setFocus('') and never touched
+  // the focuses table, so getFocusByNode('N') would still return fN.
+  assert.equal(getFocusByNode('N'), null, 'focus row closed by tearDownNode');
+  assert.equal(getNode('N')!.pane ?? null, null, 'pane nulled (pane-keyed teardown)');
+  assert.equal(getNode('N')!.status, 'canceled', 'node canceled as before');
 });

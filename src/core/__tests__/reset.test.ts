@@ -13,6 +13,7 @@ import {
   subscriptionsOf,
   view,
 } from '../canvas/canvas.js';
+import { openFocusRow, getFocusByNode } from '../canvas/focuses.js';
 import { closeDb } from '../canvas/db.js';
 import { reportsDir, inboxPath } from '../canvas/paths.js';
 import { roadmapPath } from '../runtime/roadmap.js';
@@ -111,6 +112,25 @@ test('resetRoot on a non-root only refreshes the session id (no reap)', () => {
   assert.equal(getNode('child')?.status, 'active', 'child not reaped');
   // The root that subscribes to the child is untouched.
   assert.equal(getNode('root')?.status, 'active');
+});
+
+test('Step 7: resetRoot reaps a FOCUSED descendant through tearDownNode (closes its focus row + nulls presence)', () => {
+  createNode(node('root', { parent: null, lifecycle: 'resident', mode: 'orchestrator' }));
+  createNode(node('desc', { parent: 'root', pane: '%d' }));
+  subscribe('root', 'desc', true);
+  openFocusRow('fD', '%d', 'Suser', 'desc');
+
+  resetRoot('root', 'new-sess');
+
+  // reapDescendants now routes each descendant through tearDownNode, so a focused
+  // descendant's focus row is closed and its LOCATION nulled. Non-vacuous:
+  // pre-Step-7 reap used closeWindow and never touched the focuses table, so
+  // getFocusByNode('desc') would still return fD.
+  assert.equal(getFocusByNode('desc'), null, 'descendant focus row closed by tearDownNode');
+  const d = getNode('desc')!;
+  assert.equal(d.status, 'done', 'descendant reaped (done)');
+  assert.equal(d.pane ?? null, null, 'descendant pane nulled');
+  assert.equal(d.tmux_session ?? null, null, 'descendant session nulled');
 });
 
 test('resetRoot is a no-op for an unknown node', () => {

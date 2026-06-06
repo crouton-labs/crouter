@@ -288,7 +288,7 @@ test('relaunchRoot on a childless root: reap is a no-op, new node minted', () =>
 // #6 — respawn dispatch failure → rollback + resetRoot
 // ---------------------------------------------------------------------------
 
-test('a respawn dispatch failure rolls back and degrades to resetRoot', () => {
+test('a respawn dispatch failure rolls the whole transaction back and degrades to resetRoot', () => {
   createNode(node('root', {
     parent: null,
     lifecycle: 'resident',
@@ -303,7 +303,8 @@ test('a respawn dispatch failure rolls back and degrades to resetRoot', () => {
 
   assert.equal(res.path, 'reset-root', 'degraded to in-place reset');
 
-  // Old root: restored to active with its window/session, re-pointed by resetRoot.
+  // Old root: FULLY restored by the transaction rollback (active, with its
+  // window/session intact), then re-pointed by the resetRoot degrade path.
   const old = getNode('root');
   assert.equal(old?.status, 'active', 'old root back to active');
   assert.equal(old?.window, '@3', 'window restored');
@@ -311,13 +312,13 @@ test('a respawn dispatch failure rolls back and degrades to resetRoot', () => {
   assert.equal(old?.mode, 'base', 'resetRoot re-pointed to base');
   assert.equal(old?.pi_session_id, 'newsess', 'resetRoot rebound the new session id');
 
-  // The new node (if created) is left dead so the daemon ignores it; no zombie
-  // active node remains besides the old root.
+  // No partial state: the half-built new node's ROW was rolled back WITH the
+  // transaction — no zombie active node, and (unlike the old hand-rolled
+  // compensation, which left a leaked `dead` row) no leftover row at all.
   const actives = listNodes({ status: ['active'] }).map((r) => r.node_id);
   assert.deepEqual(actives, ['root'], 'only the old root is active — no zombie');
-  const dead = listNodes({ status: ['dead'] });
-  assert.equal(dead.length, 1, 'the half-built new node is left dead');
-  assert.equal(getNode(dead[0]!.node_id)?.spawned_by, 'root', 'the dead node is the new root');
+  assert.equal(listNodes({ status: ['dead'] }).length, 0, 'no dead zombie — new node row rolled back');
+  assert.equal(listNodes().length, 1, 'only the old root row exists — the mint was fully undone');
 
   assert.equal(getFocus(), 'root', 'focus restored to the old root');
 });

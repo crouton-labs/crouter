@@ -31,14 +31,11 @@
 
 import {
   getNode,
-  setStatus,
-  setIntent,
-  setPresence,
   subscriptionsOf,
   subscribersOf,
 } from '../canvas/index.js';
-import { closeWindow, closePane, windowAlive, paneOfWindow } from './tmux.js';
-import { getFocus, setFocus } from './presence.js';
+import { transition } from './lifecycle.js';
+import { tearDownNode } from './placement.js';
 import { appendInbox } from '../feed/inbox.js';
 
 export interface CloseNodeResult {
@@ -141,7 +138,6 @@ export function closeNode(rootId: string): CloseNodeResult {
     }
   }
 
-  const focus = getFocus();
   const closed: string[] = [];
 
   for (const id of order) {
@@ -155,22 +151,13 @@ export function closeNode(rootId: string): CloseNodeResult {
         .filter((c) => closing.has(c));
 
       // 1) Canceled + intent cleared BEFORE the window dies (daemon race).
-      setStatus(id, 'canceled');
-      setIntent(id, null);
+      transition(id, 'cancel');
 
-      // 2) Kill the node's PANE (not the whole window), so sibling nodes the
-      //    user co-located in the same window survive; the window closes on its
-      //    own once its last pane goes. paneOfWindow resolves the node's pane
-      //    (its window's active pane — the one being closed for the focused
-      //    root, the sole pane for a background descendant in its own window).
-      //    Fall back to a window kill only when no pane can be resolved.
-      const win = m.window;
-      if (windowAlive(m.tmux_session, win)) {
-        const pane = paneOfWindow(m.tmux_session as string, win as string);
-        if (pane !== null) closePane(pane);
-        else closeWindow(win as string);
-      }
-      setPresence(id, { window: null, tmux_session: null });
+      // 2) Tear the node off its placement (pane-keyed): close any focus row it
+      //    occupies, kill its PANE (the window closes once its last pane goes, so
+      //    sibling nodes the user co-located in one window survive), null its
+      //    LOCATION, and clear focus.ptr if it was the current focus.
+      tearDownNode(id);
 
       // 3) Leave the resume notice AFTER the watcher is gone, so it survives.
       appendInbox(id, {
@@ -181,7 +168,6 @@ export function closeNode(rootId: string): CloseNodeResult {
         data: { reason: 'user-close', cascade_root: rootId, canceled_children: deadChildren },
       });
 
-      if (focus === id) setFocus('');
       closed.push(id);
     } catch {
       /* one bad node never aborts the cascade */
