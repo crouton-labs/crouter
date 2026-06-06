@@ -166,14 +166,33 @@ export function registerCanvasResume(pi: PiLike): void {
   if (typeof pi.registerCommand !== 'function') return;
 
   pi.registerCommand('resume-node', {
-    description: 'Resume a node — pick from the whole canvas (incl. dormant) and revive it',
+    description: 'Open the canvas navigator (search/tabs/tree) and resume the chosen node',
     handler: async (_args: string, ctx: CommandCtx): Promise<void> => {
-      // select() is a terminal-only dialog — guard the run mode before it.
+      // The popup / select() are terminal-only — guard the run mode before either.
       if (ctx.mode !== 'tui') {
         try { ctx.ui.notify('/resume-node needs the interactive TUI', 'warning'); } catch { /* best-effort */ }
         return;
       }
 
+      const origPane = process.env['TMUX_PANE'];
+
+      // In tmux → open the full-screen canvas navigator as a popup. It owns the
+      // screen (tabs / auto-collapsed tree / `/` search) and, on Enter, focuses
+      // the chosen node back INTO this pane via `crtr node focus --pane`. Fire-
+      // and-forget: tmux runs the trailing string through sh -c, and the popup
+      // closes itself when browse exits.
+      if (process.env['TMUX'] !== undefined && origPane !== undefined && origPane !== '') {
+        try {
+          execFile(
+            'tmux',
+            ['display-popup', '-E', '-w', '90%', '-h', '85%', `crtr canvas browse --return-pane ${origPane}`],
+            (): void => { /* best-effort: popup is self-contained */ },
+          );
+        } catch { /* best-effort */ }
+        return;
+      }
+
+      // Not in tmux → keep the flat tree picker fallback so non-tmux pi still works.
       let forest: Forest;
       try {
         forest = buildForest();

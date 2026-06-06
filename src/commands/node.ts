@@ -219,6 +219,7 @@ const nodeFocus = defineLeaf({
     params: [
       { kind: 'positional', name: 'node', required: true, constraint: 'Node id to focus.' },
       { kind: 'flag', name: 'new-pane', type: 'bool', required: false, constraint: 'Open the node in a NEW viewport SIDE-BY-SIDE with your current pane (a second focus) instead of swapping it into your pane. Two agents on screen at once (F4).' },
+      { kind: 'flag', name: 'pane', type: 'string', required: false, constraint: 'tmux pane id to focus INTO (default: caller TMUX_PANE). Used by the canvas browser popup to focus back into the originating pane.' },
     ],
     output: [
       { name: 'focused', type: 'boolean', required: true, constraint: 'True when the node was brought into view.' },
@@ -249,6 +250,7 @@ const nodeFocus = defineLeaf({
     // is dormant, then hot-swap it onto the focus. The reviver is injected so
     // placement need not import revive.ts.
     const res = placementFocus(id, {
+      pane: input['pane'] as string | undefined,
       newPane: input['newPane'] === true,
       callerNode: process.env['CRTR_NODE_ID'],
       revive: (nid) => { reviveNode(nid, { resume: true }); },
