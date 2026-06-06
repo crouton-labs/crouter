@@ -17,13 +17,57 @@ export function shellQuote(s: string): string {
   return `'${s.replace(/'/g, "'\\''")}'`;
 }
 
-/** Count panes in the current tmux window (0 outside tmux / on error). */
-export function countPanesInCurrentWindow(): number {
-  const result = spawnSync('tmux', ['list-panes', '-F', '#{pane_id}'], {
-    encoding: 'utf8',
-  });
+/** Count panes in a tmux window (0 outside tmux / on error). With `targetPane`,
+ *  counts the window THAT pane lives in (the placement decision must reflect the
+ *  window the new pane will actually open into, not the caller's backstage one);
+ *  without it, the caller's current window. */
+export function countPanesInWindow(targetPane?: string): number {
+  const args =
+    targetPane !== undefined && targetPane !== ''
+      ? ['list-panes', '-t', targetPane, '-F', '#{pane_id}']
+      : ['list-panes', '-F', '#{pane_id}'];
+  const result = spawnSync('tmux', args, { encoding: 'utf8' });
   if (result.status !== 0) return 0;
   return result.stdout.split('\n').filter((line) => line.trim() !== '').length;
+}
+
+/** Back-compat alias: panes in the caller's current window. */
+export function countPanesInCurrentWindow(): number {
+  return countPanesInWindow();
+}
+
+/** Does this tmux pane id still exist? `display-message` EXITS 0 with EMPTY
+ *  output on an unresolvable pane, so test for non-empty stdout, not just `.ok`.
+ *  False outside tmux / on error. */
+export function paneAlive(pane: string): boolean {
+  if (!isInTmux() || !/^%\d+$/.test(pane)) return false;
+  const r = spawnSync('tmux', ['display-message', '-p', '-t', pane, '#{pane_id}'], {
+    encoding: 'utf8',
+  });
+  return r.status === 0 && r.stdout.trim() !== '';
+}
+
+/** The active pane of the user's attached tmux client — where they are looking
+ *  right now. `list-clients` first attached client, then its current pane. Used
+ *  to surface a human prompt in the user's view when nothing in the asking
+ *  node's graph is focused. null outside tmux / no client / on error. */
+export function attachedClientPane(): string | null {
+  if (!isInTmux()) return null;
+  const clients = spawnSync('tmux', ['list-clients', '-F', '#{client_name}'], {
+    encoding: 'utf8',
+  });
+  if (clients.status !== 0) return null;
+  const name = clients.stdout
+    .split('\n')
+    .map((l) => l.trim())
+    .find((l) => l !== '');
+  if (name === undefined) return null;
+  const pane = spawnSync('tmux', ['display-message', '-p', '-c', name, '#{pane_id}'], {
+    encoding: 'utf8',
+  });
+  if (pane.status !== 0) return null;
+  const id = pane.stdout.trim();
+  return id !== '' ? id : null;
 }
 
 /**
@@ -58,6 +102,11 @@ export interface DetachOptions {
    *  uses the attached client's currently-focused pane — which drifts if the
    *  user switches windows between kickoff and spawn. */
   targetPane?: string;
+  /** Pass tmux `-d` to new-window so CREATING the window never switches the
+   *  attached client to it (split-window already leaves the client's view put).
+   *  The prompt lands in the target session/window without jumping the user out
+   *  of what they are looking at. No effect on split-h/split-v. */
+  detached?: boolean;
 }
 
 export interface DetachResult {
@@ -82,6 +131,7 @@ export function spawnAndDetach(opts: DetachOptions): DetachResult {
   const splitArgs: string[] = [];
   if (opts.placement === 'new-window') {
     splitArgs.push('new-window');
+    if (opts.detached === true) splitArgs.push('-d'); // don't switch the client to it
     if (opts.targetPane !== undefined && opts.targetPane !== '') {
       // -a = insert after target window; -t <pane> resolves to that pane's window.
       splitArgs.push('-a', '-t', opts.targetPane);

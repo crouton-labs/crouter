@@ -2,7 +2,15 @@ import { readConfig } from '../../core/config.js';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { atomicWriteJson, readJson } from '@crouton-kit/humanloop';
-import { countPanesInCurrentWindow, spawnAndDetach, shellQuote } from '../../core/spawn.js';
+import {
+  countPanesInWindow,
+  spawnAndDetach,
+  shellQuote,
+  attachedClientPane,
+  paneAlive,
+  type DetachResult,
+} from '../../core/spawn.js';
+import { graphSurfaceTarget } from '../../core/runtime/placement.js';
 
 export const DECK_SCHEMA_HINT =
   'Deck must match the humanloop deck schema: {title?, ' +
@@ -25,8 +33,52 @@ export function resolveMaxPanes(): number {
   return readConfig('user').max_panes_per_window;
 }
 
-export function pickPlacement(): 'split-h' | 'new-window' {
-  return countPanesInCurrentWindow() >= resolveMaxPanes() ? 'new-window' : 'split-h';
+export function pickPlacement(targetPane?: string): 'split-h' | 'new-window' {
+  return countPanesInWindow(targetPane) >= resolveMaxPanes() ? 'new-window' : 'split-h';
+}
+
+/**
+ * The tmux pane the humanloop TUI should open BESIDE so a PERSON actually sees
+ * it. A prompt raised by a canvas node must NOT land in the backstage `crtr`
+ * session (the holding ground for un-watched node panes) — it lands in the
+ * session the user is watching that node's graph in:
+ *   1. node prompt (CRTR_NODE_ID set) → the HIGHEST FOCUSED node of its graph
+ *      (`graphSurfaceTarget`, the focused node closest to the graph root): split
+ *      beside it, in the session/window the user already has it open in.
+ *   2. nothing in the graph on screen (or a dead focus pane), or a bare-shell
+ *      prompt → the user's currently-attached pane (`attachedClientPane`).
+ *   3. neither resolvable → undefined (tmux falls back to the caller pane).
+ * The TUI lands in the right place but NEVER switches the user's session/window
+ * (no switch-client / select-window; new-window opens `-d`). They see it when
+ * they look at the node they are already watching.
+ */
+export function resolveHumanTarget(): string | undefined {
+  const nodeId = process.env['CRTR_NODE_ID'];
+  if (nodeId !== undefined && nodeId !== '') {
+    const f = graphSurfaceTarget(nodeId);
+    if (f !== null && f.pane !== null && paneAlive(f.pane)) return f.pane;
+  }
+  return attachedClientPane() ?? undefined;
+}
+
+/**
+ * Open the detached humanloop `_run` pane for an interaction dir, ROUTED to the
+ * session the user is watching (`resolveHumanTarget`). The single spawn path
+ * behind ask/approve/review (`spawnHumanJob`) and notify. `detached: true` keeps
+ * the user's view put — the prompt lands beside the watched node without
+ * jumping their session/window. `jobId`, when given, is injected as CRTR_JOB_ID.
+ */
+export function detachHumanTui(idir: string, cwd: string, jobId?: string): DetachResult {
+  const targetPane = resolveHumanTarget();
+  return spawnAndDetach({
+    command: runCmd(idir),
+    cwd,
+    ...(jobId !== undefined ? { jobId } : {}),
+    placement: pickPlacement(targetPane),
+    killAfterSeconds: 0,
+    detached: true,
+    ...(targetPane !== undefined ? { targetPane } : {}),
+  });
 }
 
 export function runCmd(dir: string): string {
@@ -78,13 +130,7 @@ export function spawnHumanJob(
   idir: string,
   cwd: string,
 ): { spawned: boolean; follow_up: string } {
-  const spawn = spawnAndDetach({
-    command: runCmd(idir),
-    cwd,
-    jobId,
-    placement: pickPlacement(),
-    killAfterSeconds: 0,
-  });
+  const spawn = detachHumanTui(idir, cwd, jobId);
   if (spawn.status !== 'spawned') {
     return { spawned: false, follow_up: followUpDrain(jobId) };
   }

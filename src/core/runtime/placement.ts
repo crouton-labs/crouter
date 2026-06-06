@@ -40,6 +40,7 @@ import {
   getFocusById,
   setFocusPane,
   listFocuses as listFocusRows,
+  view,
   type NodeRow,
   type FocusRow,
 } from '../canvas/index.js';
@@ -129,6 +130,42 @@ export function focusedNodes(): Set<string> {
 /** Every focus row (every live viewport). */
 export function listFocuses(): FocusRow[] {
   return listFocusRows();
+}
+
+// ---------------------------------------------------------------------------
+// Graph → focus routing (for surfacing human-in-the-loop prompts)
+// ---------------------------------------------------------------------------
+
+/** The root of a node's spine: walk the `parent` column up to `parent == null`.
+ *  Cycle-guarded (parents must not cycle, but never loop forever). */
+function rootOfSpine(nodeId: string): string {
+  let cur = nodeId;
+  const seen = new Set<string>();
+  for (;;) {
+    if (seen.has(cur)) return cur;
+    seen.add(cur);
+    const row = getRow(cur);
+    if (row === null || row.parent == null) return cur;
+    cur = row.parent;
+  }
+}
+
+/** The on-screen viewport a human-in-the-loop prompt raised by `nodeId` should
+ *  surface into: the HIGHEST FOCUSED node of nodeId's graph — the focused node
+ *  closest to the graph root, i.e. the session/window the user is actually
+ *  watching this work in. Walks nodeId's spine to its root, enumerates the whole
+ *  tree root-first (`view` is BFS ⇒ shallowest first), and returns the focus row
+ *  of the first node that occupies a viewport. null when nothing in the graph is
+ *  on screen — the caller then surfaces in the user's attached pane rather than
+ *  the backstage node session. PURE (db reads only): no tmux probe, so the pane
+ *  may be stale; the caller liveness-checks before targeting it. */
+export function graphSurfaceTarget(nodeId: string): FocusRow | null {
+  const root = rootOfSpine(nodeId);
+  for (const id of [root, ...view(root)]) {
+    const f = getFocusByNode(id);
+    if (f !== null && f.pane !== null) return f;
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------

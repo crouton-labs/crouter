@@ -2,7 +2,7 @@ import { defineLeaf } from '../../core/command.js';
 import { InputError } from '../../core/io.js';
 import { spawnNode } from '../../core/runtime/nodes.js';
 import { interactionDir } from '../../core/artifact.js';
-import { isInTmux, spawnAndDetach } from '../../core/spawn.js';
+import { isInTmux } from '../../core/spawn.js';
 import { mkdirSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -20,8 +20,7 @@ import {
   type RunRecord,
   followUpReview,
   spawnHumanJob,
-  pickPlacement,
-  runCmd,
+  detachHumanTui,
   resolveMaxPanes,
 } from './shared.js';
 
@@ -251,13 +250,7 @@ export const humanNotify = defineLeaf({
 
     let shown = false;
     if (isInTmux()) {
-      const spawn = spawnAndDetach({
-        command: runCmd(idir),
-        cwd,
-        placement: pickPlacement(),
-        killAfterSeconds: 0,
-      });
-      shown = spawn.status === 'spawned';
+      shown = detachHumanTui(idir, cwd).status === 'spawned';
     }
 
     return { shown, dir: idir };
