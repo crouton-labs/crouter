@@ -90,24 +90,38 @@ function makeTierLeaf(tier: Tier): LeafDef {
       if (body === '') {
         throw new InputError({ error: 'missing_body', message: 'no report body', field: 'body', next: 'Pass the body as an argument or on stdin.' });
       }
-      // A RESIDENT node with no subscribers is human-driven and has no one to
-      // submit a canonical result to: `push final` fans to subscribers, and a
-      // resident root conversation has none. Finishing it would close its window
-      // mid-conversation. Block that unless the user confirms (--force). Keyed on
-      // lifecycle, NOT subscriber-count alone: a TERMINAL node with no subscribers
-      // was deliberately terminalized to owe a final — it self-completes here
-      // (records the result, reaps) rather than being blocked for lack of a recipient.
-      if (tier === 'final' && input['force'] !== true) {
+      if (tier === 'final') {
         const node = getNode(nodeId);
-        const noRecipient = node !== null && node.lifecycle === 'resident' && subscribersOf(nodeId).length === 0;
-        if (noRecipient) {
+        // A 2nd `push final` in one turn (or finalizing an already dead/canceled
+        // node) is an illegal finalize-from-terminal: the underlying transition()
+        // throws a raw Error that surfaces as an `internal` "crtr bug" on stderr.
+        // Catch it here as a CLEAN user-facing error — the node is simply already
+        // finished, so there is nothing to do.
+        if (node !== null && node.status !== 'active' && node.status !== 'idle') {
           throw new InputError({
-            error: 'no_final_recipient',
-            message:
-              'This node is working directly with the user — it has no manager to submit a final result to. `push final` would close its window mid-conversation.',
-            next:
-              'You almost certainly do NOT need to finish here — just keep working with the user. If the user has explicitly asked you to finish and close this node, confirm with them first, then rerun with `crtr push final --force "<result>"`.',
+            error: 'already_finalized',
+            message: `This node is already ${node.status} — \`push final\` finishes a node once and cannot finalize it again.`,
+            next: 'Nothing to do here: the node is already finished. Do not push again from this node.',
           });
+        }
+        // A RESIDENT node with no subscribers is human-driven and has no one to
+        // submit a canonical result to: `push final` fans to subscribers, and a
+        // resident root conversation has none. Finishing it would close its window
+        // mid-conversation. Block that unless the user confirms (--force). Keyed on
+        // lifecycle, NOT subscriber-count alone: a TERMINAL node with no subscribers
+        // was deliberately terminalized to owe a final — it self-completes here
+        // (records the result, reaps) rather than being blocked for lack of a recipient.
+        if (input['force'] !== true) {
+          const noRecipient = node !== null && node.lifecycle === 'resident' && subscribersOf(nodeId).length === 0;
+          if (noRecipient) {
+            throw new InputError({
+              error: 'no_final_recipient',
+              message:
+                'This node is working directly with the user — it has no manager to submit a final result to. `push final` would close its window mid-conversation.',
+              next:
+                'You almost certainly do NOT need to finish here — just keep working with the user. If the user has explicitly asked you to finish and close this node, confirm with them first, then rerun with `crtr push final --force "<result>"`.',
+            });
+          }
         }
       }
       const result = await push(nodeId, { kind: tier, body });
@@ -133,19 +147,20 @@ function makeTierLeaf(tier: Tier): LeafDef {
 const feedReadLeaf = defineLeaf({
   name: 'read',
   description: 'drain unread pointers into a digest',
-  whenToUse: 'you want to catch up on what the nodes you subscribe to — your children and anyone you follow — have reported, draining the unread pointers in your inbox into one coalesced digest so progress notes, urgent flags, and finished results read at a glance before you dereference the reports that matter. Reach for it when a subscriber push wakes you, or to poll the feed before deciding your next move; pass --node to inspect a worker inbox as an orchestrator.',
+  whenToUse: 'you want to PROACTIVELY poll what the nodes you subscribe to — your children and anyone you follow — have reported before the watcher wakes you, draining the unread pointers in your inbox into one coalesced digest. NOTE: when a subscriber push wakes you, that wake message already IS this digest (the watcher drains your inbox to wake you), so don\'t re-run feed read to "open" it — dereference the refs in the digest you already have. Reach for read to poll before the next wake, to inspect a worker inbox via --node, or with --all to re-read the whole history (full message bodies included) after the cursor has advanced.',
   help: {
     name: 'feed read',
     summary: 'drain unread inbox pointers for the caller (or a named node) into a compact digest',
     params: [
       { kind: 'flag', name: 'node', type: 'string', required: false, constraint: 'Node whose inbox to read. Defaults to CRTR_NODE_ID. Use to inspect a worker\'s inbox as an orchestrator.' },
-      { kind: 'flag', name: 'all', type: 'bool', required: false, default: false, constraint: 'Ignore the cursor and return everything from the start.' },
+      { kind: 'flag', name: 'all', type: 'bool', required: false, default: false, constraint: 'Ignore the cursor and return everything from the start — use to re-read history the wake already drained.' },
     ],
     output: [
       { name: 'node_id', type: 'string', required: true, constraint: 'Node whose inbox was read.' },
       { name: 'digest', type: 'string', required: true, constraint: 'Coalesced digest — paste directly into a prompt.' },
       { name: 'entries', type: 'object[]', required: true, constraint: 'Raw InboxEntry objects.' },
       { name: 'cursor', type: 'string', required: true, constraint: 'New cursor ISO written after draining.' },
+      { name: 'inbox_total', type: 'number', required: true, constraint: 'Total entries in the inbox (read + unread). Distinguishes a never-used inbox from one already drained at wake.' },
     ],
     outputKind: 'object',
     effects: ['Advances nodes/<nodeId>/inbox.jsonl.cursor.', 'Read-only on inbox.jsonl itself.'],
@@ -157,6 +172,7 @@ const feedReadLeaf = defineLeaf({
         : requireCallerNode();
     const cursor = input['all'] === true ? undefined : readCursor(nodeId);
     const entries: InboxEntry[] = readInboxSince(nodeId, cursor);
+    const total = readInboxSince(nodeId, undefined).length;
     const newCursor = entries.length > 0 ? entries[entries.length - 1]!.ts : cursor ?? new Date().toISOString();
     writeCursor(nodeId, newCursor);
     return {
@@ -164,14 +180,22 @@ const feedReadLeaf = defineLeaf({
       digest: coalesce(entries),
       entries: entries as unknown as Record<string, unknown>[],
       cursor: newCursor,
+      inbox_total: total,
     };
   },
   render: (r) => {
     const n = Array.isArray(r['entries']) ? (r['entries'] as unknown[]).length : 0;
     const rawDigest = typeof r['digest'] === 'string' ? (r['digest'] as string) : '';
-    const digest = n > 0 && rawDigest.trim() !== ''
-      ? rawDigest
-      : 'Inbox empty — nothing new from your subscriptions. This is expected while workers are still running (a worker that has not pushed yet leaves no pointer). Run `crtr feed peek` to see if they are alive and whether it is safe to yield.';
+    if (n > 0 && rawDigest.trim() !== '') {
+      return `<feed node="${r['node_id']}" unread="${n}">\n${rawDigest}\n</feed>`;
+    }
+    // Empty drain has two distinct causes — say which, honestly. An inbox that
+    // already holds entries was drained when the watcher woke you (the wake
+    // message WAS that digest); a never-used inbox simply has nothing yet.
+    const total = typeof r['inbox_total'] === 'number' ? (r['inbox_total'] as number) : 0;
+    const digest = total > 0
+      ? 'Nothing unread — but your inbox is not empty. The watcher drains your inbox to wake you, so the entries you already saw in your wake message are the same ones you would read here; that is why this is empty. Re-read the whole history (full message bodies included) with `crtr feed read --all`, or dereference the refs from the wake digest you already have.'
+      : 'Inbox empty — nothing has arrived from your subscriptions yet. Expected while workers run: a worker that has not pushed yet leaves no pointer, and it will wake you the moment it does. The wake is automatic — just continue your own work or end your turn. (Reach for `crtr feed peek` only if you suspect a worker died, not to confirm a live one.)';
     return `<feed node="${r['node_id']}" unread="${n}">\n${digest}\n</feed>`;
   },
 });
@@ -336,7 +360,7 @@ export function registerFeed(): BranchDef {
       name: 'feed',
       summary: 'read the per-node inbox feed',
       model:
-        'Each node has an inbox.jsonl that accumulates ~30-token pointers from publishers it subscribes to. `feed read` coalesces UNREAD pointers into one digest and advances the cursor; dereference the reports that matter by reading their ref paths. An empty feed is normal while workers run \u2014 a worker that has not pushed leaves no pointer \u2014 so use `feed peek` to see the live state of the nodes below you (and whether to yield) without draining anything.',
+        'Each node has an inbox.jsonl that accumulates ~30-token pointers from publishers it subscribes to. The watcher drains this inbox to wake you, so the wake message you receive ALREADY IS the coalesced digest \u2014 dereference the reports that matter by reading their ref paths (a push carries a ref; a direct message inlines its full body). `feed read` is for PROACTIVELY polling before a wake (it advances the cursor); after a wake it reads empty because the cursor already moved \u2014 use `--all` to re-read history. An empty feed is normal while workers run \u2014 a worker that has not pushed leaves no pointer \u2014 so use `feed peek` to see the live state of the nodes below you (and whether to yield) without draining anything.',
     },
     children: [feedReadLeaf, feedPeekLeaf],
   });

@@ -134,12 +134,58 @@ export function writeCursor(nodeId: string, iso: string): void {
 // Coalesce
 // ---------------------------------------------------------------------------
 
+/** Bounds for inlining a ref-less entry's body in the digest. */
+const BODY_MAX_LINES = 12;
+const BODY_MAX_CHARS = 1000;
+
+/** Clip a body to a bounded preview, reporting whether anything was dropped. */
+function clipBody(body: string): { text: string; clipped: boolean } {
+  let text = body;
+  let clipped = false;
+  const lines = text.split('\n');
+  if (lines.length > BODY_MAX_LINES) {
+    text = lines.slice(0, BODY_MAX_LINES).join('\n');
+    clipped = true;
+  }
+  if (text.length > BODY_MAX_CHARS) {
+    text = text.slice(0, BODY_MAX_CHARS);
+    clipped = true;
+  }
+  return { text: text.trimEnd(), clipped };
+}
+
+/**
+ * Render one entry's digest line(s).
+ *
+ * A push pointer (has a `ref`) stays a pointer — the body lives in the report
+ * file, dereferenced on demand by reading that path. A ref-less entry (a direct
+ * `node msg` or a system alert) has NO report to dereference; its full body
+ * lives only in `data.body`, and `label` is just the first line truncated. So
+ * for those we inline the body (bounded) — rendering only the truncated label
+ * would strand the rest with nowhere to recover it.
+ */
+function renderEntry(e: InboxEntry): string {
+  if (e.ref !== undefined) {
+    return `  [${e.kind}] ${e.label}  (ref: ${e.ref})`;
+  }
+  const body = typeof e.data?.['body'] === 'string' ? (e.data['body'] as string).trim() : '';
+  if (body === '' || body === e.label) {
+    return `  [${e.kind}] ${e.label}`;
+  }
+  const { text, clipped } = clipBody(body);
+  const indented = text.split('\n').map((l) => `    ${l}`).join('\n');
+  const more = clipped ? '\n    … (body clipped)' : '';
+  return `  [${e.kind}]\n${indented}${more}`;
+}
+
 /**
  * Render many unread inbox pointers into one compact digest string.
  *
  * Format (per sender group):
  *   From <sender> — <N> update(s):
- *     [<kind>] <label>  (ref: <path>)
+ *     [<kind>] <label>  (ref: <path>)        ← push: pointer, dereference the ref
+ *     [<kind>]                                ← ref-less msg: full body inlined
+ *       <body line>
  *     …
  *
  * A header line announces the total count and instructs the receiver to
@@ -160,10 +206,7 @@ export function coalesce(entries: InboxEntry[]): string {
 
   const sections: string[] = [];
   for (const [sender, items] of groups) {
-    const lines = items.map((e) => {
-      const refPart = e.ref !== undefined ? `  (ref: ${e.ref})` : '';
-      return `  [${e.kind}] ${e.label}${refPart}`;
-    });
+    const lines = items.map(renderEntry);
     sections.push(`From ${sender} — ${items.length} update${items.length === 1 ? '' : 's'}:\n${lines.join('\n')}`);
   }
 
