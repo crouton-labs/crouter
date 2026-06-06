@@ -18,7 +18,7 @@ import type { Deck } from '@crouton-kit/humanloop';
 import {
   DECK_SCHEMA_HINT,
   type RunRecord,
-  waitForFinalReport,
+  followUpReview,
   spawnHumanJob,
   pickPlacement,
   runCmd,
@@ -147,26 +147,24 @@ export const humanReview = defineLeaf({
   whenToUse: 'a human should comment line-by-line on a document rather than give one overall answer: reviewing a plan or spec before you build it, marking up a draft, flagging specific sections to change. The comments come back anchored to the lines they touch. Use `approve` instead for a single yes/no on the whole thing, or `ask` to pose a discrete choice',
   help: {
     name: 'human review',
-    summary: 'open a .md in a read-only review editor for anchored comments; BLOCKS until the human submits the review. Humans respond on human time (often >10 min) — if you want to keep working, background this call (your harness will notify you when it finishes).',
+    summary: "put a .md live on the human's screen for anchored, line-by-line comments; returns a job handle instantly (a non-blocking kickoff, like ask/approve). The pane tracks the file and re-renders on every save, so edit in place rather than re-presenting.",
     guide:
-      'Unlike ask/approve, this call does not return a job handle and walk away — it blocks until the human finishes reviewing and submits (or closes the pane). Run it in the background when you have other work to do; the harness surfaces the result on completion. The returned `result` is the humanloop FeedbackResult (anchored comments). The .md you point at is directive-flavored markdown rendered by termrender (panels, columns, trees, callouts, mermaid) — see `termrender doc -h` for the directive set before authoring one.',
+      "A kickoff, not a blocking call: it returns at once and the human reviews on their own time. When they submit, the FeedbackResult (anchored comments, plus any line edits they made) is pushed to your inbox — waking you — and autosaved to `output`; you never poll, verify it opened, or background it. The pane is a LIVE view of the file: keep editing the .md in place and it updates, so do not cancel and re-present to show a change. The .md is directive-flavored markdown rendered by termrender (panels, columns, trees, callouts, mermaid) — see `termrender doc -h` for the directive set before authoring one.",
     params: [
       { kind: 'positional', name: 'file', type: 'path', required: true, constraint: 'Absolute path to an existing .md file.' },
       { kind: 'flag', name: 'output', type: 'path', required: false, constraint: 'Where the FeedbackResult JSON is written. Default: <dir>/feedback.json.' },
     ],
     output: [
-      { name: 'job_id', type: 'string', required: true, constraint: 'Node id of the kind:"human" node backing this review.' },
-      { name: 'output', type: 'string', required: true, constraint: 'Path the FeedbackResult JSON is autosaved to.' },
-      { name: 'status', type: 'string', required: true, constraint: 'Terminal state once the call unblocks: done (submitted), failed, canceled, or closed (pane went away before submit).' },
-      { name: 'result', type: 'object', required: false, constraint: 'The humanloop FeedbackResult (anchored comments). Present when status is done.' },
-      { name: 'reason', type: 'string', required: false, constraint: 'Short explanation when status is failed or closed.' },
-      { name: 'follow_up', type: 'string', required: false, constraint: 'Present only when off-tmux: a human must drain the review via `crtr human inbox`, then read the result.' },
+      { name: 'job_id', type: 'string', required: true, constraint: 'Node id of the kind:"human" node backing this review. Its FeedbackResult is pushed to your inbox when the human submits.' },
+      { name: 'dir', type: 'string', required: true, constraint: 'Interaction directory holding run.json and the autosaved feedback.json.' },
+      { name: 'output', type: 'string', required: true, constraint: 'Path the FeedbackResult JSON is autosaved to when the human submits.' },
+      { name: 'follow_up', type: 'string', required: true, constraint: 'A non-blocking road sign. The human may take minutes to hours; do not block, poll, or verify the pane — just end your turn and you are woken when they submit.' },
     ],
     outputKind: 'object',
     effects: [
       'Creates a kind:"human" node under you and writes run.json to the interaction dir.',
-      'Spawns a read-only nvim/vim review session in a detached tmux pane (when in tmux).',
-      'Blocks the calling process until the human submits, the pane closes, or the job is canceled.',
+      'Spawns a live, read-only review session (in a detached tmux pane when in tmux) that tracks the file and re-renders on save.',
+      'Returns instantly; the anchored comments fan into your inbox when the human submits (off-tmux, drain via `crtr human inbox`).',
     ],
   },
   run: async (input) => {
@@ -198,20 +196,15 @@ export const humanReview = defineLeaf({
     const rc: RunRecord = { mode: 'review', job_id: jobId, file: abs, output };
     atomicWriteJson(join(idir, 'run.json'), rc);
 
-    const { spawned, follow_up, paneId } = spawnHumanJob(jobId, idir, cwd);
-    // Off-tmux: no pane to block on — fall back to the non-blocking handle the
-    // way ask/approve do, so the review can still be drained from the inbox.
-    if (!spawned) {
-      return { job_id: jobId, output, status: 'live', follow_up };
-    }
-    // In tmux: block until the human submits or the pane dies before submitting.
-    // No timeout (the human owns the clock); the pane-alive poll inside
-    // waitForFinalReport resolves 'closed' if the pane goes away first.
-    const r = await waitForFinalReport(jobId, paneId);
-    const out: Record<string, unknown> = { job_id: jobId, output, status: r.status };
-    if (r.result !== undefined) out['result'] = r.result;
-    if (r.reason !== undefined) out['reason'] = r.reason;
-    return out;
+    // review is a non-blocking kickoff, exactly like ask/approve: the detached
+    // `_run` worker pushes the FeedbackResult as this node's final report when
+    // the human submits, which fans into our inbox and wakes us (and is also
+    // autosaved to `output`). There is nothing to block on — the doc is live on
+    // the human's screen and tracks the file, so the caller keeps editing in
+    // place or simply ends its turn.
+    const { spawned, follow_up: drainFollowUp } = spawnHumanJob(jobId, idir, cwd);
+    const follow_up = spawned ? followUpReview(jobId) : drainFollowUp;
+    return { job_id: jobId, dir: idir, output, follow_up };
   },
 });
 

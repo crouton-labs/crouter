@@ -24,13 +24,13 @@ export function registerHuman(): BranchDef {
       concept: 'human-in-the-loop decisions, document review, and live display',
       desc: 'ask, approve, review, notify, show, cancel, inbox, list',
       useWhen:
-        'you have a question for the user, want their feedback, or are presenting them with options or a choice — always reach for human instead of guessing or assuming, or laying a choice out as prose, when a person can decide',
+        'you have a question for the user, want their feedback, or are presenting them with options or a choice — always reach for human instead of guessing or assuming, or laying a choice out as prose, when a person can decide; and whenever the user wants to review a spec, plan, or requirements document, this is the command (use `human review` for anchored line-by-line comments)'
     },
     help: {
       name: 'human',
       summary: 'human-in-the-loop decisions, document review, and live display',
       model:
-        "Every body and displayed file is directive-flavored markdown rendered by termrender (panels, columns, trees, callouts, mermaid) — see `termrender doc -h` for the directive set before authoring one. ask and approve are kickoffs: they create a kind:'human' node under you and return instantly, never blocking — the answer is pushed to your inbox when the human responds, so keep working and you'll be woken with it. review BLOCKS until the human submits — background the call if you want to keep working while it's open. notify and show create no node.",
+        "Every body and displayed file is directive-flavored markdown rendered by termrender (panels, columns, trees, callouts, mermaid) — see `termrender doc -h` for the directive set before authoring one. ask, approve, and review are kickoffs: they create a kind:'human' node under you and return instantly, never blocking — the human's response is pushed to your inbox when they answer, so keep working (or just end your turn) and you'll be woken with it. review puts a .md live on the human's screen for anchored comments and tracks the file, so edit in place rather than canceling and re-presenting. notify and show create no node.",
     },
     children: [
       humanAsk,

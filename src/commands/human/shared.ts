@@ -1,10 +1,8 @@
 import { readConfig } from '../../core/config.js';
 import { spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { atomicWriteJson, readJson } from '@crouton-kit/humanloop';
 import { countPanesInCurrentWindow, spawnAndDetach, shellQuote } from '../../core/spawn.js';
-import { reportsDir } from '../../core/canvas/paths.js';
 
 export const DECK_SCHEMA_HINT =
   'Deck must match the humanloop deck schema: {title?, ' +
@@ -47,22 +45,39 @@ export function followUpDrain(_jobId: string): string {
 }
 
 /**
+ * Road sign for a spawned `human review`. It is a non-blocking kickoff, so the
+ * text steers the caller to stop rather than wait, verify, or re-present: the
+ * pane is already live and tracks the file, and the comments arrive via the
+ * inbox/wake when the human submits.
+ */
+export function followUpReview(_jobId: string): string {
+  return (
+    "The document is live on the human's screen for anchored, line-by-line " +
+    'review. The pane tracks the file — edit the .md in place and it re-renders ' +
+    'on save, so never cancel and re-present just to show a change. Do not poll, ' +
+    'verify it opened, or background this call; end your turn. The human reviews ' +
+    'on their own time, and their comments (with any line edits) arrive in your ' +
+    'inbox and wake you when they submit.'
+  );
+}
+
+/**
  * Spawn the detached `_run` pane that drives the humanloop TUI for this node.
- * Returns whether the pane spawned, the follow_up text, and (when spawned) the
- * tmux pane id so a blocking caller (review) can detect the pane dying before
- * the human submits. Degrades to the inbox-drain follow_up when not in tmux /
- * spawn fails — kickoffs are intentionally non-fatal off-tmux.
+ * Returns whether the pane spawned and the follow_up road sign. Degrades to the
+ * inbox-drain follow_up when not in tmux / spawn fails — kickoffs are
+ * intentionally non-fatal off-tmux.
  *
  * Completion routing needs no bookkeeping here: the human node was created
  * under the asking node as its parent (spawnNode auto-subscribes the parent),
- * so the `pushFinal` the `_run` worker emits fans the answer straight into the
- * asking node's inbox.
+ * so the `pushFinal` the `_run` worker emits — for ask, approve, AND review —
+ * fans the answer straight into the asking node's inbox. The pane id is recorded
+ * on run.json (not returned) so `human cancel` can later kill the TUI.
  */
 export function spawnHumanJob(
   jobId: string,
   idir: string,
   cwd: string,
-): { spawned: boolean; follow_up: string; paneId?: string } {
+): { spawned: boolean; follow_up: string } {
   const spawn = spawnAndDetach({
     command: runCmd(idir),
     cwd,
@@ -80,11 +95,7 @@ export function spawnHumanJob(
     const rc = readJson<RunRecord>(rcPath);
     if (rc !== null) atomicWriteJson(rcPath, { ...rc, pane_id: spawn.paneId });
   }
-  return {
-    spawned: true,
-    follow_up: followUpResult(jobId),
-    ...(spawn.paneId !== undefined ? { paneId: spawn.paneId } : {}),
-  };
+  return { spawned: true, follow_up: followUpResult(jobId) };
 }
 
 /**
@@ -111,59 +122,4 @@ export function killPane(paneId: string, verify: string): boolean {
   if (probe.status !== 0 || !probe.stdout.includes(verify)) return false;
   const r = spawnSync('tmux', ['kill-pane', '-t', paneId], { encoding: 'utf8' });
   return r.status === 0;
-}
-
-/** True when a tmux pane is still alive. */
-function paneAlive(paneId: string): boolean {
-  const r = spawnSync('tmux', ['display-message', '-p', '-t', paneId, '#{pane_id}'], {
-    encoding: 'utf8',
-  });
-  return r.status === 0 && r.stdout.trim() !== '';
-}
-
-export interface HumanResult {
-  status: string;
-  result?: unknown;
-  reason?: string;
-}
-
-/**
- * Block until `nodeId` emits a `final` report (the human submitted) or — when a
- * pane id is given — that pane dies before submitting (the human closed it).
- * Polls once a second: this is a human-time operation, so a coarse poll is fine
- * and sidesteps fs.watch directory-existence races. The `_run` worker writes
- * the humanloop result as the report body (JSON), which we parse back out.
- */
-export function waitForFinalReport(nodeId: string, paneId?: string): Promise<HumanResult> {
-  const dir = reportsDir(nodeId);
-  const findFinal = (): string | null => {
-    if (!existsSync(dir)) return null;
-    const files = readdirSync(dir).filter((f) => f.endsWith('-final.md')).sort();
-    return files.length > 0 ? join(dir, files[files.length - 1]!) : null;
-  };
-  const parse = (path: string): HumanResult => {
-    const body = readFileSync(path, 'utf8').replace(/^---[\s\S]*?---\n/, '').trim();
-    try {
-      return { status: 'done', result: JSON.parse(body) };
-    } catch {
-      return { status: 'done' };
-    }
-  };
-  const immediate = findFinal();
-  if (immediate !== null) return Promise.resolve(parse(immediate));
-  return new Promise((resolve) => {
-    const timer = setInterval(() => {
-      const p = findFinal();
-      if (p !== null) {
-        clearInterval(timer);
-        resolve(parse(p));
-        return;
-      }
-      if (paneId !== undefined && !paneAlive(paneId)) {
-        clearInterval(timer);
-        resolve({ status: 'closed', reason: 'review pane closed before submit' });
-      }
-    }, 1000);
-    if (typeof timer.unref === 'function') timer.unref();
-  });
 }

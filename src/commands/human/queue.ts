@@ -3,7 +3,8 @@ import { InputError } from '../../core/io.js';
 import { pushFinal } from '../../core/feed/feed.js';
 import { interactionsRoot, interactionDir } from '../../core/artifact.js';
 import { paginate } from '../../core/pagination.js';
-import { getNode, setStatus, setIntent, subscribersOf } from '../../core/canvas/index.js';
+import { getNode, subscribersOf } from '../../core/canvas/index.js';
+import { transition } from '../../core/runtime/lifecycle.js';
 import { appendInbox } from '../../core/feed/inbox.js';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -112,7 +113,7 @@ export const humanCancel = defineLeaf({
     summary:
       'retract a pending ask/approve/review you posed — kills its TUI pane, drops it from the human queue, and retires the node. Reach for this the moment a question goes stale (you answered it yourself, the situation changed) so a human is not left resolving a prompt whose answer no longer matters',
     guide:
-      'Pass the job_id returned by `human ask`/`approve`/`review`. Best-effort and idempotent: if the human already answered, or it was already canceled, it reports canceled:false with reason "already_resolved" and changes nothing. The agent that posed the deck is almost always the one canceling it, so the caller is never messaged — only OTHER subscribers (e.g. the asking node when a human dismisses the prompt) get a quiet deferred note that no answer is coming. A blocking `human review` caller unblocks with status "closed" when its pane is killed.',
+      'Pass the job_id returned by `human ask`/`approve`/`review`. Best-effort and idempotent: if the human already answered, or it was already canceled, it reports canceled:false with reason "already_resolved" and changes nothing. The agent that posed the deck is almost always the one canceling it, so the caller is never messaged — only OTHER subscribers (e.g. the asking node when a human dismisses the prompt) get a quiet deferred note that no answer is coming. Canceling a review kills its live on-screen pane and delivers no comments — the same quiet deferred note covers it.',
     params: [
       { kind: 'positional', name: 'job_id', type: 'string', required: true, constraint: 'Node id of the interaction to cancel — the job_id returned by ask/approve/review.' },
       { kind: 'flag', name: 'reason', type: 'string', required: false, constraint: 'Optional short note delivered to subscribers explaining why it was retracted.' },
@@ -148,15 +149,17 @@ export const humanCancel = defineLeaf({
     const idir = interactionDir(jobId, node.cwd);
 
     // Nothing live to cancel: the human already answered, or it was retired.
-    if (node.status === 'done' || node.status === 'dead' || isResolved(idir)) {
+    // 'canceled' is in the guard too so transition('finalize') below — legal only
+    // from active|idle — can never throw on an already-canceled (but unresolved)
+    // interaction node.
+    if (node.status === 'done' || node.status === 'dead' || node.status === 'canceled' || isResolved(idir)) {
       return { canceled: false, job_id: jobId, reason: 'already_resolved' };
     }
 
-    // (1) Kill the detached TUI pane so the prompt leaves the human's screen and
-    //     any blocking `human review` caller unblocks (pane death → 'closed').
-    //     Pass `idir` so killPane only fires when the target pane is provably the
-    //     worker we spawned for THIS job (its launch command carries CRTR_HUMAN_DIR
-    //     =idir) — never the agent's own pane or a shell.
+    // (1) Kill the detached TUI pane so the prompt (or a review's live doc) leaves
+    //     the human's screen. Pass `idir` so killPane only fires when the target
+    //     pane is provably the worker we spawned for THIS job (its launch command
+    //     carries CRTR_HUMAN_DIR=idir) — never the agent's own pane or a shell.
     const rc = readJson<RunRecord>(join(idir, 'run.json'));
     if (rc?.pane_id !== undefined && rc.pane_id !== '') killPane(rc.pane_id, idir);
 
@@ -170,11 +173,10 @@ export const humanCancel = defineLeaf({
       });
     }
 
-    // (3) Retire the node. We do NOT push a -final.md report: a blocking
-    //     `human review` caller must see the pane-death 'closed', not a phantom
-    //     'done' result.
-    setStatus(jobId, 'done');
-    setIntent(jobId, 'done');
+    // (3) Retire the node. We do NOT push a -final.md report: a cancel must not
+    //     masquerade as a human-submitted result. Subscribers get the quiet
+    //     deferred 'no answer is coming' note below instead.
+    transition(jobId, 'finalize');
     // Almost always the asking agent cancels its OWN deck — it already knows, so
     // never message the caller. Only a third-party cancel (a human, an
     // orchestrator) leaves a genuinely-waiting asker uninformed; give them a
