@@ -38,7 +38,12 @@ is still chosen by what the agent does after reading, not by the script.
   assets; nested dirs are their own skills.
 - Required frontmatter: \`name\`, \`type\`, \`description\`. \`name\` must equal the
   dir path under \`skills/\` — slashes nest (\`web/frontend/design\`).
-- \`description\`: one sentence, front-load "Use when…" — it drives discovery.
+- \`description\`: one sentence, front-load "Use when…" — it is the **only**
+  text an agent reads before choosing the skill, so every "when to reach for
+  this" / selection cue lives *here*, never in the body. By the time anyone
+  reads the body they have already picked the skill; a body line about
+  when-to-use is wasted. The body is purely the workflow or knowledge they
+  came for.
 - Budget ~150 lines per \`SKILL.md\`; spill deeper material into sibling files.
 - \`crtr skill author scaffold <n> --type <t> --scope <s> --description "<d>"\` writes correct frontmatter for you; \`crtr sys doctor\` validates.
 

@@ -32,6 +32,14 @@ export const canvasPruneLeaf: LeafDef = defineLeaf({
       },
       {
         kind: 'flag',
+        name: 'include-stale',
+        type: 'bool',
+        required: false,
+        default: false,
+        constraint: 'ALSO prune stale active/idle nodes past the TTL whose process is gone (pi_pid null or dead) — reaps abandoned roots the daemon never reconciled. A genuinely-running node (live pi_pid) and the caller are protected.',
+      },
+      {
+        kind: 'flag',
         name: 'dry-run',
         type: 'bool',
         required: false,
@@ -48,15 +56,16 @@ export const canvasPruneLeaf: LeafDef = defineLeaf({
     outputKind: 'object',
     effects: [
       'Deletes matching `nodes` rows; their edges cascade-delete via the FK; each node\u2019s `nodes/<id>/` dir is removed.',
-      'No-op on live nodes (active/idle) and on terminal nodes newer than the TTL.',
+      'No-op on live nodes (active/idle) and on terminal nodes newer than the TTL. With --include-stale: also deletes active/idle nodes past the TTL whose process is gone (pi_pid null/dead); genuinely-running nodes and the caller are kept.',
       'Under --dry-run: read-only, deletes nothing.',
     ],
   },
   run: async (input) => {
     const ttlDays = (input['ttl'] as number | undefined) ?? DEFAULT_TTL_DAYS;
     const dryRun = (input['dryRun'] as boolean | undefined) ?? false;
+    const includeStale = (input['includeStale'] as boolean | undefined) ?? false;
 
-    const result = pruneNodes({ ttlDays, dryRun });
+    const result = pruneNodes({ ttlDays, dryRun, includeStale });
     return {
       pruned: dryRun ? 0 : result.pruned.length,
       dryRun,

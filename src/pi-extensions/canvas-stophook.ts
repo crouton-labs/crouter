@@ -32,6 +32,7 @@ import { join } from 'node:path';
 
 import { getNode, jobDir, updateNode, recordPid, subscribersOf, setPresence } from '../core/canvas/index.js';
 import { transition } from '../core/runtime/lifecycle.js';
+import { markBusy, clearBusy } from '../core/runtime/busy.js';
 import { evaluateStop } from '../core/runtime/stop-guard.js';
 import { personaDrift, commitPersonaAck } from '../core/runtime/persona.js';
 import { reviveInPlace } from '../core/runtime/revive.js';
@@ -42,7 +43,7 @@ import { focusOf, handFocusToManager, tearDownNode, closeFocusToShell } from '..
 // Minimal PiLike interface (avoids hard dep on @earendil-works/*)
 // ---------------------------------------------------------------------------
 
-type PiEvents = 'turn_end' | 'agent_end' | 'session_shutdown' | 'session_start';
+type PiEvents = 'agent_start' | 'turn_end' | 'agent_end' | 'session_shutdown' | 'session_start';
 
 interface PiLike {
   on: (event: PiEvents, handler: (event: any, ctx: any) => void | Promise<void>) => void;
@@ -325,6 +326,15 @@ export function registerCanvasStophook(pi: PiLike): void {
   });
 
   // ---------------------------------------------------------------------------
+  // agent_start — pi entered a turn. Mark the node mid-turn (busy) so a
+  // focus-away while it is genuinely working backstages it (Invariant F2)
+  // rather than reaping it. Cleared at the top of agent_end (turn over).
+  // ---------------------------------------------------------------------------
+  pi.on('agent_start', (): void => {
+    try { markBusy(nodeId); } catch { /* best-effort */ }
+  });
+
+  // ---------------------------------------------------------------------------
   // session_shutdown — clean exit → done.
   //
   // pi hands us a reason as a session tears down. Only 'quit' is a node-ending
@@ -339,6 +349,7 @@ export function registerCanvasStophook(pi: PiLike): void {
   // ---------------------------------------------------------------------------
   pi.on('session_shutdown', (event: any, _ctx: any): void => {
     try {
+      clearBusy(nodeId); // turn marker is meaningless once pi is exiting
       // Clean /quit (reason='quit') resolves the node to done; if it held the
       // user's viewport, Q1-close it (tearDownNode kills the frozen focus pane +
       // closes the focus row → returns the user to a shell, §1.5/flow (e)). pi is
@@ -428,6 +439,9 @@ export function registerCanvasStophook(pi: PiLike): void {
     // steering). The stop/yield auto-pushes that needed `await push(...)` were
     // removed, so the handler no longer needs to be async — the node reaches its
     // subscribers ONLY through its own explicit `crtr push` calls.
+    // The turn has ended regardless of how it routes below — clear the mid-turn
+    // marker FIRST so a focus-away from this now-parked node despawns it.
+    clearBusy(nodeId);
     try {
         const messages: any[] = Array.isArray(event?.messages) ? event.messages : [];
 

@@ -37,6 +37,7 @@ import {
   detachToBackground,
   type Reviver,
 } from '../runtime/placement.js';
+import { markBusy, isBusy } from '../runtime/busy.js';
 import type { NodeMeta } from '../canvas/types.js';
 
 let home: string;
@@ -80,21 +81,32 @@ after(() => {
 });
 
 // ---------------------------------------------------------------------------
-// 1a. PURE: outgoingDisposition — backstage (still generating) vs kill.
+// 1a. PURE: outgoingDisposition — the 4-field truth table (kill / backstage /
+// release). Each branch is provably non-vacuous (a wrong impl fails).
 // ---------------------------------------------------------------------------
-
-test('outgoingDisposition: a still-generating node → BACKSTAGE (F2: keeps running off-screen)', () => {
-  assert.deepEqual(outgoingDisposition({ exists: true, generating: true }), { kind: 'backstage' });
-});
-
-test('outgoingDisposition: a dormant/done node → KILL (Invariant P: not-focused + not-generating ⇒ no pane)', () => {
-  assert.deepEqual(outgoingDisposition({ exists: true, generating: false }), { kind: 'kill' });
-});
 
 test('outgoingDisposition: a HOLDER / vanished node (no row) → KILL (never backstaged)', () => {
   // A wrong impl that backstaged a holder would leak a sleep pane into crtr.
-  assert.deepEqual(outgoingDisposition({ exists: false, generating: true }), { kind: 'kill' });
-  assert.deepEqual(outgoingDisposition({ exists: false, generating: false }), { kind: 'kill' });
+  assert.deepEqual(outgoingDisposition({ exists: false, live: false, resident: false, generating: false }), { kind: 'kill' });
+  assert.deepEqual(outgoingDisposition({ exists: false, live: true, resident: true, generating: true }), { kind: 'kill' });
+});
+
+test('outgoingDisposition: a done/dead node (not live) → KILL (Invariant P: not-focused + not-live ⇒ no pane)', () => {
+  assert.deepEqual(outgoingDisposition({ exists: true, live: false, resident: false, generating: false }), { kind: 'kill' });
+});
+
+test('outgoingDisposition: a RESIDENT node (editor/root) → BACKSTAGE (human-driven, NEVER despawned on focus-away)', () => {
+  // Resident wins even when NOT mid-turn — a wrong impl here KILLS the user\'s editor.
+  assert.deepEqual(outgoingDisposition({ exists: true, live: true, resident: true, generating: false }), { kind: 'backstage' });
+  assert.deepEqual(outgoingDisposition({ exists: true, live: true, resident: true, generating: true }), { kind: 'backstage' });
+});
+
+test('outgoingDisposition: a still-generating terminal worker → BACKSTAGE (F2: keeps running off-screen)', () => {
+  assert.deepEqual(outgoingDisposition({ exists: true, live: true, resident: false, generating: true }), { kind: 'backstage' });
+});
+
+test('outgoingDisposition: a PARKED terminal viewer (live, not mid-turn) → RELEASE (despawn to dormant — the stuck-green fix)', () => {
+  assert.deepEqual(outgoingDisposition({ exists: true, live: true, resident: false, generating: false }), { kind: 'release' });
 });
 
 // ---------------------------------------------------------------------------
@@ -154,9 +166,11 @@ test('retargetFocus: outgoing GENERATING → backstaged; the viewport stays put 
   await withSessions('gen', async ({ user, back, userWindow, backWindow }) => {
     const focusPane = livePane(user, userWindow); // R's focus pane (the viewport)
     const backPane = livePane(back, backWindow); // A's live backstage pane
-    // R is the outgoing occupant, generating (a live pi_pid). A is incoming.
-    createNode(node('R', { pane: focusPane, tmux_session: user, window: userWindow, status: 'active', pi_pid: process.pid, home_session: back }));
+    // R is the outgoing occupant, generating: a terminal worker MID-TURN (live
+    // pi_pid AND the busy marker set). A is incoming.
+    createNode(node('R', { pane: focusPane, tmux_session: user, window: userWindow, status: 'active', lifecycle: 'terminal', pi_pid: process.pid, home_session: back }));
     createNode(node('A', { pane: backPane, tmux_session: back, window: backWindow, status: 'active', pi_pid: process.pid, home_session: back }));
+    markBusy('R'); // R is genuinely mid-turn (isGenerating = busy && pidAlive)
     openFocusRow('f1', focusPane, user, 'R');
     const userBefore = windowIds(user).length;
 
@@ -181,12 +195,13 @@ test('retargetFocus: outgoing GENERATING → backstaged; the viewport stays put 
   });
 });
 
-test('retargetFocus: outgoing DORMANT (no live pi) → its now-backstage pane is REAPED (Invariant P)', { skip: !hasTmux() }, async () => {
+test('retargetFocus: outgoing DONE/dead (not live) → its now-backstage pane is REAPED (Invariant P)', { skip: !hasTmux() }, async () => {
   await withSessions('kill', async ({ user, back, userWindow, backWindow }) => {
     const focusPane = livePane(user, userWindow);
     const backPane = livePane(back, backWindow);
-    // R is NOT generating (pi_pid null) → its pane must be reaped after the swap.
-    createNode(node('R', { pane: focusPane, tmux_session: user, window: userWindow, status: 'active', pi_pid: null, home_session: back }));
+    // R is NOT live (status done) → the KILL path: its pane must be reaped after
+    // the swap, with NO lifecycle transition.
+    createNode(node('R', { pane: focusPane, tmux_session: user, window: userWindow, status: 'done', pi_pid: null, home_session: back }));
     createNode(node('A', { pane: backPane, tmux_session: back, window: backWindow, status: 'active', pi_pid: process.pid, home_session: back }));
     openFocusRow('f1', focusPane, user, 'R');
 
@@ -194,7 +209,35 @@ test('retargetFocus: outgoing DORMANT (no live pi) → its now-backstage pane is
 
     assert.equal(getFocusByNode('A')?.focus_id, 'f1', 'A took the viewport');
     assert.equal(paneSession(backPane), user, 'A\'s pane is in the viewport');
-    assert.equal(paneExistsReal(focusPane), false, 'R\'s now-backstage pane was KILLED (dormant ⇒ no pane)');
+    assert.equal(paneExistsReal(focusPane), false, 'R\'s now-backstage pane was KILLED (not live ⇒ no pane)');
+    assert.equal(getNode('R')!.status, 'done', 'R stays done (KILL does not transition status)');
+    assert.equal(getNode('R')!.pane, null, 'R\'s LOCATION was nulled (Invariant P)');
+    assert.equal(getNode('R')!.tmux_session, null);
+  });
+});
+
+test('retargetFocus: outgoing PARKED terminal viewer (live pi, NOT mid-turn) → RELEASED to dormant (status idle, pane reaped) — the stuck-green fix', { skip: !hasTmux() }, async () => {
+  await withSessions('park', async ({ user, back, userWindow, backWindow }) => {
+    const focusPane = livePane(user, userWindow);
+    const backPane = livePane(back, backWindow);
+    // R is a terminal node revived only for VIEWING: live pi (pidAlive) but NOT
+    // mid-turn (no busy marker). It was the stuck-green bug: misread as
+    // generating, backstaged, and left status='active' forever. It must instead
+    // be RELEASED to dormant.
+    createNode(node('R', { pane: focusPane, tmux_session: user, window: userWindow, status: 'active', lifecycle: 'terminal', pi_pid: process.pid, home_session: back }));
+    createNode(node('A', { pane: backPane, tmux_session: back, window: backWindow, status: 'active', pi_pid: process.pid, home_session: back }));
+    assert.equal(isBusy('R'), false, 'precondition: R is parked between turns (not mid-turn)');
+    openFocusRow('f1', focusPane, user, 'R');
+
+    retargetFocus('f1', 'A', NOREVIVE);
+
+    assert.equal(getFocusByNode('A')?.focus_id, 'f1', 'A took the viewport');
+    assert.equal(paneSession(backPane), user, 'A\'s pane is in the viewport');
+    // The fix: focus-away flips R back to dormant (idle + idle-release) and reaps
+    // its pane — so the editor stops drawing it green/active.
+    assert.equal(getNode('R')!.status, 'idle', 'R was RELEASED back to dormant (no longer stuck active/green)');
+    assert.equal(getNode('R')!.intent, 'idle-release', 'R carries idle-release so the daemon revives it on its inbox');
+    assert.equal(paneExistsReal(focusPane), false, 'R\'s now-backstage pane was REAPED (parked viewer ⇒ no pane)');
     assert.equal(getNode('R')!.pane, null, 'R\'s LOCATION was nulled (Invariant P)');
     assert.equal(getNode('R')!.tmux_session, null);
   });

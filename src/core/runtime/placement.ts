@@ -66,6 +66,8 @@ import {
   selectWindow,
 } from './tmux.js';
 import { homeSessionOf, nodeSession, newNodeId } from './nodes.js';
+import { isBusy } from './busy.js';
+import { transition } from './lifecycle.js';
 
 // Re-export the durable REVIVE-HOME read so placement is the one front door for
 // "where does this node live."
@@ -489,25 +491,54 @@ function pidAlive(pid: number | null | undefined): boolean {
   }
 }
 
-/** Is a focus's OUTGOING occupant still GENERATING (a live pi doing work)? A
- *  still-generating node is moved to backstage by a retarget (F2 — it keeps
- *  running off-screen); a holder / done / dormant node has its pane reaped
- *  (Invariant P). A holder or vanished node (row null) is never generating. */
+/** Is a focus's OUTGOING occupant still GENERATING (a live pi actually MID-TURN)?
+ *  A still-generating node is moved to backstage by a retarget (F2 — it keeps
+ *  running off-screen); a holder / done / dormant / merely-parked node has its
+ *  pane reaped or released (Invariant P). A holder or vanished node (row null) is
+ *  never generating.
+ *
+ *  The signal is the mid-turn `busy` marker AND a live pid — NOT pid-alive
+ *  alone. A node revived only for VIEWING is parked at its prompt with a live
+ *  pid between turns; pid-alive would misclassify it as "doing work" and leave
+ *  it stuck backstaged-active forever. `isBusy` is true only inside a turn, so a
+ *  parked viewer reads as not-generating and is released to dormant on
+ *  focus-away. The AND with `pidAlive` makes a stale marker (a pi that crashed
+ *  mid-turn) harmless. */
 function isGenerating(nodeId: string): boolean {
   const row = getRow(nodeId);
   if (row === null) return false;
   if (row.status !== 'active' && row.status !== 'idle') return false;
-  return pidAlive(row.pi_pid);
+  return isBusy(nodeId) && pidAlive(row.pi_pid);
 }
 
 /** PURE disposition of a focus's outgoing occupant after a retarget swap (§2.5/
- *  §1.3): a still-generating node moves to backstage (F2); a holder pane or a
- *  done/dormant node has its (now-backstage) pane reaped (Invariant P: a
- *  not-focused + not-generating node has NO pane). Unit-testable in isolation. */
-export type OutgoingAction = { kind: 'backstage' } | { kind: 'kill' };
-export function outgoingDisposition(o: { exists: boolean; generating: boolean }): OutgoingAction {
-  if (!o.exists) return { kind: 'kill' };
-  return o.generating ? { kind: 'backstage' } : { kind: 'kill' };
+ *  §1.3). Four signals decide one of three fates; unit-testable in isolation:
+ *    - `kill`     — a holder pane (no row) or a done/dead/canceled node: reap the
+ *                   (now-backstage) pane (Invariant P: not-focused + not-live ⇒
+ *                   no pane).
+ *    - `backstage`— a human-driven RESIDENT node (editor/root/orchestrator — NEVER
+ *                   despawned on focus-away), or a terminal worker that is
+ *                   genuinely MID-TURN (Invariant F2 — keeps running off-screen).
+ *    - `release`  — a PARKED terminal viewer (live but not mid-turn): a node
+ *                   revived only for inspection. Despawn it back to dormant
+ *                   (transition `release` → idle/idle-release) and reap its pane;
+ *                   the daemon revives it on its inbox, or the user re-focuses.
+ *                   This is the bug fix: such a node was misclassified as
+ *                   generating and left stuck active forever.
+ *  Order matters: `resident` is checked BEFORE `generating` so a resident node is
+ *  always kept warm regardless of whether it happens to be mid-turn. */
+export type OutgoingAction = { kind: 'backstage' } | { kind: 'kill' } | { kind: 'release' };
+export function outgoingDisposition(o: {
+  exists: boolean; // has a node row (false = holder pane)
+  live: boolean; // status active|idle
+  resident: boolean; // lifecycle === 'resident' (human-driven → keep warm)
+  generating: boolean; // busy && pidAlive (mid-turn worker → keep running, F2)
+}): OutgoingAction {
+  if (!o.exists) return { kind: 'kill' }; // holder pane
+  if (!o.live) return { kind: 'kill' }; // done/dead/canceled — reap the pane
+  if (o.resident) return { kind: 'backstage' }; // human-driven node: keep warm
+  if (o.generating) return { kind: 'backstage' }; // mid-turn terminal worker (F2)
+  return { kind: 'release' }; // parked terminal viewer → dormant
 }
 
 /** The node's pane iff it is a LIVE pane (a generating-unfocused backstage pane,
@@ -584,8 +615,9 @@ export function registerRootFocus(
  *    - `swapPaneInPlace(pin, focusPane)`: incoming → the viewport slot; the
  *      outgoing occupant → incoming's old (backstage) slot, %ids preserved
  *      (cross-session swap confirmed by the spike).
- *    - outgoing still generating → backstage (F2); else reap its now-backstage
- *      pane (Invariant P). A holder occupant (no node row) is always reaped.
+ *    - outgoing resident OR still mid-turn → backstage (kept warm / F2); a parked
+ *      terminal viewer → RELEASE (status → idle, pane reaped); a holder or
+ *      done/dormant occupant → reap its now-backstage pane (Invariant P).
  *  Arms remain-on-exit on the viewport (F3); the focus row is the record. */
 export function retargetFocus(focusId: string, incoming: string, revive: Reviver): FocusResult {
   let f = getFocusById(focusId);
@@ -641,12 +673,23 @@ export function retargetFocus(focusId: string, incoming: string, revive: Reviver
   }
   const pinLoc = paneLocation(pin); // now the viewport
   const outLoc = paneLocation(focusPane); // now backstage (outgoing's new home)
-  const action = outgoingDisposition({ exists: getRow(outgoing) !== null, generating: isGenerating(outgoing) });
+  const oRow = getRow(outgoing);
+  const action = outgoingDisposition({
+    exists: oRow !== null,
+    live: oRow?.status === 'active' || oRow?.status === 'idle',
+    resident: oRow?.lifecycle === 'resident',
+    generating: isGenerating(outgoing),
+  });
   commitFocusTxn(f.focus_id, incoming, pin, pinLoc, outgoing, action, outLoc, focusPane);
 
-  // Reap the outgoing/holder pane (now backstage) when not generating — AFTER
-  // commit (a tmux side effect, outside the txn).
-  if (action.kind === 'kill') closePane(focusPane);
+  // Crash-safety: flip a released (parked terminal viewer) node to dormant
+  // (idle + intent='idle-release') BEFORE reaping its pane, so the daemon never
+  // sees a window-gone live node and races to revive it. Then reap the
+  // outgoing/holder pane (now backstage) for both kill (done/dormant/holder) and
+  // release (parked viewer) — AFTER commit (a tmux side effect, outside the txn).
+  // A still-generating worker or a resident node is backstaged, untouched here.
+  if (action.kind === 'release') transition(outgoing, 'release');
+  if (action.kind === 'kill' || action.kind === 'release') closePane(focusPane);
   armRemainOnExit(pinLoc?.window);
   return { focused: true, session: pinLoc?.session ?? f.session, inPlace: true, revived };
 }
@@ -676,6 +719,7 @@ function commitFocusTxn(
         // The outgoing pi kept its pane id (`outgoingPane`), now in the backstage.
         setPresence(outgoing, { pane: outgoingPane, tmux_session: outLoc?.session ?? null, window: outLoc?.window ?? null });
       } else {
+        // kill | release — the pane is reaped by the caller; null the LOCATION.
         setPresence(outgoing, { pane: null, tmux_session: null, window: null });
       }
     }

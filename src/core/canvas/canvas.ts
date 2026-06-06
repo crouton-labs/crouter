@@ -461,22 +461,41 @@ export interface PruneResult {
   dryRun: boolean;
 }
 
+/** Is `pid` a live process? `kill(pid, 0)` sends no signal — it only probes
+ *  existence/permission. ESRCH ⇒ gone; EPERM ⇒ alive but not ours (still alive). */
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
 /** Retention sweep: remove TERMINAL nodes (status dead | done | canceled) whose
  *  `created` is older than `ttlDays`, bounding the otherwise-unbounded growth of
  *  node rows + dirs. The edges→nodes FK (`ON DELETE CASCADE`, migration v4) GCs
  *  each pruned node's edges automatically; the on-disk `nodes/<id>/` dir is
- *  removed too. Live nodes are NEVER touched: active | idle are the daemon's
- *  domain, a DISJOINT status set, so prune and supervision can't interfere.
+ *  removed too.
+ *
+ *  With `includeStale`, ALSO prunes nominally-live (active | idle) nodes past the
+ *  TTL whose process is provably gone — `pi_pid` is NULL or no longer alive. This
+ *  reaps stale roots (a bare `crtr` whose pi died without the row transitioning),
+ *  which the daemon's supervision never reconciled. A genuinely-running node keeps
+ *  a live `pi_pid`, so it is protected, as is the CALLER ($CRTR_NODE_ID). Without
+ *  the flag, active | idle are NEVER touched (the daemon's domain).
  *
  *  The row deletes run in ONE transaction (so the sweep is all-or-nothing); the
  *  dir removals follow after COMMIT — the fs isn't transactional, and by then the
  *  rows are gone, so a re-run never re-finds a half-deleted node. `dryRun`
  *  reports the candidate set and deletes NOTHING. */
-export function pruneNodes(opts: { ttlDays: number; dryRun?: boolean }): PruneResult {
+export function pruneNodes(opts: { ttlDays: number; dryRun?: boolean; includeStale?: boolean }): PruneResult {
   const dryRun = opts.dryRun ?? false;
+  const includeStale = opts.includeStale ?? false;
   const cutoff = new Date(Date.now() - opts.ttlDays * 86_400_000).toISOString();
+  const selfId = process.env['CRTR_NODE_ID'] ?? '';
   const db = openDb();
-  const candidates = (
+  const terminal = (
     db
       .prepare(
         `SELECT node_id, status, created FROM nodes
@@ -489,6 +508,30 @@ export function pruneNodes(opts: { ttlDays: number; dryRun?: boolean }): PruneRe
     status: r['status'] as NodeStatus,
     created: r['created'] as string,
   }));
+
+  // Stale non-terminal sweep (opt-in): active | idle past the TTL whose process
+  // is provably gone (pi_pid NULL or not alive). Never the caller itself.
+  const stale: PrunedNode[] = !includeStale ? [] : (
+    db
+      .prepare(
+        `SELECT node_id, status, created, pi_pid FROM nodes
+         WHERE status IN ('active', 'idle') AND created < ?
+         ORDER BY created`,
+      )
+      .all(cutoff) as Array<Record<string, unknown>>
+  )
+    .filter((r) => {
+      if ((r['node_id'] as string) === selfId) return false;
+      const pid = r['pi_pid'] as number | null;
+      return pid === null || !pidAlive(pid);
+    })
+    .map((r): PrunedNode => ({
+      node_id: r['node_id'] as string,
+      status: r['status'] as NodeStatus,
+      created: r['created'] as string,
+    }));
+
+  const candidates = [...terminal, ...stale];
 
   if (dryRun || candidates.length === 0) return { pruned: candidates, dryRun };
 

@@ -28,7 +28,7 @@ import { VALID_TYPES, resolveWriteScope } from './shared.js';
 export const authorGuide = defineLeaf({
   name: 'guide',
   description: 'load authoring workflow + skeleton for a type',
-  whenToUse: 'writing a new skill and you want the authoring workflow plus the template skeleton — call it once with no --type for the template picker, then again with --type for the full workflow and skeleton of that type.',
+  whenToUse: 'REQUIRED reading before you author a new skill OR edit an existing one — it carries the SKILL.md format, the description-drives-discovery rule (when-to-use lives in the frontmatter description, never the body), the voice constraints, and the per-type workflow. Call it once with no --type for the template picker, then again with --type for that type\'s full workflow and skeleton. Editing an existing skill counts: read this first, because the format and voice rules govern every change, not just new files.',
   help: {
     name: 'skill author guide',
     summary: 'load the skill authoring workflow — two stages: omit type to pick one, pass type for its full skeleton',
@@ -169,7 +169,7 @@ export const authorScaffold = defineLeaf({
 export const authorBranch = defineBranch({
   name: 'author',
   description: 'create and scaffold skills',
-  whenToUse: 'you have a reusable workflow, methodology, or hard-won convention worth capturing so future agents adopt it instead of re-deriving it — author carries you from picking a template through scaffolding the file. Reach for it when a task just taught you a repeatable procedure, when the same guidance keeps getting re-explained across sessions, or when the house conventions for a tool deserve to be written down once. Start with `crtr skill author guide` for the template picker and authoring workflow; use `crtr skill author scaffold` to stub the SKILL.md file.',
+  whenToUse: 'you have a reusable workflow, methodology, or hard-won convention worth capturing so future agents adopt it instead of re-deriving it — author carries you from picking a template through scaffolding the file. Reach for it when a task just taught you a repeatable procedure, when the same guidance keeps getting re-explained across sessions, or when the house conventions for a tool deserve to be written down once. Always start with `crtr skill author guide` — required reading before you author OR edit any skill (the SKILL.md format, the description-vs-body rule, and the voice constraints all live there) — then use `crtr skill author scaffold` to stub the SKILL.md file.',
   help: {
     name: 'skill author',
     summary: 'create and scaffold new skills',
