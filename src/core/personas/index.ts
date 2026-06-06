@@ -7,7 +7,7 @@
  *   - ResolvedPersona            (return type of resolve)
  */
 
-export { loadPersona, loadKernel, availableKinds } from './loader.js';
+export { loadPersona, loadKernel, availableKinds, loadLifecycleFragment, loadSpineFragment } from './loader.js';
 export type { LoadedPersona } from './loader.js';
 export { resolve } from './resolve.js';
 export type { ResolvedPersona } from './resolve.js';

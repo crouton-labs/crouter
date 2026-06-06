@@ -21,12 +21,12 @@
 // the caller delivers the guidance, then commits the ack.
 
 import { getNode, updateNode, type Mode, type Lifecycle } from '../canvas/index.js';
-import { loadKernel, loadPersona } from '../personas/index.js';
+import { loadKernel, loadPersona, loadLifecycleFragment } from '../personas/index.js';
 import { resolveSkill } from '../resolver.js';
 import { readText } from '../fs-utils.js';
 import { parseFrontmatter } from '../frontmatter.js';
 import { readRoadmap, roadmapPath } from './roadmap.js';
-import { readGoal, goalPath } from './kickoff.js';
+
 import { orchestratorContextNote } from './bearings.js';
 import {
   memoryPath, memoryDir,
@@ -79,7 +79,6 @@ function orchestrationGuidance(nodeId: string, kind: string, cwd: string): strin
   const skillBody = roadmapSkill ? loadSkillBody(roadmapSkill) : null;
   const roadmap = readRoadmap(nodeId) ?? '(no roadmap yet)';
   const rmPath = roadmapPath(nodeId);
-  const goal = readGoal(nodeId);
 
   const parts: string[] = [
     `You are now a ${kind.toUpperCase()} ORCHESTRATOR. Your scarce resource is your own context window.`,
@@ -87,9 +86,6 @@ function orchestrationGuidance(nodeId: string, kind: string, cwd: string): strin
     '',
     kernel,
   ];
-  if (goal !== null && goal.trim() !== '') {
-    parts.push('', `--- Your goal (${goalPath(nodeId)}) ---`, '', goal.trim());
-  }
   if (skillBody) {
     parts.push('', `--- How to shape a ${kind} roadmap (skill: ${roadmapSkill}) ---`, '', skillBody);
   }
@@ -129,29 +125,24 @@ function baseModeGuidance(): string {
   );
 }
 
+// The lifecycle transition prose is the SAME contract that's baked into the
+// static system prompt at birth — so both load from the one source
+// (`personas/lifecycle/{terminal,resident}.md`) and can never drift. The flip
+// only re-delivers that fragment as the node's new-state steer.
+
 /** terminal → resident: interactable, never forced to submit. */
 function residentLifecycleGuidance(): string {
-  return (
-    'You are RESIDENT and interactable now. You are NEVER forced to submit a final result: stopping is ' +
-    'legitimate — you go dormant and wake on an inbox message or the human. Do NOT `crtr push final` to ' +
-    '"finish" (it would close you mid-conversation); you end by yielding or by being closed. End your turn ' +
-    'whenever you have nothing in hand — a wake brings you back.'
-  );
+  return loadLifecycleFragment('resident');
 }
 
-/** resident → terminal: owes a final up the spine, reaps when done. */
+/** resident → terminal: owes a final, reaps when done. */
 function terminalLifecycleGuidance(): string {
-  return (
-    'You are TERMINAL now: you owe a final result UP the spine and you reap when done. Drive the work to ' +
-    'completion, then `crtr push final "<result>"` — that records the canonical result and closes you. ' +
-    'Don\'t sit dormant: stopping with nothing live to await and no final pushed is a stall, and you\'ll be ' +
-    're-prompted to finish or escalate (`crtr human ask`).'
-  );
+  return loadLifecycleFragment('terminal');
 }
 
 /** Build the injected transition prompt for a `from → to` persona change.
  *  Concatenates the relevant section per changed axis (both when both changed).
- *  Pure read of the node's roadmap/goal/memory for the base→orchestrator case. */
+ *  Pure read of the node's roadmap/memory for the base→orchestrator case. */
 export function transitionGuidance(nodeId: string, from: Persona, to: Persona): string {
   const sections: string[] = [];
 

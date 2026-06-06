@@ -14,14 +14,13 @@
  *       If even the base is missing, fall back to general defaults + kernel.
  *
  * Frontmatter from whichever file is the primary source (orchestrator.md >
- * base.md) supplies model/lifecycle/skills/extensions/tools.
- *
- * Lifecycle defaults:
- *   base         → 'terminal'
- *   orchestrator → 'resident'
+ * base.md) supplies model/skills/extensions/tools. Lifecycle and spine position
+ * are INPUTS (the caller decides them — root/child, terminal/resident), not
+ * derived here; they select the lifecycle/spine protocol fragments spliced
+ * ahead of the persona body.
  */
 
-import { loadPersona, loadKernel, loadRuntimeBase } from './loader.js';
+import { loadPersona, loadKernel, loadRuntimeBase, loadSpineFragment, loadLifecycleFragment, subKindsFor } from './loader.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -49,21 +48,48 @@ function toOptionalString(v: unknown): string | undefined {
   return typeof v === 'string' ? v : undefined;
 }
 
-function toLifecycle(v: unknown, defaultValue: 'terminal' | 'resident'): 'terminal' | 'resident' {
-  if (v === 'terminal' || v === 'resident') return v;
-  return defaultValue;
-}
-
 /** The bare-minimum system prompt used when no persona file is found at all. */
 function fallbackBasePrompt(kind: string): string {
   return `You are a ${kind} agent. Complete the task you have been given.`;
 }
 
-/** Prepend the base runtime protocol (push/finish/delegate/feed/ask) to a
- *  persona's prompt — every node, every kind, every mode gets it first. */
-function withBase(personaPrompt: string): string {
-  const base = loadRuntimeBase();
-  return base ? `${base}\n\n---\n\n${personaPrompt}` : personaPrompt;
+/** Compose the runtime protocol that precedes every persona body: the
+ *  lifecycle-neutral base (identity/delegate/ask/promote), then the spine
+ *  fragment (report-up vs. silent, keyed on whether the node has a manager),
+ *  then the lifecycle fragment (finish-with-`push final` vs. dormant/wake). The
+ *  kind×mode persona body follows after a rule. Empty fragments drop out. */
+/** Render the "sub-kinds you may spawn" menu for a kind that owns a roster.
+ *  Returns '' when the kind owns none. Data-driven: one line per sub-kind, its
+ *  spawn string + its `summary`. Adding a roster file makes it appear here. */
+function renderSubKindMenu(kind: string): string {
+  const subs = subKindsFor(kind);
+  if (subs.length === 0) return '';
+  const lines = subs.map((s) => `- \`${s.kind}\` — ${s.summary}`);
+  return [
+    '## Reviewer sub-kinds you may spawn',
+    '',
+    `These specialist reviewers exist only in the ${kind} kind's world — no other kind sees them. Spawn one with \`crtr node new --kind <sub-kind> "<scope>"\`, giving it only its scope, never your suspicions: a reviewer handed a hint anchors on it instead of finding problems independently.`,
+    '',
+    ...lines,
+  ].join('\n');
+}
+
+function composeProtocol(
+  personaPrompt: string,
+  kind: string,
+  lifecycle: 'terminal' | 'resident',
+  hasManager: boolean,
+): string {
+  const menu = renderSubKindMenu(kind);
+  const body = menu ? `${personaPrompt}\n\n${menu}` : personaPrompt;
+  const protocol = [
+    loadRuntimeBase(),
+    loadSpineFragment(hasManager),
+    loadLifecycleFragment(lifecycle),
+  ]
+    .filter((s) => s.length > 0)
+    .join('\n\n');
+  return protocol ? `${protocol}\n\n---\n\n${body}` : body;
 }
 
 // ---------------------------------------------------------------------------
@@ -75,27 +101,40 @@ function withBase(personaPrompt: string): string {
  *
  * Never throws for missing files — missing personas produce sensible defaults.
  */
-export function resolve(kind: string, mode: 'base' | 'orchestrator'): ResolvedPersona {
+export interface ResolveOpts {
+  /** The node's lifecycle axis — selects the "how you end" fragment. */
+  lifecycle: 'terminal' | 'resident';
+  /** Whether the node reports up to a manager (parent !== null) — selects the
+   *  spine fragment (`has-manager` teaches the push family; `no-manager` omits
+   *  it entirely). */
+  hasManager: boolean;
+}
+
+export function resolve(
+  kind: string,
+  mode: 'base' | 'orchestrator',
+  opts: ResolveOpts,
+): ResolvedPersona {
   if (mode === 'base') {
     const persona = loadPersona(kind, 'base');
 
     if (!persona) {
       // No persona file for this kind — use minimal defaults.
       return {
-        systemPrompt: withBase(fallbackBasePrompt(kind)),
+        systemPrompt: composeProtocol(fallbackBasePrompt(kind), kind, opts.lifecycle, opts.hasManager),
         extensions: [],
         skills: [],
-        lifecycle: 'terminal',
+        lifecycle: opts.lifecycle,
       };
     }
 
     const fm = persona.frontmatter ?? {};
     return {
-      systemPrompt: withBase(persona.body || fallbackBasePrompt(kind)),
+      systemPrompt: composeProtocol(persona.body || fallbackBasePrompt(kind), kind, opts.lifecycle, opts.hasManager),
       extensions: toStringArray(fm['extensions']),
       skills: toStringArray(fm['skills']),
       model: toOptionalString(fm['model']),
-      lifecycle: toLifecycle(fm['lifecycle'], 'terminal'),
+      lifecycle: opts.lifecycle,
       tools: fm['tools'] !== undefined ? toStringArray(fm['tools']) : undefined,
     };
   }
@@ -107,11 +146,11 @@ export function resolve(kind: string, mode: 'base' | 'orchestrator'): ResolvedPe
     // Orchestrator file exists; @include was already inlined by the loader.
     const fm = orchestratorPersona.frontmatter ?? {};
     return {
-      systemPrompt: withBase(orchestratorPersona.body || fallbackBasePrompt(kind)),
+      systemPrompt: composeProtocol(orchestratorPersona.body || fallbackBasePrompt(kind), kind, opts.lifecycle, opts.hasManager),
       extensions: toStringArray(fm['extensions']),
       skills: toStringArray(fm['skills']),
       model: toOptionalString(fm['model']),
-      lifecycle: toLifecycle(fm['lifecycle'], 'resident'),
+      lifecycle: opts.lifecycle,
       tools: fm['tools'] !== undefined ? toStringArray(fm['tools']) : undefined,
     };
   }
@@ -127,12 +166,11 @@ export function resolve(kind: string, mode: 'base' | 'orchestrator'): ResolvedPe
   const systemPrompt = kernel ? `${baseBody}\n\n${kernel}` : baseBody;
 
   return {
-    systemPrompt: withBase(systemPrompt),
+    systemPrompt: composeProtocol(systemPrompt, kind, opts.lifecycle, opts.hasManager),
     extensions: toStringArray(fm['extensions']),
     skills: toStringArray(fm['skills']),
     model: toOptionalString(fm['model']),
-    // Override lifecycle to 'resident' — this node is being used as an orchestrator.
-    lifecycle: 'resident',
+    lifecycle: opts.lifecycle,
     tools: fm['tools'] !== undefined ? toStringArray(fm['tools']) : undefined,
   };
 }
