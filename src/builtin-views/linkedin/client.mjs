@@ -134,6 +134,13 @@ function fail(error) {
 function classifyError(stderr) {
   const s = String(stderr || '');
   if (/No browser with CDP found/i.test(s)) return { kind: 'no-cdp' };
+  // A dead/unreachable debugger port surfaces as a raw connection failure: capture
+  // probes http://localhost:<port>/json/version, so an unlistened port yields
+  // `fetch failed` (Node fetch wrapping ECONNREFUSED). Classify it as no-cdp so the
+  // view shows the §5 "launch a debuggable browser" panel, not the generic error.
+  if (/fetch failed/i.test(s) || /failed to fetch/i.test(s) || /ECONNREFUSED/i.test(s)) {
+    return { kind: 'no-cdp' };
+  }
   if (/No tab found/i.test(s)) return { kind: 'no-tab' };
   if (/Unauthenticated/i.test(s)) return { kind: 'not-logged-in' };
   if (/Messaging queryId not found/i.test(s) || /Navigate to \/messaging\//i.test(s)) {

@@ -74,6 +74,7 @@ import { loadingState, emptyState, errorState, notReadyState } from '../_lib/sta
  * @property {number} reactCursor        Index into EMOJIS.
  * @property {number} lastFetch          Epoch ms of the last successful refresh.
  * @property {Recovery|null} recovery    Active guided-recovery panel (full-content takeover), or null.
+ * @property {boolean} loginTabOpened   True once the login tab has been opened for the current not-logged-in episode; reset on ready so a later logout re-opens exactly once.
  */
 
 /** Fixed emoji set for the react picker. */
@@ -410,10 +411,15 @@ async function recover(state, host, error) {
     await settlePoll(state, host);
     return;
   }
-  // not-logged-in: open the messaging tab so the login page is visible, then stop.
-  if (error && error.kind === 'not-logged-in') {
+  // not-logged-in: open the messaging tab ONCE so the login page is visible, then
+  // STOP (§5). Logged out, LinkedIn redirects /messaging/ → /login|/authwall, so
+  // capture's URL-match misses and a NEW tab would be spawned on EVERY 30s
+  // auto-poll. Gate the open to once per episode; onReady() resets the flag so a
+  // later logout re-opens exactly once.
+  if (error && error.kind === 'not-logged-in' && !state.loginTabOpened) {
     const o = await openMessagingTab({ port: state.port });
     if (o.ok && o.data) state.target = o.data;
+    state.loginTabOpened = true;
   }
   applyGuided(state, host, d);
 }
@@ -498,6 +504,7 @@ async function attemptLoad(state) {
 function onReady(state, host) {
   state.recovery = null;
   state.lastFetch = Date.now();
+  state.loginTabOpened = false; // a fresh ready resets the once-per-episode login-tab gate
   host.setStatus(null);
   host.setError(null);
   if (state.mode === 'list') host.setMode(null);
@@ -660,7 +667,7 @@ function buildThreadLines(state, width, reactTarget) {
         lines.push({ spans: [{ text: bl }] });
       }
     }
-    lines.push({ spans: [{ text: '' }] }); // spacer between groups
+    if (idx < state.thread.length - 1) lines.push({ spans: [{ text: '' }] }); // spacer BETWEEN groups only (no trailing waste under tail-windowing)
   });
   return lines;
 }
@@ -738,7 +745,7 @@ function renderReactBar(state, draw, right) {
   EMOJIS.forEach((e, i) => {
     if (i === state.reactCursor) {
       spans.push({ text: ' ' });
-      spans.push({ text: '[' + e + ']', style: { bg: '236', bold: true } }); // accent-bg + brackets (mono carrier)
+      spans.push({ text: '[' + e + ']', style: { bg: '236', reverse: true } }); // accent-bg (color) + brackets+reverse (mono carrier, §2)
     } else {
       spans.push({ text: '  ' + e + ' ' });
     }
@@ -1059,6 +1066,7 @@ const view = {
       reactCursor: 0,
       lastFetch: 0,
       recovery: null,
+      loginTabOpened: false,
     };
   },
 
