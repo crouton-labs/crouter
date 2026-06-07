@@ -36,7 +36,13 @@
 //     pane-alive but pi-dead) — unit: daemon-liveness.test.ts "idle-release +
 //     live (frozen) pane …"; the grace-window double-spawn guard around it is
 //     exercised faithfully in grace-clock.test.ts.
-//   • node lifecycle --detach (A3: orphaned-focus-row hazard) — untested.
+//   • node lifecycle --detach (A3: orphaned-focus-row hazard) — faithful E2E:
+//     detach-focus.test.ts (the real verb on a FOCUSED live node → terminal +
+//     pane relocated to the backstage + focus row CLOSED).
+//   • focused-finish → manager-TAKEOVER (handFocusToManager swap) — NOT harness-
+//     reachable: the harness root is a paneless never-booted row, so the done-
+//     branch only ever hits the paneless-manager false guard (closeFocusToShell),
+//     never a live/dormant-idle-release takeover. Unit: placement-teardown.test.ts.
 //   • node msg / focus / cycle wake of a dormant node (A7) — untested faithfully.
 // These are intentional boundaries, not oversights.
 

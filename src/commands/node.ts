@@ -306,7 +306,11 @@ const nodeFocus = defineLeaf({
 });
 
 // ---------------------------------------------------------------------------
-// node demote — detach the agent in your pane to the background session
+// node demote — FINALIZE the agent in your pane + recycle it into a fresh root
+// (push its last report as a `final` → mark it done, then boot a fresh resident
+// `crtr` root in the SAME pane; see demoteNode in runtime/demote.ts). Still a
+// registered leaf, but NOT bound to any Alt+C key/menu — d/D there route to
+// `node lifecycle terminal` (±--detach), which is a different action.
 // ---------------------------------------------------------------------------
 
 /** First live node whose window id is `win` (each node owns one window). The
