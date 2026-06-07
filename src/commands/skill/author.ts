@@ -28,7 +28,7 @@ import { VALID_TYPES, resolveWriteScope } from './shared.js';
 export const authorGuide = defineLeaf({
   name: 'guide',
   description: 'load authoring workflow + skeleton for a type',
-  whenToUse: 'REQUIRED reading before you author a new skill OR edit an existing one — it carries the SKILL.md format, the description-drives-discovery rule (when-to-use lives in the frontmatter description, never the body), the voice constraints, and the per-type workflow. Call it once with no --type for the template picker, then again with --type for that type\'s full workflow and skeleton. Editing an existing skill counts: read this first, because the format and voice rules govern every change, not just new files.',
+  whenToUse: 'REQUIRED reading before you author a new skill OR edit an existing one — it carries the SKILL.md format, the description-drives-discovery rule (when-to-use lives in the frontmatter description, never the body), the voice constraints, and the per-type workflow. Editing an existing skill counts: read this first, because the format and voice rules govern every change, not just new files.',
   help: {
     name: 'skill author guide',
     summary: 'load the skill authoring workflow — two stages: omit type to pick one, pass type for its full skeleton',

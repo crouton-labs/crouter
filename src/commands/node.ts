@@ -129,7 +129,7 @@ function callerSubPersonasBlock(): string {
 const nodeNew = defineLeaf({
   name: 'new',
   description: 'spawn a node — a managed child (default), or an independent root with --root',
-  whenToUse: 'you have a self-contained unit of work — reach for this instead of doing it inline, so the reading and the tokens land in a fresh window and only the conclusion comes back: mapping an unfamiliar part of the codebase, writing a spec, designing an approach, breaking a job into a plan, implementing a change, or running a review. Match `--kind` to the work (explore/spec/design/plan/developer/review/general) and fan independent units out as concurrent children. Default is a managed child you auto-subscribe to, so its finish wakes you; pass `--mode orchestrator` when the unit is itself too big for one window (e.g. a large multi-area review) so it boots as a sub-orchestrator with its own roadmap instead of a base worker you hope promotes itself; pass `--root` to hand off an INDEPENDENT node you neither manage nor get woken by (e.g. one a human will sit and drive), not for ordinary delegation',
+  whenToUse: 'you have a self-contained unit of work — reach for this instead of doing it inline, so the reading and the tokens land in a fresh window and only the conclusion comes back: mapping an unfamiliar part of the codebase, writing a spec, designing an approach, breaking a job into a plan, implementing a change, or running a review. Fan independent units out as concurrent children. Most spawns are managed children whose finish wakes you; reach here too when a unit is itself too big for one window (boot it directly as its own sub-orchestrator rather than hope a base worker promotes itself) or when you are handing off an INDEPENDENT node you will neither manage nor be woken by, e.g. one a human will sit and drive',
   tier: 'important',
   help: {
     name: 'node new',
@@ -251,7 +251,7 @@ const nodeNew = defineLeaf({
 const nodeList = defineLeaf({
   name: 'list',
   description: 'list nodes on the canvas',
-  whenToUse: 'you want a flat roster of the nodes on the canvas, optionally sliced by status (active/idle/done/dead/canceled): a quick read of what exists and what is still running. Use `node inspect show` instead to drill into one node and its spine neighbors, `canvas dashboard` for the tree SHAPE, and `canvas attention` to find which nodes are blocked on a human',
+  whenToUse: 'you want a flat roster of the nodes on the canvas, optionally sliced by status: a quick read of what exists and what is still running. Use `node inspect show` instead to drill into one node and its spine neighbors, `canvas dashboard` for the tree SHAPE, and `canvas attention` to find which nodes are blocked on a human',
   help: {
     name: 'node inspect list',
     summary: 'list nodes on the canvas, optionally by status',
@@ -589,7 +589,7 @@ const nodeCycle = defineLeaf({
 const nodeMsg = defineLeaf({
   name: 'msg',
   description: 'direct-message any node at a wake tier',
-  whenToUse: 'you want to address a specific node directly — steer it mid-flight, hand it a correction, ping it, or pass it new information — and have it land regardless of subscriptions, reviving a dormant target. Set `--tier` by urgency: critical interrupts with a new turn, urgent steers mid-turn, normal is a follow-up, deferred waits for its next cycle. Use `node subscribe` instead to wire ongoing push delivery rather than send a one-off, and `push` to report UP your own spine',
+  whenToUse: 'you want to address a specific node directly — steer it mid-flight, hand it a correction, ping it, or pass it new information — and have it land regardless of subscriptions, reviving a dormant target. You set how urgently it lands, from an immediate interrupt to a note read on its next cycle. Use `node subscribe` instead to wire ongoing push delivery rather than send a one-off, and `push` to report UP your own spine',
   help: {
     name: 'node msg',
     summary: 'send a direct message to any node\'s inbox at a wake tier — a direct message wakes the node regardless of subscriptions (reviving it if dormant)',
@@ -643,7 +643,7 @@ function resolveSubscriber(input: Record<string, unknown>): string {
 const nodeSubscribe = defineLeaf({
   name: 'subscribe',
   description: 'wire a subscribes_to edge between any pair (active or --passive)',
-  whenToUse: 'you want to wire who-wakes-whom on the graph: make a node receive the pushes another node emits — yourself by default, or any node to any publisher via `--subscriber` (e.g. point a manager at a `--root` worker you spawned, or fan a reviewer to a second orchestrator). Active by default, so a push WAKES the subscriber; pass `--passive` to have pushes accumulate and auto-inject on its next message without waking it. You already auto-subscribe to any child you spawn, so reach for this for edges spawn did not create. Inverse is `node unsubscribe`',
+  whenToUse: 'you want to wire who-wakes-whom on the graph: make a node receive the pushes another node emits — yourself by default, or any node to any publisher (e.g. point a manager at an independent worker you spawned, or fan a reviewer to a second orchestrator), choosing whether each push wakes the subscriber or just accumulates for its next turn. You already auto-subscribe to any child you spawn, so reach for this for edges spawn did not create. Inverse is `node unsubscribe`',
   help: {
     name: 'node subscribe',
     summary: 'wire a subscribes_to edge so one node receives another\'s pushes — the subscriber can be you (default) or, with --subscriber, ANY node, to ANY publisher. Re-running flips an existing edge\'s active/passive mode.',
@@ -680,7 +680,7 @@ const nodeSubscribe = defineLeaf({
 const nodeUnsubscribe = defineLeaf({
   name: 'unsubscribe',
   description: 'drop a subscribes_to edge',
-  whenToUse: 'you want to stop a node receiving another\'s pushes: detach yourself (default) or any node via `--subscriber` from a publisher — quiet a feed you no longer track, or cut a manager loose from a finished worker. Idempotent. The inverse of `node subscribe`',
+  whenToUse: 'you want to stop a node receiving another\'s pushes: detach yourself, or any node, from a publisher — quiet a feed you no longer track, or cut a manager loose from a finished worker. Idempotent. The inverse of `node subscribe`',
   help: {
     name: 'node unsubscribe',
     summary: 'drop a subscribes_to edge — the subscriber (you by default, or any node via --subscriber) stops receiving the publisher\'s pushes.',
@@ -712,7 +712,7 @@ const nodeUnsubscribe = defineLeaf({
 const nodePromote = defineLeaf({
   name: 'promote',
   description: 'become an orchestrator of a chosen kind',
-  whenToUse: 'your task has outgrown a single context window — many phases to delegate and persist across refreshes — so become an orchestrator: a long-lived, roadmap-holding node that fans work out to children and survives context refreshes (`node yield`). Choose `--kind` to specialize (developer/review/spec/design/plan/explore/general). Pass `--resident` to ALSO make it interactable (stays dormant, woken by inbox/human, never forced to submit a final); without it you stay terminal/orchestrator — still reporting a final up the spine and reaping when done. Do NOT reach for this for work that fits one window, or merely because you spawned a child — a base worker that spawns a helper and ends with `push final` never needs to promote',
+  whenToUse: 'your task has outgrown a single context window — many phases to delegate and persist across refreshes — so become an orchestrator: a long-lived, roadmap-holding node that fans work out to children and survives context refreshes (`node yield`). Specialize it to the kind of work it now steers, and optionally make it interactable so it stays dormant between inbox/human pings instead of owing a final. Do NOT reach for this for work that fits one window, or merely because you spawned a child — a base worker that spawns a helper and ends with `push final` never needs to promote',
   tier: 'important',
   help: {
     name: 'node promote',
@@ -800,7 +800,7 @@ function setLifecycle(id: string, value: Lifecycle, opts: { pane?: string | unde
 const nodeDemote = defineLeaf({
   name: 'demote',
   description: 'demote a node to terminal in place; it stays focused and running but now owes a final; --detach also sends it to the backstage crtr session',
-  whenToUse: 'you are watching a resident/interactive node and want to put it on a finishing track WITHOUT disturbing it: flip it terminal IN PLACE — it keeps its pane and your focus, keeps running, but now owes a final report up the spine and reaps when done. The friendly counterpart to `node promote` (mode↑). Pass `--detach` to ALSO let go — send the still-running agent to the background crtr session, freeing your pane while it finishes off-screen (Alt+C → d demotes in place, → D demotes + detaches). Use `node recycle` instead to FINISH it now and reboot a fresh root in its pane, and `node lifecycle` for the orthogonal low-level flip (incl. terminal→resident)',
+  whenToUse: 'you are watching a resident/interactive node and want to put it on a finishing track WITHOUT disturbing it: flip it terminal IN PLACE — it keeps its pane and your focus, keeps running, but now owes a final report up the spine and reaps when done. The friendly counterpart to `node promote`. You can also let go entirely and send the still-running agent off-screen to finish in the background. Use `node recycle` instead to FINISH it now and reboot a fresh root in its pane, and `node lifecycle` for the orthogonal low-level flip (incl. terminal→resident)',
   help: {
     name: 'node demote',
     summary: 'demote a node to terminal IN PLACE — it stays focused and running but now owes a final up the spine and reaps when done. Pairs with `node promote` (mode↑); `--detach` also relocates the still-running agent to the background crtr session',
@@ -834,7 +834,7 @@ const nodeDemote = defineLeaf({
 const nodeLifecycle = defineLeaf({
   name: 'lifecycle',
   description: 'switch a node between terminal and resident',
-  whenToUse: 'you want to flip a node\'s LIFECYCLE independent of its mode: make a node RESIDENT so it becomes interactable — it stays dormant, wakes on inbox/human, and is never forced to submit a final; or make a node TERMINAL so it owes a final result up the spine and reaps when done. Orthogonal to `node promote`, which changes MODE (base↔orchestrator), not lifecycle. The new-state guidance is injected automatically at the next turn boundary. Pass `--detach` to ALSO send a still-running agent to the background crtr session, freeing your pane while it finishes. For the human-driver flip-to-terminal pair reach for `node demote` (the friendly terminal-only skin over this, bound to Alt+C → d in place / → D detach)',
+  whenToUse: 'you want to flip a node\'s LIFECYCLE independent of its mode: make a node RESIDENT so it becomes interactable — it stays dormant, wakes on inbox/human, and is never forced to submit a final; or make a node TERMINAL so it owes a final result up the spine and reaps when done. Orthogonal to `node promote`, which changes MODE (base↔orchestrator), not lifecycle. You can also let go of a still-running agent and send it off-screen to finish in the background. For the human-driver flip-to-terminal pair reach for `node demote` (the friendly terminal-only skin over this)',
   help: {
     name: 'node lifecycle',
     summary: 'set a node\'s lifecycle axis — terminal (owes a final up the spine, reaps when done) or resident (interactable, stays dormant, woken by inbox/human, never forced to submit). Orthogonal to mode; promotion does not touch it. `--detach` also relocates a live agent to the background crtr session',
@@ -1036,7 +1036,7 @@ const nodeWakeAt = defineLeaf({
   name: 'at',
   description: 'arm a self-alarm — wake yourself (or another node) at a future time',
   whenToUse:
-    'you have nothing to do until a known time — re-check a poll after a backoff interval, run a standing job each morning, or hand your future self a timed reminder. Bare (no --note) is the time-triggered twin of `node yield`: a fresh window re-reading your roadmap, right for standing/recurring work and polls; add --note to wake into your saved conversation with a pointer this moment needs. Use `node wake until` instead to bound a wait on an INBOX event; `node new --at` to defer spawning a NEW node; `node yield` to refresh NOW rather than at a future T',
+    'you have nothing to do until a known time — re-check a poll after a backoff interval, run a standing job each morning, or hand your future self a timed reminder. The bare form is the time-triggered twin of `node yield`: a fresh window re-reading your roadmap, right for standing/recurring work and polls; the noted form instead wakes you into your saved conversation with a pointer this moment needs. Use `node wake until` instead to bound a wait on an INBOX event; `node new` to defer spawning a NEW node; `node yield` to refresh NOW rather than at a future T',
   help: {
     name: 'node wake at',
     summary:
@@ -1205,7 +1205,7 @@ const nodeWakeList = defineLeaf({
   name: 'list',
   description: 'list pending wakes for a scope (default self)',
   whenToUse:
-    "before re-arming or finishing, to see what you already have armed and reap stale ones. Default scope is your own wakes; --node lists another node's, --canvas every wake on the canvas, --subtree a node and its descendants",
+    'before re-arming or finishing, to see what you already have armed and reap stale ones. Defaults to your own wakes, with scopes for another node, the whole canvas, or a node and its descendants',
   help: {
     name: 'node wake list',
     summary:
@@ -1324,7 +1324,7 @@ const nodeWake = defineBranch({
   name: 'wake',
   description: 'arm/list/cancel scheduled wakeups — the second trigger that stirs a dormant node: time',
   whenToUse:
-    'you want to wait CHEAPLY on a future time: end your turn, go dormant (no window, no compute), and be woken only when it is worth acting again. `at` arms a self-alarm (the timed twin of `node yield`), `until` bounds an inbox-wait with a deadline, `list`/`cancel` inspect and reap. To defer the BIRTH of a new node use `node new --at` — it is a wake too and shows up in `list`',
+    'you want to wait CHEAPLY on a future time: end your turn, go dormant (no window, no compute), and be woken only when it is worth acting again. `at` arms a self-alarm (the timed twin of `node yield`), `until` bounds an inbox-wait with a deadline, `list`/`cancel` inspect and reap. To defer the BIRTH of a new node use `node new` — it is a wake too and shows up in `list`',
   help: {
     name: 'node wake',
     summary: 'the pending-wakeups namespace — arm a time trigger on the dormant state, then inspect/cancel it',
@@ -1341,7 +1341,7 @@ export function registerNode(): BranchDef {
       concept: 'a unit of the agent runtime — an agent on the canvas with its own context dir and pi vehicle. Spawning nodes is how work gets done here, not an optimization you reach for late',
       desc: 'spawn, inspect, and navigate nodes on the canvas',
       useWhen:
-        'delegating work, or walking the subscription graph. CRITICAL, and your default reflex — spawning a child is the first move on almost any task, not a fallback. Your own context window is the scarce resource: before you read files into it to understand, implement, debug, or change code you do not already know, hand that to a fresh node and get back just the conclusion (`crtr node new "<task>" --kind <explore|spec|design|plan|developer|review>`). Keep inline only a fact you already know. Fan out independent units as CONCURRENT children — a wake with idle workers is wasted; serialize only true dependencies, and never let two live children edit the same files. Once you delegate a unit, do not also run it yourself: you auto-subscribe on spawn, so its finish wakes you. Spawn + collect mechanics: `crtr node -h`.',
+        'delegating work, or walking the subscription graph. CRITICAL, and your default reflex — spawning a child is the first move on almost any task, not a fallback. Your own context window is the scarce resource: before you read files into it to understand, implement, debug, or change code you do not already know, hand that to a fresh node and get back just the conclusion, matching the node kind to the work. Keep inline only a fact you already know. Fan out independent units as CONCURRENT children — a wake with idle workers is wasted; serialize only true dependencies, and never let two live children edit the same files. Once you delegate a unit, do not also run it yourself: you auto-subscribe on spawn, so its finish wakes you. Spawn + collect mechanics: `crtr node -h`.',
     },
     help: {
       name: 'node',

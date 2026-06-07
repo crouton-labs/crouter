@@ -17,7 +17,7 @@ import { getNode } from '../core/canvas/index.js';
 export const reviveLeaf: LeafDef = defineLeaf({
   name: 'revive',
   description: 'reopen a window for a done/idle/dead/canceled node',
-  whenToUse: 'you want to bring a dormant node back yourself — reopen a window for one that is done, idle, dead, or canceled: resume a node you closed with `node close`, reopen a finished worker for a follow-up, or restart a crashed one now instead of waiting. Resumes the saved conversation by default; pass `--fresh` to restart clean against its context dir. You rarely need this for crashes — the daemon auto-revives those; reach for it to bring a node back on demand, or to revive a canceled node the daemon will never touch on its own',
+  whenToUse: 'you want to bring a dormant node back yourself — reopen a window for one that is done, idle, dead, or canceled: resume a node you closed with `node close`, reopen a finished worker for a follow-up, or restart a crashed one now instead of waiting. It resumes the saved conversation by default, or can restart the node clean. You rarely need this for crashes — the daemon auto-revives those; reach for it to bring a node back on demand, or to revive a canceled node the daemon will never touch on its own',
   help: {
     name: 'canvas revive',
     summary: 'open a fresh tmux window for a node, optionally resuming its saved pi conversation',

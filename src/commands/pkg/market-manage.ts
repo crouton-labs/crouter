@@ -270,7 +270,7 @@ const marketUpdate = defineLeaf({
 const marketInstall = defineLeaf({
   name: 'install',
   description: 'install a plugin from a marketplace',
-  whenToUse: 'installing a plugin by name from an already-registered marketplace, e.g. `pkg market manage install --marketplace <m> --plugin <p>`',
+  whenToUse: 'installing a plugin by name from a marketplace you have already registered',
   help: {
     name: 'pkg market manage install',
     summary: 'install a plugin from an added marketplace by plugin name',

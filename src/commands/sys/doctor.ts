@@ -352,7 +352,7 @@ function runChecksForScope(scope: Scope, opts: { fix: boolean; remote: boolean }
 export const sysDoctorLeaf = defineLeaf({
   name: 'doctor',
   description: 'diagnose installation health',
-  whenToUse: 'something in your crtr install looks off and you want it diagnosed — a plugin or marketplace manifest is missing, a config entry points at a directory that no longer exists, or skill frontmatter has drifted from its filename. Reports each problem with a structured remediation; pass --fix to apply the repairs.',
+  whenToUse: 'something in your crtr install looks off and you want it diagnosed — a plugin or marketplace manifest is missing, a config entry points at a directory that no longer exists, or skill frontmatter has drifted from its filename. Reports each problem with a structured remediation, and can apply the repairs for you.',
   help: {
     name: 'sys doctor',
     summary: 'diagnose missing manifests, broken config entries, and skill frontmatter drift',

@@ -17,7 +17,7 @@ const DEFAULT_TTL_DAYS = 14;
 export const canvasPruneLeaf: LeafDef = defineLeaf({
   name: 'prune',
   description: 'remove terminal nodes (dead/done/canceled) older than a TTL',
-  whenToUse: 'you want to bound the canvas\u2019s on-disk growth \u2014 sweep away nodes that are finished (done), crashed (dead), or closed (canceled) and older than a retention window, reclaiming their rows, edges (cascade-deleted by the schema), and `nodes/<id>/` dirs. Run it as an operator/cron chore; live nodes (active/idle) are never touched. Pass `--dry-run` first to see exactly what would go, `--ttl <days>` to widen or tighten the window',
+  whenToUse: 'you want to bound the canvas\u2019s on-disk growth \u2014 sweep away nodes that are finished (done), crashed (dead), or closed (canceled) and older than a retention window, reclaiming their rows, edges (cascade-deleted by the schema), and `nodes/<id>/` dirs. Run it as an operator/cron chore; live nodes (active/idle) are never touched, and you can preview the sweep before it deletes anything',
   help: {
     name: 'canvas prune',
     summary: 'delete terminal nodes older than a TTL (edges cascade, dirs removed); --dry-run to preview',

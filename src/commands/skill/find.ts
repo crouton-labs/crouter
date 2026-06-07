@@ -11,7 +11,7 @@ import { walkFiles, readText } from '../../core/fs-utils.js';
 export const findList = defineLeaf({
   name: 'list',
   description: 'paginated list of installed skills',
-  whenToUse: 'browse the whole catalog of installed skills, paginated, when you want to see everything that is available rather than hunt for a particular topic — supports --scope, --plugin, and --full filters to narrow or enrich the listing. Use `crtr skill find search` instead when you already have a topic or keyword in mind.',
+  whenToUse: 'browse the whole catalog of installed skills, paginated, when you want to see everything that is available rather than hunt for a particular topic. Use `crtr skill find search` instead when you already have a topic or keyword in mind.',
   help: {
     name: 'skill find list',
     summary: 'paginated list of installed skills',
@@ -97,7 +97,7 @@ export const findList = defineLeaf({
 export const findSearch = defineLeaf({
   name: 'search',
   description: 'keyword search across name/description/keywords',
-  whenToUse: 'you have a topic, keyword, or problem in mind but not the exact skill name — search ranks installed skills by how well your terms match their name, description, and keywords (add --search-body to also look inside SKILL.md bodies). Reach for it to answer questions like is there a skill for writing tests, anything on prompt design, do we have a debugging workflow. Use `crtr skill find list` instead to browse the whole catalog when you have no particular topic in mind, and `crtr skill find grep` when you need an exact regex or literal-string match across skill bodies rather than a ranked topic match.',
+  whenToUse: 'you have a topic, keyword, or problem in mind but not the exact skill name — search ranks installed skills by how well your terms match their name, description, and keywords. Reach for it to answer questions like is there a skill for writing tests, anything on prompt design, do we have a debugging workflow. Use `crtr skill find list` instead to browse the whole catalog when you have no particular topic in mind, and `crtr skill find grep` when you need an exact regex or literal-string match across skill bodies rather than a ranked topic match.',
   help: {
     name: 'skill find search',
     summary: 'search skills by name, description, and keywords',

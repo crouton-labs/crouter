@@ -147,7 +147,7 @@ function makeTierLeaf(tier: Tier): LeafDef {
 const feedReadLeaf = defineLeaf({
   name: 'read',
   description: 'drain unread pointers into a digest',
-  whenToUse: 'you want to PROACTIVELY poll what the nodes you subscribe to — your children and anyone you follow — have reported before the watcher wakes you, draining the unread pointers in your inbox into one coalesced digest. NOTE: when a subscriber push wakes you, that wake message already IS this digest (the watcher drains your inbox to wake you), so don\'t re-run feed read to "open" it — dereference the refs in the digest you already have. Reach for read to poll before the next wake, to inspect a worker inbox via --node, or with --all to re-read the whole history (full message bodies included) after the cursor has advanced.',
+  whenToUse: 'you want to PROACTIVELY poll what the nodes you subscribe to — your children and anyone you follow — have reported before the watcher wakes you, draining the unread pointers in your inbox into one coalesced digest. NOTE: when a subscriber push wakes you, that wake message already IS this digest (the watcher drains your inbox to wake you), so don\'t re-run feed read to "open" it — dereference the refs in the digest you already have. Reach for it to poll before the next wake, to inspect another node\'s inbox, or to re-read the whole history after the cursor has advanced.',
   help: {
     name: 'feed read',
     summary: 'drain unread inbox pointers for the caller (or a named node) into a compact digest',

@@ -30,7 +30,7 @@ import {
 const attentionCount = defineLeaf({
   name: 'count',
   description: 'total pending ask count (machine-parseable stdout.count)',
-  whenToUse: 'getting a single pending-ask count for a script or nav chrome to read (stdout.count is machine-parseable); scope with --node or --view, or default to canvas-wide',
+  whenToUse: 'getting a single pending-ask count for a script or nav chrome to read; scope it to a node or a sub-DAG, or default to canvas-wide',
   help: {
     name: 'canvas attention count',
     // stdout.count is parsed directly by the nav chrome — keep the contract.
@@ -108,7 +108,7 @@ const attentionCount = defineLeaf({
 const attentionList = defineLeaf({
   name: 'list',
   description: 'itemised list of cwds with pending asks',
-  whenToUse: 'finding which agents are blocked waiting on a human — an itemised list of the cwds with pending asks, oldest first, so you know where to go answer. Scope to a sub-DAG with --view or list canvas-wide. Use `canvas attention count` instead when a script just needs the number, or `canvas attention map` for per-node counts to label a UI',
+  whenToUse: 'finding which agents are blocked waiting on a human — an itemised list of the cwds with pending asks, oldest first, so you know where to go answer. Scope it to a sub-DAG or list canvas-wide. Use `canvas attention count` instead when a script just needs the number, or `canvas attention map` for per-node counts to label a UI',
   help: {
     name: 'canvas attention list',
     summary: 'list nodes with pending human asks, grouped by cwd, oldest first',
@@ -235,7 +235,7 @@ const attentionMap = defineLeaf({
 export const attentionBranch: BranchDef = defineBranch({
     name: 'attention',
     description: 'count/list pending human asks across the graph',
-    whenToUse: 'checking whether any agent on the canvas is blocked waiting on a human, and where: count the pending asks, list the cwds that have them, or map per-node counts. Scope with --node or --view, or go canvas-wide. Use `canvas dashboard` instead for the graph SHAPE, or `node inspect list` for a plain node roster',
+    whenToUse: 'checking whether any agent on the canvas is blocked waiting on a human, and where: count the pending asks, list the cwds that have them, or map per-node counts. Scope it to a node or a sub-DAG, or go canvas-wide. Use `canvas dashboard` instead for the graph SHAPE, or `node inspect list` for a plain node roster',
     help: {
       name: 'canvas attention',
       summary: 'aggregate pending human asks across the canvas',
