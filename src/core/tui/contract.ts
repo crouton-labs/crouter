@@ -42,6 +42,16 @@ export interface ViewHost {
   /** Sticky error banner above the footer; null clears. Back-compat shorthand
    *  for setBanner(msg, 'error'). */
   setError(msg: string | null): void;
+  /** Dynamic title subtitle: a dim ` · <s>` after the bold title (e.g. the live
+   *  unread count "3 unread"). A non-null value OVERRIDES the static
+   *  {@link ViewManifest.subtitle}; `null` clears back to the manifest default
+   *  (or nothing). The title still leads — the subtitle is muted. */
+  setSubtitle(s: string | null): void;
+  /** Explicit interaction-mode chip override (compose/react). When set it WINS
+   *  the title state chip over the derived state, rendering the mode word in the
+   *  compose accent (yellow `33` bold) with the `✎` glyph (`react` → `☺`), so
+   *  entering an input mode is unmistakable. `null` returns to derived behavior. */
+  setMode(mode: string | null): void;
 }
 
 export type ViewAction =

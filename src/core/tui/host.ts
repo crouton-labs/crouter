@@ -42,6 +42,8 @@ export interface Chrome {
   loaded: boolean;        // a refresh has completed at least once ⇒ ready vs idle
   lastRefresh: number;    // epoch ms of the last refresh (the "updated <rel>" cue)
   tick: number;           // spinner frame, advanced by the busy-tick repaint
+  subtitle: string | null; // dynamic title subtitle (overrides manifest.subtitle); null ⇒ manifest default
+  mode: string | null;     // explicit interaction-mode chip override (compose/react); null ⇒ derived chip
 }
 
 type ChipState = 'working' | 'blocked' | 'attention' | 'ready' | 'idle';
@@ -58,6 +60,13 @@ const CHIP: Record<ChipState, { word: string; glyph: string; fg: string }> = {
 
 /** Spinner frames for the working chip (animated only while busy). */
 const SPINNER = ['⟳', '⟲'];
+
+/** Explicit interaction modes flip the chip to the compose accent (yellow `33`)
+ *  so entering an input mode is unmistakable. Known modes get a tailored glyph;
+ *  any other mode word falls back to `✎`. Color is yellow; the glyph + bold are
+ *  the mono carrier (survive NO_COLOR). */
+const MODE_GLYPH: Record<string, string> = { compose: '✎', react: '☺' };
+const MODE_GLYPH_FALLBACK = '✎';
 
 /** Banner glyph + hue by severity (color never carries meaning alone: the glyph
  *  + bold survive NO_COLOR). */
@@ -140,20 +149,41 @@ function keymapSpans(hints: KeyHint[], avail: number): Span[] {
 function drawChrome(draw: Draw, size: Size, manifest: ViewManifest, c: Chrome, now: number = Date.now()): Rect {
   const { cols, rows } = size;
   const st = deriveState(c);
-  const chip = CHIP[st];
-  const chipStyle: Style = { fg: chip.fg, bold: true };
+
+  // Chip selection. An explicit interaction mode (compose/react) WINS the chip
+  // over the derived state — even while busy — so entering input is unmistakable
+  // (precedence: setMode > derived). The mode chip is the yellow compose accent;
+  // only the derived `working` chip animates its spinner.
+  let chipWord: string;
+  let chipGlyph: string;
+  let chipFg: string;
+  let animate = false;
+  if (c.mode) {
+    chipWord = c.mode;
+    chipGlyph = MODE_GLYPH[c.mode] ?? MODE_GLYPH_FALLBACK;
+    chipFg = FG.yellow;
+  } else {
+    const chip = CHIP[st];
+    chipWord = chip.word;
+    chipGlyph = chip.glyph;
+    chipFg = chip.fg;
+    animate = st === 'working';
+  }
+  const chipStyle: Style = { fg: chipFg, bold: true };
 
   // ── Title row: right cluster first (measure), then title clipped to fit. ──
-  const glyph = st === 'working' ? (SPINNER[c.tick % SPINNER.length] ?? chip.glyph) : chip.glyph;
-  const rightCluster: Span[] = [{ text: `${glyph} ${chip.word}`, style: chipStyle }];
+  const glyph = animate ? (SPINNER[c.tick % SPINNER.length] ?? chipGlyph) : chipGlyph;
+  const rightCluster: Span[] = [{ text: `${glyph} ${chipWord}`, style: chipStyle }];
   if (c.loaded && c.lastRefresh > 0) {
     rightCluster.push({ text: ` · updated ${relTime(now - c.lastRefresh)}`, style: { dim: true } });
   }
   const rightW = spanWidth(rightCluster);
 
   draw.text(0, 0, '▎', chipStyle); // state rail (always drawn; word carries meaning in mono)
+  // Dynamic subtitle overrides the static manifest default; null ⇒ manifest.
+  const subtitle = c.subtitle ?? manifest.subtitle;
   const titleSpans: Span[] = [{ text: manifest.title, style: { bold: true } }];
-  if (manifest.subtitle) titleSpans.push({ text: ` · ${manifest.subtitle}`, style: { dim: true } });
+  if (subtitle) titleSpans.push({ text: ` · ${subtitle}`, style: { dim: true } });
   draw.spans(0, 2, titleSpans, Math.max(0, cols - 2 - rightW - 1));
   draw.spansRight(0, cols, rightCluster, rightW);
 
@@ -189,12 +219,14 @@ export { drawChrome };
 export async function runView<S>(view: ViewModule<S>, opts: RunViewOptions = {}): Promise<void> {
   const options = Object.freeze({ ...(opts.options ?? {}) });
 
-  const chrome: Chrome = { status: null, banner: null, busy: false, loaded: false, lastRefresh: 0, tick: 0 };
+  const chrome: Chrome = { status: null, banner: null, busy: false, loaded: false, lastRefresh: 0, tick: 0, subtitle: null, mode: null };
   const host: ViewHost = {
     options,
     setStatus(msg) { chrome.status = msg; },
     setBanner(msg, level) { chrome.banner = msg == null ? null : { msg, level }; },
     setError(msg) { chrome.banner = msg == null ? null : { msg, level: 'error' }; },
+    setSubtitle(s) { chrome.subtitle = s; },
+    setMode(mode) { chrome.mode = mode; },
   };
 
   // ── Non-TTY / piped path: build state, best-effort load, dump, exit 0. ──

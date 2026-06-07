@@ -39,7 +39,7 @@ function hasColorSgr(frame: string): boolean {
 }
 
 function baseChrome(over: Partial<Chrome> = {}): Chrome {
-  return { status: null, banner: null, busy: false, loaded: true, lastRefresh: Date.now(), tick: 0, ...over };
+  return { status: null, banner: null, busy: false, loaded: true, lastRefresh: Date.now(), tick: 0, subtitle: null, mode: null, ...over };
 }
 
 const MANIFEST: ViewManifest = {
@@ -210,5 +210,87 @@ describe('drawChrome: SGR encoding + mono fallback (bug-regression)', () => {
     const f = frame();
     assert.ok(f.includes('q'), 'q quit hint survives overflow');
     assert.ok(!hasInvalidCsi(f), 'no invalid CSI under overflow');
+  });
+});
+
+// ── Dynamic subtitle (host.setSubtitle) — same bug class + mono fallback ──
+
+describe('drawChrome subtitle: SGR encoding + mono fallback (bug-regression)', () => {
+  test('a dynamic subtitle overrides manifest.subtitle, dim, no broken escape', () => {
+    const { draw, frame } = createDraw(SIZE, ON);
+    drawChrome(draw, SIZE, MANIFEST, baseChrome({ subtitle: '7 unread' }));
+    const f = frame();
+    assert.ok(f.includes('7 unread'), 'dynamic subtitle rendered');
+    assert.ok(!f.includes('3 unread'), 'dynamic value overrides the static manifest subtitle');
+    assert.ok(f.includes(`${ESC}2m`), 'subtitle is dim (structural)');
+    assert.ok(!hasInvalidCsi(f), 'no invalid CSI');
+  });
+
+  test('null subtitle falls back to the manifest default', () => {
+    const { draw, frame } = createDraw(SIZE, ON);
+    drawChrome(draw, SIZE, MANIFEST, baseChrome({ subtitle: null }));
+    const f = frame();
+    assert.ok(f.includes('3 unread'), 'manifest.subtitle shown when dynamic is null');
+    assert.ok(!hasInvalidCsi(f), 'no invalid CSI');
+  });
+
+  test('mono fallback: subtitle text renders dim with no color SGR', () => {
+    const { draw, frame } = createDraw(SIZE, OFF);
+    drawChrome(draw, SIZE, MANIFEST, baseChrome({ subtitle: '7 unread' }));
+    const f = frame();
+    assert.ok(f.includes('7 unread'), 'subtitle text still renders in mono');
+    assert.ok(!hasColorSgr(f), 'no color SGR emitted for the subtitle in mono');
+    assert.ok(!hasInvalidCsi(f), 'no invalid CSI');
+  });
+});
+
+// ── Mode chip (host.setMode) — same bug class, mono fallback, precedence ──
+
+describe('drawChrome mode chip: SGR encoding + mono fallback (bug-regression)', () => {
+  test('compose mode → ✎ compose in yellow (33), no broken escape', () => {
+    const { draw, frame } = createDraw(SIZE, ON);
+    drawChrome(draw, SIZE, MANIFEST, baseChrome({ mode: 'compose' }));
+    const f = frame();
+    assert.ok(f.includes('✎') && f.includes('compose'), 'mode glyph + word present');
+    assert.ok(f.includes(`${ESC}33m`), 'compose-accent yellow 33 emitted');
+    assert.ok(!hasInvalidCsi(f), 'no invalid CSI');
+  });
+
+  test('react mode → ☺ react reuses the compose-accent yellow (33)', () => {
+    const { draw, frame } = createDraw(SIZE, ON);
+    drawChrome(draw, SIZE, MANIFEST, baseChrome({ mode: 'react' }));
+    const f = frame();
+    assert.ok(f.includes('☺') && f.includes('react'), 'react glyph + word present');
+    assert.ok(f.includes(`${ESC}33m`), 'react reuses yellow 33');
+    assert.ok(!hasInvalidCsi(f), 'no invalid CSI');
+  });
+
+  test('mono fallback: mode chip is glyph + bold word, no color SGR', () => {
+    const { draw, frame } = createDraw(SIZE, OFF);
+    drawChrome(draw, SIZE, MANIFEST, baseChrome({ mode: 'compose' }));
+    const f = frame();
+    assert.ok(f.includes('✎'), 'glyph carries the mode in mono');
+    assert.ok(f.includes('compose'), 'mode word carries meaning in mono');
+    assert.ok(f.includes(`${ESC}1m`), 'bold still emitted (mono carrier)');
+    assert.ok(!hasColorSgr(f), 'no color SGR emitted in mono');
+    assert.ok(!hasInvalidCsi(f), 'no invalid CSI');
+  });
+
+  test('precedence: an explicit mode WINS the chip over the derived busy/working state', () => {
+    const { draw, frame } = createDraw(SIZE, ON);
+    // busy would derive `working`; the explicit mode must override it.
+    drawChrome(draw, SIZE, MANIFEST, baseChrome({ busy: true, mode: 'compose' }));
+    const f = frame();
+    assert.ok(f.includes('compose'), 'mode word shown');
+    assert.ok(!f.includes('working'), 'derived working chip suppressed by the mode override');
+    assert.ok(!hasInvalidCsi(f), 'no invalid CSI');
+  });
+
+  test('null mode returns to the derived chip (ready when loaded)', () => {
+    const { draw, frame } = createDraw(SIZE, ON);
+    drawChrome(draw, SIZE, MANIFEST, baseChrome({ mode: null }));
+    const f = frame();
+    assert.ok(f.includes('ready'), 'derived ready chip shown when no mode set');
+    assert.ok(!hasInvalidCsi(f), 'no invalid CSI');
   });
 });
