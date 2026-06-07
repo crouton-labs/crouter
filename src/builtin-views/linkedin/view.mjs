@@ -236,7 +236,7 @@ function renderLeft(state, draw, left) {
     const badge = c.unread ? '●' : ' ';
     /** @type {import('../../core/tui/draw.js').Span[]} */
     const spans = [
-      { text: badge + ' ', style: c.unread ? { fg: 'cyan', bold: true } : undefined },
+      { text: badge + ' ', style: c.unread ? { fg: '36', bold: true } : undefined }, // cyan
       { text: c.name || 'Unknown', style: c.unread ? { bold: true } : undefined },
     ];
     const snippet = (c.lastMessage || '').replace(/\s+/g, ' ').trim();
@@ -278,7 +278,7 @@ function renderRight(state, draw, right) {
     const lines = [];
     for (const m of state.thread) {
       const who = m.fromMe ? 'You' : m.sender || 'Them';
-      lines.push({ spans: [{ text: who, style: { bold: true, fg: m.fromMe ? 'green' : 'cyan' } }] });
+      lines.push({ spans: [{ text: who, style: { bold: true, fg: m.fromMe ? '32' : '36' } }] }); // green / cyan
       for (const bl of wrapText(m.text || '', right.width)) {
         lines.push({ spans: [{ text: bl, style: m.fromMe ? { dim: true } : undefined }] });
       }
@@ -297,7 +297,7 @@ function renderRight(state, draw, right) {
     const row = right.row + right.height - 1;
     /** @type {import('../../core/tui/draw.js').Span[]} */
     const spans = [
-      { text: 'Reply: ', style: { fg: 'yellow', bold: true } },
+      { text: 'Reply: ', style: { fg: '33', bold: true } }, // yellow
       { text: state.draft },
       { text: '▌', style: { reverse: true } },
     ];

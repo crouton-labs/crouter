@@ -46,6 +46,13 @@ export interface Style {
 
 export interface Span { text: string; style?: Style; }
 
+/** An SGR fg/bg parameter is digits and semicolons only (e.g. '32', '1;36', '236').
+ *  Guards styleSpan against a non-numeric value (a color name) producing a broken
+ *  escape sequence. */
+export function isSgrParams(v: string): boolean {
+  return v.length > 0 && /^[0-9;]+$/.test(v);
+}
+
 /** Style one chunk of text. Hue (fg/bg) is gated on `color`; bold/dim/reverse
  *  are not. After the styled text we return to `lineBase` (not a bare reset) so a
  *  row-level background/dim persists across spans instead of bleeding or being
@@ -56,8 +63,11 @@ export function styleSpan(text: string, style: Style | undefined, color: boolean
   if (style?.dim) pre += DIM;
   if (style?.bold) pre += BOLD;
   if (style?.reverse) pre += REVERSE;
-  if (color && style?.fg) pre += `${ESC}${style.fg}m`;
-  if (color && style?.bg) pre += `${ESC}48;5;${style.bg}m`;
+  // fg is an SGR parameter string (e.g. '32' or '1;36'); bg is a 256-color index.
+  // Reject anything else so a bad value (e.g. a color NAME like 'green') degrades
+  // to no-color instead of emitting an invalid CSI that prints as literal garbage.
+  if (color && style?.fg && isSgrParams(style.fg)) pre += `${ESC}${style.fg}m`;
+  if (color && style?.bg && isSgrParams(style.bg)) pre += `${ESC}48;5;${style.bg}m`;
   if (pre === '') return text; // inherits lineBase / default
   return `${pre}${text}${RESET}${lineBase}`;
 }
