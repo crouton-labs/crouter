@@ -4,8 +4,6 @@ CLI builder skills — needs to build its own harness for projects (like figurin
 - Changes the pi harness as it goes?
 
 
-Make crouter inline with openclaw—should be able to have it schedule stuff for itself, run scripts on a schedule
-
 UI library for crouter—make it able to access a UI library so it can build dashboards for itself. I want it to build my own crouter dashboard using crouter's ui tooling. Or actually, it should be a git UI for handling PRs?? Or using ink for TUI version of git handling, TUI for visualizing nodes, TUI for visualizing map, progress of nodes, etc. 
 
 When I start crouter, I want to be able to switch between agent mode, tickets, and dashboards.
@@ -13,8 +11,4 @@ When I start crouter, I want to be able to switch between agent mode, tickets, a
 - It builds dashboards which are just keybind away from opening. They render stuff from APIs and internal tools. THey each have their own menu.
 - Anything opens tickets. I want maybe a unified ticket space per cwd (zone). I can cycle between tickets.
 
-
-- Was giving me notifications on next round
-- it's taking the human stuff very seriously.
 - when terminal agents use ask, that has to bubble up to top.
-- daily passive subscriber to all nodes created. Just gets notified that it was started or stopped. Sees final reports.
