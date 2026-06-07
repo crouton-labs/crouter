@@ -461,7 +461,15 @@ export function reviveIntoPlacement(nodeId: string, launch: ReviveLaunch): Place
  *  CURRENT location, §2.4) and again after (presence FOLLOWS the move). No-op
  *  (false) when there is no live pane to relocate or tmux refuses the break.
  *  `pane` is the authoritative node pane the caller acts on (the Alt+C menu's
- *  `#{pane_id}`); falls back to the node's durable handle. */
+ *  `#{pane_id}`); falls back to the node's durable handle.
+ *
+ *  Invariant P gate (Bug 1): the backstage holds ONLY generating-but-unfocused
+ *  nodes. A node that is NOT mid-turn (e.g. a resident root parked idle between
+ *  turns, detached via Alt+C → D) must never be parked there as a live-idle pi —
+ *  nothing would re-enter agent_end to release it and, with no live subscription,
+ *  nothing would wake it, so it would hold a backstage pane forever, reaped by
+ *  nothing. Such a node is RELEASED to dormant instead (mirrors the parked-viewer
+ *  release on focus-away in retargetFocus). */
 export function detachToBackground(nodeId: string, pane?: string): boolean {
   reconcile(nodeId);
   const row = getRow(nodeId);
@@ -471,6 +479,28 @@ export function detachToBackground(nodeId: string, pane?: string): boolean {
   // Anchor the durable handle on the pane we relocate so the post-move reconcile
   // follows the right pane.
   if (row.pane !== target) setPresence(nodeId, { pane: target });
+
+  // Invariant P (Bug 1): a node that is NOT mid-turn must never be parked in the
+  // backstage as a live-idle pi (it would hold a backstage pane forever, reaped
+  // by nothing). Detaching such a node RELEASES it to dormant instead: close its
+  // focus, then — crash-safety, as in retargetFocus's release path — flip it to
+  // dormant (idle + intent='idle-release', revivable via inbox / re-focus) and
+  // null its LOCATION BEFORE reaping the pane, so a daemon tick can never catch a
+  // window-gone live node mid-reap and race to revive it. Unlike retargetFocus's
+  // outgoingDisposition (which keeps a RESIDENT node warm on focus-away), detach
+  // is a deliberate let-go: a non-generating node is released regardless of
+  // lifecycle. The status guard skips the transition for a done/dead/canceled
+  // node ('release' is legal only from active|idle) — it still reaps + nulls.
+  if (!isGenerating(nodeId)) {
+    const f = focusOf(nodeId);
+    if (f !== null) closeFocusRow(f.focus_id);
+    if (row.status === 'active' || row.status === 'idle') transition(nodeId, 'release');
+    setPresence(nodeId, { pane: null, tmux_session: null, window: null });
+    closePane(target);
+    return true;
+  }
+
+  // Generating → park in the backstage, keep running off-screen.
   const session = nodeSession();
   ensureSession(session, row.cwd);
   const ok = breakPaneToSession(target, session);

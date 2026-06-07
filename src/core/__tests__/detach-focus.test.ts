@@ -38,6 +38,7 @@ import { createHarness, hasTmux, type Harness } from './helpers/harness.js';
 import { setPresence, getNode } from '../canvas/canvas.js';
 import { openFocusRow, getFocusByNode, getFocusByPane, listFocuses } from '../canvas/focuses.js';
 import { closeDb } from '../canvas/db.js';
+import { markBusy } from '../runtime/busy.js';
 
 const SKIP = !hasTmux() ? 'tmux unavailable' : false;
 
@@ -109,6 +110,12 @@ test(
       setPresence(B, { pane: bPane!, tmux_session: user, window: moved!.window });
       openFocusRow('f-detach', bPane!, user, B);
       assert.equal(getFocusByNode(B)?.focus_id, 'f-detach', 'precondition: B is FOCUSED in the user viewport');
+      // B must read as GENERATING for the backstage-park path: isGenerating now
+      // gates the break-pane (Bug 1 / Invariant P) on the mid-turn busy marker
+      // AND a live pi_pid. The boot only recorded pi_pid (session_start); no turn
+      // fired, so set the busy marker to model an agent genuinely mid-turn —
+      // otherwise the new gate would RELEASE B (the non-generating path below).
+      markBusy(B);
 
       // --- Drive the REAL verb on the FOCUSED node. The subprocess inherits
       //     CRTR_NODE_SESSION = h.session (the backstage), so detachToBackground
@@ -133,6 +140,92 @@ test(
       assert.equal(getFocusByNode(B), null, '(c) B no longer occupies any focus (row CLOSED — Invariant P)');
       assert.equal(getFocusByPane(bPane!), null, '(c) NO phantom focus resolves on the relocated %id');
       assert.equal(listFocuses().length, 0, '(c) no dangling focus rows remain');
+    } finally {
+      spawnSync('tmux', ['kill-session', '-t', user], { stdio: 'ignore' });
+      const session = h.session;
+      await h.dispose();
+      assert.equal(sessionExists(session), false, 'isolated session killed — no stray');
+    }
+  },
+);
+
+// ===========================================================================
+// Bug 1 (Invariant P / detach-idle-node): `crtr node demote --detach` on a
+// NON-GENERATING focused node must NOT park it alive in the backstage — it must
+// be RELEASED to dormant and its pane reaped.
+//
+// The backstage holds ONLY generating-but-unfocused nodes (Invariant P).
+// detachToBackground used to break-pane to the backstage UNCONDITIONALLY, with no
+// generating-ness check: a resident root parked idle between turns (pi alive,
+// idle, NOT mid-turn) detached via Alt+C → D became unfocused + pi-alive-idle +
+// holding a backstage pane forever — nothing re-enters agent_end to release it
+// and, with no live subscription, nothing wakes it → a leaked live-idle pi that
+// never reaps. The fix gates the break-pane on isGenerating() and RELEASES a
+// non-generating node to dormant instead (mirrors retargetFocus's parked-viewer
+// release on focus-away).
+//
+// This drives the SAME real verb as the happy-path test above, but on a node
+// with NO busy marker (not mid-turn). isGenerating() = busy && pidAlive, so a
+// freshly-booted node (pi_pid recorded at session_start, no turn fired) reads as
+// NOT generating.
+// ===========================================================================
+test(
+  'node demote --detach on a NON-GENERATING focused node: RELEASES to dormant (idle + idle-release), reaps the pane, closes the focus row — NOT parked in the backstage (Bug 1 — Invariant P)',
+  { skip: SKIP, timeout: 120_000 },
+  async () => {
+    const h: Harness = await createHarness({ sessionPrefix: 'crtr-detach-idle' });
+    const user = `crtr-detach-idle-user-${process.pid}-${Date.now().toString(36)}`;
+    try {
+      // A resident root + a live terminal child B. B is freshly booted: pi alive
+      // (pi_pid recorded at session_start), status active, and — critically — NO
+      // busy marker, since no turn ever fired. It is parked idle, not mid-turn:
+      // exactly the non-generating occupant Bug 1 is about.
+      const A = h.spawnRoot('resident root');
+      const B = await h.spawnChild(A, 'do the work', { kind: 'developer' });
+      const b0 = h.node(B)!;
+      assert.equal(b0.status, 'active', 'B active after boot');
+
+      const bPane = firstPaneOf(b0.window!);
+      assert.ok(typeof bPane === 'string' && bPane !== '', 'B has a live pane');
+
+      // --- Put B into a USER viewport, FOCUSED (same precondition as the happy
+      //     path), but DO NOT mark it busy: it stays NOT generating.
+      spawnSync('tmux', ['new-session', '-d', '-s', user, '-c', '/tmp', 'sleep 600'], { stdio: 'ignore' });
+      assert.equal(
+        spawnSync('tmux', ['break-pane', '-d', '-a', '-s', bPane!, '-t', `${user}:`]).status,
+        0,
+        'B pane broke out into the user viewport (pi kept alive)',
+      );
+      const moved = paneLoc(bPane!);
+      assert.equal(moved?.session, user, 'B pane physically in the user session now');
+      assert.equal(paneExistsReal(bPane!), true, "B's pi is alive (parked idle, not mid-turn)");
+      closeDb();
+      setPresence(B, { pane: bPane!, tmux_session: user, window: moved!.window });
+      openFocusRow('f-detach-idle', bPane!, user, B);
+      assert.equal(getFocusByNode(B)?.focus_id, 'f-detach-idle', 'precondition: B is FOCUSED, NON-generating');
+
+      // --- Drive the REAL verb on the non-generating focused node.
+      const res = h.cli(B, ['node', 'demote', '--node', B, '--pane', bPane!, '--detach']);
+      assert.equal(res.code, 0, `node demote --detach exit 0\n${res.stderr}`);
+      assert.match(res.stdout, /detached="true"/, `the agent was detached\n${res.stdout}`);
+
+      closeDb();
+      const b = getNode(B)!;
+      // (b) RELEASED to dormant — idle + intent='idle-release' (revivable via inbox
+      //     / re-focus), NOT left active in the backstage.
+      assert.equal(b.status, 'idle', '(b) B released to dormant (status idle)');
+      assert.equal(b.intent, 'idle-release', "(b) B's intent is idle-release (daemon revives on inbox)");
+
+      // (c) the pane is REAPED / presence nulled — NOT relocated to the backstage
+      //     crtr session. The leaked live-idle pi must be gone.
+      assert.equal(paneExistsReal(bPane!), false, '(c) B pane reaped (NOT parked alive in the backstage)');
+      assert.equal(b.pane, null, "(c) B's presence pane is nulled");
+      assert.equal(b.tmux_session, null, "(c) B's presence session is nulled (NOT the backstage crtr session)");
+
+      // (a) the focus row is CLOSED — no orphaned/phantom viewport.
+      assert.equal(getFocusByNode(B), null, '(a) B no longer occupies any focus (row CLOSED — Invariant P)');
+      assert.equal(getFocusByPane(bPane!), null, '(a) NO phantom focus resolves on the reaped %id');
+      assert.equal(listFocuses().length, 0, '(a) no dangling focus rows remain');
     } finally {
       spawnSync('tmux', ['kill-session', '-t', user], { stdio: 'ignore' });
       const session = h.session;

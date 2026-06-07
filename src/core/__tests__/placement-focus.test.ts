@@ -321,6 +321,11 @@ test('detachToBackground: a FOCUSED node sent to the backstage CLOSES its focus 
       createNode(node('N', { pane: focusPane, tmux_session: user, window: userWindow, status: 'active', pi_pid: process.pid, home_session: back }));
       openFocusRow('f1', focusPane, user, 'N'); // N is the focus occupant
       assert.equal(getFocusByNode('N')?.focus_id, 'f1', 'precondition: N is focused');
+      // N must read as GENERATING for the relocate-to-backstage path: detach now
+      // gates the break-pane (Bug 1 / Invariant P) on isGenerating = busy &&
+      // pidAlive. pi_pid is this (alive) process; set the busy marker so N is
+      // genuinely mid-turn (otherwise the gate would RELEASE + reap it instead).
+      markBusy('N');
 
       const ok = detachToBackground('N', focusPane);
 
