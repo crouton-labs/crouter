@@ -24,7 +24,7 @@
     "bin"
   ],
   "scripts": {
-    "build": "rm -rf dist && tsc && cp -R src/builtin-skills dist/builtin-skills && cp -R src/builtin-personas dist/builtin-personas",
+    "build": "rm -rf dist && tsc && cp -R src/builtin-skills dist/builtin-skills && cp -R src/builtin-personas dist/builtin-personas && cp -R src/builtin-views dist/builtin-views",
     "dev": "tsx src/cli.ts",
     "link": "npm link",
     "prepublishOnly": "npm run build",

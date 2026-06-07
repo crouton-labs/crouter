@@ -39,6 +39,7 @@ export const CANVAS_PASSIVE_CONTEXT_PATH = resolveExtension('canvas-passive-cont
 export const CANVAS_CONTEXT_INTRO_PATH = resolveExtension('canvas-context-intro');
 export const CANVAS_COMMANDS_PATH = resolveExtension('canvas-commands');
 export const CANVAS_RESUME_PATH = resolveExtension('canvas-resume');
+export const CANVAS_VIEW_PATH = resolveExtension('canvas-view');
 
 /** The canvas extensions every node loads, in order: stophook (routing +
  *  telemetry + session-id capture), inbox-watcher (wake), nav (in-editor
@@ -46,7 +47,8 @@ export const CANVAS_RESUME_PATH = resolveExtension('canvas-resume');
  *  passive-context (drain passive backlog as pre-text on the next message),
  *  context-intro (inject the <crtr-context> bearings block as its own session
  *  message, once per brand-new chat), commands (the /promote slash-command),
- *  resume (the /resume-node whole-canvas picker → `crtr node focus`).
+ *  resume (the /resume-node whole-canvas picker → `crtr node focus`),
+ *  view (the /view popup → `crtr view pick` / `crtr view run <name>`).
  *  All self-gate on CRTR_NODE_ID. goal-capture precedes passive-context so it
  *  reads the raw user text. */
 export const CANVAS_EXTENSIONS = [
@@ -58,6 +60,7 @@ export const CANVAS_EXTENSIONS = [
   CANVAS_CONTEXT_INTRO_PATH,
   CANVAS_COMMANDS_PATH,
   CANVAS_RESUME_PATH,
+  CANVAS_VIEW_PATH,
 ];
 
 /** Bare model aliases resolve to the anthropic provider under pi (avoids the

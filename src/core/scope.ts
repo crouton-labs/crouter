@@ -16,6 +16,15 @@ export function builtinSkillsRoot(): string {
   return join(pkgDir, 'builtin-skills');
 }
 
+export function builtinViewsRoot(): string {
+  // Resolved relative to this file exactly like builtinSkillsRoot — sibling of
+  // builtin-skills: dist/core/scope.js → dist/builtin-views/ (src/ at dev time).
+  const thisFile = fileURLToPath(import.meta.url);
+  const coreDir = dirname(thisFile);
+  const pkgDir = dirname(coreDir); // src/ or dist/
+  return join(pkgDir, 'builtin-views');
+}
+
 export function userScopeRoot(): string {
   return join(homedir(), CRTR_DIR_NAME);
 }
@@ -86,6 +95,15 @@ export function marketplacesDir(scope: Scope): string | null {
 export function scopeSkillsDir(scope: Scope): string | null {
   const root = scopeRoot(scope);
   return root ? join(root, 'skills') : null;
+}
+
+/** Where view definition dirs live per scope. Builtin views sit directly under
+ *  builtinViewsRoot() (no `views/` segment — they ARE the builtin views dir),
+ *  matching the loader's `<root>/<name>/view.mjs` resolution. */
+export function viewsDir(scope: Scope): string | null {
+  if (scope === 'builtin') return builtinViewsRoot();
+  const root = scope === 'user' ? userScopeRoot() : projectScopeRoot();
+  return root ? join(root, 'views') : null;
 }
 
 export function resolveScopeArg(scopeArg: string | undefined): Scope | 'all' {

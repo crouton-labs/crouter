@@ -19,7 +19,7 @@ import {
   getTerminalSize,
   parseKeypress,
   type Key,
-} from './terminal.js';
+} from '../../tui/terminal.js';
 import { buildTree, flatten, TABS, SORTS, type Tab, type Tree, type VisibleRow, type SortMode } from './model.js';
 import { renderFrame, detectColorCaps, headerHeight, PREVIEW_HEIGHT, type ColorCaps } from './render.js';
 

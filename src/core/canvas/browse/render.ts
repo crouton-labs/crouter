@@ -16,6 +16,12 @@ import type { NodeStatus } from '../types.js';
 import type { DashboardRow } from '../render.js';
 import type { Tab, Tree, VisibleRow, SortMode } from './model.js';
 import { TABS, matchIndices } from './model.js';
+// Span/color primitives live in core/tui/draw.ts (one copy, shared with the
+// `crtr view` host). Re-export the color caps so browse's importers + tests keep
+// resolving them from this module.
+import { clip, assemble, detectColorCaps, type Span, type ColorCaps } from '../../tui/draw.js';
+export { detectColorCaps };
+export type { ColorCaps };
 
 // Fixed chrome heights, shared with app.ts so its viewport math never drifts
 // from what renderFrame actually draws.
@@ -64,26 +70,7 @@ const STATUS_COLOR: Record<NodeStatus, string> = {
 
 // ── Color capability ──────────────────────────────────────────────────────────
 
-export interface ColorCaps {
-  /** Any hue (fg/bg color) allowed. */
-  color: boolean;
-  /** 256-color bg allowed — drives the subtle cursor-row background. */
-  color256: boolean;
-}
-
-/** Detect color capability. Honors `NO_COLOR` and `TERM=dumb`, and only emits
- *  hue when stdout is a TTY. `color256` additionally requires a 256/truecolor
- *  terminal (for the cursor-row background; otherwise we fall back to reverse). */
-export function detectColorCaps(
-  stream: { isTTY?: boolean } = process.stdout,
-  env: NodeJS.ProcessEnv = process.env,
-): ColorCaps {
-  const term = env['TERM'] ?? '';
-  const color = stream.isTTY === true && !env['NO_COLOR'] && term !== 'dumb';
-  const colorTerm = env['COLORTERM'] ?? '';
-  const color256 = color && (/256|direct/i.test(term) || /truecolor|24bit/i.test(colorTerm));
-  return { color, color256 };
-}
+// ColorCaps + detectColorCaps now live in core/tui/draw.ts (re-exported above).
 
 export interface RenderState {
   tree: Tree;
@@ -113,12 +100,6 @@ function ctxColorCode(tokens: number): string | undefined {
   if (tokens >= 100_000) return FG_RED;
   if (tokens >= 50_000) return FG_YELLOW;
   return undefined;
-}
-
-/** Truncate to `max` visible cols (plain text, no ANSI). */
-function clip(text: string, max: number): string {
-  if (max <= 0) return '';
-  return text.length <= max ? text : text.slice(0, Math.max(0, max - 1)) + '…';
 }
 
 /** Compact relative age, e.g. `45s` `12m` `3h` `5d` `2w` `4mo`. Empty on a bad
@@ -169,50 +150,7 @@ function wrap(text: string, width: number, maxLines: number): string[] {
 // while clipping by VISIBLE width — ANSI bytes don't count toward the column
 // budget. `fg` is hue (gated on `color`); `bold`/`dim` are structural (always).
 
-interface Span {
-  text: string;
-  fg?: string;   // hue code — emitted only when color is on
-  bold?: boolean;
-  dim?: boolean;
-}
-
-/** Style one span. Hue is gated on `color`; bold/dim are not. After the span we
- *  return to `lineBase` (not a bare reset) so a row-level background/dim persists
- *  across the span instead of bleeding or being cleared. */
-function styleSpan(text: string, span: Span, color: boolean, lineBase: string): string {
-  if (text === '') return '';
-  let pre = '';
-  if (span.dim) pre += DIM;
-  if (span.bold) pre += BOLD;
-  if (color && span.fg) pre += `${ESC}${span.fg}m`;
-  if (pre === '') return text; // inherits lineBase / default
-  return `${pre}${text}${RESET}${lineBase}`;
-}
-
-/** Assemble styled spans into one line clipped to `width` visible cols. When
- *  `fill`, pad the remainder with spaces (under `lineBase`) so a cursor-row
- *  background spans the full width. Always RESET-terminated so no color bleeds
- *  into the next line. */
-function assemble(spans: Span[], width: number, color: boolean, lineBase: string, fill: boolean): string {
-  let used = 0;
-  let body = '';
-  for (const span of spans) {
-    if (used >= width) break;
-    if (span.text === '') continue;
-    let t = span.text;
-    const remaining = width - used;
-    let cut = false;
-    if (t.length > remaining) {
-      t = t.slice(0, Math.max(0, remaining - 1)) + '…';
-      cut = true;
-    }
-    body += styleSpan(t, span, color, lineBase);
-    used += t.length;
-    if (cut) break;
-  }
-  if (fill && used < width) body += ' '.repeat(width - used);
-  return lineBase === '' ? body : `${lineBase}${body}${RESET}`;
-}
+// Span / styleSpan / assemble now live in core/tui/draw.ts (imported above).
 
 /** Status tallies across the whole canvas, for the right-aligned header. Memoized
  *  per tree — the snapshot is immutable for a browse session, so counting is done
@@ -248,14 +186,14 @@ const EMPTY_HI: ReadonlySet<number> = new Set();
  *  terminal status, bold on the cursor row). */
 function nameSpans(name: string, query: string, style: { dim: boolean; bold: boolean }): Span[] {
   const hi = query === '' ? EMPTY_HI : matchIndices(query, name);
-  if (hi.size === 0) return [{ text: name, dim: style.dim, bold: style.bold }];
+  if (hi.size === 0) return [{ text: name, style: { dim: style.dim, bold: style.bold } }];
   const out: Span[] = [];
   let buf = '';
   let bufHi = false;
   const flush = (): void => {
     if (buf === '') return;
-    if (bufHi) out.push({ text: buf, fg: FG_BRIGHT_CYAN, bold: true });
-    else out.push({ text: buf, dim: style.dim, bold: style.bold });
+    if (bufHi) out.push({ text: buf, style: { fg: FG_BRIGHT_CYAN, bold: true } });
+    else out.push({ text: buf, style: { dim: style.dim, bold: style.bold } });
     buf = '';
   };
   for (let i = 0; i < name.length; i++) {
@@ -295,16 +233,16 @@ function rowLine(
 
   const spans: Span[] = [
     { text: `${indent}${collapse} ` },
-    { text: glyph, fg: STATUS_COLOR[r.status] }, // load-bearing status hue
+    { text: glyph, style: { fg: STATUS_COLOR[r.status] } }, // load-bearing status hue
     { text: ' ' },
     ...nameSpans(r.name, query, nameStyle),
-    { text: ` [${r.kind}/${r.mode}]`, fg: FG_GRAY }, // recedes
-    { text: ' ctx ', dim: true },
-    { text: ctxStr, fg: ctxFg, dim: ctxFg === undefined }, // tiered budget cue
+    { text: ` [${r.kind}/${r.mode}]`, style: { fg: FG_GRAY } }, // recedes
+    { text: ' ctx ', style: { dim: true } },
+    { text: ctxStr, style: { fg: ctxFg, dim: ctxFg === undefined } }, // tiered budget cue
   ];
-  if (age !== '') spans.push({ text: ` ${age}`, dim: true }); // recency cue
-  if (showCwd) spans.push({ text: ` ~${baseDir(r.cwd)}`, fg: FG_GRAY }); // project cue (All dirs)
-  if (r.asks > 0) spans.push({ text: ` ⚑${r.asks}`, fg: FG_BRIGHT_YELLOW, bold: true }); // attention
+  if (age !== '') spans.push({ text: ` ${age}`, style: { dim: true } }); // recency cue
+  if (showCwd) spans.push({ text: ` ~${baseDir(r.cwd)}`, style: { fg: FG_GRAY } }); // project cue (All dirs)
+  if (r.asks > 0) spans.push({ text: ` ⚑${r.asks}`, style: { fg: FG_BRIGHT_YELLOW, bold: true } }); // attention
 
   // Row base: cursor → subtle bg (256) or reverse fallback (also covers !color);
   // non-matched ancestor → whole-row dim for tree context (keep prior behavior).
