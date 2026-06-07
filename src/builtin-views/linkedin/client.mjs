@@ -209,6 +209,32 @@ function buildListArgv(opts) {
   return argv;
 }
 
+/** The LinkedIn inbox URL the recovery flow opens / navigates to. */
+const MESSAGING_URL = 'https://www.linkedin.com/messaging/';
+
+/**
+ * Build the `capture open <url>` argv (open/reuse a tab; no --target).
+ * @param {BaseOpts} [opts]
+ * @returns {string[]}
+ */
+function buildOpenArgv(opts) {
+  const argv = ['open', MESSAGING_URL];
+  if (opts && opts.port != null && opts.port !== '') argv.push('--port', String(opts.port));
+  return argv;
+}
+
+/**
+ * Build the `capture navigate <url> --target <id>` argv (drive an existing tab).
+ * @param {BaseOpts} [opts]
+ * @returns {string[]}
+ */
+function buildNavigateArgv(opts) {
+  const argv = ['navigate', MESSAGING_URL];
+  if (opts && opts.target) argv.push('--target', String(opts.target));
+  if (opts && opts.port != null && opts.port !== '') argv.push('--port', String(opts.port));
+  return argv;
+}
+
 /**
  * Render an argv as the human-readable shell command (for logs/eyeballing). The
  * code element (which contains spaces) gets double-quoted; nothing is executed.
@@ -401,6 +427,45 @@ export async function discoverTab(opts = {}) {
 }
 
 /**
+ * Open (or reuse) a LinkedIn `/messaging/` tab and return its CDP tab id. Shells
+ * `capture open <url> [--port N]`, which finds an existing matching tab or opens
+ * one and BLOCKS on `Page.loadEventFired` (~10s timeout) — so it does the first
+ * page settle for us. Stdout is clean JSON `{id,title,url,port}` (the next-step
+ * hints go to stderr); we parse `.id`. Part of the not-ready recovery flow: the
+ * view drives the browser to the inbox instead of dead-ending on `no-tab`.
+ * @param {BaseOpts} [opts]
+ * @returns {Promise<Result<string>>}
+ */
+export async function openMessagingTab(opts = {}) {
+  const r = await runCapture(buildOpenArgv(opts));
+  if (!r.spawned) return fail(captureMissingError());
+  if (r.exitCode !== 0) return fail(classifyError(r.stderr));
+  let body;
+  try {
+    body = JSON.parse(String(r.stdout || '').trim() || '{}');
+  } catch {
+    return fail({ kind: 'error', message: `could not parse capture open output: ${truncate(r.stdout, 300)}` });
+  }
+  if (body && body.id) return ok(String(body.id));
+  return fail({ kind: 'error', message: 'capture open returned no tab id' });
+}
+
+/**
+ * Drive an EXISTING LinkedIn tab to the `/messaging/` inbox. Shells
+ * `capture navigate <url> --target <tabId> [--port N]`. Used for the
+ * `not-messaging` recovery branch (a LinkedIn tab parked on the wrong page).
+ * Exit 0 ⇒ ok; we don't need the HAR body it returns on stdout.
+ * @param {BaseOpts} [opts]
+ * @returns {Promise<Result<void>>}
+ */
+export async function navigateToMessaging(opts = {}) {
+  const r = await runCapture(buildNavigateArgv(opts));
+  if (!r.spawned) return fail(captureMissingError());
+  if (r.exitCode !== 0) return fail(classifyError(r.stderr));
+  return ok(undefined);
+}
+
+/**
  * Read the page auth context. Call ONCE; cache `csrf`+`memberId` and thread them
  * into later calls.
  * @param {BaseOpts} [opts]
@@ -512,6 +577,8 @@ export function describeCommands(opts = {}) {
   const o = { target: opts.target || '<tabId>', port: opts.port };
   return {
     discoverTab: toDisplay(buildListArgv(o)),
+    openMessagingTab: toDisplay(buildOpenArgv(o)),
+    navigateToMessaging: toDisplay(buildNavigateArgv(o)),
     getContext: toDisplay(buildExec('getContext', null, o).argv),
     listConversations: toDisplay(
       buildExec('listConversations', { count: 20, csrf: '<csrf>', memberId: '<memberId>' }, o).argv
