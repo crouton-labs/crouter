@@ -230,24 +230,29 @@ test('§5.1.4 truly-done + UNFOCUSED → no focus row created/touched, shuts dow
   assert.equal(listFocuses().length, 0, 'no focus row was created or touched');
 });
 
-test('§5.1.5 awaiting + focused → idle-release FREEZE: the focus row SURVIVES untouched (F3)', () => {
+test('§5.1.5 awaiting + FOCUSED → STAY ALIVE: pi keeps running (no release), focus row untouched (F3)', () => {
   createNode(node('root', { parent: null, lifecycle: 'resident' }));
   createNode(node('mgr', { parent: 'root', lifecycle: 'terminal', mode: 'orchestrator' }));
   createNode(node('worker', { parent: 'mgr', lifecycle: 'terminal', status: 'active' }));
   subscribe('root', 'mgr', true);
-  subscribe('mgr', 'worker', true); // mgr awaits a live worker → idle-release
+  subscribe('mgr', 'worker', true); // mgr awaits a live worker → would idle-release if UNfocused
   openFocusRow('fMgr', '%g', 'Suser', 'mgr');
 
   process.env['CRTR_NODE_ID'] = 'mgr';
   const pi = makeFakePi();
   registerCanvasStophook(pi as any);
-  pi.fire('agent_end', stopEvent('still waiting on the worker'), { shutdown: () => { /* swallow */ } });
 
-  // The awaiting branch only transition('release')s — it must NOT close or
-  // repoint the focus (that is the done branch). Non-vacuous: a wrong impl that
-  // routed an idle-release through the done-branch handoff/close would change or
-  // remove fMgr.
-  assert.equal(getNode('mgr')?.intent, 'idle-release', 'mgr idle-released (frozen)');
+  let shutdown = false;
+  pi.fire('agent_end', stopEvent('still waiting on the worker'), { shutdown: () => { shutdown = true; } });
+
+  // A FOCUSED awaiting node holds the user's viewport, so the awaiting branch
+  // keeps pi LIVE and dormant (the in-process inbox-watcher wakes it) instead of
+  // releasing + shutting down. It must NOT release, NOT shut down, and NOT touch
+  // the focus row. Non-vacuous: the old freeze impl flipped intent→idle-release
+  // and shut pi down; this pins all three as untouched.
+  assert.equal(getNode('mgr')?.status, 'active', 'a focused awaiting node stays active (not released)');
+  assert.equal(getNode('mgr')?.intent ?? null, null, 'no idle-release intent while focused');
+  assert.equal(shutdown, false, 'a focused awaiting node is NOT shut down — pi stays live');
   assert.equal(getFocusByNode('mgr')?.focus_id, 'fMgr', 'the focus row is UNCHANGED — not closed, not handed off');
 });
 

@@ -540,13 +540,21 @@ export function registerCanvasStophook(pi: PiLike): void {
         // subscribed worker delivers. An 'attended' root never releases: the human
         // is its wake source, so we keep its window live and dormant.
         if (decision.reason === 'awaiting') {
-          // AWAITING = F3. transition('release') marks it idle-released. If this
-          // node is FOCUSED its pane FREEZES in place (remain-on-exit, armed at
-          // focus time) so the daemon can respawn-pane -k it back into the SAME
-          // focus pane when a worker pushes; if UNFOCUSED its backstage pane
-          // closes (dormant) and the daemon revives it into the backstage on the
-          // inbox. Both are the same release — tmux's per-window remain-on-exit
-          // decides freeze vs close. NO manager-takeover (awaiting ≠ done).
+          // AWAITING ≠ done (no manager-takeover). What happens next splits on
+          // whether the user is WATCHING this node:
+          //   • FOCUSED → it holds the user's viewport, so keep pi LIVE and
+          //     dormant (exactly like a resident root): do NOT release or shut
+          //     down. The in-process inbox-watcher (still alive) wakes it the
+          //     instant a worker pushes — no respawn, no frozen pane, the pane
+          //     stays interactive. When the user later focuses AWAY, placement's
+          //     retarget reclassifies it as a parked terminal viewer and releases
+          //     it then (transition 'release' + pane reaped), so the kept-alive
+          //     pi is reclaimed on focus-away, never held forever.
+          //   • UNFOCUSED → no one is watching, so holding a live pi for a window
+          //     is waste. Release it (idle + idle-release) and shut pi down; its
+          //     backstage pane closes and the daemon revives it (resume) on the
+          //     next unseen inbox entry.
+          if (focusOf(nodeId) !== null) return; // focused → stay alive, dormant
           transition(nodeId, 'release');
           try { ctx?.shutdown?.(); } catch { /* ignore */ }
           return;

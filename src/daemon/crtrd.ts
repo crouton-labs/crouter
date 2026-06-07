@@ -106,10 +106,13 @@ export function livenessVerdict(piPidAlive: boolean | null, deadFor: number | nu
  *  it's been dead past the grace window. */
 function handleLiveWindow(row: NodeRow, now: number): void {
   const id = row.node_id;
-  // A deliberately-frozen focused-dormant node (intent=idle-release) keeps its
-  // pane alive via remain-on-exit (F3, §3c). Do NOT grace-revive it here — it is
-  // waiting for a worker's inbox push, which the second pass delivers. Grace-
-  // reviving would pre-empt that and churn the frozen focus pane.
+  // Defensive: an idle-release node whose pane is still alive must NOT be
+  // grace-revived here — it is dormant BY CHOICE and is woken only by a worker's
+  // inbox push (the second pass below); grace-reviving would pre-empt that and
+  // churn the pane. (Focused-await nodes now stay pi-LIVE instead of releasing —
+  // see the stophook awaiting branch — so reaching this with a live pane is rare;
+  // the guard stays as a cheap safety net, e.g. a remain-on-exit pane frozen for
+  // a done-node's manager handoff.)
   if (row.intent === 'idle-release') {
     unhealthySince.delete(id);
     return;
@@ -308,9 +311,11 @@ export async function superviseTick(now: number = Date.now()): Promise<void> {
       if (r === null) continue;
       if (r.status !== 'idle' || r.intent !== 'idle-release') continue;
       // The in-process inbox-watcher only owns delivery while pi is actually LIVE.
-      // A frozen focused-dormant pane (remain-on-exit, F3) is pane-ALIVE but
-      // pi-DEAD — no watcher — so the daemon must wake it. Gate the skip on pi
-      // liveness, NOT pane presence (which would skip a frozen pane forever, §3c).
+      // A released node is pi-DEAD with no watcher — whether its pane is GONE
+      // (unfocused release) or still ALIVE (a remain-on-exit pane frozen for a
+      // done-node's manager handoff) — so the daemon must wake it. Gate the skip
+      // on pi liveness, NOT pane presence (which would skip a frozen pane
+      // forever, §3c).
       if (r.pi_pid != null && isPidAlive(r.pi_pid)) continue;
 
       const entries = readInboxSince(row.node_id, readCursor(row.node_id));
