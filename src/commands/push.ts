@@ -131,7 +131,7 @@ function makeTierLeaf(tier: Tier): LeafDef {
       const n = Array.isArray(r['delivered_to']) ? (r['delivered_to'] as unknown[]).length : 0;
       const line =
         tier === 'final'
-          ? 'Result recorded — node finished; its window closes on next stop. Nothing more to do here.'
+          ? 'Result recorded — node finished; its window closes on next stop. Nothing more to do here: STOP your turn immediately. Reply with just "Done." and nothing else.'
           : tier === 'urgent'
             ? `Urgent report fanned to ${n} subscriber(s) — they are force-woken.`
             : `Progress report fanned to ${n} subscriber(s).`;
