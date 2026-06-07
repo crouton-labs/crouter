@@ -129,8 +129,10 @@ export function detectColorCaps(
 // ── Draw surface (cell buffer) ─────────────────────────────────────────────────
 
 /** One pre-styled list row (the view styles its own spans; `list` windows + the
- *  cursor highlight are the host's job). */
-export interface ListItemRow { spans: Span[]; }
+ *  cursor highlight are the host's job). An optional `right` group is flush-right
+ *  on the row (e.g. a timestamp) via spansRight; the left `spans` are clipped to
+ *  leave room for it, and the cursor-row highlight merges over both. */
+export interface ListItemRow { spans: Span[]; right?: Span[]; }
 /** Adjusted scroll the view stores back so the cursor stays visible. */
 export interface ListResult { scroll: number; }
 
@@ -139,10 +141,18 @@ export interface Draw {
   readonly caps: ColorCaps;
   /** Styled spans at an absolute cell, clipped to maxWidth (default → edge). */
   spans(row: number, col: number, spans: Span[], maxWidth?: number): void;
+  /** Flush-right span placement (mirror of `spans`): the group's last visible
+   *  cell lands just before `rightCol` (i.e. start col = rightCol − visibleWidth,
+   *  rightCol exclusive). If the group exceeds `maxWidth` (default → the room left
+   *  of rightCol) the LEFT end is clipped with a leading `…`. */
+  spansRight(row: number, rightCol: number, spans: Span[], maxWidth?: number): void;
   /** Convenience single span. */
   text(row: number, col: number, text: string, style?: Style): void;
   /** Dim horizontal rule across [fromCol,toCol) (default full width). */
   hline(row: number, fromCol?: number, toCol?: number, ch?: string): void;
+  /** Dim vertical rule down column `col` across [fromRow,toRow) (default full
+   *  height). `ch` defaults to `│`; pass `|` as the ASCII fallback. */
+  vline(col: number, fromRow?: number, toRow?: number, ch?: string): void;
   /** Single-line box border around rect (optional title in the top edge). */
   box(rect: Rect, title?: string): void;
   /** Split a rect into N columns by weights. */
@@ -219,12 +229,56 @@ export function createDraw(size: Size, caps: ColorCaps): DrawHandle {
     for (let x = Math.max(0, col); x < end; x++) grid[row]![x] = { ch: ' ', style };
   };
 
+  /** Visible (column) width of a span group — ANSI-free cell count. */
+  const spanWidth = (spans: Span[]): number => {
+    let n = 0;
+    for (const s of spans) n += Array.from(s.text).length;
+    return n;
+  };
+
+  /** Flatten spans to per-cell {ch,style}, then re-group consecutive same-style
+   *  cells back into spans — used to left-clip a flush-right group. */
+  const regroup = (cells: Cell[]): Span[] => {
+    const out: Span[] = [];
+    for (const c of cells) {
+      const last = out[out.length - 1];
+      if (last && sameStyle(last.style, c.style)) last.text += c.ch;
+      else out.push({ text: c.ch, style: c.style });
+    }
+    return out;
+  };
+
+  /** Flush-right placement shared by draw.spansRight and the list right-group.
+   *  Lays `spans` so the group ends just before `rightCol` (exclusive); clips the
+   *  LEFT end with a leading `…` when the group exceeds the effective width.
+   *  `base` (the cursor-row highlight) merges under each cell, like `place`. */
+  const placeRight = (row: number, rightCol: number, spans: Span[], maxWidth: number | undefined, base?: Style): void => {
+    if (row < 0 || row >= rows) return;
+    const cap = Math.max(0, rightCol);              // room available left of rightCol
+    const max = Math.min(maxWidth ?? cap, cap);
+    if (max <= 0) return;
+    let cells: Cell[] = [];
+    for (const s of spans) for (const ch of Array.from(s.text)) cells.push({ ch, style: s.style });
+    if (cells.length === 0) return;
+    if (cells.length > max) {
+      const drop = cells.length - max + 1;          // make room for the leading …
+      cells = cells.slice(drop);
+      cells.unshift({ ch: '…', style: cells[0]?.style });
+    }
+    const startCol = rightCol - cells.length;
+    place(row, startCol, regroup(cells), undefined, base);
+  };
+
   const draw: Draw = {
     size: { cols, rows },
     caps,
 
     spans(row, col, spans, maxWidth) {
       place(row, col, spans, maxWidth);
+    },
+
+    spansRight(row, rightCol, spans, maxWidth) {
+      placeRight(row, rightCol, spans, maxWidth);
     },
 
     text(row, col, text, style) {
@@ -236,6 +290,13 @@ export function createDraw(size: Size, caps: ColorCaps): DrawHandle {
       const a = Math.max(0, Math.min(cols, fromCol));
       const b = Math.max(0, Math.min(cols, toCol));
       for (let x = a; x < b; x++) grid[row]![x] = { ch, style: { dim: true } };
+    },
+
+    vline(col, fromRow = 0, toRow = rows, ch = '│') {
+      if (col < 0 || col >= cols) return;
+      const a = Math.max(0, Math.min(rows, fromRow));
+      const b = Math.max(0, Math.min(rows, toRow));
+      for (let r = a; r < b; r++) grid[r]![col] = { ch, style: { dim: true } };
     },
 
     box(rect, title) {
@@ -287,12 +348,20 @@ export function createDraw(size: Size, caps: ColorCaps): DrawHandle {
       const end = Math.min(items.length, sc + height);
       for (let i = sc; i < end; i++) {
         const rowIdx = rect.row + (i - sc);
-        if (i === cursor) {
-          const base: Style = caps.color256 ? { bg: '236' } : { reverse: true };
-          fillStyle(rowIdx, rect.col, rect.width, base);
-          place(rowIdx, rect.col, items[i]!.spans, rect.width, base);
+        const item = items[i]!;
+        const base: Style | undefined = i === cursor
+          ? (caps.color256 ? { bg: '236' } : { reverse: true })
+          : undefined;
+        if (base) fillStyle(rowIdx, rect.col, rect.width, base);
+        if (item.right && item.right.length) {
+          // Right-flush group (e.g. a timestamp); clip the left spans so they
+          // never collide, and merge the cursor highlight over both.
+          const rightWidth = spanWidth(item.right);
+          const leftLimit = Math.max(0, rect.width - rightWidth - 1);
+          place(rowIdx, rect.col, item.spans, leftLimit, base);
+          placeRight(rowIdx, rect.col + rect.width, item.right, rightWidth, base);
         } else {
-          place(rowIdx, rect.col, items[i]!.spans, rect.width);
+          place(rowIdx, rect.col, item.spans, rect.width, base);
         }
       }
       return { scroll: sc };

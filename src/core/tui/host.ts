@@ -22,43 +22,159 @@ import {
   getTerminalSize,
   parseKeypress,
 } from './terminal.js';
-import { createDraw, detectColorCaps, type ColorCaps, type Draw, type Rect, type Size } from './draw.js';
-import type { ViewModule, ViewHost, ViewAction, ViewManifest } from './contract.js';
+import { createDraw, detectColorCaps, type ColorCaps, type Draw, type Span, type Style, type Rect, type Size } from './draw.js';
+import type { ViewModule, ViewHost, ViewAction, ViewManifest, KeyHint, BannerLevel } from './contract.js';
 
 export interface RunViewOptions {
   /** CLI flags forwarded verbatim to the view via host.options. */
   options?: Record<string, string>;
 }
 
-const FG_RED = '31';
+// Numeric SGR codes only (a color NAME emits a broken CSI — see draw.ts guard).
+const FG = { cyan: '36', green: '32', yellow: '33', red: '31', grey: '90' } as const;
 
-interface Chrome {
+/** The host-tracked chrome state. `banner` + `busy` + `loaded` derive the title
+ *  state chip; `tick` advances the spinner under the busy-tick repaint. */
+export interface Chrome {
   status: string | null;
-  error: string | null;
+  banner: { msg: string; level: BannerLevel } | null;
   busy: boolean;
+  loaded: boolean;        // a refresh has completed at least once ⇒ ready vs idle
+  lastRefresh: number;    // epoch ms of the last refresh (the "updated <rel>" cue)
+  tick: number;           // spinner frame, advanced by the busy-tick repaint
 }
 
-/** Draw the host chrome into `draw` and return the content Rect for the view. */
-function drawChrome(draw: Draw, size: Size, manifest: ViewManifest, c: Chrome): Rect {
-  const { cols, rows } = size;
+type ChipState = 'working' | 'blocked' | 'attention' | 'ready' | 'idle';
 
-  // Top: title + (busy indicator) + separator.
-  draw.text(0, 0, manifest.title, { bold: true });
-  if (c.busy) {
-    const tag = '⟳ working…';
-    draw.text(0, Math.max(0, cols - tag.length), tag, { dim: true });
+/** The persistent state signal: word + glyph + hue, derived from host signals so
+ *  every view gets it for free. Each pairs hue with a glyph/word — mono-safe. */
+const CHIP: Record<ChipState, { word: string; glyph: string; fg: string }> = {
+  working:   { word: 'working',   glyph: '⟳', fg: FG.cyan },
+  blocked:   { word: 'blocked',   glyph: '⚠', fg: FG.red },
+  attention: { word: 'attention', glyph: '⚠', fg: FG.yellow },
+  ready:     { word: 'ready',     glyph: '●', fg: FG.green },
+  idle:      { word: 'idle',      glyph: '◌', fg: FG.grey },
+};
+
+/** Spinner frames for the working chip (animated only while busy). */
+const SPINNER = ['⟳', '⟲'];
+
+/** Banner glyph + hue by severity (color never carries meaning alone: the glyph
+ *  + bold survive NO_COLOR). */
+const BANNER: Record<BannerLevel, { glyph: string; fg: string }> = {
+  info:   { glyph: 'ℹ', fg: FG.cyan },
+  action: { glyph: '▸', fg: FG.yellow },
+  error:  { glyph: '✗', fg: FG.red },
+};
+
+/** Derive the one state chip from host signals (resume guidance): busy→working,
+ *  error banner→blocked, action banner→attention, else ready (once loaded) / idle.
+ *  An info banner does not block — the chip stays ready/idle and the cyan banner
+ *  carries the notice. */
+function deriveState(c: Chrome): ChipState {
+  if (c.busy) return 'working';
+  if (c.banner?.level === 'error') return 'blocked';
+  if (c.banner?.level === 'action') return 'attention';
+  return c.loaded ? 'ready' : 'idle';
+}
+
+/** Color-code the transient footer status by kind (not dim, so it leads): a
+ *  trailing … or an in-progress verb → cyan; a completed verb → green; else plain.
+ *  The words carry meaning; the hue is decorative (mono-safe). */
+function statusStyle(s: string): Style {
+  if (/…$/.test(s) || /^(loading|sending|reacting|opening|working|refreshing)\b/i.test(s)) return { fg: FG.cyan };
+  if (/^(sent|reacted|done|saved|caught up)\b/i.test(s) || /\bsent\b/i.test(s)) return { fg: FG.green };
+  return {};
+}
+
+/** Visible width of a span group. */
+function spanWidth(spans: Span[]): number {
+  let n = 0;
+  for (const s of spans) n += Array.from(s.text).length;
+  return n;
+}
+
+/** Compact relative-time cue for "updated <rel>": now/Ns/Nm/Nh/Nd. */
+function relTime(deltaMs: number): string {
+  const s = Math.max(0, Math.floor(deltaMs / 1000));
+  if (s < 5) return 'just now';
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h`;
+  return `${Math.floor(h / 24)}d`;
+}
+
+/** Build the right-flushed keymap span group, applying the overflow ladder: full
+ *  (key bold + label dim) → keys only → drop trailing hints (keep the last, q quit)
+ *  → the last hint alone. Returns spans ≤ `avail` where possible. */
+function keymapSpans(hints: KeyHint[], avail: number): Span[] {
+  if (hints.length === 0 || avail <= 0) return [];
+  const sep = (): Span => ({ text: ' · ', style: { dim: true } });
+  const build = (hs: KeyHint[], labels: boolean): Span[] => {
+    const out: Span[] = [];
+    hs.forEach((h, i) => {
+      if (i > 0) out.push(sep());
+      out.push({ text: h.keys, style: { bold: true } });
+      if (labels) out.push({ text: ` ${h.label}`, style: { dim: true } });
+    });
+    return out;
+  };
+  let spans = build(hints, true);
+  if (spanWidth(spans) <= avail) return spans;
+  spans = build(hints, false);
+  if (spanWidth(spans) <= avail) return spans;
+  const last = hints[hints.length - 1]!;
+  for (let keep = hints.length - 1; keep > 0; keep--) {
+    spans = build([...hints.slice(0, keep), last], false);
+    if (spanWidth(spans) <= avail) return spans;
   }
-  draw.hline(1, 0, cols);
+  return build([last], false); // may still overflow — spansRight left-clips with …
+}
 
-  // Bottom: footer (status left, keymap hints after it), error banner above it.
+/** Draw the host chrome into `draw` and return the content Rect for the view.
+ *  Three zones: title row (state rail + title/subtitle + state chip + liveness),
+ *  a hairline, and a footer (status left, keymap right) with a severity banner
+ *  on the row above it when set. */
+function drawChrome(draw: Draw, size: Size, manifest: ViewManifest, c: Chrome, now: number = Date.now()): Rect {
+  const { cols, rows } = size;
+  const st = deriveState(c);
+  const chip = CHIP[st];
+  const chipStyle: Style = { fg: chip.fg, bold: true };
+
+  // ── Title row: right cluster first (measure), then title clipped to fit. ──
+  const glyph = st === 'working' ? (SPINNER[c.tick % SPINNER.length] ?? chip.glyph) : chip.glyph;
+  const rightCluster: Span[] = [{ text: `${glyph} ${chip.word}`, style: chipStyle }];
+  if (c.loaded && c.lastRefresh > 0) {
+    rightCluster.push({ text: ` · updated ${relTime(now - c.lastRefresh)}`, style: { dim: true } });
+  }
+  const rightW = spanWidth(rightCluster);
+
+  draw.text(0, 0, '▎', chipStyle); // state rail (always drawn; word carries meaning in mono)
+  const titleSpans: Span[] = [{ text: manifest.title, style: { bold: true } }];
+  if (manifest.subtitle) titleSpans.push({ text: ` · ${manifest.subtitle}`, style: { dim: true } });
+  draw.spans(0, 2, titleSpans, Math.max(0, cols - 2 - rightW - 1));
+  draw.spansRight(0, cols, rightCluster, rightW);
+
+  draw.hline(1, 0, cols); // hairline separator (dim)
+
+  // ── Footer: status left (color-coded, not dim), keymap right. ──
   const footerRow = rows - 1;
-  const hints = (manifest.keymap ?? []).map((h) => `${h.keys} ${h.label}`).join('   ');
-  const footer = c.status ? (hints ? `${c.status}   ${hints}` : c.status) : hints;
-  draw.text(footerRow, 0, footer, { dim: true });
+  const status = c.status ?? '';
+  const statusW = Math.min(spanWidth([{ text: status }]), Math.max(0, Math.floor(cols / 2)));
+  if (status) draw.spans(footerRow, 0, [{ text: status, style: statusStyle(status) }], statusW);
+  const avail = Math.max(0, cols - statusW - 1);
+  draw.spansRight(footerRow, cols, keymapSpans(manifest.keymap ?? [], avail), avail);
 
+  // ── Banner (bottom-1, only when set): severity-coded, full-width. ──
   let bottomRows = 1;
-  if (c.error) {
-    draw.text(footerRow - 1, 0, c.error, { fg: FG_RED, bold: true });
+  if (c.banner) {
+    const b = BANNER[c.banner.level];
+    draw.spans(footerRow - 1, 0, [
+      { text: `${b.glyph} `, style: { fg: b.fg, bold: true } },
+      { text: c.banner.msg, style: { bold: true } },
+    ], cols);
     bottomRows = 2;
   }
 
@@ -67,15 +183,18 @@ function drawChrome(draw: Draw, size: Size, manifest: ViewManifest, c: Chrome): 
   return { row: top, col: 0, width: cols, height };
 }
 
+export { drawChrome };
+
 /** Host a view in the alt screen until it quits (or Ctrl-C). */
 export async function runView<S>(view: ViewModule<S>, opts: RunViewOptions = {}): Promise<void> {
   const options = Object.freeze({ ...(opts.options ?? {}) });
 
-  const chrome: Chrome = { status: null, error: null, busy: false };
+  const chrome: Chrome = { status: null, banner: null, busy: false, loaded: false, lastRefresh: 0, tick: 0 };
   const host: ViewHost = {
     options,
     setStatus(msg) { chrome.status = msg; },
-    setError(msg) { chrome.error = msg; },
+    setBanner(msg, level) { chrome.banner = msg == null ? null : { msg, level }; },
+    setError(msg) { chrome.banner = msg == null ? null : { msg, level: 'error' }; },
   };
 
   // ── Non-TTY / piped path: build state, best-effort load, dump, exit 0. ──
@@ -84,7 +203,9 @@ export async function runView<S>(view: ViewModule<S>, opts: RunViewOptions = {})
     if (view.refresh) {
       try { await view.refresh(state, host); } catch { /* dump current state regardless */ }
     }
-    let text = view.dump(state);
+    // Thread the host's current banner so a view can surface guidance without
+    // mirroring it into state (older views ignore the arg).
+    let text = view.dump(state, { banner: chrome.banner });
     if (!text.endsWith('\n')) text += '\n';
     process.stdout.write(text);
     return;
@@ -109,9 +230,21 @@ export async function runView<S>(view: ViewModule<S>, opts: RunViewOptions = {})
     try {
       view.render(state, draw, content);
     } catch (e) {
-      chrome.error = `render error: ${errText(e)}`;
+      chrome.banner = { msg: `render error: ${errText(e)}`, level: 'error' };
     }
     process.stdout.write(frame());
+  };
+
+  // Busy-tick repaint: while an async op is in flight, a ~120ms timer advances
+  // the spinner + re-renders so live setStatus narration shows. Render-only — it
+  // NEVER re-enters a hook, and Ctrl-C still escapes (handled before the drop).
+  let tickTimer: ReturnType<typeof setInterval> | undefined;
+  const startBusyTick = (): void => {
+    if (tickTimer) return;
+    tickTimer = setInterval(() => { chrome.tick++; render(); }, 120);
+  };
+  const stopBusyTick = (): void => {
+    if (tickTimer) { clearInterval(tickTimer); tickTimer = undefined; }
   };
 
   // The single-flight lane. Returns true if the op ran (false if one was already
@@ -122,13 +255,17 @@ export async function runView<S>(view: ViewModule<S>, opts: RunViewOptions = {})
     busy = true;
     chrome.busy = true;
     render();
+    startBusyTick();
     try {
       await view.refresh(state, host);
     } catch (e) {
-      chrome.error = errText(e);
+      chrome.banner = { msg: errText(e), level: 'error' };
     } finally {
       busy = false;
       chrome.busy = false;
+      chrome.loaded = true;
+      chrome.lastRefresh = Date.now();
+      stopBusyTick();
       render();
     }
   };
@@ -144,6 +281,7 @@ export async function runView<S>(view: ViewModule<S>, opts: RunViewOptions = {})
       if (done) return;
       done = true;
       if (timer) clearInterval(timer);
+      stopBusyTick();
       cleanup();
       resolveLoop();
     };
@@ -185,18 +323,20 @@ export async function runView<S>(view: ViewModule<S>, opts: RunViewOptions = {})
           busy = true;
           chrome.busy = true;
           render();
+          startBusyTick();
           try {
             action = await r;
           } finally {
             busy = false;
             chrome.busy = false;
+            stopBusyTick();
           }
         } else {
           action = r;
         }
         await apply(action);
       } catch (e) {
-        chrome.error = errText(e);
+        chrome.banner = { msg: errText(e), level: 'error' };
         render();
       }
     };
