@@ -402,16 +402,19 @@ export async function fetchPrs(branch) {
 
   /** @type {Pr[]} */
   const prs = arr.map((p) => {
-    const head = String((p && p.headRefName) || '');
+    // Guard the whole element — gh shouldn't emit null array entries, but this
+    // file's contract is never-throw, so dereference only off a safe object.
+    const o = p || {};
+    const head = String(o.headRefName || '');
     return {
-      number: typeof p.number === 'number' ? p.number : toInt(p.number),
-      title: String((p && p.title) || '(untitled)'),
+      number: typeof o.number === 'number' ? o.number : toInt(o.number),
+      title: String(o.title || '(untitled)'),
       headRefName: head,
-      isDraft: !!(p && p.isDraft),
+      isDraft: !!o.isDraft,
       current: head !== '' && head === branch,
-      review: normReview(p && p.reviewDecision),
-      ci: rollupCi(p && p.statusCheckRollup),
-      updatedAt: String((p && p.updatedAt) || ''),
+      review: normReview(o.reviewDecision),
+      ci: rollupCi(o.statusCheckRollup),
+      updatedAt: String(o.updatedAt || ''),
     };
   });
 

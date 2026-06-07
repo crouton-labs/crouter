@@ -295,6 +295,19 @@ function rowToItem(row, now) {
 // ── Header zone (drawn manually above the board list) ──────────────────────────
 
 /**
+ * Visible (column) width of a span group — ANSI-free cell count. Mirrors
+ * draw.ts's internal `spanWidth` so the header can reserve room for a
+ * right-flushed group before clipping the left line (Array.from counts code
+ * points, so wide/combined glyphs count as one cell each, like the renderer).
+ * @param {import('../../core/tui/draw.js').Span[]} spans @returns {number}
+ */
+function spanWidth(spans) {
+  let n = 0;
+  for (const s of spans) n += Array.from(s.text).length;
+  return n;
+}
+
+/**
  * Paint the always-on header gauges into the top of `content`: branch line then
  * commit line, with right-flushed metadata. Returns the number of rows consumed
  * (incl. the trailing hairline) so render can place the board below it.
@@ -323,8 +336,6 @@ function drawHeader(g, draw, content, now) {
   } else {
     left.push({ text: ' · no upstream', style: { fg: '90', dim: true } });
   }
-  draw.spans(r, content.col, left, content.width);
-
   // Tree chip, right-flushed on the same row (clean = green ✓, else colored counts).
   /** @type {import('../../core/tui/draw.js').Span[]} */
   const chip = [];
@@ -343,6 +354,10 @@ function drawHeader(g, draw, content, now) {
     seg(c.modified, 'modified', '○', '33');
     seg(c.untracked, 'untracked', '?', '90');
   }
+  // Clip the left line so the right-flushed chip never overpaints its tail
+  // (mirror draw.list's leftLimit = width − rightWidth − 1).
+  const chipW = spanWidth(chip);
+  draw.spans(r, content.col, left, chipW ? Math.max(0, content.width - chipW - 1) : content.width);
   draw.spansRight(r, right, chip);
   r++;
 
@@ -356,9 +371,14 @@ function drawHeader(g, draw, content, now) {
       { text: '  ', style: undefined },
       { text: g.lastCommit.subject, style: undefined },
     ];
-    draw.spans(r, content.col, commit, content.width);
+    // Build the right-flushed age first, then clip the subject so the age never
+    // overpaints it (mirror draw.list's leftLimit).
     const age = relAge(g.lastCommit.when, now);
-    if (age) draw.spansRight(r, right, [{ text: age, style: { fg: '90', dim: true } }]);
+    /** @type {import('../../core/tui/draw.js').Span[]} */
+    const ageSpans = age ? [{ text: age, style: { fg: '90', dim: true } }] : [];
+    const ageW = spanWidth(ageSpans);
+    draw.spans(r, content.col, commit, ageW ? Math.max(0, content.width - ageW - 1) : content.width);
+    if (age) draw.spansRight(r, right, ageSpans);
   } else {
     draw.spans(r, content.col, [
       { text: ' ', style: undefined },
@@ -398,14 +418,15 @@ async function refresh(state, host) {
       host.setError(state.gitError);
     } else {
       // Hard not-ready (no repo / no git binary / first-load failure): drop data
-      // so render() shows the guided takeover. not-a-repo wants a human action
-      // (cd / git init) → action chip; the rest are genuine failures → blocked.
+      // so render() shows the guided takeover. The takeover owns the whole rect
+      // (design §3) and already names the cause + next step, so DON'T stack a
+      // banner under it — clear any stale one. (Soft/partial cases — a transient
+      // git-failed that keeps the board, or gh-down — keep their banner below.)
       state.git = null;
       state.prs = [];
       state.prNote = null;
       state.board = buildBoard(state);
-      if (g.error.kind === 'not-a-repo') host.setBanner(state.gitError, 'action');
-      else host.setError(state.gitError);
+      host.setError(null);
     }
     host.setStatus(null);
     host.setSubtitle(subtitleFor(state));
