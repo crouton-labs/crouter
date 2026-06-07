@@ -47,6 +47,22 @@ export function paneAlive(pane: string): boolean {
   return r.status === 0 && r.stdout.trim() !== '';
 }
 
+/** Resolve a tmux pane id to its `session:window_index` — the target form
+ *  `new-window -t` accepts. tmux REJECTS a pane id for new-window ("can't
+ *  specify pane here"); only split-window -t takes a pane. null outside tmux /
+ *  on a bad pane id / on error / empty. */
+export function paneWindowTarget(pane: string): string | null {
+  if (!isInTmux() || !/^%\d+$/.test(pane)) return null;
+  const r = spawnSync(
+    'tmux',
+    ['display-message', '-p', '-t', pane, '#{session_name}:#{window_index}'],
+    { encoding: 'utf8' },
+  );
+  if (r.status !== 0) return null;
+  const t = r.stdout.trim();
+  return t !== '' ? t : null;
+}
+
 /** The active pane of the user's attached tmux client — where they are looking
  *  right now. `list-clients` first attached client, then its current pane. Used
  *  to surface a human prompt in the user's view when nothing in the asking
@@ -133,8 +149,12 @@ export function spawnAndDetach(opts: DetachOptions): DetachResult {
     splitArgs.push('new-window');
     if (opts.detached === true) splitArgs.push('-d'); // don't switch the client to it
     if (opts.targetPane !== undefined && opts.targetPane !== '') {
-      // -a = insert after target window; -t <pane> resolves to that pane's window.
-      splitArgs.push('-a', '-t', opts.targetPane);
+      // new-window -t REJECTS a pane id (tmux exits 1: "can't specify pane
+      // here") — only split-window -t accepts a pane. Resolve the target pane to
+      // its session:window first; -a then inserts the new window right after it.
+      // If the pane can't be resolved, fall back to no -t (tmux uses current).
+      const winTarget = paneWindowTarget(opts.targetPane);
+      if (winTarget !== null) splitArgs.push('-a', '-t', winTarget);
     }
   } else {
     splitArgs.push('split-window');
