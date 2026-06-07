@@ -447,12 +447,13 @@ export function installMenuBinding(): boolean {
     // a whole-canvas picker (incl. dormant nodes) and revives the choice via
     // `crtr node focus` — the only sync-safe open (routes through reviveNode).
     { name: 'resume node',                 key: 'r', cmd: `send-keys -t '#{pane_id}' '/resume-node' Enter` },
-    // `d` demotes the agent to TERMINAL in place: no finalize, no kill — it keeps
-    // running where it is, and because it is now terminal it is forced to push a
-    // final up the spine when it finishes. `D` ALSO detaches it to the background
-    // `crtr` session (frees the pane; the pi keeps generating). Neither ends it.
-    { name: 'demote to terminal',          key: 'd', cmd: `run-shell "crtr node lifecycle terminal --pane '#{pane_id}' >/dev/null 2>&1"` },
-    { name: 'detach to background',        key: 'D', cmd: `run-shell "crtr node lifecycle terminal --pane '#{pane_id}' --detach >/dev/null 2>&1"` },
+    // `d` runs `node demote`: flip the agent to TERMINAL in place — no finalize,
+    // no kill — it keeps running where it is, and because it is now terminal it
+    // is forced to push a final up the spine when it finishes. `D` runs `node
+    // demote --detach`, which ALSO detaches it to the background `crtr` session
+    // (frees the pane; the pi keeps generating). Neither ends it.
+    { name: 'demote to terminal',          key: 'd', cmd: `run-shell "crtr node demote --pane '#{pane_id}' >/dev/null 2>&1"` },
+    { name: 'detach to background',        key: 'D', cmd: `run-shell "crtr node demote --pane '#{pane_id}' --detach >/dev/null 2>&1"` },
     // Close cascades down the subscribes_to spine (kills the subtree's windows,
     // marks them canceled); revivable. Output discarded — the keypress just acts.
     { name: 'close agent + subtree',       key: 'x', cmd: `run-shell "crtr node close --pane '#{pane_id}' >/dev/null 2>&1"` },

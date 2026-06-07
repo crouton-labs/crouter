@@ -15,7 +15,7 @@ import { newNodeId } from '../core/runtime/nodes.js';
 import { readRoadmap } from '../core/runtime/roadmap.js';
 import { parseWhen, parseCadence, type WakeError } from '../core/wake.js';
 
-import { demoteNode } from '../core/runtime/demote.js';
+import { recycleNode } from '../core/runtime/recycle.js';
 import { detachToBackground, focus as placementFocus, windowAlive, windowOfPane, currentTmux } from '../core/runtime/placement.js';
 import { buildLaunchSpec } from '../core/runtime/launch.js';
 import { closeNode } from '../core/runtime/close.js';
@@ -374,11 +374,11 @@ const nodeFocus = defineLeaf({
 });
 
 // ---------------------------------------------------------------------------
-// node demote — FINALIZE the agent in your pane + recycle it into a fresh root
+// node recycle — FINALIZE the agent in your pane + recycle it into a fresh root
 // (push its last report as a `final` → mark it done, then boot a fresh resident
-// `crtr` root in the SAME pane; see demoteNode in runtime/demote.ts). Still a
-// registered leaf, but NOT bound to any Alt+C key/menu — d/D there route to
-// `node lifecycle terminal` (±--detach), which is a different action.
+// `crtr` root in the SAME pane; see recycleNode in runtime/recycle.ts). NOT
+// bound to any Alt+C key/menu — d/D there route to `node demote` (±--detach),
+// the flip-to-terminal-IN-PLACE action that keeps the agent running.
 // ---------------------------------------------------------------------------
 
 /** First live node whose window id is `win` (each node owns one window). The
@@ -392,8 +392,9 @@ function nodeByWindow(win: string): string | undefined {
 
 /** The live node occupying a tmux pane (pane → window → node), or undefined.
  *  Defaults to $TMUX_PANE / the caller's current pane when `pane` is omitted —
- *  shared by `node demote` and `node cycle`, both of which act on "the agent in
- *  front of you". Exported for the `canvas chord` / `canvas tmux-spread` leaves,
+ *  shared by `node recycle` / `node demote` / `node lifecycle` / `node close` /
+ *  `node cycle`, all of which act on "the agent in front of you". Exported for
+ *  the `canvas chord` / `canvas tmux-spread` leaves,
  *  which resolve the active pane's node the same way. */
 export function nodeInPane(pane?: string): string | undefined {
   const resolvePane = pane ?? process.env['TMUX_PANE'] ?? currentTmux()?.pane;
@@ -401,19 +402,19 @@ export function nodeInPane(pane?: string): string | undefined {
   return win !== null ? nodeByWindow(win) : undefined;
 }
 
-const nodeDemote = defineLeaf({
-  name: 'demote',
+const nodeRecycle = defineLeaf({
+  name: 'recycle',
   description: 'finish the agent in your pane + recycle it into a fresh root',
-  whenToUse: 'you are at an agent\'s pane and done with it: finish it cleanly and recycle the pane in one move — push its last message as a final report to everyone waiting on it, mark it done, then boot a fresh crtr root in the same pane to keep working. The human-driver way to end an agent and immediately start over in place. Use `node close` instead to tear a node and its subtree down WITHOUT finishing (no report, revivable), and `push final` when the agent should finish ITSELF from inside its own turn',
+  whenToUse: 'you are at an agent\'s pane and done with it: finish it cleanly and recycle the pane in one move — push its last message as a final report to everyone waiting on it, mark it done, then boot a fresh crtr root in the same pane to keep working. The human-driver way to end an agent and immediately start over in place. Use `node demote` instead to put it on a finishing track IN PLACE (flip terminal, keep it running) without ending it now, `node close` to tear a node and its subtree down WITHOUT finishing (no report, revivable), and `push final` when the agent should finish ITSELF from inside its own turn',
   help: {
-    name: 'node demote',
+    name: 'node recycle',
     summary: 'finish the agent in your current pane and recycle the pane — push its last message as a final report to everyone waiting on it, mark it done, then boot a fresh crtr root in the same pane',
     params: [
       { kind: 'flag', name: 'node', type: 'string', required: false, constraint: 'Node to finish. Defaults to the node occupying --pane (or your current pane).' },
       { kind: 'flag', name: 'pane', type: 'string', required: false, constraint: 'tmux pane id to recycle. Defaults to $TMUX_PANE / your current pane. The Alt+C menu passes this for you.' },
     ],
     output: [
-      { name: 'demoted', type: 'boolean', required: true, constraint: 'True when the pane was recycled into a fresh root.' },
+      { name: 'recycled', type: 'boolean', required: true, constraint: 'True when the pane was recycled into a fresh root.' },
       { name: 'node_id', type: 'string', required: false, constraint: 'The finished node.' },
       { name: 'finalized', type: 'boolean', required: false, constraint: 'True when a final report was pushed to its subscribers.' },
       { name: 'delivered', type: 'number', required: false, constraint: 'How many subscribers/managers received the final report.' },
@@ -435,13 +436,13 @@ const nodeDemote = defineLeaf({
     if (getNode(id) === null) {
       throw new InputError({ error: 'not_found', message: `no node: ${id}`, next: 'List nodes with `crtr node inspect list`.' });
     }
-    const res = await demoteNode(id, pane);
-    return { demoted: res.demoted, node_id: id, finalized: res.finalized, delivered: res.delivered.length, new_root: res.newRoot ?? undefined };
+    const res = await recycleNode(id, pane);
+    return { recycled: res.recycled, node_id: id, finalized: res.finalized, delivered: res.delivered.length, new_root: res.newRoot ?? undefined };
   },
   render: (r) =>
-    r['demoted'] === true
-      ? `<demoted id="${r['node_id']}" finalized="${r['finalized']}" delivered="${r['delivered']}" new_root="${r['new_root'] ?? ''}"/>`
-      : `<demote-failed id="${r['node_id'] ?? ''}">not in tmux, or no agent in this pane</demote-failed>`,
+    r['recycled'] === true
+      ? `<recycled id="${r['node_id']}" finalized="${r['finalized']}" delivered="${r['delivered']}" new_root="${r['new_root'] ?? ''}"/>`
+      : `<recycle-failed id="${r['node_id'] ?? ''}">not in tmux, or no agent in this pane</recycle-failed>`,
 });
 
 // ---------------------------------------------------------------------------
@@ -451,7 +452,7 @@ const nodeDemote = defineLeaf({
 const nodeClose = defineLeaf({
   name: 'close',
   description: 'close a node + cascade-cancel its exclusive subtree (revivable)',
-  whenToUse: 'you want to tear a node down WITHOUT finishing it, cascade-cancelling every descendant it exclusively owns: abandoning a line of work, killing a stuck or wrong-turn subtree, clearing a branch you no longer need. Windows die but nothing is deleted — each closed node keeps its pi session and can be revived later (`canvas revive`). Use `node demote` instead to FINISH the agent in your pane with a final report, and `push final` when a worker should end its own work normally (Alt+C → x)',
+  whenToUse: 'you want to tear a node down WITHOUT finishing it, cascade-cancelling every descendant it exclusively owns: abandoning a line of work, killing a stuck or wrong-turn subtree, clearing a branch you no longer need. Windows die but nothing is deleted — each closed node keeps its pi session and can be revived later (`canvas revive`). Use `node recycle` instead to FINISH the agent in your pane with a final report, and `push final` when a worker should end its own work normally (Alt+C → x)',
   help: {
     name: 'node close',
     summary:
@@ -749,6 +750,83 @@ const nodePromote = defineLeaf({
 });
 
 // ---------------------------------------------------------------------------
+// Shared lifecycle plumbing — the single implementation behind BOTH `node
+// demote` (the friendly terminal-only verb that pairs with `node promote`) and
+// `node lifecycle` (the low-level orthogonal flip, which also does resident).
+// ---------------------------------------------------------------------------
+
+/** Resolve the node a demote/lifecycle command acts on: explicit --node, else
+ *  the node occupying --pane (the Alt+C menu passes #{pane_id}), else the caller
+ *  (CRTR_NODE_ID). Throws a rendered error when none resolves or it is unknown. */
+function resolveLifecycleNode(input: Record<string, unknown>, pane: string | undefined): string {
+  let id = input['node'] as string | undefined;
+  if (id === undefined || id === '') id = nodeInPane(pane);
+  if (id === undefined || id === '') id = process.env['CRTR_NODE_ID'];
+  if (id === undefined || id === '') throw new InputError({ error: 'no_node', message: 'no node (set CRTR_NODE_ID, pass --node, or run from the agent\'s pane)', next: 'Run from inside a node, pass --node <id>, or --pane <pane>.' });
+  if (getNode(id) === null) throw new InputError({ error: 'not_found', message: `no node: ${id}`, next: 'List nodes with `crtr node inspect list`.' });
+  return id;
+}
+
+/** Set a node's lifecycle axis and, with `detach`, relocate its still-running
+ *  pane to the background crtr session. Rebuilds the launch spec so a future
+ *  revive comes back with the new lifecycle's prompt baked in (the live session
+ *  is steered by the persona injector; this fixes the static prompt the daemon
+ *  replays). Spine is fixed by parent-ness, so it carries through unchanged.
+ *  The ONE implementation `node demote` (always terminal) and `node lifecycle`
+ *  (the passed value) both call — no duplication. */
+function setLifecycle(id: string, value: Lifecycle, opts: { pane?: string | undefined; detach?: boolean }): { node_id: string; lifecycle: Lifecycle; detached: boolean } {
+  const target = getNode(id)!;
+  const { launch } = buildLaunchSpec(target.kind, target.mode, {
+    lifecycle: value,
+    hasManager: target.parent !== null,
+  });
+  const meta = updateNode(id, { lifecycle: value, launch });
+  // --detach: shove the still-running agent into the background crtr session,
+  // freeing the foreground pane. The pi is untouched (it keeps generating); now
+  // terminal, it pushes a final up the spine when it finishes.
+  let detached = false;
+  if (opts.detach === true) detached = detachToBackground(id, opts.pane);
+  return { node_id: meta.node_id, lifecycle: meta.lifecycle, detached };
+}
+
+// ---------------------------------------------------------------------------
+// node demote — flip a node to TERMINAL in place (the friendly half of the
+// promote/demote pair; bound to Alt+C → d, and → D with --detach). It stays
+// focused and running but now owes a final up the spine. A terminal-only skin
+// over the shared setLifecycle plumbing; `node lifecycle` is the orthogonal
+// low-level command (it also does resident). See vision F5.
+// ---------------------------------------------------------------------------
+
+const nodeDemote = defineLeaf({
+  name: 'demote',
+  description: 'demote a node to terminal in place; it stays focused and running but now owes a final; --detach also sends it to the backstage crtr session',
+  whenToUse: 'you are watching a resident/interactive node and want to put it on a finishing track WITHOUT disturbing it: flip it terminal IN PLACE — it keeps its pane and your focus, keeps running, but now owes a final report up the spine and reaps when done. The friendly counterpart to `node promote` (mode↑). Pass `--detach` to ALSO let go — send the still-running agent to the background crtr session, freeing your pane while it finishes off-screen (Alt+C → d demotes in place, → D demotes + detaches). Use `node recycle` instead to FINISH it now and reboot a fresh root in its pane, and `node lifecycle` for the orthogonal low-level flip (incl. terminal→resident)',
+  help: {
+    name: 'node demote',
+    summary: 'demote a node to terminal IN PLACE — it stays focused and running but now owes a final up the spine and reaps when done. Pairs with `node promote` (mode↑); `--detach` also relocates the still-running agent to the background crtr session',
+    params: [
+      { kind: 'flag', name: 'node', type: 'string', required: false, constraint: 'Node to demote. Defaults to the node in --pane, else the caller (CRTR_NODE_ID).' },
+      { kind: 'flag', name: 'pane', type: 'string', required: false, constraint: 'tmux pane id whose node to demote, when --node is omitted. Defaults to $TMUX_PANE. The Alt+C menu passes this for you.' },
+      { kind: 'flag', name: 'detach', type: 'bool', required: false, constraint: 'After flipping terminal, send the still-running agent to the background crtr session (break its pane out of the foreground). The pi keeps generating and — now terminal — pushes a final up the spine when done. The Alt+C → D move.' },
+    ],
+    output: [
+      { name: 'node_id', type: 'string', required: true, constraint: 'The demoted node.' },
+      { name: 'lifecycle', type: 'string', required: true, constraint: 'Always "terminal" after a demote.' },
+      { name: 'detached', type: 'boolean', required: false, constraint: 'True when --detach relocated the agent to the background crtr session.' },
+    ],
+    outputKind: 'object',
+    effects: ['Flips the node\'s lifecycle→terminal and rebuilds its launch spec so a future revive boots terminal — it stays focused and running, now owing a final up the spine.', 'The persona injector delivers the transition guidance at the next turn boundary (or on the node\'s next revive if it is dormant).', 'With --detach: relocates the agent\'s live pane to the background crtr session (break-pane) WITHOUT killing the pi — it keeps generating off-screen.'],
+  },
+  run: async (input) => {
+    const pane = (input['pane'] as string | undefined) ?? process.env['TMUX_PANE'];
+    const id = resolveLifecycleNode(input, pane);
+    const res = setLifecycle(id, 'terminal', { pane, detach: input['detach'] === true });
+    return { node_id: res.node_id, lifecycle: res.lifecycle, detached: res.detached };
+  },
+  render: (r) => `<demoted node="${r['node_id']}" lifecycle="${r['lifecycle']}"${r['detached'] === true ? ' detached="true"' : ''}/>`,
+});
+
+// ---------------------------------------------------------------------------
 // node lifecycle — flip the lifecycle axis (terminal ↔ resident), independent
 // of mode. The persona injector delivers the transition guidance.
 // ---------------------------------------------------------------------------
@@ -756,7 +834,7 @@ const nodePromote = defineLeaf({
 const nodeLifecycle = defineLeaf({
   name: 'lifecycle',
   description: 'switch a node between terminal and resident',
-  whenToUse: 'you want to flip a node\'s LIFECYCLE independent of its mode: make a node RESIDENT so it becomes interactable — it stays dormant, wakes on inbox/human, and is never forced to submit a final; or make a node TERMINAL so it owes a final result up the spine and reaps when done. Orthogonal to `node promote`, which changes MODE (base↔orchestrator), not lifecycle. The new-state guidance is injected automatically at the next turn boundary. Pass `--detach` to ALSO send a still-running agent to the background crtr session, freeing your pane while it finishes — the human-driver demote (Alt+C → d demotes in place) and detach (Alt+C → D demotes + backgrounds)',
+  whenToUse: 'you want to flip a node\'s LIFECYCLE independent of its mode: make a node RESIDENT so it becomes interactable — it stays dormant, wakes on inbox/human, and is never forced to submit a final; or make a node TERMINAL so it owes a final result up the spine and reaps when done. Orthogonal to `node promote`, which changes MODE (base↔orchestrator), not lifecycle. The new-state guidance is injected automatically at the next turn boundary. Pass `--detach` to ALSO send a still-running agent to the background crtr session, freeing your pane while it finishes. For the human-driver flip-to-terminal pair reach for `node demote` (the friendly terminal-only skin over this, bound to Alt+C → d in place / → D detach)',
   help: {
     name: 'node lifecycle',
     summary: 'set a node\'s lifecycle axis — terminal (owes a final up the spine, reaps when done) or resident (interactable, stays dormant, woken by inbox/human, never forced to submit). Orthogonal to mode; promotion does not touch it. `--detach` also relocates a live agent to the background crtr session',
@@ -779,30 +857,10 @@ const nodeLifecycle = defineLeaf({
     if (value !== 'terminal' && value !== 'resident') {
       throw new InputError({ error: 'bad_lifecycle', message: `invalid lifecycle: ${value ?? ''}`, field: 'lifecycle', next: 'Pass `terminal` or `resident`.' });
     }
-    // Resolve the node: explicit --node, else the node occupying --pane (the
-    // Alt+C menu passes #{pane_id}), else the caller (CRTR_NODE_ID).
     const pane = (input['pane'] as string | undefined) ?? process.env['TMUX_PANE'];
-    let id = input['node'] as string | undefined;
-    if (id === undefined || id === '') id = nodeInPane(pane);
-    if (id === undefined || id === '') id = process.env['CRTR_NODE_ID'];
-    if (id === undefined || id === '') throw new InputError({ error: 'no_node', message: 'no node (set CRTR_NODE_ID, pass --node, or run from the agent\'s pane)', next: 'Run from inside a node, pass --node <id>, or --pane <pane>.' });
-    if (getNode(id) === null) throw new InputError({ error: 'not_found', message: `no node: ${id}`, next: 'List nodes with `crtr node inspect list`.' });
-    // Rebuild the launch spec so a future revive comes back with the new
-    // lifecycle's prompt baked in (the live session is steered by the persona
-    // injector; this fixes the static prompt the daemon replays). Spine is fixed
-    // by parent-ness, so it carries through unchanged.
-    const target = getNode(id)!;
-    const { launch } = buildLaunchSpec(target.kind, target.mode, {
-      lifecycle: value,
-      hasManager: target.parent !== null,
-    });
-    const meta = updateNode(id, { lifecycle: value as Lifecycle, launch });
-    // --detach: shove the still-running agent into the background crtr session,
-    // freeing the foreground pane. The pi is untouched (it keeps generating); now
-    // terminal, it pushes a final up the spine when it finishes.
-    let detached = false;
-    if (input['detach'] === true) detached = detachToBackground(id, pane);
-    return { node_id: meta.node_id, lifecycle: meta.lifecycle, detached };
+    const id = resolveLifecycleNode(input, pane);
+    const res = setLifecycle(id, value as Lifecycle, { pane, detach: input['detach'] === true });
+    return { node_id: res.node_id, lifecycle: res.lifecycle, detached: res.detached };
   },
   render: (r) => `<lifecycle node="${r['node_id']}" set="${r['lifecycle']}"${r['detached'] === true ? ' detached="true"' : ''}/>`,
 });
@@ -1294,6 +1352,6 @@ export function registerNode(): BranchDef {
         'HOW: `crtr node new "<task>" --kind <kind>` returns a node id immediately and runs the worker in a background window. Match the kind to the work (see `node new -h`). You are woken when a child finishes — the wake message ALREADY IS the coalesced digest (the watcher drains your inbox to wake you), so don\'t re-run `crtr feed read` to "open" it (it would read empty, the cursor already advanced); instead dereference the report paths in that digest that matter, don\'t act on a one-line label. (`crtr feed read` is for proactively polling before a wake, or inspecting a child\'s inbox via `--node`; `--all` re-reads history with full message bodies.) Integrate, then either delegate the next units or finish.\n\n' +
         'FINISH: a worker ends its own work with `crtr push final "<result>"` (writes the canonical result, marks done, closes the window) — stopping without it is not finishing. For a job too big for one context window, `node promote` to an orchestrator (holds a roadmap, delegates phases); when context fills, `node yield` to refresh against that roadmap.',
     },
-    children: [nodeNew, nodeInspect, nodeFocus, nodeCycle, nodeDemote, nodeClose, nodeMsg, nodeSubscribe, nodeUnsubscribe, nodePromote, nodeLifecycle, nodeYield, nodeWake],
+    children: [nodeNew, nodeInspect, nodeFocus, nodeCycle, nodeRecycle, nodeClose, nodeMsg, nodeSubscribe, nodeUnsubscribe, nodePromote, nodeDemote, nodeLifecycle, nodeYield, nodeWake],
   });
 }

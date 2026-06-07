@@ -7,7 +7,7 @@
 //   - home_session round-trips through meta.json (it IS durable identity)
 //   - the birth-session decision (`resolveBirthSession`) for the child /
 //     inline-root / --root cases each site sets home_session from
-//   - demote-recycle + relaunch (pane-recycle) births populate home_session
+//   - recycle + relaunch (pane-recycle) births populate home_session
 //   - a legacy meta with NO home_session defaults to tmux_session ?? nodeSession()
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -21,7 +21,7 @@ import { closeDb } from '../canvas/db.js';
 import { resolveBirthSession, homeSessionOf, childBackstageOf } from '../runtime/nodes.js';
 import { nodeSession } from '../runtime/nodes.js';
 import { relaunchRoot } from '../runtime/reset.js';
-import { demoteNode } from '../runtime/demote.js';
+import { recycleNode } from '../runtime/recycle.js';
 import type { NodeMeta } from '../canvas/types.js';
 
 let home: string;
@@ -40,7 +40,7 @@ function node(id: string, over: Partial<NodeMeta> = {}): NodeMeta {
   };
 }
 
-/** Make ensureDaemon (called by demoteNode) a no-op by faking a live daemon
+/** Make ensureDaemon (called by recycleNode) a no-op by faking a live daemon
  *  pidfile pointing at THIS test process — so no real daemon is ever spawned. */
 function fakeLiveDaemon(): void {
   writeFileSync(join(home, 'crtrd.pid'), String(process.pid), 'utf8');
@@ -219,7 +219,7 @@ test('birth: the inline front door (bootRoot) homes to its adopted session', () 
 
 // ---------------------------------------------------------------------------
 // Pane-recycle births populate home_session. relaunchRoot (option C) is fully
-// unit-testable (injected respawn, no tmux); demoteNode runs to completion with
+// unit-testable (injected respawn, no tmux); recycleNode runs to completion with
 // no tmux (respawn dispatch just fails) once the daemon spawn is neutralized.
 // ---------------------------------------------------------------------------
 
@@ -233,14 +233,14 @@ test('relaunch birth: the fresh root homes to the recycled pane session', () => 
   assert.equal(getNode(res!.newNodeId)?.home_session, 'crtr', 'fresh root homes to the recycled pane session');
 });
 
-test('demote birth: the recycled root populates home_session (backstage when no pane location)', async () => {
+test('recycle birth: the recycled root populates home_session (backstage when no pane location)', async () => {
   createNode(node('M', { parent: null, lifecycle: 'resident', tmux_session: 'crtr', window: '@3' }));
   fakeLiveDaemon(); // createNode ensured the home dir; now neutralize ensureDaemon
 
   // No live tmux → paneLocation('%0') is null → home_session defaults to the
   // backstage. The respawn dispatch fails (no tmux), but the fresh root is still
   // born — and must carry a populated home_session.
-  const res = await demoteNode('M', '%0');
-  assert.ok(res.newRoot !== null, 'demote minted a fresh root');
+  const res = await recycleNode('M', '%0');
+  assert.ok(res.newRoot !== null, 'recycle minted a fresh root');
   assert.equal(getNode(res.newRoot!)?.home_session, nodeSession(), 'recycled root homes to the backstage');
 });

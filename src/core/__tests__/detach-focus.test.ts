@@ -1,9 +1,10 @@
 // Run with: node --import tsx/esm --test src/core/__tests__/detach-focus.test.ts
 //
-// GAP CLOSE (flagship-lifecycle.test.ts coverage boundary): "node lifecycle
+// GAP CLOSE (flagship-lifecycle.test.ts coverage boundary): "node demote
 // --detach (A3: orphaned-focus-row hazard)". An END-TO-END test that drives the
-// REAL `crtr node lifecycle terminal --detach` verb (subprocess, AS the node)
-// against a live fake-pi node that is genuinely FOCUSED in a user viewport, and
+// REAL `crtr node demote --detach` verb (subprocess, AS the node) — the actual
+// Alt+C → D menu path — against a live fake-pi node genuinely FOCUSED in a user
+// viewport, and
 // proves the three things the A3 hazard is about:
 //   (a) lifecycle flips terminal IN PLACE,
 //   (b) the still-running pi's pane is RELOCATED to the backstage crtr session
@@ -13,9 +14,10 @@
 //
 // This is the harness-driven counterpart to placement-focus.test.ts's
 // `detachToBackground` unit (which calls the function directly): here the FLIP
-// and the detach both go through the real CLI leaf (node.ts nodeLifecycle), so
-// the whole `crtr node lifecycle terminal --detach` wiring is exercised. Modeled
-// on live-mutation.test.ts (harness + `crtr node lifecycle` + firstPaneOf) and
+// and the detach both go through the real CLI leaf (node.ts nodeDemote →
+// setLifecycle), so the whole `crtr node demote --detach` wiring — the Alt+C → D
+// menu path — is exercised. Modeled on live-mutation.test.ts (harness +
+// `crtr node demote` + firstPaneOf) and
 // placement-focus.test.ts (user/back sessions + focus-row asserts).
 //
 // NOTE — the SIBLING focused-finish→manager-TAKEOVER path is NOT added here: the
@@ -66,10 +68,10 @@ function paneExistsReal(pane: string): boolean {
 }
 
 // ===========================================================================
-// `crtr node lifecycle terminal --detach` on a FOCUSED node (A3 gap close).
+// `crtr node demote --detach` on a FOCUSED node (A3 gap close; Alt+C → D).
 // ===========================================================================
 test(
-  'node lifecycle terminal --detach on a FOCUSED node: flips terminal, relocates the pane to the backstage, CLOSES the focus row (A3 — no orphaned focus row)',
+  'node demote --detach on a FOCUSED node: flips terminal, relocates the pane to the backstage, CLOSES the focus row (A3 — no orphaned focus row)',
   { skip: SKIP, timeout: 120_000 },
   async () => {
     const h: Harness = await createHarness({ sessionPrefix: 'crtr-detach-focus' });
@@ -111,8 +113,8 @@ test(
       // --- Drive the REAL verb on the FOCUSED node. The subprocess inherits
       //     CRTR_NODE_SESSION = h.session (the backstage), so detachToBackground
       //     breaks the pane back into h.session.
-      const res = h.cli(B, ['node', 'lifecycle', 'terminal', '--node', B, '--pane', bPane!, '--detach']);
-      assert.equal(res.code, 0, `node lifecycle terminal --detach exit 0\n${res.stderr}`);
+      const res = h.cli(B, ['node', 'demote', '--node', B, '--pane', bPane!, '--detach']);
+      assert.equal(res.code, 0, `node demote --detach exit 0\n${res.stderr}`);
       assert.match(res.stdout, /detached="true"/, `the agent was detached\n${res.stdout}`);
 
       closeDb();

@@ -2,8 +2,8 @@
 //
 // AXIS: LIVE MUTATION of the 2×2 state vector (mode {base,orchestrator} ×
 // lifecycle {terminal,resident}) while a node is ACTIVE/LIVE — driven through
-// the REAL `crtr node lifecycle` / `node promote` / `node demote` CLI verbs
-// against a live fake-pi, with the REAL stophook / kickoff / daemon hooks doing
+// the REAL `crtr node lifecycle` / `node promote` / `node demote` / `node recycle`
+// CLI verbs against a live fake-pi, with the REAL stophook / kickoff / daemon hooks doing
 // the work. Every assertion reads the canvas data layer and is checked against
 // the state-model ORACLE (mq1su40t .../state-model.md).
 //
@@ -261,72 +261,78 @@ test(
 );
 
 // ===========================================================================
-// (b) MODE FLIP — demote. ⚑ FLAG vs the task framing ("demote orchestrator back
-//     to base; assert the mode field changes"): the `node demote` verb does NOT
-//     flip the SAME live node's mode orchestrator→base. Per ORACLE §4 (which
-//     matches the code: demote.ts) it FINISHES the node (push final → done) and
-//     RECYCLES the pane into a FRESH general/base/resident root — a DIFFERENT
-//     node. The demoted node keeps mode=orchestrator (it is merely `done`).
-//     There is NO live verb that flips a node orchestrator→base, so the
-//     persona.ts `baseModeGuidance` (orchestrator→base) is effectively
-//     UNREACHABLE via live mutation. This test pins the real behavior so the
-//     contradiction is visible; production is NOT changed.
+// (b) THE demote / recycle SPLIT — two DISTINCT verbs after the rename:
+//   • `node demote`  flips a LIVE node's lifecycle→TERMINAL IN PLACE — it keeps
+//     its pane, its MODE, and its parentage, keeps running, is NOT finalized; it
+//     now merely owes a final up the spine (vision F5). It is NOT an
+//     orchestrator→base mode flip — MODE is untouched (so persona.ts
+//     `baseModeGuidance` stays unreachable via live mutation, as before).
+//   • `node recycle` is FINISH+RECYCLE — push final → done, then recycle the
+//     pane into a FRESH general/base/resident root (a DIFFERENT node). The
+//     recycled node keeps mode=orchestrator (it is merely `done`).
+// This test drives BOTH real verbs on one live node and pins each behavior.
 // ===========================================================================
 test(
-  'node demote is FINISH+RECYCLE, not an orchestrator→base mode flip (current behavior vs task framing)',
+  'node demote flips lifecycle→terminal IN PLACE; node recycle is FINISH+RECYCLE',
   { skip: SKIP, timeout: 120_000 },
   async () => {
     const h: Harness = await createHarness({ sessionPrefix: 'crtr-live-demote' });
     try {
       const A = h.spawnRoot('resident root');
       const B = await h.spawnChild(A, 'do the work', { kind: 'developer' });
-      // Promote B so it is genuinely an orchestrator before we demote it.
+      // Make B resident + orchestrator so the demote's flip→terminal is visible
+      // and we can prove MODE/parentage survive it.
+      assert.equal(h.cli(B, ['node', 'lifecycle', 'resident', '--node', B]).code, 0, 'B → resident');
       assert.equal(h.cli(B, ['node', 'promote', '--kind', 'developer']).code, 0, 'promote B');
-      const b0 = h.node(B)!;
-      assert.equal(b0.mode, 'orchestrator', 'B is orchestrator before demote');
-      // Resolve B's live %pane_id from its window (the row's `pane` is null until
-      // a reconcile; the spawn path records only window+session).
-      const pane = firstPaneOf(b0.window!);
-      assert.ok(typeof pane === 'string' && pane !== '', 'B has a live pane to recycle');
+      {
+        const b = h.node(B)!;
+        assert.equal(b.lifecycle, 'resident', 'B resident before demote');
+        assert.equal(b.mode, 'orchestrator', 'B orchestrator before demote');
+      }
+      const bParent = h.node(B)!.parent;
 
-      // DEMOTE via the real verb (TMUX_PANE is scrubbed from child env → pass --pane).
-      const res = h.cli(B, ['node', 'demote', '--node', B, '--pane', pane!]);
-      assert.equal(res.code, 0, `demote exit 0\n${res.stderr}`);
-      // The leaf renders `<demoted ... finalized=".." new_root=".."/>` (not JSON).
-      assert.match(res.stdout, /<demoted /, `demote recycled the pane\n${res.stdout}`);
+      // --- node demote: flip-to-terminal IN PLACE. Keeps B alive, MODE/parentage
+      //     untouched, NOT finalized.
+      const dem = h.cli(B, ['node', 'demote', '--node', B]);
+      assert.equal(dem.code, 0, `node demote exit 0\n${dem.stderr}`);
+      assert.match(dem.stdout, /<demoted /, `demote rendered\n${dem.stdout}`);
+      {
+        const b = h.node(B)!;
+        assert.equal(b.lifecycle, 'terminal', 'demote flips lifecycle→terminal IN PLACE');
+        assert.equal(b.mode, 'orchestrator', 'demote leaves MODE untouched (not an orchestrator→base flip)');
+        assert.equal(b.parent, bParent, 'demote leaves parentage unchanged');
+        assert.equal(b.status, 'active', 'demote does NOT finish B — it keeps running in place');
+        assert.notEqual(b.intent ?? null, 'done', 'demote does NOT finalize B');
+      }
+
+      // --- node recycle: FINISH + RECYCLE the SAME pane into a fresh root.
+      //     Resolve B's live %pane_id from its window (the row's `pane` is null
+      //     until a reconcile; the spawn path records only window+session).
+      const pane = firstPaneOf(h.node(B)!.window!);
+      assert.ok(typeof pane === 'string' && pane !== '', 'B has a live pane to recycle');
+      // RECYCLE via the real verb (TMUX_PANE is scrubbed from child env → pass --pane).
+      const res = h.cli(B, ['node', 'recycle', '--node', B, '--pane', pane!]);
+      assert.equal(res.code, 0, `recycle exit 0\n${res.stderr}`);
+      // The leaf renders `<recycled ... finalized=".." new_root=".."/>` (not JSON).
+      assert.match(res.stdout, /<recycled /, `recycle recycled the pane\n${res.stdout}`);
       const newRoot = /new_root="([^"]+)"/.exec(res.stdout)?.[1];
       const finalized = /finalized="true"/.test(res.stdout);
 
-      // ⚑ The demoted node is FINISHED, not mode-flipped.
+      // The recycled node is FINISHED, not mode-flipped.
       {
         const b = h.node(B)!;
-        assert.equal(b.status, 'done', 'demoted node → done (finished), NOT re-roled');
+        assert.equal(b.status, 'done', 'recycled node → done (finished), NOT re-roled');
         assert.equal(b.intent, 'done', 'intent=done (finalize), per the push-final path');
-        assert.equal(
-          b.mode,
-          'orchestrator',
-          '⚑ demoted node KEEPS mode=orchestrator — demote is NOT an orchestrator→base flip',
-        );
-        assert.ok(finalized, 'demote pushed a final for the node');
+        assert.equal(b.mode, 'orchestrator', 'recycled node KEEPS mode=orchestrator — recycle is NOT a mode flip');
+        assert.ok(finalized, 'recycle pushed a final for the node');
       }
 
-      // The fresh root is a DIFFERENT, BASE×RESIDENT node — that is where "base"
-      // comes from, not a mutation of B.
+      // The fresh root is a DIFFERENT, BASE×RESIDENT node.
       assert.ok(typeof newRoot === 'string' && newRoot !== B, 'a fresh root (≠ B) was minted');
       {
         const fresh = h.node(newRoot!)!;
-        assert.deepEqual(
-          persona(fresh),
-          { mode: 'base', lifecycle: 'resident' },
-          'recycled root is born base×resident (general)',
-        );
-        // Born acked to its own persona → it will never see an orchestrator→base
-        // drift steer: that persona path is unreachable through live mutation.
-        assert.deepEqual(
-          fresh.persona_ack,
-          { mode: 'base', lifecycle: 'resident' },
-          'fresh root born acked base×resident — no orchestrator→base drift will ever fire',
-        );
+        assert.deepEqual(persona(fresh), { mode: 'base', lifecycle: 'resident' }, 'recycled root is born base×resident (general)');
+        assert.deepEqual(fresh.persona_ack, { mode: 'base', lifecycle: 'resident' }, 'fresh root born acked base×resident');
       }
     } finally {
       const session = h.session;

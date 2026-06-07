@@ -1,12 +1,16 @@
-// demote.ts — the "graduate this agent" action behind `crtr node demote`.
+// recycle.ts — the "finalize + reboot this pane" action behind `crtr node recycle`.
 //
-// Demote finishes the agent occupying a tmux pane and recycles that pane for
+// Recycle FINALIZES the agent occupying a tmux pane and recycles that pane for
 // fresh work, in three steps:
 //
 //   1. Finalize — push the agent's last surfaced message as a `final` report so
 //      every subscriber/manager waiting on it is unblocked, and mark it done.
 //   2. Close    — kill the agent's pi (respawn-pane -k tears it down in place).
 //   3. Recycle  — boot a fresh resident root in that same pane (a new `crtr`).
+//
+// NOT to be confused with `node demote` (flip-to-terminal IN PLACE, which keeps
+// the agent focused and running): recycle ENDS this agent and boots a brand-new
+// resident root here.
 //
 // The agent's real conversation lives inside pi (not on disk), so the final
 // body is its newest report (which, on a natural stop, IS its last assistant
@@ -24,10 +28,10 @@ import { FRONT_DOOR_ENV } from './front-door.js';
 import { focusOf, recycleFocusPane, piCommand, paneLocation } from './placement.js';
 import { ensureDaemon } from '../../daemon/manage.js';
 
-export interface DemoteResult {
+export interface RecycleResult {
   /** True when the pane was recycled (a fresh root respawned in it). */
-  demoted: boolean;
-  /** True when a `final` report was pushed for the demoted node. */
+  recycled: boolean;
+  /** True when a `final` report was pushed for the recycled node. */
   finalized: boolean;
   /** The fresh root node booted into the pane, or null on failure. */
   newRoot: string | null;
@@ -59,19 +63,19 @@ function lastReportBody(nodeId: string): string {
 
 /** Finish `nodeId` and recycle its pane into a fresh root. `callerPane` is the
  *  tmux pane the agent occupies (the Alt+C menu passes it as `#{pane_id}`).
- *  Best-effort; `demoted:false` when there is no pane to act on. */
-export async function demoteNode(nodeId: string, callerPane?: string): Promise<DemoteResult> {
+ *  Best-effort; `recycled:false` when there is no pane to act on. */
+export async function recycleNode(nodeId: string, callerPane?: string): Promise<RecycleResult> {
   const meta = getNode(nodeId);
-  if (meta === null) return { demoted: false, finalized: false, newRoot: null, delivered: [] };
+  if (meta === null) return { recycled: false, finalized: false, newRoot: null, delivered: [] };
 
   const pane = callerPane ?? process.env['TMUX_PANE'];
   if (pane === undefined || pane === '') {
-    return { demoted: false, finalized: false, newRoot: null, delivered: [] };
+    return { recycled: false, finalized: false, newRoot: null, delivered: [] };
   }
 
   // 1. Finalize — fan the agent's last message out as a `final`, mark it done.
   const body = lastReportBody(nodeId) ||
-    `Closed via demote — no final summary was authored by ${meta.name}.`;
+    `Closed via recycle — no final summary was authored by ${meta.name}.`;
   let delivered: string[] = [];
   let finalized = false;
   try {
@@ -99,7 +103,7 @@ export async function demoteNode(nodeId: string, callerPane?: string): Promise<D
     parent: null,
     launch,
   });
-  // REVIVE-HOME: a demote-recycled root's durable revive target is the session
+  // REVIVE-HOME: a recycled root's durable revive target is the session
   // of the pane it was recycled into (the one place home_session is rewritten
   // after birth). Falls back to the backstage when the pane can't be located.
   updateNode(root.node_id, { home_session: loc?.session ?? nodeSession() });
@@ -113,5 +117,5 @@ export async function demoteNode(nodeId: string, callerPane?: string): Promise<D
     command: piCommand(inv.argv), env, cwd: meta.cwd, name: fullName(fresh), resuming: false,
   });
 
-  return { demoted: ok, finalized, newRoot: root.node_id, delivered };
+  return { recycled: ok, finalized, newRoot: root.node_id, delivered };
 }
