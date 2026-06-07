@@ -230,6 +230,30 @@ export function paneExists(pane: string): boolean {
   return r.ok && r.stdout === pane;
 }
 
+/** The working directory of a pane (`display-message -p -t <pane>
+ *  '#{pane_current_path}'`). Used to preserve a view monitor's cwd across a
+ *  view-cycle respawn so project-scoped views still resolve. Null if tmux fails. */
+export function paneCurrentPath(pane: string): string | null {
+  const r = tmux(['display-message', '-p', '-t', pane, '#{pane_current_path}']);
+  return r.ok && r.stdout !== '' ? r.stdout : null;
+}
+
+/** Set a PANE-scoped tmux option (`tmux set-option -p -t <pane> <name> <value>`).
+ *  Used to tag a pane with the view id it currently hosts (`@crtr_view`) so the
+ *  view-nav cycle can read it back and switch to the next/prev view in place.
+ *  Best-effort; never throws. */
+export function setPaneOption(pane: string, name: string, value: string): boolean {
+  return tmux(['set-option', '-p', '-t', pane, name, value]).ok;
+}
+
+/** Read a PANE-scoped tmux option value (`tmux show-options -p -t <pane> -q -v
+ *  <name>`): `-v` prints only the value, `-q` suppresses the unknown-option
+ *  error so an unset option yields an empty string. undefined if tmux fails. */
+export function getPaneOption(pane: string, name: string): string | undefined {
+  const r = tmux(['show-options', '-p', '-t', pane, '-q', '-v', name]);
+  return r.ok ? r.stdout : undefined;
+}
+
 /** Relocate a pane into another session as its own window WITHOUT killing the
  *  process in it — `break-pane -d` moves the pane out of its current window (the
  *  pi keeps generating) into a fresh window in `session`; `-d` leaves the caller's
@@ -528,4 +552,46 @@ export function installNavBindings(): boolean {
     `crtr node cycle --dir prev --pane '#{pane_id}' >/dev/null 2>&1`,
   ]).ok;
   return next && prev;
+}
+
+// ---------------------------------------------------------------------------
+// View-nav bindings — Alt+V then ] / [ cycle the view hosted in a MONITOR pane
+// to the next/prev available view, in place. A VIEW-PREFIXED CHORD, not a bare
+// Alt pair: Alt+V switches into a private one-shot `crtr-view` key table, then
+// ] (next) / [ (prev) fire the cycle — mirroring node cycle's bracket DIRECTION
+// grammar (Alt+] next / Alt+[ prev) while NAMESPACING the brackets so they can
+// never shadow root bindings. This is collision-proof: only ONE root key (M-v)
+// is claimed, and bare Alt pairs are a minefield in real configs (e.g. Alt+,/. 
+// and Alt+]/.[ commonly bound to window/pane nav). The bracket lives in the
+// private table, so it also sidesteps the M-[ vs CSI-introducer ambiguity that
+// dogs installNavBindings' Alt+[. Each key shells `crtr view cycle`, passing the
+// active pane; cycle reads the pane's @crtr_view tag and respawns it on the
+// next/prev view. Output discarded so the keypress never pops a results view.
+// Installed at root boot alongside the node nav + Alt+C menu.
+//
+// NOTE: `M-v` is a GLOBAL root binding — it intercepts Alt+V in every pane/app
+// (e.g. swallowed from the pi editor), the same tradeoff crtr already takes for
+// M-c / M-] / M-[. Intended: crtr owns a small set of Alt chords server-wide.
+// ---------------------------------------------------------------------------
+
+/** Bind Alt+V → (], [) to the view-monitor cycle. `M-v` enters the private
+ *  `crtr-view` key table (switch-client -T), then ] cycles next / [ cycles prev.
+ *  Best-effort; false if any of the three binds fail. Deliberately distinct from
+ *  installNavBindings' bare Alt+]/Alt+[ (node cycle): the two cycles coexist on
+ *  the same server — brackets alone walk the node graph, Alt+V-then-bracket flips
+ *  view monitors. The bracket keys are bound in the private table, so they NEVER
+ *  shadow the user's root ]/[ and carry no CSI-introducer ambiguity. */
+export function installViewNavBindings(): boolean {
+  const enter = tmux([
+    'bind-key', '-n', 'M-v', 'switch-client', '-T', 'crtr-view',
+  ]).ok;
+  const next = tmux([
+    'bind-key', '-T', 'crtr-view', ']', 'run-shell',
+    `crtr view cycle --dir next --pane '#{pane_id}' >/dev/null 2>&1`,
+  ]).ok;
+  const prev = tmux([
+    'bind-key', '-T', 'crtr-view', '[', 'run-shell',
+    `crtr view cycle --dir prev --pane '#{pane_id}' >/dev/null 2>&1`,
+  ]).ok;
+  return enter && next && prev;
 }

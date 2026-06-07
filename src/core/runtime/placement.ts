@@ -85,10 +85,15 @@ export {
   inTmux,
   ensureSession,
   openNodeWindow,
+  splitWindow,
   focusWindow,
   windowAlive,
   windowOfPane,
   respawnPane,
+  respawnPaneSync,
+  setPaneOption,
+  getPaneOption,
+  paneCurrentPath,
 } from './tmux.js';
 export type { RespawnPaneOpts } from './tmux.js';
 export { nodeSession } from './nodes.js';
