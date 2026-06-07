@@ -82,6 +82,30 @@ export function homeSessionOf(nodeId: string): string {
   return meta.home_session ?? meta.tmux_session ?? nodeSession();
 }
 
+/** The session a node's CHILDREN spawn into — the value its pi process exports
+ *  as CRTR_ROOT_SESSION (the subtree's backstage). NOT the same as where the
+ *  node's OWN pane lives.
+ *
+ *  For a managed CHILD this is its `home_session`: a child's home_session is
+ *  ALWAYS the backstage it was born into (focus may move its live pane into a
+ *  user session, but home_session stays the taint-immune backstage), so its
+ *  descendants correctly inherit that backstage.
+ *
+ *  For a ROOT (`parent === null`) `home_session` may be a USER session it
+ *  ADOPTED — the inline front door keeps the root's own pane where the user is
+ *  working (`home_session = cli`). Sourcing children's CRTR_ROOT_SESSION from
+ *  that would exile the root's entire subtree into the user's session. A root's
+ *  children must instead flow to the shared backstage `nodeSession()`, NEVER the
+ *  user's session — mirroring spawnRoot's birth-time split (root pane → user
+ *  session; children → nodeSession() via CRTR_ROOT_SESSION). The revive paths
+ *  MUST honor the same split, or a refreshed front-door root re-points its whole
+ *  subtree into the user's session on every yield (the bug this fixes). */
+export function childBackstageOf(nodeId: string): string {
+  const meta = getNode(nodeId);
+  if (meta !== null && meta.parent === null) return nodeSession();
+  return homeSessionOf(nodeId);
+}
+
 // ---------------------------------------------------------------------------
 // The env contract — what a node's pi process inherits and its children read.
 // ---------------------------------------------------------------------------

@@ -66,13 +66,13 @@ import {
   switchClient,
   selectWindow,
 } from './tmux.js';
-import { homeSessionOf, nodeSession, newNodeId } from './nodes.js';
+import { homeSessionOf, childBackstageOf, nodeSession, newNodeId } from './nodes.js';
 import { isBusy } from './busy.js';
 import { transition } from './lifecycle.js';
 
 // Re-export the durable REVIVE-HOME read so placement is the one front door for
 // "where does this node live."
-export { homeSessionOf };
+export { homeSessionOf, childBackstageOf };
 export type { FocusRow };
 
 // Placement is the sanctioned model-over-driver (§2.1): non-placement runtime /
@@ -396,8 +396,10 @@ export function reviveTarget(
  *      nothing else. That is the structural bug-kill.
  *
  *  `setPresence` (the one atomic LOCATION write) records where the node landed.
- *  CRTR_ROOT_SESSION is forced to `homeSession` in BOTH branches so the node's
- *  children always flow to the backstage, never into the focus session. */
+ *  CRTR_ROOT_SESSION is forced to the node's children-backstage (childBackstageOf)
+ *  in BOTH branches so the node's children always flow to the backstage, never
+ *  into the focus session — and, for a front-door ROOT, never into the user
+ *  session its own pane adopted. */
 export function reviveIntoPlacement(nodeId: string, launch: ReviveLaunch): PlacementResult {
   // §2.4 — follow any manual pane move before acting.
   reconcile(nodeId);
@@ -407,9 +409,12 @@ export function reviveIntoPlacement(nodeId: string, launch: ReviveLaunch): Place
   const homeSession = homeSessionOf(nodeId);
   const decision = reviveTarget(focus, focusPaneAlive, homeSession);
 
-  // The node's children always spawn into the backstage (homeSession), never the
-  // focus session — force it regardless of which branch the node itself takes.
-  const env = { ...launch.env, CRTR_ROOT_SESSION: homeSession };
+  // The node's children always spawn into the backstage, never the focus session
+  // — force it regardless of which branch the node itself takes. childBackstageOf
+  // is home_session for a managed child but `nodeSession()` for a root (whose
+  // home_session may be a user session it adopted), so a refreshed front-door
+  // root never re-points its subtree into the user's session.
+  const env = { ...launch.env, CRTR_ROOT_SESSION: childBackstageOf(nodeId) };
 
   if (decision.kind === 'focus-pane') {
     // F3: resume the pi INTO the live focus pane, in its CURRENT session (Q4 —

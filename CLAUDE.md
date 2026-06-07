@@ -7,6 +7,8 @@ npm run build && crtr canvas daemon stop && crtr canvas daemon start
 ```
 Why the restart matters: `crtrd` (and every running node's pi process) loads compiled `dist/` at process start and **never reloads it**. A long-lived daemon silently keeps running stale code after a rebuild — that's how auto-revive breaks invisibly (a dormant node's inbox gets a push but the old daemon never resumes it). `crtr canvas daemon status` shows the running pid; if its process start time predates your last `dist/` build, it's stale — restart it. Then commit (conventional commits; CI publishes on push to `main`).
 
+**Restarting the daemon is safe — it does not disturb running nodes or their state.** `crtrd` is a thin supervisor (`src/daemon/crtrd.ts`): it polls tmux-pane + pi liveness every ~2s and revives dead nodes, nothing more. It does NOT host the agents — each node is an independent `pi` process in its own tmux pane. `daemon stop` (SIGTERM) just removes the pidfile and exits; it never signals any node's pi, so running agents keep going untouched. Durable state (`cycles`, lifecycle, presence) lives in `canvas.db` / `meta.json`, not in the daemon; the only daemon in-memory state is the `unhealthySince` grace-timer map, whose reset costs at most one extra ~20s grace before reviving an already-dead pi. The sole cost of a restart is the ~1–2s supervision gap between stop and start: a node that yields or dies in that window just waits for the next tick after the daemon is back (its `intent` persists) — nothing is lost or corrupted.
+
 ## Testing policy
 Only two kinds of tests belong in this codebase — nothing else:
 1. **Lifecycle tests** — the node/canvas lifecycle suite (spawn → revive → close → cascade-close, placement, daemon liveness, stop-guard).

@@ -18,7 +18,7 @@ import { join } from 'node:path';
 import { createNode, getNode, updateNode } from '../canvas/canvas.js';
 import { nodeMetaPath } from '../canvas/paths.js';
 import { closeDb } from '../canvas/db.js';
-import { resolveBirthSession, homeSessionOf } from '../runtime/nodes.js';
+import { resolveBirthSession, homeSessionOf, childBackstageOf } from '../runtime/nodes.js';
 import { nodeSession } from '../runtime/nodes.js';
 import { relaunchRoot } from '../runtime/reset.js';
 import { demoteNode } from '../runtime/demote.js';
@@ -124,6 +124,44 @@ test('homeSessionOf: the backstage default honors CRTR_NODE_SESSION', () => {
 
 test('homeSessionOf: unknown node falls back to the backstage', () => {
   assert.equal(homeSessionOf('ghost'), nodeSession());
+});
+
+// ---------------------------------------------------------------------------
+// childBackstageOf — the session a node's CHILDREN spawn into (their
+// CRTR_ROOT_SESSION). REGRESSION for the front-door-root subtree-exile bug:
+// a refreshed inline root (home_session = a USER session it adopted) was
+// sourcing children's CRTR_ROOT_SESSION from home_session, so every yield
+// re-pointed its entire subtree into the user's working session. A root's
+// children must always flow to the shared backstage `nodeSession()`, never the
+// user session, while a managed child's children inherit its backstage
+// home_session. (Bug: node mq2u219p spawned all 13 children into `cli`.)
+// ---------------------------------------------------------------------------
+
+test('childBackstageOf: a managed child uses its backstage home_session', () => {
+  // A child's home_session is ALWAYS the backstage it was born into; its live
+  // tmux_session may be a user session (focus taint) but must NOT leak to kids.
+  createNode(node('child', { parent: 'p', home_session: 'crtr', tmux_session: 'user-sess' }));
+  assert.equal(childBackstageOf('child'), 'crtr', 'children inherit the backstage, not the tainted LOCATION');
+});
+
+test('childBackstageOf: a front-door ROOT routes children to the backstage, NOT its adopted user session', () => {
+  // The bug: an inline root adopts the user's session as home_session ('cli').
+  // Sourcing children's CRTR_ROOT_SESSION from home_session exiled the whole
+  // subtree into 'cli' on every refresh-yield. A root (parent === null) must
+  // route children to nodeSession() instead.
+  createNode(node('root', { parent: null, home_session: 'cli', tmux_session: 'cli' }));
+  assert.equal(childBackstageOf('root'), nodeSession(), "a root's children flow to the backstage");
+  assert.notEqual(childBackstageOf('root'), 'cli', 'NEVER the user session the root pane adopted');
+});
+
+test('childBackstageOf: a root honors CRTR_NODE_SESSION for the backstage', () => {
+  process.env['CRTR_NODE_SESSION'] = 'my-backstage';
+  createNode(node('root', { parent: null, home_session: 'cli' }));
+  assert.equal(childBackstageOf('root'), 'my-backstage', 'the backstage default is env-overridable');
+});
+
+test('childBackstageOf: unknown node falls back to the backstage', () => {
+  assert.equal(childBackstageOf('ghost'), nodeSession());
 });
 
 // ---------------------------------------------------------------------------

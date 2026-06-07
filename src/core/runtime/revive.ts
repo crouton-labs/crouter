@@ -31,12 +31,11 @@ import {
   reviveIntoPlacement,
   reconcile,
   isNodePaneAlive,
-  homeSessionOf,
   piCommand,
   respawnPane,
   type RespawnPaneOpts,
 } from './placement.js';
-import { nodeSession } from './nodes.js';
+import { nodeSession, childBackstageOf } from './nodes.js';
 
 /** signal-0 liveness probe for a pi pid (mirrors the daemon's isPidAlive). A
  *  null pid (legacy / never-booted) reads dead. */
@@ -202,14 +201,16 @@ export function reviveInPlace(
   // then build purely.
   const bearings = drainBearings(meta);
   const inv = buildPiArgv(meta, { prompt: buildReviveKickoff(meta, bearings) });
-  // CRTR_ROOT_SESSION is the backstage this node's CHILDREN spawn into — it must
-  // be the durable REVIVE-HOME (home_session), NOT the pane's live `session`. A
-  // FOCUSED child's pane is in a USER session (focus taints meta.tmux_session),
-  // so sourcing it from `session` would land any child it spawns in the user's
-  // session, re-tainting that child's home_session (A-MAJOR-1). home_session is
-  // the taint-immune backstage `crtr` for a child; for a root it equals its own
-  // session, so this is behavior-preserving there.
-  const env = { ...inv.env, CRTR_ROOT_SESSION: homeSessionOf(nodeId) };
+  // CRTR_ROOT_SESSION is the backstage this node's CHILDREN spawn into — NOT the
+  // pane's live `session`. A FOCUSED child's pane is in a USER session (focus
+  // taints meta.tmux_session), so sourcing it from `session` would land any
+  // child it spawns in the user's session, re-tainting that child's
+  // home_session (A-MAJOR-1). childBackstageOf is the taint-immune backstage:
+  // home_session for a managed child, but `nodeSession()` for a ROOT (whose
+  // home_session may itself be a user session it adopted via the inline front
+  // door — sourcing children from it would re-point the root's whole subtree
+  // into the user's session on every refresh-yield).
+  const env = { ...inv.env, CRTR_ROOT_SESSION: childBackstageOf(nodeId) };
 
   const ok = respawn({ pane, cwd: meta.cwd, env, command: piCommand(inv.argv) });
   if (!ok) {
@@ -257,11 +258,11 @@ export function relaunchRootInPane(nodeId: string, pane: string): void {
 
   // No prompt, no resume → a brand-new root conversation at cycle 0.
   const inv = buildPiArgv(meta, {});
-  // Source CRTR_ROOT_SESSION from the durable REVIVE-HOME (home_session), the
-  // same taint-immunity rule as reviveInPlace. relaunchRootInPane runs only on a
-  // root, whose home_session IS its own session, so this is behavior-preserving
-  // — it keeps both in-pane revive paths sourced identically.
-  const env = { ...inv.env, CRTR_ROOT_SESSION: homeSessionOf(nodeId), [FRONT_DOOR_ENV]: '1' };
+  // Source CRTR_ROOT_SESSION from childBackstageOf, the same backstage rule as
+  // reviveInPlace. relaunchRootInPane runs only on a root, whose children must
+  // flow to the shared backstage `nodeSession()` — never the root's own adopted
+  // user session — so both in-pane revive paths stay sourced identically.
+  const env = { ...inv.env, CRTR_ROOT_SESSION: childBackstageOf(nodeId), [FRONT_DOOR_ENV]: '1' };
 
   const ok = respawnPane({ pane, cwd: meta.cwd, env, command: piCommand(inv.argv) });
   if (!ok) {
