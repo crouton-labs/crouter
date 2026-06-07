@@ -41,15 +41,23 @@ import {
   setPresence,
   getNode,
   hasActiveLiveSubscription,
+  dueWakes,
+  consumeWake,
+  advanceWake,
   type NodeRow,
   type NodeMeta,
+  type Wakeup,
+  type NotedWakePayload,
+  type DeadlineWakePayload,
 } from '../core/canvas/index.js';
 import { transition } from '../core/runtime/lifecycle.js';
 import { isBusy } from '../core/runtime/busy.js';
 import { isNodePaneAlive, reconcile } from '../core/runtime/placement.js';
 import { reviveNode } from '../core/runtime/revive.js';
+import { spawnChild, type SpawnChildOpts } from '../core/runtime/spawn.js';
 import { pushUrgent } from '../core/feed/feed.js';
-import { readInboxSince, readCursor } from '../core/feed/inbox.js';
+import { appendInbox, readInboxSince, readCursor } from '../core/feed/inbox.js';
+import { nextSlotAfter } from '../core/wake.js';
 
 /** Surface a vehicle that never booted.
  *
@@ -86,6 +94,14 @@ const REVIVE_GRACE_MS = 20_000;
 // only — a daemon restart resets it (worst case: one extra grace interval).
 const unhealthySince = new Map<string, number>();
 
+// Wake-failure dedup latch (third pass): wakeup_ids we've already fail-loud
+// notified about, so a permanently-broken spawn-cron (or a quarantined recurrence)
+// notifies the armer ONCE and then stays quiet until the next success or cancel —
+// the unrotated, append-only inbox.jsonl must not be flooded (Min-9). In-memory
+// only, like unhealthySince; a daemon restart resets it (worst case: one repeat
+// notice). A successful spawn clears its entry so a future failure re-notifies.
+const notifiedWakeFailures = new Set<string>();
+
 export type LivenessVerdict = 'leave' | 'pending' | 'revive';
 
 /** Decide what to do with a node whose tmux pane is alive, from its pi
@@ -104,7 +120,7 @@ export function livenessVerdict(piPidAlive: boolean | null, deadFor: number | nu
  *  alive (an inline root runs pi under a persistent login shell that survives
  *  pi's death), so gauge liveness on the recorded pid and revive a dead pi once
  *  it's been dead past the grace window. */
-function handleLiveWindow(row: NodeRow, now: number): void {
+function handleLiveWindow(row: NodeRow, now: number, revivedThisTick: Set<string>): void {
   const id = row.node_id;
   // Defensive: an idle-release node whose pane is still alive must NOT be
   // grace-revived here — it is dormant BY CHOICE and is woken only by a worker's
@@ -142,6 +158,35 @@ function handleLiveWindow(row: NodeRow, now: number): void {
     `[crtrd] revive ${id} (pi dead, pane alive, intent=${String(row.intent)})\n`,
   );
   reviveNode(id, { resume });
+  // Record for the third pass's bare double-spawn guard (Maj-4): this node's
+  // pi_pid is now NULL until the fresh pi re-records it, so a same-tick bare wake
+  // would otherwise read it as "not live" and double-spawn pi on the same .jsonl.
+  revivedThisTick.add(id);
+}
+
+/** Fail loud for a drifted/broken wake (design §6.6/Q5): wake the ARMER DIRECTLY
+ *  via appendInbox — NOT pushUrgent, which fans to subscribersOf(owner), and a
+ *  DETACHED spawn has no subscribers (so the armer would never be reached); the
+ *  literal {from:null} is also a type error for pushUrgent. Deduped per wakeup_id
+ *  (notify once, suppress until the next success/cancel via notifiedWakeFailures)
+ *  so a broken spawn-cron can't flood the unrotated inbox.jsonl. Falls back to a
+ *  loud daemon-log line when the owner no longer resolves to a node. */
+function failLoudWake(w: Wakeup, label: string, body: string): void {
+  if (notifiedWakeFailures.has(w.wakeup_id)) return;
+  notifiedWakeFailures.add(w.wakeup_id);
+  if (getRow(w.owner_id) !== null) {
+    appendInbox(w.owner_id, {
+      from: null,
+      tier: 'urgent',
+      kind: 'urgent',
+      label,
+      data: { body },
+    });
+  } else {
+    process.stderr.write(
+      `[crtrd] wake ${w.wakeup_id} failed (owner ${w.owner_id} gone): ${body}\n`,
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -208,6 +253,10 @@ export async function superviseTick(now: number = Date.now()): Promise<void> {
     return;
   }
 
+  // Node-ids revived in pass 1 + pass 2 THIS tick — the third pass's bare branch
+  // skips them so it never launches a second pi on the same .jsonl (Maj-4).
+  const revivedThisTick = new Set<string>();
+
   for (const row of rows) {
     try {
       // Runtime (tmux_session, window, intent, pi_pid) is now authoritative IN
@@ -226,7 +275,7 @@ export async function superviseTick(now: number = Date.now()): Promise<void> {
         // alive-gate means reconcile here only ever FOLLOWS/backfills — never
         // nulls the LOCATION out from under the gone-branches below.
         reconcile(row.node_id);
-        handleLiveWindow(getRow(row.node_id) ?? row, now);
+        handleLiveWindow(getRow(row.node_id) ?? row, now, revivedThisTick);
         continue;
       }
 
@@ -237,14 +286,18 @@ export async function superviseTick(now: number = Date.now()): Promise<void> {
         // fresh so it re-reads its roadmap/context dir.
         process.stderr.write(`[crtrd] revive ${row.node_id} (refresh-yield)\n`);
         reviveNode(row.node_id, { resume: false });
+        revivedThisTick.add(row.node_id); // third-pass bare double-spawn guard (Maj-4)
       } else if (row.intent === 'idle-release') {
         // The node freed its own window on purpose while dormant. Drop the stale
         // window ref and keep it 'idle'; the inbox-poll pass below revives it
         // (resume) the moment a subscribed worker delivers.
         setPresence(row.node_id, { tmux_session: row.tmux_session, window: null });
       } else {
-        // The pane vanished without the node yielding or releasing. Route on what
-        // the node was DOING at pane-kill time — not every gone pane is a death:
+        // The pane vanished without the node yielding or releasing — most often
+        // the user CLOSED it (kill-pane/kill-window), which crtr cannot tell apart
+        // from a window death. Closing a pane is a benign "get it off my screen",
+        // NOT an orphan-the-work kill, so route on what the node was DOING and keep
+        // anything with outstanding work REVIVABLE:
         //   • never-booted (pi_session_id null) → crash + surface boot failure.
         //     A spawn failure the parent was never told about — it had no turn to
         //     finish, so it can never be a finalize. (Boot-failed vs crashed turns
@@ -256,20 +309,29 @@ export async function superviseTick(now: number = Date.now()): Promise<void> {
         //     pi is dead; we read isBusy WITHOUT the usual AND-pidAlive guard on
         //     purpose — here a stale marker IS the proof it died mid-turn.)
         //   • finished its turn (busy ABSENT) but still awaiting a LIVE child →
-        //     crash (→dead) for now. (This waiting-on-a-live-child case may later
-        //     route to a revivable-idle instead of a hard death.)
+        //     RELEASE (→idle + idle-release), NOT dead. Real orchestration is
+        //     outstanding; killing it would orphan the children's reports. Drop the
+        //     stale window and let the second pass revive it into the backstage on
+        //     the next child push, where the user can re-focus it. This is what
+        //     makes "close the pane" safe for a waiting orchestrator.
         //   • finished its turn AND awaiting nothing live → finalize (→done): it
         //     did its own work and the pane was closed to dismiss it.
         const meta = getNode(row.node_id);
         const neverBooted = meta !== null && meta.pi_session_id == null;
-        if (
-          !neverBooted &&
-          !isBusy(row.node_id) &&
-          !hasActiveLiveSubscription(row.node_id)
-        ) {
+        const finishedTurn = !neverBooted && !isBusy(row.node_id);
+        if (finishedTurn && !hasActiveLiveSubscription(row.node_id)) {
           transition(row.node_id, 'finalize');
           process.stderr.write(
             `[crtrd] done ${row.node_id} (pane gone after turn end, no live child)\n`,
+          );
+        } else if (finishedTurn) {
+          // Awaiting a live child → revivable, not a death (closing the pane must
+          // not orphan in-flight work). Clear the stale window; the second pass
+          // revives it on the next unseen inbox entry.
+          setPresence(row.node_id, { tmux_session: row.tmux_session, window: null, pane: null });
+          transition(row.node_id, 'release');
+          process.stderr.write(
+            `[crtrd] release ${row.node_id} (pane gone while awaiting a live child → revivable)\n`,
           );
         } else {
           transition(row.node_id, 'crash');
@@ -286,7 +348,7 @@ export async function superviseTick(now: number = Date.now()): Promise<void> {
             }
           } else {
             process.stderr.write(
-              `[crtrd] dead ${row.node_id} (pane gone, intent=${String(row.intent)})\n`,
+              `[crtrd] dead ${row.node_id} (pane gone mid-generation, intent=${String(row.intent)})\n`,
             );
           }
         }
@@ -322,10 +384,135 @@ export async function superviseTick(now: number = Date.now()): Promise<void> {
       if (entries.length > 0) {
         process.stderr.write(`[crtrd] revive ${row.node_id} (idle-release, inbox)\n`);
         reviveNode(row.node_id, { resume: true });
+        revivedThisTick.add(row.node_id); // third-pass bare double-spawn guard (Maj-4)
       }
     } catch (err) {
       process.stderr.write(
         `[crtrd] error polling inbox ${row.node_id}: ${(err as Error).message}\n`,
+      );
+    }
+  }
+
+  // Third pass: FIRE DUE SCHEDULED WAKES (the wakeups engine, migration v7).
+  // Runs immediately AFTER the inbox second pass — the ordering is load-bearing
+  // (design §6.4): a same-tick inbox revive runs cancelDeadlinesFor (inside
+  // reviveNode) BEFORE this pass's dueWakes query, so an event that wins a
+  // deadline deletes its row before it can fire. The pass-2 inbox loop above is
+  // otherwise untouched (design D3) — it stays the generic wake-on-message path
+  // that noted/deadline rely on; the only addition is the revivedThisTick.add
+  // observation that the bare branch below needs to avoid a double-spawn.
+  // For each due row, in fire_at order, settle the row FIRST (advance-or-consume
+  // — crash-safety, design D4) THEN enact by kind, wrapped per-row so one bad
+  // wake never kills the tick.
+  const nowIso = new Date(now).toISOString();
+  const nowDate = new Date(now);
+  let due: Wakeup[];
+  try {
+    due = dueWakes(nowIso);
+  } catch (err) {
+    process.stderr.write(`[crtrd] dueWakes error: ${(err as Error).message}\n`);
+    due = [];
+  }
+  for (const w of due) {
+    try {
+      // 1. Advance-or-consume FIRST (design D4): settle the row's pending state
+      //    before ANY side effect, so a daemon crash mid-fire can never double-
+      //    fire (a double SPAWN is the worst case — structurally prevented here).
+      if (w.recur == null) {
+        consumeWake(w.wakeup_id);
+      } else {
+        let nextFire: string;
+        try {
+          nextFire = nextSlotAfter(w.recur, nowDate);
+        } catch (err) {
+          // The recur is unparseable (parseCadence validates at arm time, so this
+          // is a rare backstop — a corrupted/foreign row). Leaving a past-fire_at
+          // row pending would re-qualify it EVERY tick (silent CPU spin, enact
+          // never reached), so quarantine it (consume) + fail loud ONCE; never
+          // re-query it each tick (Min-8).
+          consumeWake(w.wakeup_id);
+          failLoudWake(
+            w,
+            '⚠ recurrence quarantined',
+            `Scheduled wake ${w.wakeup_id} has an unparseable recurrence and was removed: ` +
+              `${(err as Error).message}\n\nRe-arm it with a valid cadence.`,
+          );
+          continue;
+        }
+        advanceWake(w.wakeup_id, nextFire);
+      }
+
+      // 2. Enact by kind.
+      if (w.kind === 'bare') {
+        // A bare wake leaves NO inbox entry, so pass 2 can never wake it — it
+        // must revive DIRECTLY with resume:false (re-reads roadmap; AC-N2).
+        const target = w.node_id == null ? null : getRow(w.node_id);
+        if (target === null) continue; // target gone (the FK cascade reaped it)
+        // Same-tick double-spawn guard (Maj-4): pass 1/2 (or an earlier bare row
+        // this pass) may have revived this node THIS tick — reviveNode clears
+        // pi_pid to NULL before the fresh pi re-records it, so the pi_pid==null
+        // liveness check below would falsely read "not live" and a second
+        // reviveNode would launch a SECOND pi on the same .jsonl (corruption).
+        // (Pane-existence is the WRONG guard — it would no-op a frozen-focus bare
+        // wake, which is pane-alive/pi-dead by design.)
+        if (revivedThisTick.has(target.node_id)) continue;
+        // pi live → no-op (AC-E3 bare): an already-awake node needs no revive.
+        if (target.pi_pid != null && isPidAlive(target.pi_pid)) continue;
+        process.stderr.write(`[crtrd] wake ${target.node_id} (bare alarm)\n`);
+        reviveNode(target.node_id, { resume: false });
+        revivedThisTick.add(target.node_id);
+      } else if (w.kind === 'noted') {
+        // Deliver the note; the UNMODIFIED pass 2 wakes the dormant target next
+        // tick (AC-N1), or its live in-process watcher delivers it (AC-E3 noted).
+        if (w.node_id == null) continue;
+        const p = w.payload as NotedWakePayload;
+        appendInbox(w.node_id, {
+          from: w.owner_id ?? null,
+          tier: 'normal',
+          kind: 'message',
+          label: p.label,
+          data: { body: p.body },
+        });
+      } else if (w.kind === 'deadline') {
+        // Same delivery as noted but URGENT tier. The woken node sees only the
+        // RENDERED digest (inbox inlines label/body, NEVER arbitrary data keys),
+        // so the timeout signal MUST ride the visible label/body (Maj-8);
+        // data.timeout is a machine-readable mirror only. body is always non-
+        // empty (the surface supplies a default timeout note when none is
+        // authored, Maj-7). One-shot — already consumed in step 1.
+        if (w.node_id == null) continue;
+        const p = w.payload as DeadlineWakePayload;
+        appendInbox(w.node_id, {
+          from: w.owner_id ?? null,
+          tier: 'urgent',
+          kind: 'message',
+          label: `⏰ deadline reached — ${p.label}`,
+          data: { body: p.body, timeout: true },
+        });
+      } else if (w.kind === 'spawn') {
+        // Re-derives LaunchSpec live (AC-W2); payload.parent is the non-null
+        // resolved armer id (T2/T7 guarantee it), so spawnChild never throws the
+        // "requires a calling node" error even for a --root recipe.
+        const recipe = w.payload as SpawnChildOpts;
+        try {
+          spawnChild(recipe);
+          notifiedWakeFailures.delete(w.wakeup_id); // success clears the dedup latch
+        } catch (err) {
+          // Fail loud by waking the ARMER DIRECTLY (design §6.6/Q5). The row was
+          // already settled in step 1, so this is never a hot retry loop; a
+          // permanently-broken spawn-cron stays deduped-noisy until cancel.
+          failLoudWake(
+            w,
+            '⚠ deferred spawn failed',
+            `Deferred spawn (${recipe.kind} @ ${recipe.cwd}) failed: ` +
+              `${(err as Error).message}\n\nRe-home (fix the cwd/parent) or re-arm the wake.`,
+          );
+        }
+      }
+    } catch (err) {
+      // One bad wake never kills the tick.
+      process.stderr.write(
+        `[crtrd] error firing wake ${w.wakeup_id}: ${(err as Error).message}\n`,
       );
     }
   }

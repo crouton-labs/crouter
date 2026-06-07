@@ -205,7 +205,7 @@ test('pane GONE while its old window is still alive → the gone-branch fires (c
 // unconditional 'dead'. It routes on what the node was DOING at pane-kill time:
 //   • mid-generation (busy marker PRESENT)               → crash  ('dead')
 //   • finished its turn, awaiting nothing live           → finalize ('done')
-//   • finished its turn, still awaiting a LIVE child     → crash  ('dead'), for now
+//   • finished its turn, still awaiting a LIVE child     → release ('idle' + idle-release), revivable
 // (The mid-generation → dead leg is covered by node 'G' above.)
 // ---------------------------------------------------------------------------
 
@@ -232,7 +232,7 @@ test('pane gone + booted + busy ABSENT + no live subscription → finalize (done
   });
 });
 
-test('pane gone + booted + busy ABSENT but AWAITING a LIVE child → crash (dead), for now', { skip: !hasTmux() }, async () => {
+test('pane gone + booted + busy ABSENT but AWAITING a LIVE child → idle-release (revivable, NOT dead)', { skip: !hasTmux() }, async () => {
   await withLivePane('fin2', async (session, window) => {
     const sp = spawnSync('tmux', ['split-window', '-d', '-P', '-F', '#{pane_id}', '-t', `${session}:${window}`, 'sleep 600'], { encoding: 'utf8' });
     const dead = (sp.stdout ?? '').trim();
@@ -244,15 +244,21 @@ test('pane gone + booted + busy ABSENT but AWAITING a LIVE child → crash (dead
       pane: dead,
       tmux_session: session,
       window,
-      pi_pid: process.pid,
+      pi_pid: deadPid(),     // the user closed the pane → pi is dead
       pi_session_id: 'booted',
       intent: null,
     }));
     subscribe('PARENT', 'CHILD', true); // active subscription to a LIVE node
-    // Parent finished its turn (no busy marker) but is still awaiting a live
-    // child → NOT a finalize. Routes to crash ('dead') for now.
+    // REGRESSION: closing the pane of a waiting orchestrator must NOT kill it.
+    // PARENT finished its turn (no busy marker) but still awaits a live child, so
+    // a hard 'dead' would orphan the child's report. It routes to idle-release
+    // (revivable); the second pass revives it on the next inbox push. No inbox
+    // entry here, so it stays dormant (idle + idle-release) — revivable, not dead.
     await superviseTick();
-    assert.equal(getNode('PARENT')!.status, 'dead', 'a finished node still awaiting a live child crashes (dead), not finalizes');
+    const p = getNode('PARENT')!;
+    assert.equal(p.status, 'idle', 'a finished node still awaiting a live child is RELEASED, not killed');
+    assert.equal(p.intent, 'idle-release', 'routed to idle-release so a child push revives it');
+    assert.equal(p.window ?? null, null, 'the stale window ref is dropped');
   });
 });
 

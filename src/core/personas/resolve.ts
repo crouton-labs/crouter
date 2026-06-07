@@ -20,7 +20,7 @@
  * ahead of the persona body.
  */
 
-import { loadPersona, loadKernel, loadRuntimeBase, loadSpineFragment, loadLifecycleFragment, subPersonasFor } from './loader.js';
+import { loadPersona, loadKernel, loadRuntimeBase, loadSpineFragment, loadLifecycleFragment, loadWaitingFragment, subPersonasFor } from './loader.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -88,6 +88,7 @@ function composeProtocol(
     loadRuntimeBase(),
     loadSpineFragment(hasManager),
     loadLifecycleFragment(lifecycle),
+    loadWaitingFragment(),
   ]
     .filter((s) => s.length > 0)
     .join('\n\n');

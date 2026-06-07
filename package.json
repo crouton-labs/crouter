@@ -37,7 +37,8 @@
   "license": "MIT",
   "dependencies": {
     "@crouton-kit/humanloop": "latest",
-    "commander": "^13.0.0"
+    "commander": "^13.0.0",
+    "cron-parser": "5.5.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

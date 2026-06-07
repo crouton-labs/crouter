@@ -6,6 +6,13 @@
 // index over those metas, plus the authoritative store for the mutable
 // `subscribes_to` edges (which no single meta owns).
 
+// Type-only import — fully erased at compile time, so it adds NO runtime
+// canvas → runtime cycle (the import-cycle prohibition is about VALUE imports
+// like newNodeId). A `spawn` wake's payload IS the existing SpawnChildOpts
+// recipe (design §4 / shared contracts), so we reference the real type rather
+// than duplicate its shape and risk drift.
+import type { SpawnChildOpts } from '../runtime/spawn.js';
+
 /** What a node is doing right now. UI shows active+idle; `done` is hidden but
  *  revivable; `canceled` is a user-closed node (also hidden, also revivable —
  *  not a fault); only `dead` is a fault. */
@@ -204,4 +211,84 @@ export interface SubscriptionRef {
   node_id: string;
   active: boolean;
   created: string;
+}
+
+// ---------------------------------------------------------------------------
+// Wakeups — the scheduled-wakeup vocabulary (the `wakeups` table, migration v7).
+// Data-access lives in its own peer module wakeups.ts (one-module-per-table).
+// ---------------------------------------------------------------------------
+
+/** The four firing actions a wakeup can carry (design §4):
+ *  - bare     → revive the target node directly (resume:false), no inbox entry.
+ *  - noted    → deliver a note to the target's inbox (normal tier).
+ *  - deadline → deliver a timeout note to the target's inbox (urgent tier); ≤1 per node.
+ *  - spawn    → spawnChild a fresh node from a stored recipe (detached, node_id NULL). */
+export type WakeKind = 'bare' | 'noted' | 'deadline' | 'spawn';
+
+/** payload for a `bare` wake — `null`, or a label carried only for list rendering. */
+export interface BareWakePayload {
+  label?: string;
+}
+
+/** payload for a `noted` wake — a non-empty note body + a ≤120-char first-line label. */
+export interface NotedWakePayload {
+  body: string;
+  label: string;
+}
+
+/** payload for a `deadline` wake — a non-empty timeout note + the machine-readable
+ *  `timeout` mirror. The VISIBLE timeout signal rides the RENDERED label/body, not
+ *  this flag (inbox digests never surface arbitrary data keys). ≤1 per node. */
+export interface DeadlineWakePayload {
+  body: string;
+  timeout: true;
+  label: string;
+}
+
+/** The parsed per-kind payload union (Maj-1): the data-access layer JSON.stringifies
+ *  this on write and JSON.parses it back on read, so callers consume `payload.body`
+ *  / `payload as SpawnChildOpts` directly with no re-parse. A `spawn` payload is a
+ *  SpawnChildOpts recipe with `parent` resolved to a NON-NULL armer id at arm time. */
+export type WakePayload =
+  | null
+  | BareWakePayload
+  | NotedWakePayload
+  | DeadlineWakePayload
+  | SpawnChildOpts;
+
+/** A wakeup row as stored in the `wakeups` table (canvas.db, migration v7). One row =
+ *  "do <kind> at fire_at [every recur]". `node_id` is the revive TARGET + node-anchored
+ *  cancel anchor (NULL = canvas-detached); `owner_id` is the ARMER (set on every row).
+ *  `payload` is the PARSED per-kind union, never the raw JSON string (Maj-1). */
+export interface Wakeup {
+  /** Stable id (caller-supplied at arm time, minted as `wk-${newNodeId()}`). */
+  wakeup_id: string;
+  /** Revive target + node-anchored cancel anchor; NULL = canvas-detached (spawn). */
+  node_id: string | null;
+  /** The node that armed this wake; set on EVERY row. == node_id for a self-alarm. */
+  owner_id: string;
+  /** Next absolute fire time, ISO 8601 UTC; lexicographic <= compare. */
+  fire_at: string;
+  kind: WakeKind;
+  /** NULL = one-shot/adaptive; else the recur JSON the daemon advances. */
+  recur: string | null;
+  /** Parsed per-kind payload (NULL for a bare one-shot with no label). */
+  payload: WakePayload;
+  /** ISO 8601, audit/order. */
+  created: string;
+}
+
+/** The arm-a-wake spec (the pinned shared contract). `wakeup_id` is CALLER-SUPPLIED —
+ *  the canvas layer never mints ids (importing newNodeId from runtime/nodes.ts would
+ *  force a canvas → runtime → canvas cycle, Min-1); the command surface mints
+ *  `wk-${newNodeId()}` and passes it in. `owner_id` is required on every row;
+ *  `node_id` is NULL for a detached wake (deferred spawn / spawn-cron). */
+export interface ArmWakeSpec {
+  wakeup_id: string;
+  node_id?: string | null;
+  owner_id: string;
+  fire_at: string;
+  kind: WakeKind;
+  recur?: string | null;
+  payload?: WakePayload;
 }

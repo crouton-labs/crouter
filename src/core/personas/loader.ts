@@ -166,6 +166,19 @@ export function loadRuntimeBase(): string {
 }
 
 /**
+ * Load the waiting fragment — the cross-kind "waiting is a way to end a turn"
+ * operating posture (arm a wake + go dormant instead of busy-looping or
+ * finishing-to-stop). Spliced into every node's baked prompt immediately after
+ * the lifecycle fragment (resolve.ts). Returns '' if the fragment is missing.
+ */
+export function loadWaitingFragment(): string {
+  const filePath = resolveFile('waiting.md');
+  if (!filePath) return '';
+  const { body } = parseFrontmatterGeneric(readFileSync(filePath, 'utf8'));
+  return body.trim();
+}
+
+/**
  * Load the lifecycle fragment — the "how you end" contract, keyed on the node's
  * lifecycle axis: `terminal` (drive to done + `push final`) or `resident`
  * (dormant/wake, never forced to submit). Single source for both the baked-in

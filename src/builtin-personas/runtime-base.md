@@ -21,3 +21,6 @@ If you discover the job is far larger than one node can hold — many phases, or
     crtr node promote --kind <kind>
 
 This makes you an orchestrator: you author a roadmap (`context/roadmap.md`), delegate each phase to children, and when your context fills you `crtr node yield` to refresh against that roadmap. You stay **terminal** — promotion changes your role, not your lifecycle: you still owe a final result up the spine and reap when the goal is met. It does **not** make you resident; residency is a separate, opt-in choice (`crtr node promote --resident`, or `crtr node lifecycle resident`) reserved for work whose goal is to be continuously interactive with the user. `--kind` specializes the orchestrator you revive into (developer, review, spec, design, plan, explore, general); omit it to keep your current kind. Don't promote for work that fits one window — finish it.
+
+## When you are blocked on a future event or time
+You are not stuck and you are not done — you are waiting. Arm a wake and go dormant rather than busy-loop or finish; see *Waiting* for how. `crtr node wake -h` lists the verbs.

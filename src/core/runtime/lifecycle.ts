@@ -34,7 +34,7 @@
 // canvas.ts touches the db" (see canvas/CLAUDE.md), exactly as db.ts's backfill
 // is the sanctioned exception for a data migration.
 
-import { openDb, getNode } from '../canvas/index.js';
+import { openDb, getNode, cancelWakesFor, cancelSelfAlarms } from '../canvas/index.js';
 import type { NodeMeta, NodeStatus, ExitIntent } from '../canvas/types.js';
 
 /** The lifecycle events — the only vocabulary for moving a node's status/intent.
@@ -117,5 +117,21 @@ export function transition(nodeId: string, event: LifecycleEvent): NodeMeta {
   } else if (writeIntent) {
     db.prepare('UPDATE nodes SET intent = ? WHERE node_id = ?').run(spec.intent ?? null, nodeId);
   }
+
+  // Wakeups cleanup — writes a DIFFERENT table (wakeups) AFTER the atomic
+  // status/intent write above, so the single-(status,intent)-writer rule holds.
+  // Event-gated; exactly ONE delegated wakeups helper per event, never inline
+  // wakeups SQL here (design §6.7 / D2 / D6, Q1/Q2):
+  //   cancel   → cancelWakesFor: reap node-anchored AND owner-armed detached
+  //              wakes this node armed (ruling A) — covers all three cancel
+  //              sites uniformly (close cascade · reapDescendants · relaunch
+  //              park-old).
+  //   finalize → cancelSelfAlarms: clear this node's one-shot self-alarms only;
+  //              node-anchored declarative crons SURVIVE a finishing instance (Q1).
+  //   crash    → NOTHING. A fault is not a deliberate end-of-waiting; self-alarms
+  //              and crons MUST survive instance death (D2 / Invariant E / AC-R3).
+  if (event === 'cancel') cancelWakesFor(nodeId);
+  else if (event === 'finalize') cancelSelfAlarms(nodeId);
+
   return getNode(nodeId) as NodeMeta;
 }

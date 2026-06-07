@@ -236,6 +236,42 @@ CREATE TABLE IF NOT EXISTS focuses (
 `);
 }
 
+/** v7 — the `wakeups` table: durable store for scheduled wake-ups (the
+ *  scheduled-wakeups feature). One row per armed wake. `node_id` is the TARGET
+ *  and the node-anchored cancel anchor — it carries a `ON DELETE CASCADE` FK to
+ *  `nodes(node_id)` so a pruned/deleted node's node-anchored wakes are reaped in
+ *  the same transaction (mirroring the edges v4 cascade; works because
+ *  `PRAGMA foreign_keys = ON` is set at every open). NULL `node_id` = a
+ *  canvas-detached wake (deferred spawn / spawn-cron) that survives.
+ *
+ *  `owner_id` is the ARMER, set on EVERY row, and is deliberately a PLAIN indexed
+ *  column with NO FK (design D1/D2): an FK on `owner_id` would cascade-drop a
+ *  crashed-then-pruned armer's detached cron, violating Invariant E. A detached
+ *  wake is reaped only by the explicit `cancelWakesFor` DELETE, never by cascade.
+ *
+ *  `fire_at` is an ISO 8601 UTC string for the NEXT occurrence, so the per-tick
+ *  due query is a lexicographic `<=` compare. The partial unique index
+ *  `idx_wakeups_deadline` enforces ≤1 deadline per node. Additive, forward-only. */
+function appendWakeupsTable(db: DatabaseSync): void {
+  db.exec(`
+CREATE TABLE IF NOT EXISTS wakeups (
+  wakeup_id  TEXT PRIMARY KEY,
+  node_id    TEXT,                       -- TARGET + node-anchored cancel anchor; NULL = canvas-detached
+  owner_id   TEXT NOT NULL,              -- ARMER; set on EVERY row. PLAIN column, NO FK (design D1/D2)
+  fire_at    TEXT NOT NULL,              -- ISO 8601 UTC; NEXT occurrence; lexicographic <=
+  kind       TEXT NOT NULL,              -- 'bare' | 'noted' | 'deadline' | 'spawn'
+  recur      TEXT,                       -- NULL = one-shot; else the pinned recur JSON
+  payload    TEXT,                       -- JSON per kind (shared contracts)
+  created    TEXT NOT NULL,
+  FOREIGN KEY (node_id) REFERENCES nodes(node_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_wakeups_fire  ON wakeups(fire_at);                 -- per-tick due query
+CREATE INDEX IF NOT EXISTS idx_wakeups_node  ON wakeups(node_id);                 -- by-node cancel / list
+CREATE INDEX IF NOT EXISTS idx_wakeups_owner ON wakeups(owner_id);               -- by-owner reap (ruling A)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_wakeups_deadline ON wakeups(node_id) WHERE kind = 'deadline';
+`);
+}
+
 /** The ordered migration list. Index `i` is migration version `i + 1`; the db's
  *  `user_version` tracks how many have been applied. Append only. */
 export const MIGRATIONS: ReadonlyArray<(db: DatabaseSync) => void> = [
@@ -245,6 +281,7 @@ export const MIGRATIONS: ReadonlyArray<(db: DatabaseSync) => void> = [
   /* v4 */ edgesForeignKeyCascade,
   /* v5 */ addPaneColumn,
   /* v6 */ addFocusesTable,
+  /* v7 */ appendWakeupsTable,
 ];
 
 /** Bring `db` up to the latest schema version. Reads `user_version`, runs each

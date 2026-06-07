@@ -539,7 +539,7 @@ export function registerCanvasStophook(pi: PiLike): void {
         // down; the daemon watches its inbox and revives it (resume) the moment a
         // subscribed worker delivers. An 'attended' root never releases: the human
         // is its wake source, so we keep its window live and dormant.
-        if (decision.reason === 'awaiting') {
+        if (decision.reason === 'awaiting' || decision.reason === 'scheduled') {
           // AWAITING ≠ done (no manager-takeover). What happens next splits on
           // whether the user is WATCHING this node:
           //   • FOCUSED → it holds the user's viewport, so keep pi LIVE and

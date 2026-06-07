@@ -17,7 +17,7 @@
 //   • otherwise      → a TERMINAL node with nothing live to wait for and no
 //                      final pushed. Re-prompt it to finish or escalate.
 
-import { hasActiveLiveSubscription, getNode } from '../canvas/index.js';
+import { hasActiveLiveSubscription, hasPendingSelfWake, getNode } from '../canvas/index.js';
 
 export interface StopSignals {
   /** Did the node call `push --final` (finish) this turn? */
@@ -27,7 +27,7 @@ export interface StopSignals {
 }
 
 export type StopAction =
-  | { action: 'allow'; reason: 'awaiting' | 'finished' | 'escalated' | 'dormant' }
+  | { action: 'allow'; reason: 'awaiting' | 'scheduled' | 'finished' | 'escalated' | 'dormant' }
   | { action: 'reprompt'; reason: 'stalled'; message: string };
 
 export const STALL_REPROMPT =
@@ -48,6 +48,10 @@ export function evaluateStop(nodeId: string, signals: StopSignals): StopAction {
   if (node !== null && node.lifecycle === 'resident') {
     return { action: 'allow', reason: 'dormant' };
   }
+  // A terminal node with a pending self-scheduled wakeup is legitimately
+  // waiting on the clock: the daemon's wakeup sweep resumes it when the wake
+  // fires, so it should idle-release rather than busy-wait holding pi/window.
+  if (hasPendingSelfWake(nodeId)) return { action: 'allow', reason: 'scheduled' };
   // A terminal node holding something live to wake it is legitimately awaiting.
   if (hasActiveLiveSubscription(nodeId)) return { action: 'allow', reason: 'awaiting' };
   // A terminal node with nothing live and no final pushed has stalled.

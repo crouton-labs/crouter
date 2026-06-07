@@ -7,10 +7,13 @@
 
 import { defineLeaf, defineBranch, type BranchDef } from '../core/command.js';
 import { InputError } from '../core/io.js';
-import { spawnChild } from '../core/runtime/spawn.js';
+import { spawnChild, type SpawnChildOpts } from '../core/runtime/spawn.js';
 import { promote, requestYield } from '../core/runtime/promote.js';
-import { writeYieldMessage } from '../core/runtime/kickoff.js';
+import { writeYieldMessage, readGoal } from '../core/runtime/kickoff.js';
 import { reviveNode } from '../core/runtime/revive.js';
+import { newNodeId } from '../core/runtime/nodes.js';
+import { readRoadmap } from '../core/runtime/roadmap.js';
+import { parseWhen, parseCadence, type WakeError } from '../core/wake.js';
 
 import { demoteNode } from '../core/runtime/demote.js';
 import { detachToBackground, focus as placementFocus, windowAlive, windowOfPane, currentTmux } from '../core/runtime/placement.js';
@@ -28,9 +31,19 @@ import {
   subscriptionsOf,
   subscribersOf,
   readContextTokens,
+  view,
+  armWake,
+  listWakes,
+  cancelWake,
+  WakeArmError,
   type Mode,
   type Lifecycle,
   type NodeStatus,
+  type WakeScope,
+  type WakeKind,
+  type WakePayload,
+  type DeadlineWakePayload,
+  type ArmWakeSpec,
 } from '../core/canvas/index.js';
 
 // Past this much context, an ORCHESTRATOR that spawns a managed child is better
@@ -120,7 +133,7 @@ const nodeNew = defineLeaf({
   tier: 'important',
   help: {
     name: 'node new',
-    summary: 'spawn a terminal worker onto the canvas as a background window — returns its node id',
+    summary: 'spawn a terminal worker onto the canvas as a background window — returns its node id (or, with --at/--every, DEFER the birth as a scheduled spawn wake — returns a wakeup id, not a node)',
     params: [
       { kind: 'stdin', name: 'prompt', required: true, constraint: 'First user message for the spawned node. Piped on stdin or passed as a positional.' },
       { kind: 'flag', name: 'kind', type: 'string', required: false, default: 'general', constraint: 'Persona kind — match the work to the kind. The <kinds> list below names every installable kind and when to use each; the <sub-personas> block (when present) names the specialist sub-personas available to YOU, each spawnable by its full kind string (e.g. plan/reviewers/security).' },
@@ -130,6 +143,9 @@ const nodeNew = defineLeaf({
       { kind: 'flag', name: 'parent', type: 'string', required: false, constraint: 'Parent node id. Defaults to the calling node (CRTR_NODE_ID).' },
       { kind: 'flag', name: 'root', type: 'bool', required: false, constraint: 'Spawn an INDEPENDENT root instead of a managed child: no parent (top-level on the canvas), NO subscription back to you (you are NOT woken by it), resident lifecycle. It records spawned_by=you for provenance and is brought forefront so it can be driven directly. Use for a node you hand off and do not manage (e.g. a sub-orchestrator a human will discuss with).' },
       { kind: 'flag', name: 'fork-from', type: 'string', required: false, constraint: 'FORK the new node from an existing pi conversation instead of starting it fresh: pass a node id (forks from that node\'s session), an absolute session `.jsonl` path, or a partial pi session uuid. pi copies that whole history into a NEW session for the child (the source is untouched), then the prompt is delivered as the next message — i.e. the child wakes up as a continuation of that conversation. Use to branch exploratory work off a node that already built up the context you need, instead of re-deriving it. One-shot at birth: the fork resumes its own session thereafter.' },
+      { kind: 'flag', name: 'at', type: 'string', required: false, constraint: 'DEFER the birth: instead of spawning now, arm a one-shot that births this exact node at <when> — a duration ("5m"), a zoned ISO, or a bare ISO (host-local). Returns a WAKEUP id, not a node id; inspect/cancel via `node wake list`/`cancel`. Mutually exclusive with --every.' },
+      { kind: 'flag', name: 'every', type: 'string', required: false, constraint: 'SPAWN-CRON: birth a fresh node on this declarative cadence even after a prior instance reaped itself or crashed — a duration ("6h") or a 5-field cron / @alias ("0 9 * * *","@daily"). Canvas-anchored (survives your crash/finalize), reaped by your deliberate close or `node wake cancel`. Min cadence 60s. Mutually exclusive with --at.' },
+      { kind: 'flag', name: 'tz', type: 'string', required: false, constraint: 'IANA zone for a calendar --every (or a bare-ISO --at); default host-local. Makes "every 9am" mean 9am there, DST-correct.' },
     ],
     output: [
       { name: 'node_id', type: 'string', required: true, constraint: 'The new node id.' },
@@ -138,6 +154,10 @@ const nodeNew = defineLeaf({
       { name: 'session', type: 'string', required: true, constraint: 'The tmux session the node was placed in — the shared crtr session for a child; your current session for an in-tmux --root.' },
       { name: 'status', type: 'string', required: true, constraint: 'Always "active" on spawn.' },
       { name: 'follow_up', type: 'string', required: true, constraint: 'Decision road sign for the caller: the child runs independently and its finish wakes you on its own, so never wait or poll on it — either pick up other work now or end your turn. If you are an orchestrator already deep in context (>100k), it instead steers you to `crtr node yield` now so your fresh revive absorbs the child\'s result. Read it, then act.' },
+      { name: 'deferred', type: 'boolean', required: false, constraint: 'True when --at/--every deferred the birth (no node exists yet); the result then carries id/fires_at/recur instead of node_id.' },
+      { name: 'id', type: 'string', required: false, constraint: 'On a deferred spawn: the wakeup id (cancel/list by it).' },
+      { name: 'fires_at', type: 'string', required: false, constraint: 'On a deferred spawn: the absolute UTC birth time (first fire for a cron).' },
+      { name: 'recur', type: 'string', required: false, constraint: 'On a deferred spawn: "none" or the cadence (every:6h / cron:0 9 * * * <zone>).' },
     ],
     dynamicState: () => kindsStateBlock(),
     outputKind: 'object',
@@ -145,6 +165,7 @@ const nodeNew = defineLeaf({
       'Creates a node under ~/.crouter/canvas/nodes/<id>/ and indexes it in canvas.db.',
       'Default (managed child): parent auto-subscribes (active) and is woken on the child\'s pushes. With --root: no subscription — records a spawned_by edge for provenance only.',
       'Opens a tmux window running pi: a background (non-focus-stealing) window in the shared crtr session for a child; with --root, a new window in your current session (in-tmux) or the shared session (outside tmux), with the client switched to it.',
+      'With --at/--every: opens NO window and creates NO node — it inserts one detached `spawn` wakeups row (owner=you, parent resolved now) the daemon spawnChilds at fire time. A far-future spawn is best-effort: if the cwd/parent is gone at fire it fails LOUD (an urgent push to you, or a daemon-log line if you are gone).',
     ],
   },
   run: async (input) => {
@@ -160,6 +181,51 @@ const nodeNew = defineLeaf({
     const root = input['root'] === true;
     const forkFrom = input['forkFrom'] as string | undefined;
 
+    // --at / --every DEFER the birth: instead of spawning now, arm a `spawn`
+    // wake carrying this exact recipe; the daemon spawnChilds it at fire time
+    // (re-deriving the LaunchSpec live, so persona prose is never stale).
+    const at = (input['at'] as string | undefined)?.trim();
+    const every = (input['every'] as string | undefined)?.trim();
+    const tz = input['tz'] as string | undefined;
+    if ((at !== undefined && at !== '') || (every !== undefined && every !== '')) {
+      if (at !== undefined && at !== '' && every !== undefined && every !== '') {
+        throw new InputError({ error: 'at_and_every', message: '--at and --every are mutually exclusive.', next: 'Use --at for a one-shot deferred spawn, or --every for a spawn-cron.' });
+      }
+      const ownerId = armerId();
+      // The recipe's `parent` is the resolved armer — NON-NULL on EVERY payload,
+      // INCLUDING --root (Maj-2): spawnChild throws at fire time on a null parent
+      // (the daemon has no CRTR_NODE_ID); for a root it internally nulls the spine
+      // parent while keeping `spawner` for provenance, so a non-null value is right.
+      const recipeParent = parent ?? ownerId;
+      const recipe: SpawnChildOpts = {
+        kind,
+        mode,
+        cwd,
+        prompt,
+        parent: recipeParent,
+        ...(name !== undefined ? { name } : {}),
+        ...(root ? { root: true } : {}),
+        ...(forkFrom !== undefined ? { forkFrom } : {}),
+      };
+      const now = new Date();
+      let recur: string | undefined;
+      let fireAt: string;
+      if (every !== undefined && every !== '') {
+        const cad = parseCadence(every, parseOpts(now, tz));
+        if ('error' in cad) throwWakeError(cad.error);
+        recur = cad.recur;
+        fireAt = cad.firstFireAt;
+      } else {
+        const w = parseWhen(at!, parseOpts(now, tz));
+        if ('error' in w) throwWakeError(w.error);
+        fireAt = w.fireAt;
+      }
+      assertUnderCap(ownerId);
+      const id = `wk-${newNodeId()}`;
+      armOrThrow({ wakeup_id: id, node_id: null, owner_id: ownerId, fire_at: fireAt, kind: 'spawn', ...(recur !== undefined ? { recur } : {}), payload: recipe });
+      return { deferred: true, id, kind, fires_at: fireAt, recur: recurDisplay(recur) };
+    }
+
     const res = spawnChild({ kind, mode, cwd, name, prompt, parent, root, forkFrom });
     return {
       node_id: res.node.node_id,
@@ -173,7 +239,9 @@ const nodeNew = defineLeaf({
     };
   },
   render: (r) =>
-    `<spawned name="${r['name']}" id="${r['node_id']}" status="${r['status']}">\n${r['follow_up']}\n</spawned>`,
+    r['deferred'] === true
+      ? `<spawn-deferred id="${r['id']}" kind="${r['kind']}" fires-at="${r['fires_at']}" recur="${r['recur']}"/>`
+      : `<spawned name="${r['name']}" id="${r['node_id']}" status="${r['status']}">\n${r['follow_up']}\n</spawned>`,
 });
 
 // ---------------------------------------------------------------------------
@@ -777,6 +845,437 @@ const nodeYield = defineLeaf({
   },
 });
 
+// ---------------------------------------------------------------------------
+// node wake — scheduled wakeups (arm / list / cancel). The agent-facing skin
+// over the wakeups data-access layer (armWake/listWakes/cancelWake) + the time
+// grammar (parseWhen/parseCadence). The surface ONLY arms a durable row and
+// introspects/cancels — it never spawns pi, drives a transition, or fires a wake
+// (those are the daemon's at fire time). T2's armWake carries only integrity
+// backstops (empty body / recur-on-deadline / unknown kind); the target-
+// resolvability, bare-recoverable-state, and per-owner cap checks live HERE
+// (Min-6), so every armer must route through this surface.
+// ---------------------------------------------------------------------------
+
+/** Max pending wakes a single owner may hold (AC-N4). */
+const WAKE_CAP = 100;
+
+/** Default timeout body for a note-less `until`, so the deadline row is never
+ *  empty (T2 rejects an empty body) and Maj-8's rendered timeout signal has text. */
+const DEFAULT_DEADLINE_BODY =
+  'Deadline reached — no report arrived; reassess / chase / escalate.';
+
+/** Resolve the calling node (the armer/owner). CRTR_NODE_ID is mandatory — a
+ *  wake is owned by the node that arms it (owner_id). */
+function armerId(): string {
+  const id = process.env['CRTR_NODE_ID'];
+  if (id === undefined || id === '') {
+    throw new InputError({ error: 'no_node', message: 'no node to arm a wake (CRTR_NODE_ID unset)', next: 'Run from inside a node.' });
+  }
+  return id;
+}
+
+/** Build ParseOpts, including `tz` only when actually provided. */
+function parseOpts(now: Date, tz: string | undefined): { tz?: string; now: Date } {
+  return tz !== undefined && tz.trim() !== '' ? { tz, now } : { now };
+}
+
+/** Map a T3 typed time-grammar error to the rendered AC-N3/N4 error block. */
+function throwWakeError(e: WakeError): never {
+  const next: Record<string, string> = {
+    wake_in_past: 'Pick a future instant — a positive duration ("5m","2h") or an ISO time later than now.',
+    bad_when: 'Use a duration ("5m","1h30m"), a zoned ISO ("2026-06-07T09:00:00Z"), or a bare ISO ("2026-06-07T09:00").',
+    bad_cadence: 'Use a duration ("6h"), a 5-field cron ("0 9 * * *"), or an @alias ("@daily").',
+    unknown_zone: 'Pass --tz with an IANA zone name (e.g. "America/New_York").',
+    cadence_too_fast: 'Use a cadence of at least 60s (e.g. "1m","5m","1h").',
+  };
+  throw new InputError({ error: e.code, message: e.message, received: e.received, next: next[e.code] ?? 'Fix the time value and retry.' });
+}
+
+/** Run armWake, mapping its thrown integrity backstop (WakeArmError) to a
+ *  rendered error block. The surface validates these cases up front, so a throw
+ *  here is a backstop, not the primary path. */
+function armOrThrow(spec: ArmWakeSpec): string {
+  try {
+    return armWake(spec);
+  } catch (e) {
+    if (e instanceof WakeArmError) {
+      const next: Record<string, string> = {
+        empty_note: 'Provide a real --note, or omit it for a bare wake.',
+        deadline_cannot_recur: 'Drop --every. For a recurring self-alarm use `crtr node wake at --every <cadence>`.',
+        bad_kind: 'This is a crtr bug — report it.',
+      };
+      throw new InputError({ error: e.code, message: e.message, next: next[e.code] ?? 'Fix the wake spec and retry.' });
+    }
+    throw e;
+  }
+}
+
+/** Reject an arm that would push this owner past the pending-wakes cap (AC-N4),
+ *  counted via the {owner} listWakes variant. */
+function assertUnderCap(ownerId: string): void {
+  const pending = listWakes({ owner: ownerId }).length;
+  if (pending >= WAKE_CAP) {
+    throw new InputError({
+      error: 'cap_exceeded',
+      message: `you hold ${pending} pending wakes (cap ${WAKE_CAP}).`,
+      next: 'Reap stale wakes with `crtr node wake cancel <id>` (see `crtr node wake list`) before arming more.',
+    });
+  }
+}
+
+/** A bare wake resumes a fresh window with no memory beyond disk, so it needs
+ *  durable state to wake INTO. Accept it only when the target has a goal
+ *  (initial-prompt.md) or roadmap (roadmap.md) on disk — located via the
+ *  codebase's own writeGoal/roadmap convention, not a new file (AC-N3). */
+function hasRecoverableState(nodeId: string): boolean {
+  const goal = readGoal(nodeId);
+  if (goal !== null && goal.trim() !== '') return true;
+  const roadmap = readRoadmap(nodeId);
+  return roadmap !== null && roadmap.trim() !== '';
+}
+
+/** A stored recur JSON → compact display (`every:6h` / `cron:0 9 * * * <zone>`). */
+function recurDisplay(recur: string | null | undefined): string {
+  if (recur === null || recur === undefined) return 'none';
+  try {
+    const r = JSON.parse(recur) as { every?: string; cron?: string; tz?: string };
+    if (typeof r.every === 'string') return `every:${r.every}`;
+    if (typeof r.cron === 'string') return `cron:${r.cron}${typeof r.tz === 'string' ? ' ' + r.tz : ''}`;
+  } catch {
+    /* fall through */
+  }
+  return 'none';
+}
+
+/** True when a stored recur is a fixed interval (vs a calendar cron). */
+function isFixedInterval(recur: string): boolean {
+  try {
+    return typeof (JSON.parse(recur) as { every?: unknown }).every === 'string';
+  } catch {
+    return false;
+  }
+}
+
+/** A human ETA hint like " (~5m)" from a fire-at ISO relative to now. '' if past. */
+function etaHint(fireAt: string, now: Date): string {
+  const ms = new Date(fireAt).getTime() - now.getTime();
+  if (!Number.isFinite(ms) || ms <= 0) return '';
+  const mins = Math.round(ms / 60_000);
+  if (mins < 60) return ` (~${mins}m)`;
+  const hrs = Math.round(ms / 3_600_000);
+  if (hrs < 48) return ` (~${hrs}h)`;
+  return ` (~${Math.round(ms / 86_400_000)}d)`;
+}
+
+/** Escape a value for a rendered XML attribute (list rows carry free-text notes). */
+function xmlAttr(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// node wake at ---------------------------------------------------------------
+
+const nodeWakeAt = defineLeaf({
+  name: 'at',
+  description: 'arm a self-alarm — wake yourself (or another node) at a future time',
+  whenToUse:
+    'you have nothing to do until a known time — re-check a poll after a backoff interval, run a standing job each morning, or hand your future self a timed reminder. Bare (no --note) is the time-triggered twin of `node yield`: a fresh window re-reading your roadmap, right for standing/recurring work and polls; add --note to wake into your saved conversation with a pointer this moment needs. Use `node wake until` instead to bound a wait on an INBOX event; `node new --at` to defer spawning a NEW node; `node yield` to refresh NOW rather than at a future T',
+  help: {
+    name: 'node wake at',
+    summary:
+      'arm a self-alarm: wake yourself (default) or another node (--node) at a future time. Bare ⇒ fresh window re-reading roadmap/disk; --note ⇒ saved conversation with the note as new context; --every ⇒ a declarative recurrence the runtime keeps firing even across your crash/finalize',
+    params: [
+      { kind: 'positional', name: 'when', required: false, constraint: 'Fire time — a duration ("5m","1h30m"), a zoned ISO ("2026-06-07T09:00:00Z"), or a bare ISO ("2026-06-07T09:00", host-local). Required UNLESS --every is given (the cadence then sets the first fire).' },
+      { kind: 'flag', name: 'note', type: 'string', required: false, constraint: 'A non-empty note delivered into the woken context. Present ⇒ NOTED wake (resume your saved conversation, note as new context). Absent ⇒ BARE wake (fresh window re-reading roadmap/disk). A bare wake on a node with no goal/roadmap on disk is rejected.' },
+      { kind: 'flag', name: 'every', type: 'string', required: false, constraint: 'Make it a declarative recurrence the runtime fires on schedule even if you crash/finalize (node-anchored revive-cron): a duration ("6h","30m") or a 5-field cron / @alias ("0 9 * * *","@daily"). A fixed-interval --every WITH <when> uses <when> as the first fire; a cron --every ignores <when>. Min cadence 60s.' },
+      { kind: 'flag', name: 'tz', type: 'string', required: false, constraint: 'IANA zone for a calendar --every or a bare-ISO <when> (default: host-local).' },
+      { kind: 'flag', name: 'node', type: 'string', required: false, constraint: 'Arm the wake for ANOTHER existing node (a parent waking a child / a timed message to it). Default: self (CRTR_NODE_ID).' },
+    ],
+    output: [
+      { name: 'id', type: 'string', required: true, constraint: 'The new wakeup id (cancel/list by it).' },
+      { name: 'kind', type: 'string', required: true, constraint: '"bare" or "noted".' },
+      { name: 'fires_at', type: 'string', required: true, constraint: 'Absolute UTC fire time (the first fire for a recurrence).' },
+      { name: 'recur', type: 'string', required: true, constraint: '"none", or the cadence (every:6h / cron:0 9 * * * <zone>).' },
+      { name: 'target', type: 'string', required: true, constraint: '"self" or the --node id.' },
+      { name: 'guidance', type: 'string', required: true, constraint: 'What to do now — end your turn to go dormant; do not push final.' },
+    ],
+    outputKind: 'object',
+    effects: [
+      'Inserts one wakeups row (kind bare/noted); nothing fires before fire_at.',
+      'No pi spawn, no transition — arming is a pure durable side-effect. End your turn separately to go dormant.',
+    ],
+  },
+  run: async (input) => {
+    const ownerId = armerId();
+    const targetId = ((input['node'] as string | undefined) ?? '').trim() || ownerId;
+    if (getNode(targetId) === null) {
+      throw new InputError({ error: 'not_found', message: `no node: ${targetId}`, field: 'node', next: 'List nodes with `crtr node inspect list`.' });
+    }
+    const when = (input['when'] as string | undefined)?.trim();
+    const every = (input['every'] as string | undefined)?.trim();
+    const tz = input['tz'] as string | undefined;
+    const noteRaw = input['note'] as string | undefined;
+    const hasNote = noteRaw !== undefined;
+
+    if ((when === undefined || when === '') && (every === undefined || every === '')) {
+      throw new InputError({ error: 'bad_when', message: 'a <when> time is required (or --every for a recurrence).', next: 'Pass a duration ("5m"), an ISO time, or --every <cadence>.' });
+    }
+    if (hasNote && noteRaw.trim() === '') {
+      throw new InputError({ error: 'empty_note', message: '--note must be non-empty for a noted wake.', received: noteRaw, next: 'Provide a real note ("re-check CI #4821; deploy was pending"), or omit --note for a bare wake.' });
+    }
+    const kind: WakeKind = hasNote ? 'noted' : 'bare';
+    if (kind === 'bare' && !hasRecoverableState(targetId)) {
+      throw new InputError({ error: 'bare_no_recoverable_state', message: `node ${targetId} has no goal/roadmap on disk — a bare wake would resume amnesiac.`, next: 'Pass --note "<why this moment matters>" so the woken context carries a pointer, or arm the bare wake only once the node has a roadmap/goal.' });
+    }
+
+    const now = new Date();
+    let recur: string | undefined;
+    let fireAt: string;
+    if (every !== undefined && every !== '') {
+      const cad = parseCadence(every, parseOpts(now, tz));
+      if ('error' in cad) throwWakeError(cad.error);
+      recur = cad.recur;
+      fireAt = cad.firstFireAt;
+      // BOTH <when> and a FIXED-interval --every: <when> overrides the first fire
+      // (Min-12). A cron --every ignores <when> by design.
+      if (when !== undefined && when !== '' && isFixedInterval(cad.recur)) {
+        const w = parseWhen(when, parseOpts(now, tz));
+        if ('error' in w) throwWakeError(w.error);
+        fireAt = w.fireAt;
+      }
+    } else {
+      const w = parseWhen(when!, parseOpts(now, tz));
+      if ('error' in w) throwWakeError(w.error);
+      fireAt = w.fireAt;
+    }
+
+    assertUnderCap(ownerId);
+
+    let payload: WakePayload = null;
+    if (kind === 'noted') {
+      const body = noteRaw!;
+      payload = { body, label: body.split('\n')[0]!.slice(0, 120) };
+    }
+
+    const id = `wk-${newNodeId()}`;
+    armOrThrow({
+      wakeup_id: id,
+      node_id: targetId,
+      owner_id: ownerId,
+      fire_at: fireAt,
+      kind,
+      ...(recur !== undefined ? { recur } : {}),
+      payload,
+    });
+
+    const target = targetId === ownerId ? 'self' : targetId;
+    const eta = etaHint(fireAt, now);
+    const guidance =
+      recur !== undefined
+        ? `${kind === 'noted' ? 'Noted' : 'Bare'} recurrence armed (${recurDisplay(recur)}); first fire ${fireAt}${eta}. End your turn to go dormant; do not push final. The runtime keeps firing it even across your crash/finalize — cancel with \`crtr node wake cancel ${id}\`.`
+        : kind === 'noted'
+          ? `Noted wake armed. You wake into your saved conversation at ${fireAt}${eta} with your note. End your turn now to go dormant; do not push final.`
+          : `Bare self-alarm armed. You wake in a fresh window at ${fireAt}${eta}. End your turn now to go dormant; do not push final. The wake re-reads your roadmap.`;
+
+    return { id, kind, fires_at: fireAt, recur: recurDisplay(recur), target, guidance };
+  },
+  render: (r) =>
+    `<wake-armed id="${r['id']}" kind="${r['kind']}" fires-at="${r['fires_at']}" recur="${r['recur']}" target="${r['target']}">\n${r['guidance']}\n</wake-armed>`,
+});
+
+// node wake until ------------------------------------------------------------
+
+const nodeWakeUntil = defineLeaf({
+  name: 'until',
+  description: 'bind a deadline to your current inbox-wait (self only)',
+  whenToUse:
+    'every time you delegate and go dormant waiting on children — so you wake when a child reports OR at T to chase a silent child, escalate, or give up, never hanging forever. This turns an open-ended event-wait into a bounded one. Use `node wake at` instead for an unconditional timed wake unrelated to an inbox event',
+  help: {
+    name: 'node wake until',
+    summary:
+      'arm a deadline on your current dormancy: you wake on the first inbox message, or at <when> if none arrives — whichever fires first wins, the loser is canceled. Self only; ≤1 deadline per node (a new `until` replaces the prior); cancel-on-wake (any genuine revive drops it)',
+    params: [
+      { kind: 'positional', name: 'when', required: true, constraint: 'Deadline time — a duration ("30m"), a zoned ISO, or a bare ISO (host-local).' },
+      { kind: 'flag', name: 'note', type: 'string', required: false, constraint: 'Your timeout playbook — what to do if you woke because the wait expired (delivered with a timeout marker so you can tell a timeout from a real report). Omit and a default timeout note is supplied.' },
+      { kind: 'flag', name: 'every', type: 'string', required: false, constraint: 'NOT ALLOWED — a deadline cannot recur. Passing it is rejected (deadline_cannot_recur); use `crtr node wake at --every` for a recurring self-alarm.' },
+    ],
+    output: [
+      { name: 'id', type: 'string', required: true, constraint: 'The new deadline wakeup id.' },
+      { name: 'fires_at', type: 'string', required: true, constraint: 'Absolute UTC deadline.' },
+      { name: 'target', type: 'string', required: true, constraint: 'Always "self".' },
+      { name: 'guidance', type: 'string', required: true, constraint: 'What to do now — delegate / end your turn to go dormant.' },
+    ],
+    outputKind: 'object',
+    effects: [
+      "Upserts the node's single deadline wakeups row (replacing any prior).",
+      'No pi spawn, no transition — arm, then end your turn to go dormant. A genuine revive (an inbox event or any other wake) cancels it.',
+    ],
+  },
+  run: async (input) => {
+    const ownerId = armerId();
+    const every = (input['every'] as string | undefined)?.trim();
+    if (every !== undefined && every !== '') {
+      throw new InputError({ error: 'deadline_cannot_recur', message: 'a deadline cannot recur.', next: 'Drop --every. For a recurring self-alarm use `crtr node wake at --every <cadence>`.' });
+    }
+    const when = (input['when'] as string).trim();
+    const noteRaw = input['note'] as string | undefined;
+    if (noteRaw !== undefined && noteRaw.trim() === '') {
+      throw new InputError({ error: 'empty_note', message: '--note must be non-empty when given.', received: noteRaw, next: 'Provide a real timeout playbook, or omit --note for the default timeout note.' });
+    }
+    const now = new Date();
+    const w = parseWhen(when, { now });
+    if ('error' in w) throwWakeError(w.error);
+
+    assertUnderCap(ownerId);
+
+    const body = noteRaw !== undefined && noteRaw.trim() !== '' ? noteRaw : DEFAULT_DEADLINE_BODY;
+    const label = body.split('\n')[0]!.slice(0, 120);
+    const payload: DeadlineWakePayload = { body, timeout: true, label };
+    const id = `wk-${newNodeId()}`;
+    armOrThrow({ wakeup_id: id, node_id: ownerId, owner_id: ownerId, fire_at: w.fireAt, kind: 'deadline', payload });
+
+    const eta = etaHint(w.fireAt, now);
+    const guidance = `Deadline armed. You wake on the first inbox message, or at ${w.fireAt}${eta} if none arrives. Now delegate / end your turn to go dormant — whichever fires first cancels the other.`;
+    return { id, fires_at: w.fireAt, target: 'self', guidance };
+  },
+  render: (r) =>
+    `<deadline-armed id="${r['id']}" fires-at="${r['fires_at']}" target="${r['target']}">\n${r['guidance']}\n</deadline-armed>`,
+});
+
+// node wake list -------------------------------------------------------------
+
+const nodeWakeList = defineLeaf({
+  name: 'list',
+  description: 'list pending wakes for a scope (default self)',
+  whenToUse:
+    "before re-arming or finishing, to see what you already have armed and reap stale ones. Default scope is your own wakes; --node lists another node's, --canvas every wake on the canvas, --subtree a node and its descendants",
+  help: {
+    name: 'node wake list',
+    summary:
+      'list pending wakes (all kinds, incl. deferred spawns) for a scope — id, kind, next fire, cadence, target, owner, note. Fired one-shots are gone; a recurrence shows its NEXT fire, not past slots',
+    params: [
+      { kind: 'flag', name: 'node', type: 'string', required: false, constraint: 'List the wakes anchored to this node. Mutually exclusive with --canvas/--subtree.' },
+      { kind: 'flag', name: 'canvas', type: 'bool', required: false, constraint: 'List EVERY wake on the canvas. Mutually exclusive with --node/--subtree.' },
+      { kind: 'flag', name: 'subtree', type: 'string', required: false, constraint: 'List the wakes anchored to this node AND its descendants (the subscription sub-DAG). Mutually exclusive with --node/--canvas.' },
+    ],
+    output: [
+      { name: 'scope', type: 'string', required: true, constraint: 'The scope listed (self / <id> / canvas / subtree:<id>).' },
+      { name: 'wakes', type: 'object[]', required: true, constraint: 'Rows: {id, kind, next, recur, target, owner, note}.' },
+    ],
+    outputKind: 'object',
+    effects: ['Read-only: queries the wakeups table.'],
+  },
+  run: async (input) => {
+    const nodeFlag = (input['node'] as string | undefined)?.trim();
+    const canvas = input['canvas'] === true;
+    const subtree = (input['subtree'] as string | undefined)?.trim();
+    const chosen = [nodeFlag !== undefined && nodeFlag !== '', canvas, subtree !== undefined && subtree !== ''].filter(Boolean).length;
+    if (chosen > 1) {
+      throw new InputError({ error: 'bad_scope', message: 'choose at most one of --node, --canvas, --subtree.', next: 'Pass a single scope flag, or none for your own wakes.' });
+    }
+    const viewer = process.env['CRTR_NODE_ID'];
+    let scope: WakeScope;
+    let scopeLabel: string;
+    if (canvas) {
+      scope = { canvas: true };
+      scopeLabel = 'canvas';
+    } else if (subtree !== undefined && subtree !== '') {
+      if (getNode(subtree) === null) throw new InputError({ error: 'not_found', message: `no node: ${subtree}`, field: 'subtree', next: 'List nodes with `crtr node inspect list`.' });
+      scope = { subtree: [subtree, ...view(subtree)] };
+      scopeLabel = `subtree:${subtree}`;
+    } else if (nodeFlag !== undefined && nodeFlag !== '') {
+      scope = { node: nodeFlag };
+      scopeLabel = viewer !== undefined && nodeFlag === viewer ? 'self' : nodeFlag;
+    } else {
+      // Default "self" scope is OWNER-based, not node-anchored: it is "what YOU
+      // armed" (§3.5 whenToUse), so the detached spawn wakes you own via
+      // `node new --at/--every` (node_id NULL, owner_id self) DO surface here
+      // with their `spawn:<kind>@<cwd>` target — §3.5/§3.7 require that. (Use
+      // --node <id> for the node-ANCHORED view of a target's wakes.)
+      scope = { owner: armerId() };
+      scopeLabel = 'self';
+    }
+    const rel = (id: string | null): string => {
+      if (id === null) return '';
+      return viewer !== undefined && viewer !== '' && id === viewer ? 'self' : id;
+    };
+    const wakes = listWakes(scope).map((w) => {
+      let target: string;
+      if (w.node_id !== null) {
+        target = rel(w.node_id);
+      } else if (w.kind === 'spawn' && w.payload !== null) {
+        const recipe = w.payload as SpawnChildOpts;
+        target = `spawn:${recipe.kind}@${recipe.cwd}`;
+      } else {
+        target = 'detached';
+      }
+      const note =
+        (w.kind === 'noted' || w.kind === 'deadline') && w.payload !== null
+          ? ((w.payload as { label?: string }).label ?? '')
+          : '';
+      return { id: w.wakeup_id, kind: w.kind, next: w.fire_at, recur: recurDisplay(w.recur), target, owner: rel(w.owner_id), note };
+    });
+    return { scope: scopeLabel, wakes };
+  },
+  render: (r) => {
+    const wakes = r['wakes'] as Array<Record<string, unknown>>;
+    const rows = wakes.map(
+      (w) =>
+        `  <wake id="${w['id']}" kind="${w['kind']}" next="${w['next']}" recur="${xmlAttr(String(w['recur']))}" target="${xmlAttr(String(w['target']))}" owner="${xmlAttr(String(w['owner']))}" note="${xmlAttr(String(w['note']))}"/>`,
+    );
+    const body = rows.length > 0 ? '\n' + rows.join('\n') + '\n' : '\n';
+    return (
+      `<wakes scope="${xmlAttr(String(r['scope']))}" count="${wakes.length}">${body}</wakes>\n` +
+      '<follow_up>Cancel one with `crtr node wake cancel <id>`. Fired one-shots are gone; a recurrence shows its NEXT fire, not past slots.</follow_up>'
+    );
+  },
+});
+
+// node wake cancel -----------------------------------------------------------
+
+const nodeWakeCancel = defineLeaf({
+  name: 'cancel',
+  description: 'cancel a pending wake by id (idempotent)',
+  whenToUse:
+    'a wait you no longer need — a poll whose goal is met, a deferred spawn you reconsidered, a deadline you are replacing. Idempotent: canceling an already-fired or already-canceled id is a no-op. Closing/reaping a node already reaps its own wakes and the detached ones it armed; reach for this to drop a single wake, or to reap a detached spawn/cron a finished or crashed node left running',
+  help: {
+    name: 'node wake cancel',
+    summary:
+      'cancel a pending wake by id — it never fires and leaves the list. Idempotent (canceling an already-gone id is a no-op, not an error)',
+    params: [
+      { kind: 'positional', name: 'wakeup-id', required: true, constraint: 'The wakeup id to cancel (from `node wake list`).' },
+    ],
+    output: [
+      { name: 'id', type: 'string', required: true, constraint: 'The canceled wakeup id.' },
+      { name: 'was_pending', type: 'boolean', required: true, constraint: 'True when a pending row was removed; false when it was already gone.' },
+    ],
+    outputKind: 'object',
+    effects: ['Deletes the wakeup row (idempotent — no error if it was already gone).'],
+  },
+  run: async (input) => {
+    const id = (input['wakeupId'] as string).trim();
+    const wasPending = listWakes({ canvas: true }).some((w) => w.wakeup_id === id);
+    cancelWake(id);
+    return { id, was_pending: wasPending };
+  },
+  render: (r) => `<wake-canceled id="${r['id']}" was-pending="${r['was_pending']}"/>`,
+});
+
+// node wake (branch) ---------------------------------------------------------
+
+const nodeWake = defineBranch({
+  name: 'wake',
+  description: 'arm/list/cancel scheduled wakeups — the second trigger that stirs a dormant node: time',
+  whenToUse:
+    'you want to wait CHEAPLY on a future time: end your turn, go dormant (no window, no compute), and be woken only when it is worth acting again. `at` arms a self-alarm (the timed twin of `node yield`), `until` bounds an inbox-wait with a deadline, `list`/`cancel` inspect and reap. To defer the BIRTH of a new node use `node new --at` — it is a wake too and shows up in `list`',
+  help: {
+    name: 'node wake',
+    summary: 'the pending-wakeups namespace — arm a time trigger on the dormant state, then inspect/cancel it',
+    model:
+      'Time is the second trigger that stirs a dormant node — the first is an inbox message, and a scheduled wake is just a future delivery on that same channel. At the moment you set, the runtime brings you (or, for a deferred birth, a fresh node) back through the ordinary revive path: no new window, nothing the focus model learns. Use this to wait CHEAPLY — end your turn, go dormant (free: no window, no compute), and be woken only when it is worth acting again. `at` arms a self-alarm; `until` bounds an inbox-wait with a deadline; `list`/`cancel` inspect and reap. To defer the BIRTH of a new node use `node new --at` — it is a wake too and shows up in `list`. Arming is a pure side-effect: it writes a durable row, it does NOT end your turn — end your turn separately to go dormant.',
+  },
+  children: [nodeWakeAt, nodeWakeUntil, nodeWakeList, nodeWakeCancel],
+});
+
 export function registerNode(): BranchDef {
   return defineBranch({
     name: 'node',
@@ -795,6 +1294,6 @@ export function registerNode(): BranchDef {
         'HOW: `crtr node new "<task>" --kind <kind>` returns a node id immediately and runs the worker in a background window. Match the kind to the work (see `node new -h`). You are woken when a child finishes — the wake message ALREADY IS the coalesced digest (the watcher drains your inbox to wake you), so don\'t re-run `crtr feed read` to "open" it (it would read empty, the cursor already advanced); instead dereference the report paths in that digest that matter, don\'t act on a one-line label. (`crtr feed read` is for proactively polling before a wake, or inspecting a child\'s inbox via `--node`; `--all` re-reads history with full message bodies.) Integrate, then either delegate the next units or finish.\n\n' +
         'FINISH: a worker ends its own work with `crtr push final "<result>"` (writes the canonical result, marks done, closes the window) — stopping without it is not finishing. For a job too big for one context window, `node promote` to an orchestrator (holds a roadmap, delegates phases); when context fills, `node yield` to refresh against that roadmap.',
     },
-    children: [nodeNew, nodeInspect, nodeFocus, nodeCycle, nodeDemote, nodeClose, nodeMsg, nodeSubscribe, nodeUnsubscribe, nodePromote, nodeLifecycle, nodeYield],
+    children: [nodeNew, nodeInspect, nodeFocus, nodeCycle, nodeDemote, nodeClose, nodeMsg, nodeSubscribe, nodeUnsubscribe, nodePromote, nodeLifecycle, nodeYield, nodeWake],
   });
 }

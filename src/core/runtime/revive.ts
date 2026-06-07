@@ -21,6 +21,7 @@ import {
   setPresence,
   clearPid,
   fullName,
+  cancelDeadlinesFor,
   type NodeMeta,
 } from '../canvas/index.js';
 import { transition } from './lifecycle.js';
@@ -149,6 +150,13 @@ export function reviveNode(
   // around it (the crash-safety ordering, unchanged). THIS is the bug-kill: a
   // non-focused background revive can no longer new-window into a user session.
   transition(nodeId, 'revive');
+  // Cancel-on-wake (design §6.4, AC-E1): every revive-for-any-reason (an inbox
+  // event, a different wake, a manual focus) drops this node's pending deadline,
+  // so the deadline always belongs to the dormancy being left. Writes only the
+  // wakeups table, after the atomic transition above. (reviveInPlace's
+  // transition('boot') needs NO hook — a refresh is the same node continuing,
+  // not leaving a dormancy.)
+  cancelDeadlinesFor(nodeId);
   const placed = reviveIntoPlacement(nodeId, {
     command: piCommand(inv.argv),
     env: inv.env,
