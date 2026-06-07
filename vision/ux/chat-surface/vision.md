@@ -38,9 +38,7 @@ A node's tmux pane is **open only when it must be.**
 
 Four cases fall out:
 - **focused + generating** → open, in a focus pane (a user session).
-- **focused + not generating** (e.g. terminated while focused, awaiting children) →
-  kept visibly present in its focus pane as a frozen/dormant pane, so it can resume
-  in place (see the hard case).
+- **focused + not generating** (parked at its prompt between turns, or revived only to be read) → kept present in its focus pane. A node that *finishes* while focused does not linger here — it hands its pane to its manager or reaps (see the hard case).
 - **not focused + generating** → open, but off-screen in the backstage.
 - **not focused + not generating** → closed; fully dormant.
 
@@ -85,23 +83,25 @@ and it is the only way a new pane should ever appear.
 > many, across sessions. Each focus is owned by one node; each node occupies at most
 > one focus. Creating a focus is always explicit.
 
-## The hard case: a focused node that terminates
+## Demote and detach: ending or shelving a focused node
 
-A terminal (base) node finishes its work and would normally go dormant — pi exits,
-pane closes. But a node can be **focused at the moment it terminates**, with children
-still working beneath it. Concretely: a node spawns a child, the child spawns its own
-children, the user focuses that middle child. The middle child finishes and goes
-dormant while its grandchildren keep running; when they finish they **push their
-reports up** to the dormant middle node, which must be **woken** to absorb them.
+A node you are watching can be moved toward finishing in two deliberate steps, distinct in what they do to your viewport.
 
-The user was *looking at* that middle node. It must not vanish, and on wake it must
-not pop open somewhere new.
+**Demote** turns an interactive node terminal *in place*: it keeps its pane and your focus, keeps running exactly where it is, but is now on a finishing track — it owes a final report up the spine and will end (then the hard case below applies). Demote changes only the node's disposition, never your viewport: nothing moves on screen.
 
-> Invariant F3 — **Seamless resume into the focus.** A node that terminates while
-> focused stays present in its focus pane (a frozen pane showing its last state) and,
-> when later revived — including by the autonomous wake when its children push reports
-> up — resumes **into that same pane.** No new window. To the user it looks like the
-> pane was there the whole time; the node simply starts talking again.
+**Detach** demotes *and* lets go: the node leaves your viewport for the backstage, where it keeps generating off-screen, now unfocused, and finishes on its own. This is the "I'm done watching this — let it run to completion without me" move; it frees the focus pane for whatever you point it at next.
+
+> Invariant F5 — **Demote is viewport-neutral; detach is the deliberate let-go.** Putting a focused node on its finishing track never disturbs your viewport — the pane and focus stay exactly as they were. Sending it off-screen to finish on its own is a separate, explicit act that frees the pane and moves the node to the backstage, where it keeps running unfocused.
+
+## The hard case: a focused node that finishes
+
+A terminal node that finishes would normally go dormant — pi exits, pane closes. But a node can be **focused at the moment it finishes**, and the user must never be left staring at a dead pane or dropped onto an empty screen. What happens next is decided by one thing: does the finished node report to a **manager** (a node above it on the spine — the one it pushes its final up to)?
+
+**With a manager — the focus follows the work upward.** The finished node hands its focus pane to its manager and its own pi ends. A manager live off-screen in the backstage is swapped into the pane; a dormant manager is woken — by the very final the finished node just pushed up — and resumes into the pane. Either way the user, who was steering the worker, is now steering the manager that received its result, in the same viewport, with no new window. The finished node is now unfocused and not generating, so it owns no pane (Invariant P); if its *own* children later push reports up to it, it wakes off-screen in the backstage, never unbidden in the user's session.
+
+**With no manager — a top-level node is reaped.** A focused root that finishes has no successor to hand to: there is nothing left to steer there, so its focus closes and its pane reaps when its pi exits. The viewport is released, not frozen into a corpse.
+
+> Invariant F3 — **A finished focused node hands its pane up the spine.** A node that finishes while focused never leaves a dead pane behind. With a manager, the manager takes over the same pane — swapped in if live, woken into it if dormant — and the finished node goes dormant in the backstage. With no manager, the focus closes and the pane reaps. The user always keeps steering the live frontier of the work, never a corpse, and no new window ever appears.
 
 ## What "good" feels like
 
@@ -110,8 +110,7 @@ not pop open somewhere new.
 - Watching several nodes at once is just several focus panes, opened deliberately.
 - Off-screen, the backstage hums with every generating-but-unfocused node. The user
   never sees it unless they go looking.
-- A focused node can finish, hand off to its children, and later wake to absorb their
-  results — in the same pane, with no new window ever appearing unbidden.
+- A focused node can finish and hand its viewport up to the manager that receives its result — the user keeps steering the live frontier in the same pane, with no new window ever appearing unbidden.
 
 ## Anti-goals (the "broken" feel)
 
@@ -125,3 +124,4 @@ not pop open somewhere new.
   brought to their focus.
 - A node staying open in the backstage when it is neither focused nor generating (it
   should be dormant).
+- A node that finishes while focused leaving a dead or frozen pane the user must clear by hand, instead of the manager taking over the pane (or the pane reaping when there is no manager).
