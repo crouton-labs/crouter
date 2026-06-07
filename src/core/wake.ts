@@ -1,7 +1,7 @@
 // Time grammar + recurrence evaluation for scheduled wakeups.
 //
 // This is the ONE place that owns wakeup time logic. Both the CLI surface
-// (`node wake` / `node new --at|--every`) and the daemon's firing pass import
+// (`node wake at|until|spawn`) and the daemon's firing pass import
 // from here, so there is no duplicated cron usage and no surface<->daemon
 // inverted dependency:
 //   - parseWhen / parseCadence  — arm-time grammar (surface, T7)

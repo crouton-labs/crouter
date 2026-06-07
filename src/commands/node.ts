@@ -133,7 +133,7 @@ const nodeNew = defineLeaf({
   tier: 'important',
   help: {
     name: 'node new',
-    summary: 'spawn a terminal worker onto the canvas as a background window — returns its node id (or, with --at/--every, DEFER the birth as a scheduled spawn wake — returns a wakeup id, not a node)',
+    summary: 'spawn a terminal worker onto the canvas as a background window — returns its node id',
     params: [
       { kind: 'stdin', name: 'prompt', required: true, constraint: 'First user message for the spawned node. Piped on stdin or passed as a positional.' },
       { kind: 'flag', name: 'kind', type: 'string', required: false, default: 'general', constraint: 'Persona kind — match the work to the kind. The <kinds> list below names every installable kind and when to use each; the <sub-personas> block (when present) names the specialist sub-personas available to YOU, each spawnable by its full kind string (e.g. plan/reviewers/security).' },
@@ -143,9 +143,6 @@ const nodeNew = defineLeaf({
       { kind: 'flag', name: 'parent', type: 'string', required: false, constraint: 'Parent node id. Defaults to the calling node (CRTR_NODE_ID).' },
       { kind: 'flag', name: 'root', type: 'bool', required: false, constraint: 'Spawn an INDEPENDENT root instead of a managed child: no parent (top-level on the canvas), NO subscription back to you (you are NOT woken by it), resident lifecycle. It records spawned_by=you for provenance and is brought forefront so it can be driven directly. Use for a node you hand off and do not manage (e.g. a sub-orchestrator a human will discuss with).' },
       { kind: 'flag', name: 'fork-from', type: 'string', required: false, constraint: 'FORK the new node from an existing pi conversation instead of starting it fresh: pass a node id (forks from that node\'s session), an absolute session `.jsonl` path, or a partial pi session uuid. pi copies that whole history into a NEW session for the child (the source is untouched), then the prompt is delivered as the next message — i.e. the child wakes up as a continuation of that conversation. Use to branch exploratory work off a node that already built up the context you need, instead of re-deriving it. One-shot at birth: the fork resumes its own session thereafter.' },
-      { kind: 'flag', name: 'at', type: 'string', required: false, constraint: 'DEFER the birth: instead of spawning now, arm a one-shot that births this exact node at <when> — a duration ("5m"), a zoned ISO, or a bare ISO (host-local). Returns a WAKEUP id, not a node id; inspect/cancel via `node wake list`/`cancel`. Mutually exclusive with --every.' },
-      { kind: 'flag', name: 'every', type: 'string', required: false, constraint: 'SPAWN-CRON: birth a fresh node on this declarative cadence even after a prior instance reaped itself or crashed — a duration ("6h") or a 5-field cron / @alias ("0 9 * * *","@daily"). Canvas-anchored (survives your crash/finalize), reaped by your deliberate close or `node wake cancel`. Min cadence 60s. Mutually exclusive with --at.' },
-      { kind: 'flag', name: 'tz', type: 'string', required: false, constraint: 'IANA zone for a calendar --every (or a bare-ISO --at); default host-local. Makes "every 9am" mean 9am there, DST-correct.' },
     ],
     output: [
       { name: 'node_id', type: 'string', required: true, constraint: 'The new node id.' },
@@ -154,10 +151,6 @@ const nodeNew = defineLeaf({
       { name: 'session', type: 'string', required: true, constraint: 'The tmux session the node was placed in — the shared crtr session for a child; your current session for an in-tmux --root.' },
       { name: 'status', type: 'string', required: true, constraint: 'Always "active" on spawn.' },
       { name: 'follow_up', type: 'string', required: true, constraint: 'Decision road sign for the caller: the child runs independently and its finish wakes you on its own, so never wait or poll on it — either pick up other work now or end your turn. If you are an orchestrator already deep in context (>100k), it instead steers you to `crtr node yield` now so your fresh revive absorbs the child\'s result. Read it, then act.' },
-      { name: 'deferred', type: 'boolean', required: false, constraint: 'True when --at/--every deferred the birth (no node exists yet); the result then carries id/fires_at/recur instead of node_id.' },
-      { name: 'id', type: 'string', required: false, constraint: 'On a deferred spawn: the wakeup id (cancel/list by it).' },
-      { name: 'fires_at', type: 'string', required: false, constraint: 'On a deferred spawn: the absolute UTC birth time (first fire for a cron).' },
-      { name: 'recur', type: 'string', required: false, constraint: 'On a deferred spawn: "none" or the cadence (every:6h / cron:0 9 * * * <zone>).' },
     ],
     dynamicState: () => kindsStateBlock(),
     outputKind: 'object',
@@ -165,7 +158,6 @@ const nodeNew = defineLeaf({
       'Creates a node under ~/.crouter/canvas/nodes/<id>/ and indexes it in canvas.db.',
       'Default (managed child): parent auto-subscribes (active) and is woken on the child\'s pushes. With --root: no subscription — records a spawned_by edge for provenance only.',
       'Opens a tmux window running pi: a background (non-focus-stealing) window in the shared crtr session for a child; with --root, a new window in your current session (in-tmux) or the shared session (outside tmux), with the client switched to it.',
-      'With --at/--every: opens NO window and creates NO node — it inserts one detached `spawn` wakeups row (owner=you, parent resolved now) the daemon spawnChilds at fire time. A far-future spawn is best-effort: if the cwd/parent is gone at fire it fails LOUD (an urgent push to you, or a daemon-log line if you are gone).',
     ],
   },
   run: async (input) => {
@@ -181,51 +173,6 @@ const nodeNew = defineLeaf({
     const root = input['root'] === true;
     const forkFrom = input['forkFrom'] as string | undefined;
 
-    // --at / --every DEFER the birth: instead of spawning now, arm a `spawn`
-    // wake carrying this exact recipe; the daemon spawnChilds it at fire time
-    // (re-deriving the LaunchSpec live, so persona prose is never stale).
-    const at = (input['at'] as string | undefined)?.trim();
-    const every = (input['every'] as string | undefined)?.trim();
-    const tz = input['tz'] as string | undefined;
-    if ((at !== undefined && at !== '') || (every !== undefined && every !== '')) {
-      if (at !== undefined && at !== '' && every !== undefined && every !== '') {
-        throw new InputError({ error: 'at_and_every', message: '--at and --every are mutually exclusive.', next: 'Use --at for a one-shot deferred spawn, or --every for a spawn-cron.' });
-      }
-      const ownerId = armerId();
-      // The recipe's `parent` is the resolved armer — NON-NULL on EVERY payload,
-      // INCLUDING --root (Maj-2): spawnChild throws at fire time on a null parent
-      // (the daemon has no CRTR_NODE_ID); for a root it internally nulls the spine
-      // parent while keeping `spawner` for provenance, so a non-null value is right.
-      const recipeParent = parent ?? ownerId;
-      const recipe: SpawnChildOpts = {
-        kind,
-        mode,
-        cwd,
-        prompt,
-        parent: recipeParent,
-        ...(name !== undefined ? { name } : {}),
-        ...(root ? { root: true } : {}),
-        ...(forkFrom !== undefined ? { forkFrom } : {}),
-      };
-      const now = new Date();
-      let recur: string | undefined;
-      let fireAt: string;
-      if (every !== undefined && every !== '') {
-        const cad = parseCadence(every, parseOpts(now, tz));
-        if ('error' in cad) throwWakeError(cad.error);
-        recur = cad.recur;
-        fireAt = cad.firstFireAt;
-      } else {
-        const w = parseWhen(at!, parseOpts(now, tz));
-        if ('error' in w) throwWakeError(w.error);
-        fireAt = w.fireAt;
-      }
-      assertUnderCap(ownerId);
-      const id = `wk-${newNodeId()}`;
-      armOrThrow({ wakeup_id: id, node_id: null, owner_id: ownerId, fire_at: fireAt, kind: 'spawn', ...(recur !== undefined ? { recur } : {}), payload: recipe });
-      return { deferred: true, id, kind, fires_at: fireAt, recur: recurDisplay(recur) };
-    }
-
     const res = spawnChild({ kind, mode, cwd, name, prompt, parent, root, forkFrom });
     return {
       node_id: res.node.node_id,
@@ -239,9 +186,7 @@ const nodeNew = defineLeaf({
     };
   },
   render: (r) =>
-    r['deferred'] === true
-      ? `<spawn-deferred id="${r['id']}" kind="${r['kind']}" fires-at="${r['fires_at']}" recur="${r['recur']}"/>`
-      : `<spawned name="${r['name']}" id="${r['node_id']}" status="${r['status']}">\n${r['follow_up']}\n</spawned>`,
+    `<spawned name="${r['name']}" id="${r['node_id']}" status="${r['status']}">\n${r['follow_up']}\n</spawned>`,
 });
 
 // ---------------------------------------------------------------------------
@@ -1036,7 +981,7 @@ const nodeWakeAt = defineLeaf({
   name: 'at',
   description: 'arm a self-alarm — wake yourself (or another node) at a future time',
   whenToUse:
-    'you have nothing to do until a known time — re-check a poll after a backoff interval, run a standing job each morning, or hand your future self a timed reminder. The bare form is the time-triggered twin of `node yield`: a fresh window re-reading your roadmap, right for standing/recurring work and polls; the noted form instead wakes you into your saved conversation with a pointer this moment needs. Use `node wake until` instead to bound a wait on an INBOX event; `node new` to defer spawning a NEW node; `node yield` to refresh NOW rather than at a future T',
+    'you have nothing to do until a known time — re-check a poll after a backoff interval, run a standing job each morning, or hand your future self a timed reminder. The bare form is the time-triggered twin of `node yield`: a fresh window re-reading your roadmap, right for standing/recurring work and polls; the noted form instead wakes you into your saved conversation with a pointer this moment needs. Use `node wake until` instead to bound a wait on an INBOX event; `node wake spawn` to defer spawning a NEW node; `node yield` to refresh NOW rather than at a future T',
   help: {
     name: 'node wake at',
     summary:
@@ -1199,6 +1144,111 @@ const nodeWakeUntil = defineLeaf({
     `<deadline-armed id="${r['id']}" fires-at="${r['fires_at']}" target="${r['target']}">\n${r['guidance']}\n</deadline-armed>`,
 });
 
+// node wake spawn -----------------------------------------------------------
+
+const nodeWakeSpawn = defineLeaf({
+  name: 'spawn',
+  description: 'defer or recur the BIRTH of a new node',
+  whenToUse:
+    'you want a node spawned LATER or on a repeating cadence rather than right now: a one-shot deferred birth at a future time (--at), or a spawn-cron that re-births a fresh node every interval/cron even across your crash/finalize (--every) — standing work like a nightly review, a periodic health check, a morning digest, or a timed reminder that acts. Use `node new` instead to spawn immediately, and `node wake at` to re-wake an EXISTING node on a timer rather than birth a new one',
+  help: {
+    name: 'node wake spawn',
+    summary:
+      'defer or recur a node birth — arm a wake that spawns a fresh node at a future time (--at) or on a repeating cadence (--every), instead of `node new` spawning it now. Returns a wakeup id, not a node id; the full spawn recipe is stored on the wake and re-derived live at fire time',
+    params: [
+      { kind: 'stdin', name: 'prompt', required: true, constraint: 'First user message for the node to be born. Piped on stdin or passed as a positional.' },
+      { kind: 'flag', name: 'at', type: 'string', required: false, constraint: 'DEFER a one-shot birth at <when> — a duration ("5m"), a zoned ISO, or a bare ISO (host-local, or in --tz). Mutually exclusive with --every; exactly one of --at/--every is required.' },
+      { kind: 'flag', name: 'every', type: 'string', required: false, constraint: 'SPAWN-CRON: re-birth a fresh node on this declarative cadence even after a prior instance reaped itself or crashed — a duration ("6h") or a 5-field cron / @alias ("0 9 * * *","@daily"). Canvas-anchored (survives your crash/finalize), reaped by your deliberate close or `node wake cancel`. Min cadence 60s. Mutually exclusive with --at.' },
+      { kind: 'flag', name: 'tz', type: 'string', required: false, constraint: 'IANA zone for a calendar --every (or a bare-ISO --at); default host-local. Makes "every 9am" mean 9am there, DST-correct.' },
+      { kind: 'flag', name: 'kind', type: 'string', required: false, default: 'general', constraint: 'Persona kind for the node to be born — match the work to the kind (the <kinds> list below names each).' },
+      { kind: 'flag', name: 'mode', type: 'enum', choices: ['base', 'orchestrator'], required: false, default: 'base', constraint: 'Persona mode: base (finishes in one window) or orchestrator (boots with a seeded roadmap and fans its scope out).' },
+      { kind: 'flag', name: 'cwd', type: 'path', required: false, constraint: 'Dir the born node is pinned to. Defaults to the caller cwd, resolved NOW — it must still exist at fire time or the spawn fails loud.' },
+      { kind: 'flag', name: 'name', type: 'string', required: false, constraint: 'Display name for the born node (tmux window + resume picker). Defaults to the kind.' },
+      { kind: 'flag', name: 'parent', type: 'string', required: false, constraint: 'Parent node id for the born node. Defaults to the calling node (CRTR_NODE_ID).' },
+      { kind: 'flag', name: 'root', type: 'bool', required: false, constraint: 'Birth an INDEPENDENT root instead of a managed child: no parent on the spine, NO subscription back to you, resident lifecycle (records spawned_by=you for provenance).' },
+      { kind: 'flag', name: 'fork-from', type: 'string', required: false, constraint: 'Fork the born node from an existing pi conversation instead of starting it fresh: a node id, an absolute session `.jsonl` path, or a partial pi session uuid. pi copies that history into a NEW session, then the prompt is the next message. One-shot at birth.' },
+    ],
+    output: [
+      { name: 'id', type: 'string', required: true, constraint: 'The wakeup id (inspect/cancel by it via `node wake list`/`cancel`).' },
+      { name: 'kind', type: 'string', required: true, constraint: 'The persona kind of the deferred node.' },
+      { name: 'fires_at', type: 'string', required: true, constraint: 'Absolute UTC birth time (the first fire for a cron).' },
+      { name: 'recur', type: 'string', required: true, constraint: '"none" (one-shot --at) or the cadence (every:6h / cron:0 9 * * * <zone>).' },
+      { name: 'guidance', type: 'string', required: true, constraint: 'What to do now — no node exists yet; pick up other work or end your turn.' },
+    ],
+    dynamicState: () => kindsStateBlock(),
+    outputKind: 'object',
+    effects: [
+      'Inserts one detached `spawn` wakeups row (node_id NULL, owner=you, parent/cwd resolved now); NO node and NO window exist until fire time.',
+      'At fire time the daemon spawns the node from the stored recipe, re-deriving the launch spec live (persona prose is never stale). Best-effort: if the cwd/parent is gone at fire it fails LOUD (an urgent push to you, or a daemon-log line if you are gone).',
+    ],
+  },
+  run: async (input) => {
+    const prompt = (input['prompt'] as string | undefined) ?? '';
+    if (prompt.trim() === '') {
+      throw new InputError({ error: 'empty_prompt', message: 'a prompt is required (stdin or positional)', next: 'Pipe a task on stdin or pass it as an argument.' });
+    }
+    const at = (input['at'] as string | undefined)?.trim();
+    const every = (input['every'] as string | undefined)?.trim();
+    const tz = input['tz'] as string | undefined;
+    const hasAt = at !== undefined && at !== '';
+    const hasEvery = every !== undefined && every !== '';
+    if (!hasAt && !hasEvery) {
+      throw new InputError({ error: 'no_schedule', message: 'node wake spawn needs a schedule: --at <when> or --every <cadence>.', next: 'Pass --at for a one-shot deferred spawn, --every for a spawn-cron, or use `crtr node new` to spawn now.' });
+    }
+    if (hasAt && hasEvery) {
+      throw new InputError({ error: 'at_and_every', message: '--at and --every are mutually exclusive.', next: 'Use --at for a one-shot deferred spawn, or --every for a spawn-cron.' });
+    }
+    const kind = (input['kind'] as string | undefined) ?? 'general';
+    const mode = ((input['mode'] as string | undefined) ?? 'base') as Mode;
+    const cwd = (input['cwd'] as string | undefined) ?? process.cwd();
+    const name = input['name'] as string | undefined;
+    const parent = input['parent'] as string | undefined;
+    const root = input['root'] === true;
+    const forkFrom = input['forkFrom'] as string | undefined;
+
+    const ownerId = armerId();
+    // The recipe's `parent` is the resolved armer — NON-NULL on EVERY payload,
+    // INCLUDING --root: spawnChild throws at fire time on a null parent (the
+    // daemon has no CRTR_NODE_ID); for a root it internally nulls the spine
+    // parent while keeping `spawner` for provenance, so a non-null value is right.
+    const recipeParent = parent ?? ownerId;
+    const recipe: SpawnChildOpts = {
+      kind,
+      mode,
+      cwd,
+      prompt,
+      parent: recipeParent,
+      ...(name !== undefined ? { name } : {}),
+      ...(root ? { root: true } : {}),
+      ...(forkFrom !== undefined ? { forkFrom } : {}),
+    };
+    const now = new Date();
+    let recur: string | undefined;
+    let fireAt: string;
+    if (hasEvery) {
+      const cad = parseCadence(every!, parseOpts(now, tz));
+      if ('error' in cad) throwWakeError(cad.error);
+      recur = cad.recur;
+      fireAt = cad.firstFireAt;
+    } else {
+      const w = parseWhen(at!, parseOpts(now, tz));
+      if ('error' in w) throwWakeError(w.error);
+      fireAt = w.fireAt;
+    }
+    assertUnderCap(ownerId);
+    const id = `wk-${newNodeId()}`;
+    armOrThrow({ wakeup_id: id, node_id: null, owner_id: ownerId, fire_at: fireAt, kind: 'spawn', ...(recur !== undefined ? { recur } : {}), payload: recipe });
+    const eta = etaHint(fireAt, now);
+    const guidance =
+      recur !== undefined
+        ? `Spawn-cron armed (${recurDisplay(recur)}): a fresh ${kind} node is born each fire, first at ${fireAt}${eta}. No node exists yet; the runtime keeps spawning even across your crash/finalize — inspect/cancel via \`crtr node wake list\` / \`crtr node wake cancel ${id}\`.`
+        : `Deferred spawn armed: a fresh ${kind} node is born at ${fireAt}${eta}. No node exists yet — inspect/cancel via \`crtr node wake list\` / \`crtr node wake cancel ${id}\`. Pick up other work or end your turn.`;
+    return { id, kind, fires_at: fireAt, recur: recurDisplay(recur), guidance };
+  },
+  render: (r) =>
+    `<spawn-deferred id="${r['id']}" kind="${r['kind']}" fires-at="${r['fires_at']}" recur="${r['recur']}">\n${r['guidance']}\n</spawn-deferred>`,
+});
+
 // node wake list -------------------------------------------------------------
 
 const nodeWakeList = defineLeaf({
@@ -1324,14 +1374,14 @@ const nodeWake = defineBranch({
   name: 'wake',
   description: 'arm/list/cancel scheduled wakeups — the second trigger that stirs a dormant node: time',
   whenToUse:
-    'you want to wait CHEAPLY on a future time: end your turn, go dormant (no window, no compute), and be woken only when it is worth acting again. `at` arms a self-alarm (the timed twin of `node yield`), `until` bounds an inbox-wait with a deadline, `list`/`cancel` inspect and reap. To defer the BIRTH of a new node use `node new` — it is a wake too and shows up in `list`',
+    'you want to wait CHEAPLY on a future time: end your turn, go dormant (no window, no compute), and be woken only when it is worth acting again. `at` arms a self-alarm (the timed twin of `node yield`), `until` bounds an inbox-wait with a deadline, `spawn` defers or repeats the BIRTH of a new node, `list`/`cancel` inspect and reap',
   help: {
     name: 'node wake',
     summary: 'the pending-wakeups namespace — arm a time trigger on the dormant state, then inspect/cancel it',
     model:
-      'Time is the second trigger that stirs a dormant node — the first is an inbox message, and a scheduled wake is just a future delivery on that same channel. At the moment you set, the runtime brings you (or, for a deferred birth, a fresh node) back through the ordinary revive path: no new window, nothing the focus model learns. Use this to wait CHEAPLY — end your turn, go dormant (free: no window, no compute), and be woken only when it is worth acting again. `at` arms a self-alarm; `until` bounds an inbox-wait with a deadline; `list`/`cancel` inspect and reap. To defer the BIRTH of a new node use `node new --at` — it is a wake too and shows up in `list`. Arming is a pure side-effect: it writes a durable row, it does NOT end your turn — end your turn separately to go dormant.',
+      'Time is the second trigger that stirs a dormant node — the first is an inbox message, and a scheduled wake is just a future delivery on that same channel. At the moment you set, the runtime brings you (or, for a deferred birth, a fresh node) back through the ordinary revive path: no new window, nothing the focus model learns. Use this to wait CHEAPLY — end your turn, go dormant (free: no window, no compute), and be woken only when it is worth acting again. `at` arms a self-alarm; `until` bounds an inbox-wait with a deadline; `spawn` defers or repeats the BIRTH of a new node (the full recipe stored on the wake); `list`/`cancel` inspect and reap. Arming is a pure side-effect: it writes a durable row, it does NOT end your turn — end your turn separately to go dormant.',
   },
-  children: [nodeWakeAt, nodeWakeUntil, nodeWakeList, nodeWakeCancel],
+  children: [nodeWakeAt, nodeWakeUntil, nodeWakeSpawn, nodeWakeList, nodeWakeCancel],
 });
 
 export function registerNode(): BranchDef {

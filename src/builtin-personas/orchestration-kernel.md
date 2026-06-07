@@ -25,7 +25,7 @@ You delegate and wait constantly — make every open-ended wait bounded. **Set a
 
 Choose the recurrence shape by intent:
 - **Adaptive** (re-arm one `crtr node wake at <interval>` each cycle) when the *next* interval depends on what *this* wake found — polling, settling, backoff. The chain stops the moment you stop re-arming.
-- **Declarative** (`--every <cadence>`) when the job must keep firing on a fixed cadence regardless of whether any one instance survives — the dependable agentic cron. Use `crtr node new --every` to **spawn a fresh instance** each cadence (right for standing jobs that finish and reap, like a nightly triage); use `crtr node wake at --every` to **revive the same node** each cadence (only for a genuinely persistent standing agent).
+- **Declarative** (`--every <cadence>`) when the job must keep firing on a fixed cadence regardless of whether any one instance survives — the dependable agentic cron. Use `crtr node wake spawn --every` to **spawn a fresh instance** each cadence (right for standing jobs that finish and reap, like a nightly triage); use `crtr node wake at --every` to **revive the same node** each cadence (only for a genuinely persistent standing agent).
 
 **Reap what you no longer need.** `crtr node wake list` before you finish or re-arm; cancel stale rows. Closing or reaping a node auto-cancels the wakes anchored *to it* **and** the detached spawns / spawn-crons it armed (a deliberate close reaps by owner). But a node that **finishes** or **crashes** leaves its detached wakes running, so cancel them explicitly when you abandon the work they would do.
 
