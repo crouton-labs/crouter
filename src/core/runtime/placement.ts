@@ -874,20 +874,28 @@ export function recycleFocusPane(nodeId: string, pane: string, launch: ReviveLau
 /** §1.6 lifecycle successor — hand a truly-done focused node's viewport to its
  *  manager. Repoints the focus row `focusId` to `managerId` (a DB swap of the
  *  occupant). Two takeover realizations, split on the manager's liveness:
- *    - DORMANT manager (dead pi): the row repoint is all this does; the manager,
- *      woken by the finished node's `push final` landing in its inbox, is revived
- *      by the external daemon INTO this node's now-frozen focus pane
- *      (remain-on-exit), where reviveIntoPlacement's focus-pane branch resumes it
- *      in place — no new window, no taint. (UNCHANGED — the canonical takeover.)
+ *    - DORMANT manager (dead pi) — ONLY when it is idle + idle-release: the row
+ *      repoint is all this does; the manager, woken by the finished node's `push
+ *      final` landing in its inbox, is revived by the external daemon INTO this
+ *      node's now-frozen focus pane (remain-on-exit), where reviveIntoPlacement's
+ *      focus-pane branch resumes it in place — no new window, no taint. A dormant
+ *      manager that is NOT idle-release (done/dead/canceled, or idle with another
+ *      intent) is one the daemon will NEVER revive, so this returns false WITHOUT
+ *      repointing — the caller then disarms the freeze (see below).
  *    - LIVE manager (pi alive in the backstage, the normal multi-child state):
  *      the daemon never revives it (it only respawns dead-pi nodes), so we must
  *      bring it into the viewport SYNCHRONOUSLY here — swap its backstage pane
  *      into the focus slot (MAJOR 1). Otherwise the manager runs off-screen
  *      forever while %m sits orphaned in the viewport and the focus row lies
  *      about LOCATION.
- *  Returns false — the caller closes the focus (Q1) — when there is no manager,
- *  the manager IS this node, or the manager already occupies another viewport
- *  (UNIQUE node_id: do NOT move it, §1.6 edge).
+ *  Returns false — the caller closes the focus (Q1: closeFocusToShell disarms
+ *  remain-on-exit so the pane REAPS on exit) — whenever NO successor will claim
+ *  the frozen pane: no manager, the manager IS this node, the manager already
+ *  occupies another viewport (UNIQUE node_id: do NOT move it, §1.6 edge), the
+ *  manager row is missing, or it is a dormant manager the daemon won't revive
+ *  (not idle-release) / a live-but-paneless inline root. It does NOT repoint the
+ *  occupant on any false path — repointing while returning false would strand the
+ *  pane frozen forever with no reaper (the dead-focus-pane bug).
  *
  *  Why the live swap is NOT the forbidden self-saw: `swap-pane -d` only EXCHANGES
  *  two panes' slot positions; it never respawns or kills the finishing node's own
@@ -900,20 +908,42 @@ export function handFocusToManager(focusId: string, managerId: string | null): b
   const f = getFocusById(focusId);
   if (f === null || managerId === f.node_id) return false;
   if (getFocusByNode(managerId) !== null) return false; // manager already focused elsewhere
-  setFocusOccupant(focusId, managerId);
-
-  // MAJOR 1 — LIVE backstage manager → swap it into the focus slot now. DORMANT
-  // managers (no live pane / dead pi) fall through unchanged: the daemon revives
-  // them into the frozen %m async.
   const mgr = getRow(managerId);
-  if (mgr !== null && mgr.pane != null && isNodePaneAlive(mgr) && pidAlive(mgr.pi_pid) && f.pane != null) {
+  if (mgr === null) return false; // no row to hand to
+
+  // MAJOR 1 — LIVE backstage manager → swap it into the focus slot NOW. The
+  // daemon never revives a live node (it only respawns dead-pi nodes), so this
+  // synchronous swap is the ONLY way a live manager claims the frozen %m. Commit
+  // the occupant repoint only here, on a path that genuinely takes the pane.
+  if (mgr.pane != null && isNodePaneAlive(mgr) && pidAlive(mgr.pi_pid) && f.pane != null) {
+    setFocusOccupant(focusId, managerId);
     const focusLoc = paneLocation(f.pane); // F2's window/session — the slot mgr swaps INTO (%m is currently there)
     if (swapPaneInPlace(mgr.pane, f.pane) && focusLoc !== null) {
       setFocusPane(f.focus_id, mgr.pane, focusLoc.session); // re-anchor the focus row to mgr's pane (now in F2)
       setPresence(managerId, { pane: mgr.pane, tmux_session: focusLoc.session, window: focusLoc.window });
     }
+    return true; // took focus (live swap) — caller doesn't disarm
   }
-  return true; // still "took focus" — caller doesn't close
+
+  // DORMANT manager → it can only enter the frozen %m via crtrd.superviseTick's
+  // SECOND PASS, which revives a node ONLY when status==='idle' && intent===
+  // 'idle-release' (AND pi dead + unseen inbox). We mirror just status+intent: the
+  // other two are guaranteed by lifecycle invariants — every transition(_,
+  // 'release') site kills pi immediately, so idle-release ⟹ pi-dead; and the
+  // `push --final` that drove us into this done-branch just seeded the manager's
+  // inbox. (If a future idle-release path ever leaves pi LIVE, revisit this.)
+  // Mirror that predicate EXACTLY: a done/dead/
+  // canceled, an idle-but-not-idle-release, or a live-but-paneless (inline root)
+  // manager will NEVER be brought into this pane. Repointing for one of those
+  // makes the caller SKIP closeFocusToShell ⇒ remain-on-exit stays ON ⇒ the pane
+  // freezes forever with no reaper (the dead-focus-pane bug). So ONLY repoint +
+  // return true when the daemon will genuinely revive it; otherwise return false
+  // WITHOUT repointing so the caller disarms the freeze and the pane reaps on exit
+  // (§1.6 flow (b), close-out-completely).
+  const daemonWillRevive = mgr.status === 'idle' && mgr.intent === 'idle-release';
+  if (!daemonWillRevive) return false;
+  setFocusOccupant(focusId, managerId); // repoint only; the daemon revives mgr INTO the frozen %m
+  return true;
 }
 
 /** Q1 close-to-shell for a truly-done focused node with no successor (§1.6 /

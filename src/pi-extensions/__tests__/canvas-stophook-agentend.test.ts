@@ -129,9 +129,11 @@ test('natural stop while awaiting a live worker → idle-release with NO push (n
 // the runtime row directly (the branch reads getNode(nodeId).status).
 // ---------------------------------------------------------------------------
 
-test('§5.1.1 truly-done + focused + manager-not-focused → MANAGER TAKEOVER of the focus row', () => {
+test('§5.1.1 truly-done + focused + dormant idle-release manager-not-focused → MANAGER TAKEOVER of the focus row', () => {
   createNode(node('root', { parent: null, lifecycle: 'resident' }));
-  createNode(node('mgr', { parent: 'root', lifecycle: 'terminal', mode: 'orchestrator' }));
+  // mgr is dormant + idle-release — the ONLY dormant manager the daemon will
+  // revive INTO the frozen pane, so the ONLY dormant case that is a real takeover.
+  createNode(node('mgr', { parent: 'root', lifecycle: 'terminal', mode: 'orchestrator', status: 'idle', intent: 'idle-release' }));
   // M starts WITH a recorded LOCATION so the MINOR presence-null is observable.
   createNode(node('M', { parent: 'mgr', lifecycle: 'terminal', pane: '%m', tmux_session: 'Suser', window: '@wm' }));
   subscribe('mgr', 'M', true);
@@ -145,8 +147,9 @@ test('§5.1.1 truly-done + focused + manager-not-focused → MANAGER TAKEOVER of
   let shutdown = false;
   pi.fire('agent_end', stopEvent('done — pushed final'), { shutdown: () => { shutdown = true; } });
 
-  // managerId = M.parent = 'mgr' (not focused elsewhere, no live pane here → the
-  // DORMANT-takeover path) → handFocusToManager repoints fM's occupant M→mgr. The
+  // managerId = M.parent = 'mgr' (idle-release, not focused elsewhere, no live
+  // pane here → the DORMANT-takeover path) → handFocusToManager repoints fM's
+  // occupant M→mgr (true ONLY because mgr is idle+idle-release). The
   // daemon later revives mgr INTO M's frozen focus pane. Non-vacuous: a no-op (no
   // handoff) impl leaves M as occupant, so getFocusByNode('mgr') is null AND
   // getFocusByNode('M') still names fM — both asserts fail.

@@ -5,9 +5,11 @@
 // never realized, so closePane no-ops and only the DB effects are asserted):
 //
 //   • handFocusToManager(focusId, managerId) — the §1.6 manager-takeover, a PURE
-//     DB occupant swap. Returns true (TAKEOVER) only when there is a distinct,
-//     not-already-focused manager; false (caller closes the focus) in each of the
-//     three guard cases. Each guard is asserted distinctly.
+//     DB occupant swap. Returns true (TAKEOVER) only when a successor will
+//     GENUINELY claim the frozen pane — a live manager (swapped in) or a dormant
+//     manager the daemon will revive (status='idle' && intent='idle-release').
+//     Returns false (caller disarms the freeze + closes the focus) for every
+//     other case; each guard is asserted distinctly.
 //   • tearDownNode(nodeId) — close/reset teardown: close the focus row it
 //     occupies and null its LOCATION.
 import { test, before, after, beforeEach } from 'node:test';
@@ -72,11 +74,14 @@ after(() => {
 // handFocusToManager (pure DB) — §1.6 manager-takeover + its three false-guards.
 // ---------------------------------------------------------------------------
 
-test('handFocusToManager: distinct, free manager → TAKEOVER (repoints the row, returns true)', () => {
+test('handFocusToManager: dormant idle-release manager → TAKEOVER (repoints the row, returns true)', () => {
   openFocusRow('f', '%m', 'Sa', 'M');
-  createNode(node('mgr'));
+  // The daemon's superviseTick second pass revives a node ONLY when it is idle +
+  // idle-release (crtrd.ts ~309) — that is the ONLY dormant manager that will be
+  // brought into the frozen %m, so it is the ONLY dormant takeover that returns true.
+  createNode(node('mgr', { status: 'idle', intent: 'idle-release' }));
 
-  assert.equal(handFocusToManager('f', 'mgr'), true, 'a valid manager takes the focus');
+  assert.equal(handFocusToManager('f', 'mgr'), true, 'a manager the daemon WILL revive takes the focus');
   assert.equal(getFocusByNode('mgr')?.focus_id, 'f', 'the row now shows the manager');
   assert.equal(getFocusByNode('M'), null, 'the finished node no longer occupies it');
   // Non-vacuous: a no-op impl returns false / leaves M as occupant → both the
@@ -162,12 +167,14 @@ test('handFocusToManager: LIVE backstage manager → swaps its pane INTO the foc
   }
 });
 
-test('handFocusToManager: DORMANT manager (dead pane) → occupant repointed, NO swap, focus pane UNCHANGED', () => {
+test('handFocusToManager: DORMANT idle-release manager (dead pane) → occupant repointed, NO swap, focus pane UNCHANGED', () => {
   openFocusRow('f', '%focus', 'Suser', 'M');
-  // The manager has a pane recorded but it is NOT a live tmux pane (its dead-pi
-  // window collapsed). isNodePaneAlive(mgr) is therefore false, so the live-swap
-  // is skipped — the external daemon later respawns it into the frozen %focus.
-  createNode(node('mgr', { pane: '%mgr-dead', tmux_session: 'back', window: '@wb', pi_pid: process.pid }));
+  // The manager is dormant + idle-release (the ONLY dormant manager the daemon
+  // revives): its pane is recorded but NOT a live tmux pane (its dead-pi window
+  // collapsed) and its pi is dead. isNodePaneAlive(mgr) is therefore false, so the
+  // live-swap is skipped — the external daemon later respawns it into the frozen
+  // %focus, exactly because status='idle' && intent='idle-release'.
+  createNode(node('mgr', { pane: '%mgr-dead', tmux_session: 'back', window: '@wb', pi_pid: null, status: 'idle', intent: 'idle-release' }));
 
   assert.equal(handFocusToManager('f', 'mgr'), true, 'still a takeover (occupant repointed)');
   assert.equal(getFocusByNode('mgr')?.focus_id, 'f', 'the manager occupies the focus row (DB repoint)');
@@ -183,6 +190,48 @@ test('handFocusToManager: DORMANT manager (dead pane) → occupant repointed, NO
   // physical swap would set f.pane='%mgr-dead' and mgr.window=the focus window —
   // both asserts fail. Proves the swap gates on PANE LIVENESS, not merely on the
   // manager having a pane.
+});
+
+// ---------------------------------------------------------------------------
+// BUG REGRESSION (dead-focus-pane): handFocusToManager must return FALSE — so
+// the stophook caller runs closeFocusToShell to DISARM remain-on-exit and the
+// pane REAPS on exit — whenever NO successor will actually claim the frozen pane.
+// Pre-fix it repointed the occupant and returned true for ANY non-null,
+// not-already-focused manager (even done/dead/canceled, idle-but-not-idle-
+// release, or a live-but-paneless inline root). The daemon revives NONE of those
+// into the frozen pane, so closeFocusToShell was skipped, remain-on-exit stayed
+// ON, and the focus pane FROZE forever as a dead pane with no reaper.
+// Diagnosis: nodes/mq32wjve-68de0c31/context/dead-focus-pane-fix.md
+// ---------------------------------------------------------------------------
+
+test('handFocusToManager (BUG REGRESSION): a manager the daemon will NEVER revive → false, occupant UNCHANGED (caller disarms + reaps)', () => {
+  openFocusRow('f', '%focus', 'Suser', 'M'); // M occupies the frozen focus pane
+
+  // (a) DONE manager — the daemon ignores done nodes entirely (the most common
+  //     trigger: demoting a child to terminal whose manager already finished).
+  createNode(node('mgrDone', { status: 'done', pane: '%d', tmux_session: 'back', window: '@wd' }));
+  assert.equal(handFocusToManager('f', 'mgrDone'), false, 'a DONE manager will never be revived → caller must disarm + reap');
+  assert.equal(getFocusByNode('mgrDone'), null, 'a DONE manager is NOT repointed into the focus row');
+
+  // (b) DORMANT but NOT idle-release — idle with a different intent; crtrd's
+  //     second pass (idle && idle-release) skips it, so it never enters the pane.
+  createNode(node('mgrIdleDone', { status: 'idle', intent: 'done', pane: '%i', tmux_session: 'back', window: '@wi' }));
+  assert.equal(handFocusToManager('f', 'mgrIdleDone'), false, 'idle but NOT idle-release → daemon never revives it → false');
+  assert.equal(getFocusByNode('mgrIdleDone'), null, 'a non-idle-release manager is NOT repointed');
+
+  // (c) LIVE-but-PANELESS manager (an inline root, pane == null) — the live-swap
+  //     branch is skipped (no pane to swap) and, being active not idle-release,
+  //     the daemon never revives it either.
+  createNode(node('mgrPaneless', { status: 'active', pi_pid: process.pid, pane: null }));
+  assert.equal(handFocusToManager('f', 'mgrPaneless'), false, 'a live-but-paneless inline root cannot claim the pane → false');
+  assert.equal(getFocusByNode('mgrPaneless'), null, 'a paneless manager is NOT repointed');
+
+  // The occupant is untouched across all three → the caller (canvas-stophook
+  // agent_end done-branch) runs closeFocusToShell, disarming the freeze.
+  assert.equal(getFocusById('f')?.node_id, 'M', 'M still occupies its focus → caller disarms remain-on-exit + closes the row');
+  // Non-vacuous: the pre-fix impl repointed the occupant + returned true for each
+  // of (a)/(b)/(c), so every false return AND every "NOT repointed" assert fails
+  // against it — and that stray true would have stranded the pane frozen forever.
 });
 
 // ---------------------------------------------------------------------------
