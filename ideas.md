@@ -12,3 +12,10 @@ When I start crouter, I want to be able to switch between agent mode, tickets, a
 - Anything opens tickets. I want maybe a unified ticket space per cwd (zone). I can cycle between tickets.
 
 - when terminal agents use ask, that has to bubble up to top.
+
+
+Telemetry
+- Diff or snapshot at time of user propmt—that way if there are thigns that go wrong, I can see exact state at time of complaint
+- 
+
+Something around the agent improving itself as it goes/fixing itself/taking feedback well.

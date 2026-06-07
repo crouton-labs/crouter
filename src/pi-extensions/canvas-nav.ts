@@ -20,13 +20,15 @@
 //
 // Selection / liveness signals:
 //   CURSOR (selected) = reverse-video bar (ESC[7m), full width — an attribute,
-//                       not a colour, so it reads under NO_COLOR. Plus a ▸ caret.
+//                       not a colour, so it reads under NO_COLOR.
 //   ACTIVE (running)  = a coloured background bar (status 'active'); the dot
 //                       glyph still carries the signal where colour is stripped.
 //   SELF              = bold name — a quiet "you are here" marker.
 //
 // Folding is auto by default: a branch stays COLLAPSED unless its subtree holds
 // a running ('active') agent or self. h/l override that per-node and persist.
+// A ▸ caret marks an expandable (collapsed-with-kids) row — but NOT the cursor
+// row, whose reverse-video bar already sets it apart.
 //
 // ⚑K pending-asks is PER-NODE, inline on each waiting node's own row (manager,
 // reports, tree rows; self shows a trailing ⚑ line in BASE). ⤳M direct-children
@@ -467,8 +469,12 @@ function renderGraphRow(r: FlatRow, isCursor: boolean): string {
   const name = r.isSelf ? `${BOLD}${rawName}${RESET}` : rawName;
   const kind = `${DIM}${node?.kind ?? ''}${RESET}`;
   const tokens = `${DIM}${tokensCell(r.id)}${RESET}`;
-  const caret = isCursor ? `${BOLD}▸${RESET} ` : '  ';
-  const fold = r.hasKids && r.collapsed ? ` ${DIM}[+${childCount(r.id)}]${RESET}` : '';
+  // ▸ marks an expandable (collapsed-with-kids) row. The cursor row gets no
+  // caret — its reverse-video bar already distinguishes it — so the triangle
+  // reads purely as "this unfolds".
+  const expandable = r.hasKids && r.collapsed;
+  const caret = !isCursor && expandable ? `${DIM}▸${RESET} ` : '  ';
+  const fold = expandable ? ` ${DIM}[+${childCount(r.id)}]${RESET}` : '';
   const line = `${r.branch}${caret}${dot} ${name} ${kind} ${tokens}${childBadge(node)}${fold}${askBadge(r.id)}`;
   return wrap(line, node?.status === 'active');
 }
