@@ -65,7 +65,7 @@ const DURATION_UNIT_MS: Record<string, number> = {
 };
 
 // `<int><unit>` repeated; units s/m/h/d (surface-design §4.1).
-const DURATION_RE = /^(?:\d+[smhd])+$/;
+const DURATION_RE = /^\+?(?:\d+[smhd])+$/;
 const DURATION_PART_RE = /(\d+)([smhd])/g;
 
 // ISO-8601 date-time core (no zone). Captures Y M D h m [s] [ms].
