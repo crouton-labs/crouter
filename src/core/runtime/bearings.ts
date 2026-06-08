@@ -31,7 +31,8 @@
 // for both, its index pointer lines inlined (the how-to lives once in the
 // kernel, not here).
 
-import { contextDir, getNode, fullName } from '../canvas/index.js';
+import { contextDir, getNode, fullName, type WakeKind, type Wakeup } from '../canvas/index.js';
+import { cadenceDisplay } from '../wake.js';
 import {
   hasMemory,
   memoryDir,
@@ -146,6 +147,95 @@ export function buildIdentityAssertion(nodeId: string): string {
   }
   lines.push('</crtr-identity>');
   return lines.join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// Wake provenance — the <crtr-wake> block (Invariant B/C/D: a node woken or
+// born by a TIMER learns, by construction, that a clock — not an event — caused
+// it, what kind of wake, who armed it + when, and (if recurring) the cadence.
+// Delivered at two seams: prepended to a born node's kickoff (spawn/spawn-cron,
+// in spawn.ts) and to a bare self-alarm's fresh-revive kickoff (buildReviveKickoff).
+// noted/deadline self-mark at the message seam (the inbox label), not here.
+// ---------------------------------------------------------------------------
+
+/** Why a node woke or was born, as carried from the fired wakeup row to the
+ *  injection seam. `ownerName` is the armer's resolved display name when it
+ *  still exists (a reaped cron's armer renders as a bare id, never crashes). */
+export interface WakeOrigin {
+  /** The firing kind. The <crtr-wake> block is rendered for 'spawn' (birth) and
+   *  'bare' (revive); 'noted'/'deadline' self-mark at the message seam instead. */
+  kind: WakeKind;
+  /** The armer node id (wakeups.owner_id), or null if somehow absent. */
+  ownerId: string | null;
+  /** The armer's display name, resolved if it still exists. */
+  ownerName?: string;
+  /** wakeups.created — when the wake was armed (ISO). */
+  armedAt: string;
+  /** wakeups.recur JSON when recurring, else null/undefined for a one-shot. */
+  recur?: string | null;
+}
+
+/** Build a WakeOrigin from a fired wakeup row, resolving the armer's display
+ *  name if the node still exists. The daemon calls this at fire time for the
+ *  bare-revive and spawn-birth seams. */
+export function wakeOriginFrom(w: Wakeup): WakeOrigin {
+  const owner = w.owner_id != null ? getNode(w.owner_id) : null;
+  return {
+    kind: w.kind,
+    ownerId: w.owner_id ?? null,
+    ownerName: owner !== null ? fullName(owner) : undefined,
+    armedAt: w.created,
+    recur: w.recur,
+  };
+}
+
+/** The armer rendered for prose, ROLE-explicit so a newborn never mistakes the
+ *  id for its own: `node <id> ("<name>")` when the name resolved, `node <id>
+ *  (now gone)` when the armer was reaped, `an unknown node` only if the owner id
+ *  is somehow absent (owner_id is NOT NULL on every real row — defensive). */
+function armerPhrase(origin: WakeOrigin): string {
+  if (origin.ownerId === null || origin.ownerId === '') return 'an unknown node';
+  if (origin.ownerName !== undefined) return `node ${origin.ownerId} ("${origin.ownerName}")`;
+  return `node ${origin.ownerId} (now gone)`;
+}
+
+/** The <crtr-wake> provenance block — load-bearing agent-facing prose read by
+ *  every wake-born or wake-woken node. Decision-first: it leads with the fact a
+ *  TIMER (not a message/event) caused this turn, names the wake kind, surfaces
+ *  the cadence for a recurrence (so the agent knows it is one run of a standing
+ *  job, not a one-off), and ends with the directive. The spawn (birth) variant
+ *  names the ARMER explicitly ("armed by node X") so the newborn never reads that
+ *  id as its own; the bare (revive) variant drops armer attribution entirely — a
+ *  bare wake can be armed for a node by ANOTHER (`--node`), and who armed it is
+ *  not decision-relevant to a timed re-check. No timestamp is rendered ("to fire
+ *  now" / the cadence already carry the signal; a raw ISO instant is noise an
+ *  agent cannot cheaply turn into an elapsed delta). Rendered for 'spawn' and
+ *  'bare'; other kinds self-mark elsewhere. */
+export function buildWakeBearings(origin: WakeOrigin): string {
+  const recurring = origin.recur !== null && origin.recur !== undefined && origin.recur !== '';
+  const cadence = recurring ? cadenceDisplay(origin.recur) : null;
+  let body: string;
+  if (origin.kind === 'spawn') {
+    const armer = armerPhrase(origin);
+    body = recurring
+      ? `You were BORN by a scheduled wake, not spawned on demand — a recurring spawn-cron armed by ` +
+        `${armer}, firing ${cadence}. The runtime re-births a fresh node like you on this cadence whether ` +
+        `or not earlier runs survived: you are one run of a standing job, not a one-off, and you inherit ` +
+        `nothing from prior runs but this task. Your task follows.`
+      : `You were BORN by a scheduled wake, not spawned on demand — a one-shot deferred birth armed by ` +
+        `${armer} to fire now. You are its only run, not a recurring job. Your task follows.`;
+  } else {
+    // bare scheduled alarm (the only kind delivered through this block at the
+    // revive seam; noted/deadline self-mark via their inbox label instead).
+    body = recurring
+      ? `You woke because a recurring scheduled alarm fired (${cadence}) — a timer, NOT a new message or ` +
+        `request. This is one tick of a standing re-check: re-read your roadmap and the disk bearings below ` +
+        `and decide what this moment calls for.`
+      : `You woke because a scheduled alarm fired — a timer, NOT a new message or request. This is a timed ` +
+        `re-check, not a new task: re-read your roadmap and the disk bearings below and decide what this ` +
+        `moment calls for.`;
+  }
+  return `<crtr-wake>\n${body}\n</crtr-wake>`;
 }
 
 /** The full boot intro: the IDENTITY assertion (always first, so it overrides

@@ -27,6 +27,7 @@ import {
 import { transition } from './lifecycle.js';
 import { buildPiArgv } from './launch.js';
 import { buildReviveKickoff, drainBearings } from './kickoff.js';
+import type { WakeOrigin } from './bearings.js';
 import { FRONT_DOOR_ENV } from './front-door.js';
 import {
   reviveIntoPlacement,
@@ -95,7 +96,7 @@ export interface ReviveResult {
  */
 export function reviveNode(
   nodeId: string,
-  opts: { resume: boolean },
+  opts: { resume: boolean; wakeReason?: WakeOrigin },
 ): ReviveResult {
   const meta = getNode(nodeId);
   if (meta === null) {
@@ -139,8 +140,12 @@ export function reviveNode(
   if (resuming) {
     inv = buildPiArgv(meta, resume);
   } else {
+    // A fresh revive: drain the one-shot bearings, then build the kickoff. When
+    // a scheduled bare self-alarm drove this revive, opts.wakeReason carries the
+    // wake provenance so the kickoff leads with a <crtr-wake> block ("a timer
+    // woke you"); every other reviveNode caller passes nothing → no block.
     const bearings = drainBearings(meta);
-    inv = buildPiArgv(meta, { prompt: buildReviveKickoff(meta, bearings) });
+    inv = buildPiArgv(meta, { prompt: buildReviveKickoff(meta, bearings, opts.wakeReason) });
   }
 
   // Placement owns WHERE this revive lands (§1.4): resume into a live focus pane

@@ -16,7 +16,7 @@ import { buildLaunchSpec, buildPiArgv } from './launch.js';
 import { writeGoal } from './kickoff.js';
 import { hasRoadmap, seedRoadmap } from './roadmap.js';
 import { generateSessionName } from './naming.js';
-import { buildIdentityAssertion } from './bearings.js';
+import { buildIdentityAssertion, buildWakeBearings, type WakeOrigin } from './bearings.js';
 import { installMenuBinding, installNavBindings, installViewNavBindings } from './tmux-chrome.js';
 import { setPresence, updateNode, getNode, fullName, type NodeMeta, type Mode, type Lifecycle } from '../canvas/index.js';
 import {
@@ -136,6 +136,13 @@ export interface SpawnChildOpts {
    *  new session for the child — the source is untouched — then `prompt` is the
    *  next message. A one-shot at birth; the child resumes its own session after. */
   forkFrom?: string;
+  /** Set ONLY by the daemon when a `spawn`/spawn-cron wake births this node: the
+   *  provenance of the timer that fired (see WakeOrigin). In-memory only — it is
+   *  NOT part of the stored recipe (the daemon spreads it in at fire time via
+   *  `spawnChild({ ...recipe, wakeOrigin })`); `node new` never sets it. When set,
+   *  a <crtr-wake> block is prepended to the kickoff so the newborn knows a clock
+   *  birthed it. */
+  wakeOrigin?: WakeOrigin;
 }
 
 /** Resolve a `--fork-from` value to the source pi gets as `--fork <path|id>`.
@@ -224,10 +231,14 @@ export function spawnChild(opts: SpawnChildOpts): SpawnChildResult {
   // session-start bearings (a trailing custom_message the model weighs only by
   // recency). Prepend it to the kickoff PROMPT — the message that actually
   // triggers the fork's first turn, so the model acts on "you are node X, a
-  // FORK of <source>, NOT them" as live instruction. Only the pi argv prompt is
-  // reframed; the persisted goal (writeGoal above) keeps the raw task.
-  const kickoff =
-    forkFrom !== undefined ? `${buildIdentityAssertion(meta.node_id)}\n\n${opts.prompt}` : opts.prompt;
+  // FORK of <source>, NOT them" as live instruction. When the daemon births this
+  // node from a scheduled `spawn` wake, the <crtr-wake> provenance block leads
+  // (so "a timer birthed you" precedes the task) — mirroring the fork-identity
+  // prepend. Only the pi argv prompt is reframed; the persisted goal (writeGoal
+  // above) keeps the raw task.
+  const wakeBlock = opts.wakeOrigin !== undefined ? `${buildWakeBearings(opts.wakeOrigin)}\n\n` : '';
+  const idBlock = forkFrom !== undefined ? `${buildIdentityAssertion(meta.node_id)}\n\n` : '';
+  const kickoff = `${wakeBlock}${idBlock}${opts.prompt}`;
 
   // A child created DIRECTLY as an orchestrator (mode='orchestrator') boots
   // with the orchestrator persona but bypasses promote(), which is where a

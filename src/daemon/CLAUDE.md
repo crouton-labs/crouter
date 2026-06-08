@@ -21,6 +21,15 @@ active|idle node with a tmux placement:
 - **pane gone, any other intent** → mark `dead`; if `pi_session_id` was never
   recorded the vehicle never booted → `surfaceBootFailure` (urgent push up the spine).
 
+**Third pass — due scheduled wakes** (`wakeups` table): settle each due row first
+(advance-or-consume, crash-safe) then enact by kind. Each firing carries its own
+provenance so a wake-born/woken node knows a TIMER caused it (Invariant B/D) and is
+not fed a wake indistinguishable from an ordinary message: `bare` →
+`reviveNode(…, { wakeReason })`; `spawn` → `spawnChild({ …recipe, wakeOrigin })`;
+`noted` → inbox label prefixed `⏰ scheduled wake —`; `deadline` →
+`⏰ deadline reached —`. `wakeOriginFrom(w)` (runtime/`bearings.ts`) builds the
+WakeOrigin, resolving the armer's display name (a reaped armer → `(now gone)`).
+
 ## Invariants
 - `REVIVE_GRACE_MS` MUST exceed worst-case pi boot: `reviveInPlace` transiently
   shows a dead OLD pid during the old-pi-dies→fresh-pi-boots gap; reviving into it

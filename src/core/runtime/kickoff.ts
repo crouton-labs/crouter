@@ -35,6 +35,7 @@ import {
   type NodeMeta,
 } from '../canvas/index.js';
 import { readRoadmap, roadmapPath } from './roadmap.js';
+import { buildWakeBearings, type WakeOrigin } from './bearings.js';
 import { personaDrift, commitPersonaAck } from './persona.js';
 import {
   readInboxSince,
@@ -219,7 +220,11 @@ function feedBlock(nodeId: string, unreadDigest: string | null): string {
  *  node's goal, roadmap, and context dir, framed so the revived node can rebuild
  *  its bearings in one turn. PURE: no state mutation, so calling it twice yields
  *  the same string and consumes nothing — drainBearings owns the one-shot reads. */
-export function buildReviveKickoff(meta: NodeMeta, bearings: ReviveBearings): string {
+export function buildReviveKickoff(
+  meta: NodeMeta,
+  bearings: ReviveBearings,
+  wakeReason?: WakeOrigin,
+): string {
   const nodeId = meta.node_id;
 
   const parts: string[] = [
@@ -227,6 +232,14 @@ export function buildReviveKickoff(meta: NodeMeta, bearings: ReviveBearings): st
       'context is gone, by design. Everything below was just read from disk; it is your ' +
       'full bearings. Rebuild from it and continue toward your goal.',
   ];
+
+  // Wake provenance (Invariant B/D): when a scheduled bare self-alarm fired this
+  // revive, the <crtr-wake> block reframes the generic "you were revived" above
+  // into "a TIMER woke you" — placed right after the sentinel (so the kickoff
+  // still STARTS with REVIVE_KICKOFF_SENTINEL, which goal-capture keys on) and
+  // before the roadmap/disk bearings, so "why you woke" precedes "what to rebuild
+  // from". Only the daemon's bare-wake branch passes wakeReason.
+  if (wakeReason !== undefined) parts.push(buildWakeBearings(wakeReason));
 
   // The roadmap is the source of truth on a fresh revive: its frozen core holds
   // the goal/exit criteria, its body the live plan the node kept current. The

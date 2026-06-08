@@ -13,7 +13,7 @@ import { writeYieldMessage, readGoal } from '../core/runtime/kickoff.js';
 import { reviveNode } from '../core/runtime/revive.js';
 import { newNodeId } from '../core/runtime/nodes.js';
 import { readRoadmap } from '../core/runtime/roadmap.js';
-import { parseWhen, parseCadence, type WakeError } from '../core/wake.js';
+import { parseWhen, parseCadence, cadenceDisplay, type WakeError } from '../core/wake.js';
 
 import { recycleNode } from '../core/runtime/recycle.js';
 import { detachToBackground, focus as placementFocus, windowAlive, windowOfPane, currentTmux } from '../core/runtime/placement.js';
@@ -937,19 +937,6 @@ function hasRecoverableState(nodeId: string): boolean {
   return roadmap !== null && roadmap.trim() !== '';
 }
 
-/** A stored recur JSON → compact display (`every:6h` / `cron:0 9 * * * <zone>`). */
-function recurDisplay(recur: string | null | undefined): string {
-  if (recur === null || recur === undefined) return 'none';
-  try {
-    const r = JSON.parse(recur) as { every?: string; cron?: string; tz?: string };
-    if (typeof r.every === 'string') return `every:${r.every}`;
-    if (typeof r.cron === 'string') return `cron:${r.cron}${typeof r.tz === 'string' ? ' ' + r.tz : ''}`;
-  } catch {
-    /* fall through */
-  }
-  return 'none';
-}
-
 /** True when a stored recur is a fixed interval (vs a calendar cron). */
 function isFixedInterval(recur: string): boolean {
   try {
@@ -997,7 +984,7 @@ const nodeWakeAt = defineLeaf({
       { name: 'id', type: 'string', required: true, constraint: 'The new wakeup id (cancel/list by it).' },
       { name: 'kind', type: 'string', required: true, constraint: '"bare" or "noted".' },
       { name: 'fires_at', type: 'string', required: true, constraint: 'Absolute UTC fire time (the first fire for a recurrence).' },
-      { name: 'recur', type: 'string', required: true, constraint: '"none", or the cadence (every:6h / cron:0 9 * * * <zone>).' },
+      { name: 'recur', type: 'string', required: true, constraint: '"none", or the cadence (every 6h / cron `0 9 * * *` <zone>).' },
       { name: 'target', type: 'string', required: true, constraint: '"self" or the --node id.' },
       { name: 'guidance', type: 'string', required: true, constraint: 'What to do now — end your turn to go dormant; do not push final.' },
     ],
@@ -1074,12 +1061,12 @@ const nodeWakeAt = defineLeaf({
     const eta = etaHint(fireAt, now);
     const guidance =
       recur !== undefined
-        ? `${kind === 'noted' ? 'Noted' : 'Bare'} recurrence armed (${recurDisplay(recur)}); first fire ${fireAt}${eta}. End your turn to go dormant; do not push final. The runtime keeps firing it even across your crash/finalize — cancel with \`crtr node wake cancel ${id}\`.`
+        ? `${kind === 'noted' ? 'Noted' : 'Bare'} recurrence armed (${cadenceDisplay(recur)}); first fire ${fireAt}${eta}. End your turn to go dormant; do not push final. The runtime keeps firing it even across your crash/finalize — cancel with \`crtr node wake cancel ${id}\`.`
         : kind === 'noted'
           ? `Noted wake armed. You wake into your saved conversation at ${fireAt}${eta} with your note. End your turn now to go dormant; do not push final.`
           : `Bare self-alarm armed. You wake in a fresh window at ${fireAt}${eta}. End your turn now to go dormant; do not push final. The wake re-reads your roadmap.`;
 
-    return { id, kind, fires_at: fireAt, recur: recurDisplay(recur), target, guidance };
+    return { id, kind, fires_at: fireAt, recur: cadenceDisplay(recur), target, guidance };
   },
   render: (r) =>
     `<wake-armed id="${r['id']}" kind="${r['kind']}" fires-at="${r['fires_at']}" recur="${r['recur']}" target="${r['target']}">\n${r['guidance']}\n</wake-armed>`,
@@ -1172,7 +1159,7 @@ const nodeWakeSpawn = defineLeaf({
       { name: 'id', type: 'string', required: true, constraint: 'The wakeup id (inspect/cancel by it via `node wake list`/`cancel`).' },
       { name: 'kind', type: 'string', required: true, constraint: 'The persona kind of the deferred node.' },
       { name: 'fires_at', type: 'string', required: true, constraint: 'Absolute UTC birth time (the first fire for a cron).' },
-      { name: 'recur', type: 'string', required: true, constraint: '"none" (one-shot --at) or the cadence (every:6h / cron:0 9 * * * <zone>).' },
+      { name: 'recur', type: 'string', required: true, constraint: '"none" (one-shot --at) or the cadence (every 6h / cron `0 9 * * *` <zone>).' },
       { name: 'guidance', type: 'string', required: true, constraint: 'What to do now — no node exists yet; pick up other work or end your turn.' },
     ],
     dynamicState: () => kindsStateBlock(),
@@ -1241,9 +1228,9 @@ const nodeWakeSpawn = defineLeaf({
     const eta = etaHint(fireAt, now);
     const guidance =
       recur !== undefined
-        ? `Spawn-cron armed (${recurDisplay(recur)}): a fresh ${kind} node is born each fire, first at ${fireAt}${eta}. No node exists yet; the runtime keeps spawning even across your crash/finalize — inspect/cancel via \`crtr node wake list\` / \`crtr node wake cancel ${id}\`.`
+        ? `Spawn-cron armed (${cadenceDisplay(recur)}): a fresh ${kind} node is born each fire, first at ${fireAt}${eta}. No node exists yet; the runtime keeps spawning even across your crash/finalize — inspect/cancel via \`crtr node wake list\` / \`crtr node wake cancel ${id}\`.`
         : `Deferred spawn armed: a fresh ${kind} node is born at ${fireAt}${eta}. No node exists yet — inspect/cancel via \`crtr node wake list\` / \`crtr node wake cancel ${id}\`. Pick up other work or end your turn.`;
-    return { id, kind, fires_at: fireAt, recur: recurDisplay(recur), guidance };
+    return { id, kind, fires_at: fireAt, recur: cadenceDisplay(recur), guidance };
   },
   render: (r) =>
     `<spawn-deferred id="${r['id']}" kind="${r['kind']}" fires-at="${r['fires_at']}" recur="${r['recur']}">\n${r['guidance']}\n</spawn-deferred>`,
@@ -1320,7 +1307,7 @@ const nodeWakeList = defineLeaf({
         (w.kind === 'noted' || w.kind === 'deadline') && w.payload !== null
           ? ((w.payload as { label?: string }).label ?? '')
           : '';
-      return { id: w.wakeup_id, kind: w.kind, next: w.fire_at, recur: recurDisplay(w.recur), target, owner: rel(w.owner_id), note };
+      return { id: w.wakeup_id, kind: w.kind, next: w.fire_at, recur: cadenceDisplay(w.recur), target, owner: rel(w.owner_id), note };
     });
     return { scope: scopeLabel, wakes };
   },

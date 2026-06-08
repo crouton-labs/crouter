@@ -24,6 +24,17 @@ spawns, launches, revives, resets, closes, and polymorphs. Composes canvas (birt
   polymorph so a node comes back as its *current* self.
 - `pi_pid` is the daemon's liveness signal: a tmux window can outlive a dead pi.
 
+## Wake provenance (the `<crtr-wake>` block)
+`bearings.ts` owns `WakeOrigin` + `buildWakeBearings()` — the agent-facing block
+that tells a node a TIMER (not an inbox event) woke or birthed it (Invariant B/D).
+Two injection seams, both set ONLY by the daemon's wakeups pass: `spawn.ts` prepends
+it to a wake-BORN node's kickoff when `SpawnChildOpts.wakeOrigin` is set (in-memory
+only, never the stored recipe — `node new` leaves it unset); `kickoff.ts`
+`buildReviveKickoff(…, wakeReason?)` prepends it to a `bare`-wake fresh-revive
+(threaded via `reviveNode`'s `wakeReason`). Cadence renders through `core/wake.ts`
+`cadenceDisplay` (shared with `node wake list`). noted/deadline self-mark via their
+inbox label instead, not this block.
+
 ## File map
 spawn/launch/kickoff (birth+boot) · revive/reset/close (lifecycle) ·
 promote/demote/persona (polymorph) · presence/tmux/front-door (placement+entry) ·

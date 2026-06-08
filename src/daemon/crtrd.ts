@@ -55,6 +55,7 @@ import { isBusy } from '../core/runtime/busy.js';
 import { isNodePaneAlive, reconcile } from '../core/runtime/placement.js';
 import { reviveNode } from '../core/runtime/revive.js';
 import { spawnChild, type SpawnChildOpts } from '../core/runtime/spawn.js';
+import { wakeOriginFrom } from '../core/runtime/bearings.js';
 import { pushUrgent } from '../core/feed/feed.js';
 import { appendInbox, readInboxSince, readCursor } from '../core/feed/inbox.js';
 import { nextSlotAfter } from '../core/wake.js';
@@ -459,18 +460,26 @@ export async function superviseTick(now: number = Date.now()): Promise<void> {
         // pi live → no-op (AC-E3 bare): an already-awake node needs no revive.
         if (target.pi_pid != null && isPidAlive(target.pi_pid)) continue;
         process.stderr.write(`[crtrd] wake ${target.node_id} (bare alarm)\n`);
-        reviveNode(target.node_id, { resume: false });
+        // wakeReason carries the timer provenance so the fresh-revive kickoff
+        // leads with a <crtr-wake> block (Invariant B/D: the node learns a clock,
+        // not an event, woke it) instead of a generic context-refresh framing.
+        reviveNode(target.node_id, { resume: false, wakeReason: wakeOriginFrom(w) });
         revivedThisTick.add(target.node_id);
       } else if (w.kind === 'noted') {
         // Deliver the note; the UNMODIFIED pass 2 wakes the dormant target next
         // tick (AC-N1), or its live in-process watcher delivers it (AC-E3 noted).
         if (w.node_id == null) continue;
         const p = w.payload as NotedWakePayload;
+        // Mark the delivery as a SCHEDULED wake (Invariant D): the woken node sees
+        // only the rendered digest (inbox inlines label/body, never arbitrary
+        // data keys), so the timer signal MUST ride the visible label — the same
+        // ⏰ family deadline uses — so a noted wake is distinguishable from a plain
+        // `node msg`, not indistinguishable from it.
         appendInbox(w.node_id, {
           from: w.owner_id ?? null,
           tier: 'normal',
           kind: 'message',
-          label: p.label,
+          label: `⏰ scheduled wake — ${p.label}`,
           data: { body: p.body },
         });
       } else if (w.kind === 'deadline') {
@@ -495,7 +504,11 @@ export async function superviseTick(now: number = Date.now()): Promise<void> {
         // "requires a calling node" error even for a --root recipe.
         const recipe = w.payload as SpawnChildOpts;
         try {
-          spawnChild(recipe);
+          // Spread in the wake provenance at fire time (in-memory only; never the
+          // stored recipe) so the born node's kickoff leads with a <crtr-wake>
+          // block — it learns, by construction, that a timer birthed it (and, for
+          // a spawn-cron, that it is one run of a standing job).
+          spawnChild({ ...recipe, wakeOrigin: wakeOriginFrom(w) });
           notifiedWakeFailures.delete(w.wakeup_id); // success clears the dedup latch
         } catch (err) {
           // Fail loud by waking the ARMER DIRECTLY (design §6.6/Q5). The row was

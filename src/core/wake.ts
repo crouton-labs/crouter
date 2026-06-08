@@ -361,6 +361,35 @@ export function parseCadence(every: string, opts: ParseOpts): CadenceResult {
 }
 
 // ---------------------------------------------------------------------------
+// cadenceDisplay — a recur JSON rendered for humans + agents
+// ---------------------------------------------------------------------------
+
+/**
+ * Render a stored `recur` JSON as a compact, human-readable cadence:
+ *   - {"every":"6h"}                         -> `every 6h`
+ *   - {"cron":"0 9 * * *","tz":"America/…"}  -> ``cron `0 9 * * *` (America/…)``
+ *   - null / undefined / unparseable         -> `none`
+ *
+ * The ONE cadence-display helper, shared by the `node wake` CLI surface
+ * (list/guidance) and the <crtr-wake> wake-provenance block (bearings.ts), so
+ * the cadence an agent reads in its wake block matches `crtr node wake list`
+ * exactly. Cadence only — never an instance count.
+ */
+export function cadenceDisplay(recur: string | null | undefined): string {
+  if (recur === null || recur === undefined) return 'none';
+  try {
+    const r = JSON.parse(recur) as { every?: string; cron?: string; tz?: string };
+    if (typeof r.every === 'string') return `every ${r.every}`;
+    if (typeof r.cron === 'string') {
+      return `cron \`${r.cron}\`${typeof r.tz === 'string' ? ` (${r.tz})` : ''}`;
+    }
+  } catch {
+    /* fall through */
+  }
+  return 'none';
+}
+
+// ---------------------------------------------------------------------------
 // nextSlotAfter — the coalescing primitive (daemon advance)
 // ---------------------------------------------------------------------------
 
