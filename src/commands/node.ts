@@ -135,7 +135,7 @@ const nodeNew = defineLeaf({
     name: 'node new',
     summary: 'spawn a terminal worker onto the canvas as a background window — returns its node id',
     params: [
-      { kind: 'stdin', name: 'prompt', required: true, constraint: 'First user message for the spawned node. Piped on stdin or passed as a positional.' },
+      { kind: 'stdin', name: 'prompt', required: true, constraint: 'First user message for the spawned node. Deliver it on stdin from a quoted heredoc (`<<\'EOF\'`) or a file (`< prompt.md`) so backticks and `$()` reach the child verbatim.' },
       { kind: 'flag', name: 'kind', type: 'string', required: false, default: 'general', constraint: 'Persona kind — match the work to the kind. The <kinds> list below names every installable kind and when to use each; the <sub-personas> block (when present) names the specialist sub-personas available to YOU, each spawnable by its full kind string (e.g. plan/reviewers/security).' },
       { kind: 'flag', name: 'mode', type: 'enum', choices: ['base', 'orchestrator'], required: false, default: 'base', constraint: 'Persona mode. base for a worker that finishes in one window; orchestrator to create the child directly as a sub-orchestrator (it boots with the orchestrator persona + a seeded roadmap and fans its scope out) — use it when the unit is too large for one window, e.g. a big review, instead of spawning a base worker and counting on it to promote itself.' },
       { kind: 'flag', name: 'cwd', type: 'path', required: false, constraint: 'Dir the node is pinned to. Defaults to the caller cwd.' },
@@ -1156,7 +1156,7 @@ const nodeWakeSpawn = defineLeaf({
     summary:
       'defer or recur a node birth — arm a wake that spawns a fresh node at a future time (--at) or on a repeating cadence (--every), instead of `node new` spawning it now. Returns a wakeup id, not a node id; the full spawn recipe is stored on the wake and re-derived live at fire time',
     params: [
-      { kind: 'stdin', name: 'prompt', required: true, constraint: 'First user message for the node to be born. Piped on stdin or passed as a positional.' },
+      { kind: 'stdin', name: 'prompt', required: true, constraint: 'First user message for the node to be born. Deliver it on stdin from a quoted heredoc (`<<\'EOF\'`) or a file (`< prompt.md`) so backticks and `$()` reach the node verbatim.' },
       { kind: 'flag', name: 'at', type: 'string', required: false, constraint: 'DEFER a one-shot birth at <when> — a duration ("5m"), a zoned ISO, or a bare ISO (host-local, or in --tz). Mutually exclusive with --every; exactly one of --at/--every is required.' },
       { kind: 'flag', name: 'every', type: 'string', required: false, constraint: 'SPAWN-CRON: re-birth a fresh node on this declarative cadence even after a prior instance reaped itself or crashed — a duration ("6h") or a 5-field cron / @alias ("0 9 * * *","@daily"). Canvas-anchored (survives your crash/finalize), reaped by your deliberate close or `node wake cancel`. Min cadence 60s. Mutually exclusive with --at.' },
       { kind: 'flag', name: 'tz', type: 'string', required: false, constraint: 'IANA zone for a calendar --every (or a bare-ISO --at); default host-local. Makes "every 9am" mean 9am there, DST-correct.' },
