@@ -33,6 +33,8 @@ Telemetry
 
 Something around the agent improving itself as it goes/fixing itself/taking feedback well.
 
+- Upstream pi want: system entries inside the messages array (mid-run instruction updates, cache-safe, no user turn) — would let us reassert node identity authoritatively without the user-role peer-message hack. Blocked on pi-ai. See [notes/pi-system-in-messages.md](notes/pi-system-in-messages.md).
+
 
 - nodes can be created in new worktrees, build in grove style secret cloning script, make sure the agent is able to verify
 - Needs to integrate with slack. 

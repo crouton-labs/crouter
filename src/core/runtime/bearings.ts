@@ -4,10 +4,12 @@
 //
 //   • the context-intro pi-extension injects buildContextBearings() as the
 //     node's first session message in every brand-new chat. It opens with a
-//     <crtr-identity> block (buildIdentityAssertion) that names the node and
-//     disowns any earlier first-person narrative as inherited context — the fix
-//     for the `--fork-from` bug where a fork copies the source's whole
-//     conversation and then impersonates it;
+//     <crtr-identity> block (buildIdentityAssertion) that names the node and,
+//     ONLY for a fork, disowns the source's copied first-person narrative as
+//     inherited context — the fix for the `--fork-from` bug where a fork copies
+//     the source's whole conversation and then impersonates it. A non-fork
+//     node's bearings are its FIRST entry, so there is nothing earlier to
+//     disown; it gets only the declarative identity line;
 //   • promote.ts folds orchestratorContextNote() into the promotion guidance
 //     dump, so a node that becomes an orchestrator MID-LIFE gets the
 //     orchestrator framing it never received at spawn — it spawned as a base
@@ -108,10 +110,12 @@ export function buildMemoryBlock(nodeId: string, cwd: string): string {
  *  entire first-person conversation into its own session, so without an explicit
  *  re-assertion the forked agent reads that copied narrative as its own and
  *  impersonates the source (it kept "monitoring itself" as a phantom child).
- *  This block names the node unambiguously and disowns any earlier first-person
- *  narrative as INHERITED CONTEXT; when the node IS a fork it additionally calls
- *  the source out by name so the agent cannot mistake the copied history for its
- *  own past. Always the FIRST thing the node reads. Exported for testing. */
+ *  This block names the node unambiguously. ONLY when the node IS a fork does it
+ *  additionally name the source AND disown the copied first-person narrative as
+ *  INHERITED CONTEXT — a non-fork node's bearings are its first session entry, so
+ *  there is no earlier narrative to disown (emitting the line there is dead
+ *  weight that reads as a contradiction with no referent). Always the FIRST
+ *  thing the node reads. Exported for testing. */
 export function buildIdentityAssertion(nodeId: string): string {
   const meta = getNode(nodeId);
   const name = meta?.name ?? nodeId;
@@ -133,13 +137,14 @@ export function buildIdentityAssertion(nodeId: string): string {
         'conversation is THEIR first-person history — inherited reference material, not your own ' +
         'past. Do not speak or act as them, do not continue their task as if it were yours, and do ' +
         'not "monitor yourself" as though you were a child they spawned.',
+      // The disown-line is fork-ONLY: it only has a referent when prior
+      // first-person narrative was actually copied in. A fresh node's bearings
+      // are its first entry — there is nothing earlier to disown.
+      `Any earlier first-person narrative in this conversation ("I am …", "my task is …") is ` +
+        `INHERITED CONTEXT, NOT you. Your identity is fixed by this block — act as node ${nodeId}.`,
     );
   }
-  lines.push(
-    `Any earlier first-person narrative in this conversation ("I am …", "my task is …") is INHERITED ` +
-      `CONTEXT, NOT you. Your identity is fixed by this block — act as node ${nodeId}.`,
-    '</crtr-identity>',
-  );
+  lines.push('</crtr-identity>');
   return lines.join('\n');
 }
 
