@@ -83,6 +83,14 @@ export interface NodeIdentity {
    *  `parent` so an INDEPENDENT root (parent=null) still records its lineage.
    *  Audit only; null for a user-opened root. Defaults to `parent` for a child. */
   spawned_by?: string | null;
+  /** Fork provenance — the `--fork-from` source this node was forked from at
+   *  spawn (the node id / session path / pi session uuid the caller passed). pi
+   *  COPIED that conversation into this node's first session, so the node boots
+   *  carrying the SOURCE's first-person history. Persisted here so the boot
+   *  intro can assert this node's OWN identity over that inherited narrative
+   *  (without it a fork impersonates its source). Undefined for a fresh node;
+   *  identity/audit only. */
+  fork_from?: string | null;
   /** New subscriptions this node opens default to passive when true. */
   passive_default?: boolean;
   /** REVIVE-HOME — the tmux session a node is (re)opened into when it must

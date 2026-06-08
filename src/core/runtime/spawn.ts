@@ -17,6 +17,7 @@ import { writeGoal } from './kickoff.js';
 import { hasRoadmap, seedRoadmap } from './roadmap.js';
 import { seedMemory, seedUserMemory, seedProjectMemory } from './memory.js';
 import { generateSessionName } from './naming.js';
+import { buildIdentityAssertion } from './bearings.js';
 import { installMenuBinding, installNavBindings, installViewNavBindings } from './tmux-chrome.js';
 import { setPresence, updateNode, getNode, fullName, type NodeMeta, type Mode, type Lifecycle } from '../canvas/index.js';
 import {
@@ -203,6 +204,10 @@ export function spawnChild(opts: SpawnChildOpts): SpawnChildResult {
     // records spawned_by=spawner. A child's parent IS its manager.
     parent: root ? null : spawner,
     spawnedBy: root ? spawner : undefined,
+    // Persist the RAW fork reference (not the resolved path) as provenance, so
+    // the boot intro can detect this is a fork and re-assert the node's own
+    // identity over the source's copied-in conversation.
+    forkFrom: opts.forkFrom,
     launch,
   });
 
@@ -214,6 +219,16 @@ export function spawnChild(opts: SpawnChildOpts): SpawnChildResult {
   // — not in buildPiArgv — so a bad reference fails the spawn loudly before any
   // window opens, rather than after pi is already booting.
   const forkFrom = opts.forkFrom !== undefined ? resolveForkSource(opts.forkFrom) : undefined;
+
+  // A fork inherits the SOURCE node's entire first-person conversation, so the
+  // identity re-assertion must ride the STRONGEST channel too, not only the
+  // session-start bearings (a trailing custom_message the model weighs only by
+  // recency). Prepend it to the kickoff PROMPT — the message that actually
+  // triggers the fork's first turn, so the model acts on "you are node X, a
+  // FORK of <source>, NOT them" as live instruction. Only the pi argv prompt is
+  // reframed; the persisted goal (writeGoal above) keeps the raw task.
+  const kickoff =
+    forkFrom !== undefined ? `${buildIdentityAssertion(meta.node_id)}\n\n${opts.prompt}` : opts.prompt;
 
   // A child created DIRECTLY as an orchestrator (mode='orchestrator') boots
   // with the orchestrator persona but bypasses promote(), which is where a
@@ -254,7 +269,7 @@ export function spawnChild(opts: SpawnChildOpts): SpawnChildResult {
   // off the user's screen (the focus taint cannot reach it).
   updateNode(meta.node_id, { home_session: session });
 
-  const inv = buildPiArgv(meta, { prompt: opts.prompt, forkFrom });
+  const inv = buildPiArgv(meta, { prompt: kickoff, forkFrom });
   const env = { ...inv.env, CRTR_ROOT_SESSION: childSession, [FRONT_DOOR_ENV]: '1' };
   const command = piCommand(inv.argv);
 

@@ -22,9 +22,18 @@
 // dump), which gates the memory block on the node having a node-local store — so
 // a terminal worker gets no memory framing at all.
 //
-// IDEMPOTENT across resumes: a `--session` relaunch restores the conversation,
-// so the block is already in history; the session_start handler sees it via
-// `sessionManager.getEntries()` and skips, so it never accumulates.
+// IDEMPOTENT across resumes, but FORK-AWARE: a `--session` relaunch restores OUR
+// conversation (whose bearings name OUR node id), so the session_start handler
+// sees it via `sessionManager.getEntries()` and skips — it never accumulates. A
+// `--fork-from` boot, by contrast, COPIES the source node's whole conversation
+// (whose bearings name the SOURCE's node id), so the handler must NOT treat that
+// inherited block as ours; it only skips when a bearings block belonging to OUR
+// node is already present (exact `details.nodeId` stamp, content-match
+// fallback), otherwise it injects ours — whose <crtr-identity> block reasserts
+// the fork's identity over the inherited persona. This is ONE of two reinforcing
+// channels: spawn.ts ALSO prepends the same identity assertion to a fork's
+// kickoff prompt (the turn-triggering message), so the override does not rest on
+// a single trailing custom_message.
 //
 // COLLAPSED BY DEFAULT: a `registerMessageRenderer` keyed to our customType
 // renders the block as a single one-line stub; the full body only appears when
@@ -52,6 +61,13 @@ export const CONTEXT_INTRO_CUSTOM_TYPE = 'crtr-context';
 interface SessionEntryLike {
   type: string;
   customType?: string;
+  /** custom_message entries carry their injected content (string or blocks). */
+  content?: string | Array<{ type: string; text?: string }>;
+  /** Extension metadata we stamp on the block (NOT sent to the LLM). The
+   *  authoritative idempotency discriminator: `nodeId` is the node the block
+   *  belongs to, so a fork (whose copied source block carries the SOURCE's id)
+   *  is told apart from a genuine resume by an EXACT id match. */
+  details?: { nodeId?: string };
 }
 
 interface SessionStartCtxLike {
@@ -62,6 +78,9 @@ interface CustomMessageLike {
   customType: string;
   content: string;
   display?: boolean;
+  /** Extension-only metadata (not sent to the LLM); used as the exact
+   *  idempotency discriminator on resume — see SessionEntryLike.details. */
+  details?: { nodeId: string };
 }
 
 /** The message handed to a message renderer. `content` is normally the string we
@@ -125,6 +144,21 @@ function messageText(message: RenderedMessageLike): string {
     .filter((c) => c.type === 'text' && typeof c.text === 'string')
     .map((c) => c.text as string)
     .join('\n');
+}
+
+/** Plain text of a session entry's content (string or text blocks), '' when
+ *  absent. Used by the idempotency guard to tell OUR own injected bearings
+ *  (which name our node id) from a SOURCE's bearings copied in by `--fork-from`. */
+function entryText(e: SessionEntryLike): string {
+  const c = e.content;
+  if (typeof c === 'string') return c;
+  if (Array.isArray(c)) {
+    return c
+      .filter((b) => typeof b?.text === 'string')
+      .map((b) => b.text as string)
+      .join('\n');
+  }
+  return '';
 }
 
 /** Hard-wrap a single logical line to `width` columns (content carries no ANSI).
@@ -209,19 +243,38 @@ export function registerCanvasContextIntro(pi: PiLike): void {
       const nodeId = process.env['CRTR_NODE_ID'];
       if (nodeId === undefined || nodeId.trim() === '') return; // not a canvas node
 
-      // Idempotent: a restored/reloaded session already carries the block.
-      const present = ctx.sessionManager
+      // Idempotent on RESUME, but NOT fooled by a FORK. A `--session` relaunch
+      // restores OUR conversation, whose bearings name OUR node id — skip then,
+      // so the block never accumulates. A `--fork-from` boot instead copies the
+      // SOURCE node's whole conversation (its bearings name ITS node id, not
+      // ours), so a naive "any crtr-context present?" check would suppress our
+      // own intro and let the fork inherit — and impersonate — the source. So we
+      // only skip when a bearings block belonging to OUR node is already present.
+      // Primary discriminator: the EXACT `details.nodeId` stamp (machine-
+      // readable, copied on fork, never sent to the LLM). Fallback: a substring
+      // match on the block text (our id appears in the identity line AND the
+      // context-dir path `…/nodes/<nodeId>/context`) — covers legacy blocks
+      // persisted before the stamp existed. Either match ⇒ this is our own
+      // resume, not an inherited fork block, so skip.
+      const ours = ctx.sessionManager
         .getEntries()
-        .some((e) => e.type === 'custom_message' && e.customType === CONTEXT_INTRO_CUSTOM_TYPE);
-      if (present) return;
+        .some(
+          (e) =>
+            e.type === 'custom_message' &&
+            e.customType === CONTEXT_INTRO_CUSTOM_TYPE &&
+            (e.details?.nodeId === nodeId || entryText(e).includes(nodeId)),
+        );
+      if (ours) return;
 
       // No delivery options: at the idle start of a session this is pushed onto
       // the (still empty) message list and persisted immediately, so it precedes
-      // the node's first prompt.
+      // the node's first prompt. The `details.nodeId` stamp rides along as the
+      // exact resume discriminator (not shown to the LLM).
       pi.sendMessage({
         customType: CONTEXT_INTRO_CUSTOM_TYPE,
         content: buildContextIntro(nodeId),
         display: true,
+        details: { nodeId },
       });
     } catch {
       // Best-effort: a failure here must never break session startup.

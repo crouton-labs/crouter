@@ -169,6 +169,11 @@ export interface SpawnNodeOpts {
    *  `parent` — e.g. an independent root (parent=null) still records its
    *  spawner. Defaults to `parent`. */
   spawnedBy?: string | null;
+  /** Fork provenance — the `--fork-from` reference this node was forked from (a
+   *  node id / session path / pi session uuid). Persisted to `meta.fork_from` so
+   *  the boot intro can re-assert this node's OWN identity over the source's
+   *  copied-in conversation. Omit for a fresh node. */
+  forkFrom?: string | null;
   /** New subscriptions this node opens default to passive when true. */
   passiveDefault?: boolean;
   /** Resolved pi launch recipe (from resolve(kind,mode)). */
@@ -209,6 +214,7 @@ export function spawnNode(opts: SpawnNodeOpts): NodeMeta {
     status: 'active',
     parent,
     spawned_by: spawnedBy,
+    fork_from: opts.forkFrom,
     passive_default: opts.passiveDefault ?? false,
     intent: null,
     pi_session_id: null,

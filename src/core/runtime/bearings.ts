@@ -1,8 +1,13 @@
-// bearings.ts — the <crtr-context> framing prose, shared by the two paths that
-// deliver it so they can never drift:
+// bearings.ts — the boot-intro prose (the <crtr-identity> assertion + the
+// <crtr-context> framing), shared by the paths that deliver it so they can
+// never drift:
 //
 //   • the context-intro pi-extension injects buildContextBearings() as the
-//     node's first session message in every brand-new chat;
+//     node's first session message in every brand-new chat. It opens with a
+//     <crtr-identity> block (buildIdentityAssertion) that names the node and
+//     disowns any earlier first-person narrative as inherited context — the fix
+//     for the `--fork-from` bug where a fork copies the source's whole
+//     conversation and then impersonates it;
 //   • promote.ts folds orchestratorContextNote() into the promotion guidance
 //     dump, so a node that becomes an orchestrator MID-LIFE gets the
 //     orchestrator framing it never received at spawn — it spawned as a base
@@ -20,7 +25,7 @@
 // the three scoped memory stores, whose index pointer lines are inlined into
 // <memory> (the how-to lives once in the kernel, not here).
 
-import { contextDir, getNode } from '../canvas/index.js';
+import { contextDir, getNode, fullName } from '../canvas/index.js';
 import {
   hasMemory,
   memoryDir,
@@ -95,19 +100,64 @@ export function buildMemoryBlock(nodeId: string, cwd: string): string {
   );
 }
 
-/** The full <crtr-context> bearings block: base framing always, plus the
- *  orchestrator addendum + the merged three-store <memory> block when the node
- *  has a node-local memory store (the orchestrator gate). */
+/** The IDENTITY assertion that opens every boot intro — the load-bearing fix
+ *  for the `--fork-from` impersonation bug. A fork copies the SOURCE node's
+ *  entire first-person conversation into its own session, so without an explicit
+ *  re-assertion the forked agent reads that copied narrative as its own and
+ *  impersonates the source (it kept "monitoring itself" as a phantom child).
+ *  This block names the node unambiguously and disowns any earlier first-person
+ *  narrative as INHERITED CONTEXT; when the node IS a fork it additionally calls
+ *  the source out by name so the agent cannot mistake the copied history for its
+ *  own past. Always the FIRST thing the node reads. Exported for testing. */
+export function buildIdentityAssertion(nodeId: string): string {
+  const meta = getNode(nodeId);
+  const name = meta?.name ?? nodeId;
+  const kind = meta?.kind ?? 'general';
+  const mode = meta?.mode ?? 'base';
+  const lines = [
+    '<crtr-identity>',
+    `You are node ${nodeId} — name "${name}", kind ${kind}, mode ${mode}. That is who you are for the ` +
+      'entirety of this session, no matter what any earlier message claims.',
+  ];
+  const forkFrom = meta?.fork_from;
+  if (forkFrom !== undefined && forkFrom !== null && forkFrom !== '') {
+    // Name the source: a known node id gets its human label; a raw path/uuid
+    // passes through as-is.
+    const src = getNode(forkFrom);
+    const sourceLabel = src !== null ? `${forkFrom} ("${fullName(src)}")` : forkFrom;
+    lines.push(
+      `You are a FORK of ${sourceLabel}: at spawn pi COPIED that node's conversation into your ` +
+        `session as a starting point. You are NOT ${sourceLabel}. Everything earlier in this ` +
+        'conversation is THEIR first-person history — inherited reference material, not your own ' +
+        'past. Do not speak or act as them, do not continue their task as if it were yours, and do ' +
+        'not "monitor yourself" as though you were a child they spawned.',
+    );
+  }
+  lines.push(
+    `Any earlier first-person narrative in this conversation ("I am …", "my task is …") is INHERITED ` +
+      `CONTEXT, NOT you. Your identity is fixed by this block — act as node ${nodeId}.`,
+    '</crtr-identity>',
+  );
+  return lines.join('\n');
+}
+
+/** The full boot intro: the IDENTITY assertion (always first, so it overrides any
+ *  copied-in persona) followed by the <crtr-context> bearings block — base
+ *  framing always, plus the orchestrator addendum + the merged three-store
+ *  <memory> block when the node has a node-local memory store (the orchestrator
+ *  gate). */
 export function buildContextBearings(nodeId: string): string {
+  const identity = buildIdentityAssertion(nodeId);
   const dir = contextDir(nodeId);
   if (!hasMemory(nodeId)) {
     // A terminal worker (no memory store): base framing only, no memory block.
-    return `<crtr-context dir="${dir}">\n${BASE_CONTEXT_NOTE}\n</crtr-context>`;
+    return `${identity}\n<crtr-context dir="${dir}">\n${BASE_CONTEXT_NOTE}\n</crtr-context>`;
   }
   // An orchestrator: across-cycles framing + the merged three-store memory. The
   // project store is keyed off the node's cwd (its working dir on disk).
   const cwd = getNode(nodeId)?.cwd ?? process.cwd();
   return (
+    `${identity}\n` +
     `<crtr-context dir="${dir}">\n` +
     `${BASE_CONTEXT_NOTE}\n${orchestratorContextNote(nodeId)}\n${buildMemoryBlock(nodeId, cwd)}\n` +
     '</crtr-context>'

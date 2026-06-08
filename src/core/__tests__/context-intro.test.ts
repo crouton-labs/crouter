@@ -195,12 +195,18 @@ test('session_start is idempotent across resume (skips if already in history)', 
   const meta = spawnNode({ kind: 'general', cwd: '/tmp/work', parent: null });
   process.env['CRTR_NODE_ID'] = meta.node_id;
 
-  // Restored session already carries the block → no duplicate injection.
+  // Restored session already carries OUR block (which names this node id) → no
+  // duplicate injection. The content matters: the guard is fork-aware and only
+  // skips when the present bearings name THIS node (a fork inherits the
+  // SOURCE's bearings, which name a different node — see canvas-context-intro
+  // tests), so a realistic resume entry must carry the real block content.
   const pi = makeFakePi();
   registerCanvasContextIntro(pi as any);
-  const entries = [{ type: 'custom_message', customType: CONTEXT_INTRO_CUSTOM_TYPE }];
+  const entries = [
+    { type: 'custom_message', customType: CONTEXT_INTRO_CUSTOM_TYPE, content: buildContextIntro(meta.node_id) },
+  ];
   pi.handler!({ reason: 'resume' }, fakeCtx(entries));
-  assert.equal(pi.sent.length, 0, 'block already in history → skip');
+  assert.equal(pi.sent.length, 0, 'our own block already in history → skip');
 });
 
 test('session_start is inert when CRTR_NODE_ID is absent', () => {

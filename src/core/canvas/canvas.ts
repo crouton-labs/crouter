@@ -45,7 +45,7 @@ import type {
  *  can ever leak onto disk even when a fully-hydrated NodeMeta is handed in. */
 const IDENTITY_KEYS: ReadonlyArray<keyof NodeIdentity> = [
   'node_id', 'name', 'description', 'cycles', 'created', 'cwd', 'kind', 'mode',
-  'lifecycle', 'persona_ack', 'parent', 'spawned_by', 'passive_default',
+  'lifecycle', 'persona_ack', 'parent', 'spawned_by', 'fork_from', 'passive_default',
   'home_session', 'pi_session_id', 'pi_session_file', 'launch',
 ];
 
