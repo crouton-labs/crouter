@@ -29,6 +29,7 @@ import {
   focusWindow,
 } from './placement.js';
 import { transition } from './lifecycle.js';
+import { headlessBrokerHost } from './host.js';
 import { ensureDaemon } from '../../daemon/manage.js';
 
 // All node windows live in one shared session — see `nodeSession()` in nodes.js.
@@ -279,6 +280,24 @@ export function spawnChild(opts: SpawnChildOpts): SpawnChildResult {
   updateNode(meta.node_id, { home_session: session });
 
   const inv = buildPiArgv(meta, { prompt: kickoff, forkFrom });
+
+  // Birth LAUNCH branch on the PERSISTED host_kind (set at birth by spawnNode).
+  // A broker birth diverts AWAY from the tmux pane: the headless broker host
+  // launches a detached broker process (which records its own pid as pi_pid via
+  // the stophook) and returns placement fields all null — so we open NO tmux
+  // window and write NO tmux placement (presence stays null for a broker). The
+  // tmux path below is left completely UNCHANGED (byte-identical) for every
+  // non-broker spawn. Mirrors reviveNode's `hostFor(meta).launch(...)` shape.
+  if (meta.host_kind === 'broker') {
+    const placed = headlessBrokerHost.launch(meta.node_id, inv, {
+      cwd: meta.cwd,
+      name: fullName(meta),
+      resuming: false,
+    });
+    const saved = getNode(meta.node_id) as NodeMeta;
+    return { node: saved, window: placed.window, session: placed.session };
+  }
+
   const env = { ...inv.env, CRTR_ROOT_SESSION: childSession, CRTR_SUBTREE: rootOfSpine(meta.node_id), [FRONT_DOOR_ENV]: '1' };
   const command = piCommand(inv.argv);
 
