@@ -22,12 +22,14 @@
 
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 import { createHarness, hasTmux, type Harness } from './helpers/harness.js';
 import { subscribe } from '../canvas/canvas.js';
 import { appendInbox } from '../feed/inbox.js';
-import { isPidAlive } from '../runtime/pid.js';
+import { isPidAlive } from '../canvas/pid.js';
+import { FAIL_BEFORE_SESSION_START } from './fixtures/fake-engine.js';
 
 // crtrd.ts module const (not exported). The fresh-pi-boot grace window the daemon
 // waits before grace-reviving a pi observed dead. Reference: crtrd.ts
@@ -215,4 +217,46 @@ test('unattended dialog resolves to its default on timeout — forward progress,
   );
   assert.equal(results[0]!.resolved, false, 'unattended confirm resolves to its default (false)');
   assert.equal(isPidAlive(pid), true, 'the broker made forward progress (still alive, did not hang or exit)');
+});
+
+// ===========================================================================
+// M-1 regression — a broker that DIES before session_start must surface a boot
+// failure, not strand the node forever. Before the fix handleBrokerLiveness read
+// pid==null UNCONDITIONALLY as "still booting", so a broker that threw before
+// recording a pid/session left the node 'active' with no engine FOREVER and the
+// parent waited on a dead child. The daemon must instead crash it past the boot
+// grace + push a boot-failure up the spine. (Also proves M-2: the broker's fatal
+// diagnostic reaches job/broker.log instead of /dev/null.)
+// ===========================================================================
+test('boot failure — a broker that dies before session_start is reaped, not stranded (review M-1/M-2)', { skip: !hasTmux() }, async () => {
+  // A headless child whose broker throws before session_start (no pid, no session
+  // EVER recorded). spawnHeadlessChildNoBoot does not awaitBoot (there is none).
+  const id = await h.spawnHeadlessChildNoBoot(root, `headless worker — boot fail ${FAIL_BEFORE_SESSION_START}`);
+
+  // M-2: the broker logs its fatal stack to job/broker.log and exits(1). Without
+  // the stdio redirect this diagnostic would be lost to /dev/null.
+  const brokerLog = join(h.home, 'nodes', id, 'job', 'broker.log');
+  await h.waitFor(
+    () => existsSync(brokerLog) && /simulated pre-session_start boot failure/.test(readFileSync(brokerLog, 'utf8')),
+    { label: 'broker logged its pre-session_start failure to job/broker.log' },
+  );
+
+  // The node is stuck 'active' with a null pid and a null session — the strand.
+  const n0 = h.node(id)!;
+  assert.equal(n0.pi_pid ?? null, null, 'no broker pid was ever recorded');
+  assert.equal(n0.pi_session_id ?? null, null, 'no session was ever recorded');
+
+  // Inside the boot grace the daemon LEAVES it (could be the sub-second boot gap).
+  const NOW = 9_000_000;
+  await h.tick(NOW);
+  assert.equal(h.status(id), 'active', 'inside the boot grace → daemon leaves it (boot gap)');
+
+  // Past the boot grace with STILL no pid and no session → crash + boot failure.
+  await h.tick(NOW + REVIVE_GRACE_MS + 1);
+  await h.waitForStatus(id, 'dead');
+  assert.equal(h.status(id), 'dead', 'a never-booted broker is reaped, not stranded active forever');
+
+  // …and the parent (an active subscriber of the child) was told up the spine.
+  const note = h.inbox(root).find((e) => /never started/.test(e.label ?? ''));
+  assert.ok(note !== undefined, 'the parent received a boot-failure notice up the spine');
 });

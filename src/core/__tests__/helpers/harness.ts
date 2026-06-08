@@ -182,6 +182,9 @@ export interface Harness {
   // spawn a HEADLESS broker child through the REAL CLI `node new --headless`, AS
   // `parentId`, then awaitBoot. The broker process loads the fake engine.
   spawnHeadlessChild(parentId: string, task: string, o?: SpawnOpts): Promise<string>;
+  // same, but DO NOT awaitBoot — for the boot-failure case (the broker dies
+  // before session_start, so it never produces a boot proof to await).
+  spawnHeadlessChildNoBoot(parentId: string, task: string, o?: SpawnOpts): Promise<string>;
 
   // drive a fake-pi over its control channel — fires the REAL hooks.
   turn(nodeId: string, text?: string): Promise<void>;
@@ -450,6 +453,24 @@ export async function createHarness(opts: HarnessOpts = {}): Promise<Harness> {
       const childId = added[0]!;
       await harness.awaitBoot(childId);
       return childId;
+    },
+
+    async spawnHeadlessChildNoBoot(parentId, task, o = {}): Promise<string> {
+      const before = new Set(nodeDirs());
+      const args = ['node', 'new', task, '--parent', parentId, '--cwd', CROUTER, '--headless'];
+      if (o.kind) args.push('--kind', o.kind);
+      if (o.mode) args.push('--mode', o.mode);
+      const res = cli(parentId, args);
+      if (res.code !== 0) {
+        throw new Error(
+          `spawnHeadlessChildNoBoot(${parentId}) failed (code ${res.code})\n--stdout--\n${res.stdout}\n--stderr--\n${res.stderr}`,
+        );
+      }
+      const added = nodeDirs().filter((d) => !before.has(d));
+      if (added.length !== 1) {
+        throw new Error(`spawnHeadlessChildNoBoot: expected exactly 1 new node dir, got [${added.join(', ')}]`);
+      }
+      return added[0]!;
     },
 
     cli,

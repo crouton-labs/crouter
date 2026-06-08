@@ -41,6 +41,13 @@ import {
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 
+/** Test seam (M-1 regression): a FRESH-start kickoff prompt carrying this token
+ *  makes the fake engine THROW inside bindExtensions BEFORE it fires
+ *  session_start — the exact failure mode that records no pid and no session, so
+ *  the broker exits(1) and the daemon must surface a boot failure rather than
+ *  strand the node. Carried on the prompt (not a global env) so it is per-spawn. */
+export const FAIL_BEFORE_SESSION_START = '__FAIL_BEFORE_SESSION_START__';
+
 // ---------------------------------------------------------------------------
 // node dir / proof helpers
 // ---------------------------------------------------------------------------
@@ -263,6 +270,14 @@ class FakeSession {
 
     const { argv, extPaths, label, prompt } = readLaunch(this.dir);
     const resuming = this.sm.resumed;
+
+    // M-1 regression seam: simulate a broker that throws BEFORE session_start
+    // (no pid, no session ever recorded). Only a fresh start carries the kickoff
+    // prompt; the throw propagates out of bindExtensions → runBroker rejects →
+    // broker-cli's fatal catch logs to job/broker.log + exit(1).
+    if (!resuming && (prompt ?? '').includes(FAIL_BEFORE_SESSION_START)) {
+      throw new Error('[fake-engine] simulated pre-session_start boot failure');
+    }
 
     // bindCore (minimal): adopt the loader's extensions + their shared runtime, and
     // replace the throwing notInitialized action methods with working ones. The

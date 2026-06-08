@@ -53,7 +53,7 @@ import {
 } from '../core/canvas/index.js';
 import { transition } from '../core/runtime/lifecycle.js';
 import { isBusy } from '../core/runtime/busy.js';
-import { isPidAlive } from '../core/runtime/pid.js';
+import { isPidAlive } from '../core/canvas/pid.js';
 import { reconcile } from '../core/runtime/placement.js';
 import { hostFor } from '../core/runtime/host.js';
 import { reviveNode } from '../core/runtime/revive.js';
@@ -197,8 +197,10 @@ function handleLiveWindow(row: NodeRow, now: number, revivedThisTick: Set<string
   // resumes the saved conversation. reviveNode opens a fresh window and clears
   // pi_pid, so the next tick won't re-fire on this stale pid.
   const resume = row.intent !== 'refresh';
+  // A broker has no pane — say so (review Mn-4); the tmux wording is unchanged.
+  const where = row.host_kind === 'broker' ? 'broker, no pane' : 'pane alive';
   process.stderr.write(
-    `[crtrd] revive ${id} (pi dead, pane alive, intent=${String(row.intent)})\n`,
+    `[crtrd] revive ${id} (pi dead, ${where}, intent=${String(row.intent)})\n`,
   );
   reviveNode(id, { resume });
   // Record for the third pass's bare double-spawn guard (Maj-4): this node's
@@ -213,24 +215,66 @@ function handleLiveWindow(row: NodeRow, now: number, revivedThisTick: Set<string
  *  never applies: every unexpected death is a genuine crash. Reuses the EXISTING
  *  supervision primitive UNCHANGED — pid signal-0 + REVIVE_GRACE_MS grace +
  *  unhealthySince + revivedThisTick — NO new machinery (decision §1.7 / R3).
- *  Four cases:
- *    • pid alive (or no pid yet — the SDK boot gap / a relaunch in flight) →
- *      leave; clear any stale grace timer.
- *    • intent==='refresh' → clean yield: respawn FRESH immediately, no grace
- *      wait (matches the tmux refresh path / design "as today").
- *    • intent==='idle-release' → dormant by choice; leave, the second pass
- *      revives (resume) on the next unseen inbox entry.
- *    • any other intent (crash / no clean intent) → grace-revive RESUME on the
- *      saved .jsonl via handleLiveWindow. Its internal resume is
+ *  Cases:
+ *    • pid alive → leave; clear any stale grace timer.
+ *    • pid null + pi_session_id set (a relaunch in flight — reviveNode clears
+ *      pi_pid right after launch) → leave; the fresh broker re-records its pid.
+ *    • pid null + pi_session_id null (NEVER booted) → normally the sub-second SDK
+ *      boot gap, but a broker that throws BEFORE session_start records no pid and
+ *      no session ever — so after a boot grace with STILL nothing, crash +
+ *      surfaceBootFailure (the broker analog of the tmux never-booted path, M-1).
+ *    • pid dead + intent==='refresh' → clean yield: respawn FRESH immediately, no
+ *      grace wait (matches the tmux refresh path / design "as today").
+ *    • pid dead + intent==='idle-release' → dormant by choice; leave, the second
+ *      pass revives (resume) on the next unseen inbox entry.
+ *    • pid dead + any other intent (crash / no clean intent) → grace-revive
+ *      RESUME on the saved .jsonl via handleLiveWindow. Its internal resume is
  *      `row.intent !== 'refresh'`, which is true here (refresh + idle-release are
  *      already handled above), so it resumes — no explicit resume flag needed. */
-function handleBrokerLiveness(row: NodeRow, now: number, revivedThisTick: Set<string>): void {
+async function handleBrokerLiveness(row: NodeRow, now: number, revivedThisTick: Set<string>): Promise<void> {
   const id = row.node_id;
   const pid = row.pi_pid;
-  // pid alive — or no pid yet recorded (the SDK boot gap / a relaunch in flight,
-  // mirroring handleLiveWindow's null-pid handling) → nothing pending.
-  if (pid == null || isPidAlive(pid)) {
+  // The broker engine is live → nothing pending; clear any boot/grace timer.
+  if (pid != null && isPidAlive(pid)) {
     unhealthySince.delete(id);
+    return;
+  }
+  if (pid == null) {
+    // No supervised pid recorded. Two very different cases turn on pi_session_id:
+    //   • a relaunch in flight — reviveNode clears pi_pid right after launch, but
+    //     the node ALREADY booted once (pi_session_id captured), so the fresh
+    //     broker re-records its pid within a tick or two; leave it.
+    //   • a NEVER-BOOTED broker (pi_session_id null) — normally the sub-second SDK
+    //     boot gap, BUT a broker that THROWS before session_start (malformed
+    //     broker-launch.json, SessionManager.open on a missing .jsonl, a loader/
+    //     registry/createAgentSession failure, the --fork / bare-id guards, or
+    //     broker-cli's own fatal catch) records NO pid and NO session — EVER.
+    //     With pid==null read unconditionally as "still booting" that strands the
+    //     node 'active' with no engine forever and its parent waits on a dead
+    //     child. Mirror the tmux never-booted path: after a boot grace with STILL
+    //     no pid AND no session, crash + surfaceBootFailure up the spine (M-1).
+    const meta = getNode(id);
+    if (meta === null || meta.pi_session_id != null) {
+      unhealthySince.delete(id); // relaunch in flight (or identity already bound)
+      return;
+    }
+    const since = unhealthySince.get(id);
+    if (since === undefined) {
+      unhealthySince.set(id, now); // start the boot-grace clock
+      return;
+    }
+    if (now - since < REVIVE_GRACE_MS) return; // still inside the boot grace
+    // Boot grace elapsed, still no pid and no session → the broker never booted.
+    unhealthySince.delete(id);
+    process.stderr.write(`[crtrd] boot-failed ${id} (broker exited before session_start)\n`);
+    transition(id, 'crash');
+    try {
+      await surfaceBootFailure(meta);
+    } catch (err) {
+      process.stderr.write(
+        `[crtrd] surfaceBootFailure ${id} error: ${(err as Error).message}\n`,
+      );
+    }
     return;
   }
   // The broker pid is dead. Branch on intent.
@@ -309,8 +353,8 @@ export function readPidfile(): number | null {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
-// isPidAlive now lives in runtime/pid.ts (the one shared signal-0 probe; daemon/
-// sits above runtime/, so this import is the correct layering direction). Re-
+// isPidAlive now lives in canvas/pid.ts (the one shared signal-0 probe at the
+// lowest layer, so canvas/, runtime/, AND daemon/ all import it down). Re-
 // exported here to preserve the public surface consumed by commands/daemon.ts
 // and the grace-clock test.
 export { isPidAlive };
@@ -350,7 +394,7 @@ export async function superviseTick(now: number = Date.now()): Promise<void> {
       // broker's grace timer every tick. This single placement does both jobs
       // (decision §1.6) — no edit to the carve-out is needed.
       if (row.host_kind === 'broker') {
-        handleBrokerLiveness(row, now, revivedThisTick);
+        await handleBrokerLiveness(row, now, revivedThisTick);
         continue;
       }
 
