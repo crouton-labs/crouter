@@ -43,6 +43,9 @@ interface CommandUI {
 
 interface CommandCtx {
   ui: CommandUI;
+  /** Current run mode: "tui" | "rpc" | "json" | "print". Guard "tui" for the
+   *  interactive-only path (headless brokers bind 'print'). */
+  mode: string;
 }
 
 interface CustomMessage {
@@ -108,6 +111,13 @@ export function registerCanvasCommands(pi: PiLike): void {
       return items.length > 0 ? items : null;
     },
     handler: async (args: string, ctx: CommandCtx): Promise<void> => {
+      // Interactive-only. A headless (print-mode) broker never invokes /promote
+      // (promotion there runs `crtr node promote` directly), so the command is
+      // inert. Under tmux ctx.mode is always 'tui' — byte-identical there.
+      if (ctx.mode !== 'tui') {
+        try { ctx.ui.notify('/promote needs the interactive TUI', 'warning'); } catch { /* best-effort */ }
+        return;
+      }
       const kind = args.trim().toLowerCase();
       ctx.ui.setStatus('crtr-promote', kind ? `promoting → ${kind}…` : 'promoting…');
 
