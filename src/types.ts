@@ -97,6 +97,10 @@ export interface ScopeConfig {
   auto_update: AutoUpdateConfig;
   max_panes_per_window: number;
   canvasNav: CanvasNavConfig;
+  /** Default to spawning nodes on the headless broker host instead of a tmux
+   *  pane. Off by default (tmux stays the default); `--headless` overrides it
+   *  per-spawn. Read at spawn via `readConfig('user').headless`. */
+  headless?: boolean;
 }
 
 export interface ScopeState {
@@ -201,6 +205,7 @@ export function defaultScopeConfig(): ScopeConfig {
     auto_update: { crtr: 'notify', content: 'notify', interval_hours: 24 },
     max_panes_per_window: DEFAULT_MAX_PANES_PER_WINDOW,
     canvasNav: defaultCanvasNavConfig(),
+    headless: false,
   };
 }
 
