@@ -140,8 +140,9 @@ test('relaunchRoot parks the old root (canceled, edges intact, no wipe) and mint
   assert.equal(existsSync(inboxPath('root')), true, 'inbox preserved');
   assert.equal(existsSync(join(reportsDir('root'), '20260101T000000-update.md')), true, 'report preserved');
 
-  // New root: fresh base resident, active, intent=refresh, empty context dir,
-  // spawned_by=old, focused.
+  // New root: fresh base resident, active, intent=refresh, a clean-slate context
+  // dir (only the born-with memory store, nothing inherited), spawned_by=old,
+  // focused.
   const fresh = getNode(newId);
   assert.equal(fresh?.parent, null, 'new node is a root');
   assert.equal(fresh?.mode, 'base');
@@ -153,7 +154,11 @@ test('relaunchRoot parks the old root (canceled, edges intact, no wipe) and mint
   assert.equal(fresh?.tmux_session, 'crtr', 'adopted the old root window location');
   assert.equal(fresh?.window, '@7');
   assert.ok(fresh?.launch, 'a fresh base launch spec was written');
-  assert.equal(readdirSync(contextDir(newId)).length, 0, 'fresh empty context dir');
+  assert.deepEqual(
+    readdirSync(contextDir(newId)).sort(),
+    ['memory'],
+    'fresh context dir holds only the born-with node-local memory store — nothing inherited from the old root',
+  );
 
   // Focus follows content: the focus row the old root held now shows the new root.
   assert.equal(getFocusByNode(newId)?.focus_id, 'fRoot', 'focus row repointed to the new root');

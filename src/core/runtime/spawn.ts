@@ -15,7 +15,6 @@ import { spawnNode, currentNodeContext, nodeEnv, resolveBirthSession, nodeSessio
 import { buildLaunchSpec, buildPiArgv } from './launch.js';
 import { writeGoal } from './kickoff.js';
 import { hasRoadmap, seedRoadmap } from './roadmap.js';
-import { seedMemory, seedUserMemory, seedProjectMemory } from './memory.js';
 import { generateSessionName } from './naming.js';
 import { buildIdentityAssertion } from './bearings.js';
 import { installMenuBinding, installNavBindings, installViewNavBindings } from './tmux-chrome.js';
@@ -238,14 +237,8 @@ export function spawnChild(opts: SpawnChildOpts): SpawnChildResult {
   if (mode === 'orchestrator' && !hasRoadmap(meta.node_id)) {
     seedRoadmap(meta.node_id, { goal: opts.prompt.trim() });
   }
-  // Born an orchestrator ⇒ also lay down its three scoped long-term memory
-  // stores, the companions to the roadmap: user-global (key-less), project
-  // (keyed off the child's cwd), and node-local. Each guarded against clobber.
-  if (mode === 'orchestrator') {
-    seedUserMemory();
-    seedProjectMemory(opts.cwd);
-    seedMemory(meta.node_id);
-  }
+  // (The three scoped long-term memory stores are seeded for EVERY node at birth
+  // in spawnNode — no orchestrator-gated seeding needed here.)
 
   // A managed CHILD lands in the shared global session: inherited from the
   // parent's CRTR_ROOT_SESSION, else the default node session. A --root spawned

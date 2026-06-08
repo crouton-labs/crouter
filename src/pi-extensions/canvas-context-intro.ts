@@ -14,13 +14,13 @@
 //    session_start instead.)
 //
 // The block carries: the path to the node's own context dir and the framing for
-// what belongs there (a shared document store for the other nodes). Resident
-// orchestrators additionally get the across-refresh-cycles framing + a <memory>
-// block merging the indexes of their three scoped memory stores (user-global,
-// project, node-local), each labeled with its absolute dir + index path. The
-// prose lives in core/runtime/bearings.ts (shared with the promotion guidance
-// dump), which gates the memory block on the node having a node-local store — so
-// a terminal worker gets no memory framing at all.
+// what belongs there (a shared document store for the other nodes). EVERY node
+// also gets a <memory> block merging the indexes of its three scoped memory
+// stores (user-global, project, node-local), each labeled with its dir — one
+// consistent surface, since every node is born with all three stores. An
+// orchestrator additionally gets the across-refresh-cycles framing (the one
+// thing a terminal worker's bearings drop). The prose lives in
+// core/runtime/bearings.ts (shared with the promotion guidance dump).
 //
 // IDEMPOTENT across resumes, but FORK-AWARE: a `--session` relaunch restores OUR
 // conversation (whose bearings name OUR node id), so the session_start handler

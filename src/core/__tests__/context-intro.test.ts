@@ -1,12 +1,13 @@
 // Tests for the <crtr-context> bearings preamble + scoped memory:
-//   1. A plain spawned node gets NO MEMORY.md; promotion seeds it (the template).
+//   1. Every node is born WITH its node-local MEMORY.md (seeded at spawn);
+//      promotion re-seeds idempotently (never clobbers).
 //   2. seedMemory is idempotent (never clobbers an evolved memory).
-//   3. Worker bearings = shared-doc framing only (no <memory> block);
-//      orchestrator bearings add the across-cycles framing + a <memory> block
-//      that MERGES the applicable stores, each a `label · dir` header over its
-//      live index POINTER LINES only (the how-to boilerplate is dropped — it
-//      lives once in the kernel); promotion delivers that same orchestrator
-//      context-dir framing to a node that spawned base.
+//   3. Worker bearings carry the SAME three-scope <memory> block as an
+//      orchestrator (one consistent surface) but DROP the across-cycles framing;
+//      orchestrator bearings add that framing. Each store is a `label · dir`
+//      header over its live index POINTER LINES only (the how-to boilerplate is
+//      dropped — it lives once in the kernel); promotion delivers that same
+//      orchestrator context-dir framing to a node that spawned base.
 //   4. canvas-context-intro injects the block as its own session message at
 //      session_start (before the first prompt), idempotent across resumes.
 //
@@ -61,15 +62,15 @@ after(() => {
   delete process.env['CRTR_NODE_ID'];
 });
 
-test('a plain spawned node gets NO memory; promotion seeds the index + dir', () => {
+test('every node is born with its node-local memory store (seeded at spawn)', () => {
   const meta = spawnNode({ kind: 'general', cwd: '/tmp/work', parent: null });
-  assert.equal(hasMemory(meta.node_id), false, 'no memory before promotion');
-
-  promote(meta.node_id);
-  assert.ok(hasMemory(meta.node_id), 'MEMORY.md index exists after promotion');
+  assert.ok(hasMemory(meta.node_id), 'MEMORY.md index exists from birth');
   assert.ok(existsSync(memoryDir(meta.node_id)), 'memory dir created for direct writes');
   assert.ok(memoryPath(meta.node_id).endsWith('/memory/MEMORY.md'), 'index lives inside the memory dir');
   assert.equal(readMemory(meta.node_id), MEMORY_TEMPLATE);
+
+  promote(meta.node_id); // idempotent — never re-clobbers the born-with store
+  assert.equal(readMemory(meta.node_id), MEMORY_TEMPLATE, 'promotion does not clobber');
 });
 
 test('seedMemory is idempotent — never clobbers an evolved memory', () => {
@@ -82,20 +83,26 @@ test('seedMemory is idempotent — never clobbers an evolved memory', () => {
   assert.equal(readMemory(meta.node_id), evolved, 'left untouched');
 });
 
-test('worker bearings: shared-doc framing only, no orchestrator/memory framing', () => {
+test('worker bearings: the SAME three-scope memory block as an orchestrator, but NO across-cycles framing', () => {
   const meta = spawnNode({ kind: 'general', cwd: '/tmp/work', parent: null });
   const block = buildContextIntro(meta.node_id);
   assert.match(block, new RegExp(`<crtr-context dir="${contextDir(meta.node_id)}">`));
   assert.match(block, /shared document store, not a task tracker/, 'base = shared docs, not tasks');
-  assert.doesNotMatch(block, /MEMORY\.md/, 'no memory pointer for a memory-less worker');
-  assert.doesNotMatch(block, /<memory>/, 'no memory block for a memory-less worker');
+  // A terminal worker is born with all three stores, so its bearings carry the
+  // full three-scope <memory> block — obvious + consistent with an orchestrator.
+  assert.match(block, /<memory>/, 'worker gets the memory block too');
+  assert.ok(block.includes(`user-global · ${userMemoryDir()}`), 'user-global scope present');
+  assert.ok(block.includes(`project · ${projectMemoryDir('/tmp/work')}`), 'project scope present');
+  assert.ok(block.includes(`node-local · ${memoryDir(meta.node_id)}`), 'node-local scope present');
+  // ...but NOT the orchestrator-only across-cycles framing (a worker has no
+  // future cycle).
   assert.doesNotMatch(block, /refresh cycles/, 'no across-cycles framing for a terminal worker');
   assert.match(block, /<\/crtr-context>/);
 });
 
 test('orchestrator bearings: across-cycles framing + a <memory> block whose body is the live pointer lines under `label · dir`', () => {
   const meta = spawnNode({ kind: 'general', cwd: '/tmp/work', parent: null });
-  seedMemory(meta.node_id);
+  promote(meta.node_id); // flip to orchestrator mode — the across-cycles gate
   // The seeded index carries the how-to comment + the empty marker; an evolved
   // index adds a pointer line. The block must render ONLY the pointer line.
   writeFileSync(

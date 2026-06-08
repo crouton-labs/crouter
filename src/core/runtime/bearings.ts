@@ -17,13 +17,17 @@
 // one place other nodes on the canvas can read from, so it is for documents
 // worth a shared reference, NOT a task tracker, and NOT a "future memory-wiped
 // you" stash (a terminal worker has no future cycle — that framing only makes
-// sense once a node is a resident orchestrator).
+// sense once a node is a resident orchestrator). Every node — terminal or
+// orchestrator — ALSO carries the same three-scope <memory> block (user-global,
+// project, node-local): one obvious, consistent long-term-memory surface, since
+// every node is born with all three stores (seeded at spawn — runtime/nodes.ts).
 //
-// Orchestrator addendum (resident orchestrators — i.e. nodes that have a
-// node-local memory store): the dir ALSO survives refresh cycles, so it is where
-// a future cycle of the orchestrator resumes; durable cross-goal lessons live in
-// the three scoped memory stores, whose index pointer lines are inlined into
-// <memory> (the how-to lives once in the kernel, not here).
+// Orchestrator addendum (gated on orchestrator MODE): the dir ALSO survives
+// refresh cycles, so it is where a future cycle of the orchestrator resumes.
+// This across-cycles note is the ONE thing a terminal worker's bearings drop (a
+// one-shot worker has no future cycle); the <memory> block itself is identical
+// for both, its index pointer lines inlined (the how-to lives once in the
+// kernel, not here).
 
 import { contextDir, getNode, fullName } from '../canvas/index.js';
 import {
@@ -73,22 +77,21 @@ function memoryStanza(label: string, dir: string, index: string | null): string 
   return `${label} · ${dir}\n${body}`;
 }
 
-/** The <memory> block (orchestrators only): the scoped stores merged, each a
- *  `label · dir` header over its live index pointer lines. A memory's `type`
+/** The <memory> block (the SAME for every node): the scoped stores merged, each
+ *  a `label · dir` header over its live index pointer lines. A memory's `type`
  *  decides which store it lands in — the mapping + the how-to live once in the
  *  orchestration kernel ("Your long-term memory"); here we carry only the live
- *  data + a one-line pointer back to it. user-global rides in when the node has
- *  a user store, project when it has a project store, node-local always (the
- *  orchestrator gate). */
+ *  data + a one-line pointer back to it. Each scope rides in when its store
+ *  exists — which, since every node is born with all three (seeded at spawn), is
+ *  normally all three; the existence guards just keep the block robust for the
+ *  rare store-less node (a human-bridge row, or a legacy node). Returns '' when
+ *  no store exists at all, so the caller can drop the block entirely. */
 export function buildMemoryBlock(nodeId: string, cwd: string): string {
   const stanzas: string[] = [];
-  if (hasUserMemory()) {
-    stanzas.push(memoryStanza('user-global', userMemoryDir(), readUserMemory()));
-  }
-  if (hasProjectMemory(cwd)) {
-    stanzas.push(memoryStanza('project', projectMemoryDir(cwd), readProjectMemory(cwd)));
-  }
-  stanzas.push(memoryStanza('node-local', memoryDir(nodeId), readMemory(nodeId)));
+  if (hasUserMemory()) stanzas.push(memoryStanza('user-global', userMemoryDir(), readUserMemory()));
+  if (hasProjectMemory(cwd)) stanzas.push(memoryStanza('project', projectMemoryDir(cwd), readProjectMemory(cwd)));
+  if (hasMemory(nodeId)) stanzas.push(memoryStanza('node-local', memoryDir(nodeId), readMemory(nodeId)));
+  if (stanzas.length === 0) return '';
   const n = stanzas.length;
   return (
     '<memory>\n' +
@@ -141,25 +144,23 @@ export function buildIdentityAssertion(nodeId: string): string {
   return lines.join('\n');
 }
 
-/** The full boot intro: the IDENTITY assertion (always first, so it overrides any
- *  copied-in persona) followed by the <crtr-context> bearings block — base
- *  framing always, plus the orchestrator addendum + the merged three-store
- *  <memory> block when the node has a node-local memory store (the orchestrator
- *  gate). */
+/** The full boot intro: the IDENTITY assertion (always first, so it overrides
+ *  any copied-in persona) followed by the <crtr-context> bearings block. Base
+ *  framing + the shared three-scope <memory> block ride for EVERY node; the
+ *  across-cycles context-dir note is added ONLY for an orchestrator (by mode) —
+ *  the one node whose dir a future cycle resumes from. The project store is keyed
+ *  off the node's cwd (its working dir on disk). */
 export function buildContextBearings(nodeId: string): string {
   const identity = buildIdentityAssertion(nodeId);
   const dir = contextDir(nodeId);
-  if (!hasMemory(nodeId)) {
-    // A terminal worker (no memory store): base framing only, no memory block.
-    return `${identity}\n<crtr-context dir="${dir}">\n${BASE_CONTEXT_NOTE}\n</crtr-context>`;
-  }
-  // An orchestrator: across-cycles framing + the merged three-store memory. The
-  // project store is keyed off the node's cwd (its working dir on disk).
-  const cwd = getNode(nodeId)?.cwd ?? process.cwd();
-  return (
-    `${identity}\n` +
-    `<crtr-context dir="${dir}">\n` +
-    `${BASE_CONTEXT_NOTE}\n${orchestratorContextNote(nodeId)}\n${buildMemoryBlock(nodeId, cwd)}\n` +
-    '</crtr-context>'
-  );
+  const node = getNode(nodeId);
+  const cwd = node?.cwd ?? process.cwd();
+  const parts = [BASE_CONTEXT_NOTE];
+  // Orchestrator-only: the across-cycles framing (a terminal has no future cycle).
+  if (node?.mode === 'orchestrator') parts.push(orchestratorContextNote(nodeId));
+  // The three-scope memory block is the SAME for every node (one consistent
+  // surface); dropped only when the node has no stores at all (returns '').
+  const memory = buildMemoryBlock(nodeId, cwd);
+  if (memory !== '') parts.push(memory);
+  return `${identity}\n<crtr-context dir="${dir}">\n${parts.join('\n')}\n</crtr-context>`;
 }

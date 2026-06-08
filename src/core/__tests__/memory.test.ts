@@ -3,7 +3,8 @@
 //   2. projectKey resolves the git-repo-root (walk up for .git), and falls back
 //      to the cwd itself when not inside a repo.
 //   3. seed* are guarded/idempotent (never clobber an evolved index).
-//   4. promote() seeds ALL THREE stores, guarded across re-promotion.
+//   4. Every node is born with all three stores (seeded at spawn); promote
+//      re-seeds idempotently and surfaces the paths.
 //   5. The kernel + promotion guidance name the type\u2192store mapping.
 //
 // CRTR_HOME isolation, like context-intro.test.ts.
@@ -138,19 +139,20 @@ test('seedUserMemory / seedProjectMemory write the template once, then never clo
 // promote(): seeds all three, guarded across re-promotion
 // ---------------------------------------------------------------------------
 
-test('promote() seeds all three stores and surfaces all three paths', () => {
+test('every node is born with all three stores; promote re-seeds idempotently + surfaces the paths', () => {
   const meta = spawnNode({ kind: 'general', cwd: '/tmp/work', parent: null });
-  assert.equal(hasMemory(meta.node_id), false);
-  assert.equal(hasUserMemory(), false);
-  assert.equal(hasProjectMemory('/tmp/work'), false);
+  // Seeded at SPAWN now, not at promotion — every node has all three from birth.
+  assert.ok(hasMemory(meta.node_id), 'node-local seeded at spawn');
+  assert.ok(hasUserMemory(), 'user-global seeded at spawn');
+  assert.ok(hasProjectMemory('/tmp/work'), 'project seeded at spawn');
 
-  const res = promote(meta.node_id);
+  const res = promote(meta.node_id); // idempotent re-seed; surfaces the paths
 
-  assert.ok(hasMemory(meta.node_id), 'node-local seeded');
-  assert.ok(hasUserMemory(), 'user-global seeded');
-  assert.ok(hasProjectMemory('/tmp/work'), 'project seeded');
-  assert.ok(existsSync(userMemoryDir()), 'user dir created for direct writes');
-  assert.ok(existsSync(projectMemoryDir('/tmp/work')), 'project dir created for direct writes');
+  assert.ok(hasMemory(meta.node_id), 'node-local still present');
+  assert.ok(hasUserMemory(), 'user-global still present');
+  assert.ok(hasProjectMemory('/tmp/work'), 'project still present');
+  assert.ok(existsSync(userMemoryDir()), 'user dir present for direct writes');
+  assert.ok(existsSync(projectMemoryDir('/tmp/work')), 'project dir present for direct writes');
 
   assert.equal(res.memoryPath, memoryPath(meta.node_id));
   assert.equal(res.userMemoryPath, userMemoryPath());
@@ -186,14 +188,19 @@ test('the orchestration kernel names the three stores and the type\u2192store ma
   assert.match(kernel, /user.*\u2192.*user-global|`user` \u2192 user-global/, 'maps user \u2192 user-global');
 });
 
-test('promotion guidance names all three stores so a base-spawned node learns where to write', () => {
+test('promotion guidance references the three stores; the dirs ride in bearings, not the guidance', () => {
   const meta = spawnNode({ kind: 'general', cwd: '/tmp/work', parent: null });
   promote(meta.node_id);
   // Guidance is now built by the persona injector, not returned by promote().
   const guidance = personaDrift(meta.node_id)?.guidance ?? '';
+  // It NAMES the three stores so a promoting node knows its memory scopes...
   for (const store of ['user-global', 'project', 'node-local']) {
     assert.ok(guidance.includes(store), `guidance names the ${store} store`);
   }
-  assert.ok(guidance.includes(userMemoryDir()), 'guidance names the user-global dir');
-  assert.ok(guidance.includes(projectMemoryDir('/tmp/work')), 'guidance names the project dir');
+  // ...but does NOT re-list their absolute dirs: the node already read them in
+  // its <crtr-context> <memory> block as a worker, so promotion re-informs of
+  // nothing — it only adds the across-cycles relevance and points back at <memory>.
+  assert.ok(!guidance.includes(userMemoryDir()), 'user-global dir not re-listed in guidance');
+  assert.ok(!guidance.includes(projectMemoryDir('/tmp/work')), 'project dir not re-listed in guidance');
+  assert.match(guidance, /<memory>/, 'guidance points at the bearings <memory> block');
 });

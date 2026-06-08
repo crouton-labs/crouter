@@ -28,11 +28,6 @@ import { parseFrontmatter } from '../frontmatter.js';
 import { readRoadmap, roadmapPath } from './roadmap.js';
 
 import { orchestratorContextNote } from './bearings.js';
-import {
-  memoryPath, memoryDir,
-  userMemoryPath, userMemoryDir,
-  projectMemoryPath, projectMemoryDir,
-} from './memory.js';
 
 /** The two-axis persona state the injector keys on. */
 export interface Persona {
@@ -65,11 +60,13 @@ function loadSkillBody(name: string): string | null {
 
 /** The base→orchestrator guidance dump, specialized to the node's kind: the
  *  shared kernel + that kind's roadmap-shaping skill + the roadmap scaffold the
- *  node must author + the orchestrator context-dir framing + the three memory
- *  stores. The node is now a delegator whose scarce resource is its own context
- *  window. (Lifecycle is left to its own section — promotion no longer forces
- *  resident, so this never asserts residency.) */
-function orchestrationGuidance(nodeId: string, kind: string, cwd: string): string {
+ *  node must author + the orchestrator context-dir framing + a short pointer at
+ *  the long-term memory it ALREADY carries (the <memory> block rode in its
+ *  bearings as a worker — promotion re-informs of nothing, it only adds the
+ *  across-cycles relevance). The node is now a delegator whose scarce resource is
+ *  its own context window. (Lifecycle is left to its own section — promotion no
+ *  longer forces resident, so this never asserts residency.) */
+function orchestrationGuidance(nodeId: string, kind: string): string {
   const kernel = loadKernel();
   const orch = loadPersona(kind, 'orchestrator');
   const roadmapSkill =
@@ -100,11 +97,7 @@ function orchestrationGuidance(nodeId: string, kind: string, cwd: string): strin
     // a born-orchestrator gets in its <crtr-context> bearings block.
     orchestratorContextNote(nodeId),
     '',
-    'Your long-term memory now exists across three seeded stores (write to them directly), each a different scope per "Your long-term memory" above:',
-    `  • user-global \`${userMemoryDir()}\` (index \`${userMemoryPath()}\`) — who the human is, how they like to work; loaded into every orchestrator everywhere.`,
-    `  • project \`${projectMemoryDir(cwd)}\` (index \`${projectMemoryPath(cwd)}\`) — facts bound to this repo; loaded into every orchestrator working here.`,
-    `  • node-local \`${memoryDir(nodeId)}\` (index \`${memoryPath(nodeId)}\`) — facts specific to this goal; they die with this node.`,
-    'A memory\'s `type` decides which store it lands in (see "Your long-term memory"). These same paths ride into every future wake in your `<crtr-context>` block.',
+    'Your three long-term memory stores (user-global, project, node-local) already ride in the <memory> block of your `<crtr-context>` — the same ones you read as a worker, each labeled with its dir. What promotion changes is USE, not access: you now persist across refresh cycles, so node-local carries what THIS goal needs between your refreshes, and durable facts you commit to user-global/project outlive this node. Write to the dirs shown in that <memory> block; a memory\'s `type` decides which store (see "Your long-term memory" above).',
     '',
     'Then delegate each phase with `crtr node new --kind <kind>`. When your context fills, run `crtr node yield` to refresh against this roadmap.',
   );
@@ -149,7 +142,7 @@ export function transitionGuidance(nodeId: string, from: Persona, to: Persona): 
   if (from.mode !== to.mode) {
     if (to.mode === 'orchestrator') {
       const node = getNode(nodeId);
-      sections.push(orchestrationGuidance(nodeId, node?.kind ?? 'general', node?.cwd ?? process.cwd()));
+      sections.push(orchestrationGuidance(nodeId, node?.kind ?? 'general'));
     } else {
       sections.push(baseModeGuidance());
     }

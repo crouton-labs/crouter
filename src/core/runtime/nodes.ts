@@ -24,6 +24,7 @@ import {
   type Lifecycle,
   type LaunchSpec,
 } from '../canvas/index.js';
+import { seedUserMemory, seedProjectMemory, seedMemory } from './memory.js';
 
 /** Generate a node id in the same shape as job ids (time-sortable + random). */
 export function newNodeId(): string {
@@ -230,6 +231,19 @@ export function spawnNode(opts: SpawnNodeOpts): NodeMeta {
   }
 
   createNode(meta);
+
+  // Every real agent node is born with all three long-term memory stores — one
+  // uniform, obvious memory surface for terminals and orchestrators alike (a
+  // terminal reads them to orient; an orchestrator also WRITES durable facts and
+  // carries node-local across its refresh cycles). user-global is machine-scoped,
+  // project is keyed off this node's cwd, node-local is its own; each seed is
+  // guarded against clobber (and a no-op existsSync check once seeded). The
+  // ephemeral human-bridge rows (kind 'human') are not agents, so they skip it.
+  if (meta.kind !== 'human') {
+    seedUserMemory();
+    seedProjectMemory(meta.cwd);
+    seedMemory(meta.node_id);
+  }
 
   if (parent !== null) {
     // The load-bearing seed: parent subscribes (active) to child so it learns

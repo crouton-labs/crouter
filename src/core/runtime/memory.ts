@@ -22,10 +22,13 @@
 //   node-local   <crtrHome>/nodes/<id>/context/memory/  — facts specific to this
 //     node's goal; dies with the node.
 //
-// An ORCHESTRATOR-only artifact — the resident, multi-cycle nodes that survive
-// refreshes and accumulate durable lessons/preferences; terminal workers are
-// one-shot and get none. All three stores are seeded the moment a node becomes
-// an orchestrator (promotion, or born one — where the roadmap is seeded too),
+// Every node is born with all three stores (seeded at spawn — see
+// runtime/nodes.ts), so the SAME <memory> block rides into every node's bearings
+// for one obvious, consistent surface. The difference is in USE, not access: a
+// terminal worker is one-shot, so it reads memory to orient but accumulates none
+// across cycles; a resident, multi-cycle orchestrator both writes durable
+// lessons/preferences and carries node-local across its refreshes. Promotion
+// re-seeds (idempotently) for legacy nodes that predate spawn-time seeding,
 // guarded so a re-seed never clobbers an evolved memory.
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
@@ -98,9 +101,11 @@ export function memoryPath(nodeId: string): string {
   return indexPathOf(memoryDir(nodeId));
 }
 
-/** Whether the node has a node-local memory store. This is ALSO the
- *  orchestrator gate: only orchestrators are ever seeded one, so a node with no
- *  node-local store is a terminal worker (no memory framing at all). */
+/** Whether the node has a node-local memory store. Seeded at birth for every
+ *  real agent node (see runtime/nodes.ts), so this is normally true; it reads
+ *  false only for the ephemeral human-bridge rows and legacy nodes that predate
+ *  spawn-time seeding. Used to gate the node-local stanza of the <memory>
+ *  block. */
 export function hasMemory(nodeId: string): boolean {
   return existsSync(memoryPath(nodeId));
 }
