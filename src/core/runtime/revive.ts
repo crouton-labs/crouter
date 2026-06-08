@@ -37,18 +37,7 @@ import {
 } from './placement.js';
 import { hostFor } from './host.js';
 import { nodeSession, childBackstageOf, rootOfSpine } from './nodes.js';
-
-/** signal-0 liveness probe for a pi pid (mirrors the daemon's isPidAlive). A
- *  null pid (legacy / never-booted) reads dead. */
-function pidAlive(pid: number | null | undefined): boolean {
-  if (pid == null) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return (e as NodeJS.ErrnoException).code === 'EPERM';
-  }
-}
+import { isPidAlive } from './pid.js';
 
 // ---------------------------------------------------------------------------
 // resumeArgs — which session source a revive resumes from
@@ -111,7 +100,7 @@ export function reviveNode(
   // frozen pane), so the guard gates on pi liveness too, not pane-existence alone.
   reconcile(nodeId);
   const live = getNode(nodeId) ?? meta;
-  if (hostFor(live).isAlive(nodeId) && pidAlive(live.pi_pid)) {
+  if (hostFor(live).isAlive(nodeId) && isPidAlive(live.pi_pid)) {
     return {
       window: live.window ?? null,
       session: live.tmux_session ?? nodeSession(),

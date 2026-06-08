@@ -53,6 +53,7 @@ import {
 } from '../core/canvas/index.js';
 import { transition } from '../core/runtime/lifecycle.js';
 import { isBusy } from '../core/runtime/busy.js';
+import { isPidAlive } from '../core/runtime/pid.js';
 import { reconcile } from '../core/runtime/placement.js';
 import { hostFor } from '../core/runtime/host.js';
 import { reviveNode } from '../core/runtime/revive.js';
@@ -308,17 +309,11 @@ export function readPidfile(): number | null {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
-/** True if a process with `pid` is currently alive (signal-0 probe). `kill(pid,
- *  0)` throws ESRCH when the process is gone; EPERM means it exists but isn't
- *  ours — still alive. */
-export function isPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return (e as NodeJS.ErrnoException).code === 'EPERM';
-  }
-}
+// isPidAlive now lives in runtime/pid.ts (the one shared signal-0 probe; daemon/
+// sits above runtime/, so this import is the correct layering direction). Re-
+// exported here to preserve the public surface consumed by commands/daemon.ts
+// and the grace-clock test.
+export { isPidAlive };
 
 /** True when a crtrd process is already running (pidfile exists + pid alive). */
 export function isDaemonRunning(): boolean {

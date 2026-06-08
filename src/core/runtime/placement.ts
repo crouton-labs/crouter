@@ -68,6 +68,7 @@ import {
 } from './tmux.js';
 import { homeSessionOf, childBackstageOf, nodeSession, newNodeId, rootOfSpine } from './nodes.js';
 import { isBusy } from './busy.js';
+import { isPidAlive } from './pid.js';
 import { transition } from './lifecycle.js';
 
 // Re-export the durable REVIVE-HOME read so placement is the one front door for
@@ -543,17 +544,6 @@ function newFocusId(): string {
   return `f-${newNodeId()}`;
 }
 
-/** signal-0 liveness probe for a pi pid (mirrors the daemon's isPidAlive). */
-function pidAlive(pid: number | null | undefined): boolean {
-  if (pid == null) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return (e as NodeJS.ErrnoException).code === 'EPERM';
-  }
-}
-
 /** Is a focus's OUTGOING occupant still GENERATING (a live pi actually MID-TURN)?
  *  A still-generating node is moved to backstage by a retarget (F2 — it keeps
  *  running off-screen); a holder / done / dormant / merely-parked node has its
@@ -565,13 +555,13 @@ function pidAlive(pid: number | null | undefined): boolean {
  *  pid between turns; pid-alive would misclassify it as "doing work" and leave
  *  it stuck backstaged-active forever. `isBusy` is true only inside a turn, so a
  *  parked viewer reads as not-generating and is released to dormant on
- *  focus-away. The AND with `pidAlive` makes a stale marker (a pi that crashed
+ *  focus-away. The AND with `isPidAlive` makes a stale marker (a pi that crashed
  *  mid-turn) harmless. */
 function isGenerating(nodeId: string): boolean {
   const row = getRow(nodeId);
   if (row === null) return false;
   if (row.status !== 'active' && row.status !== 'idle') return false;
-  return isBusy(nodeId) && pidAlive(row.pi_pid);
+  return isBusy(nodeId) && isPidAlive(row.pi_pid);
 }
 
 /** PURE disposition of a focus's outgoing occupant after a retarget swap (§2.5/
@@ -595,7 +585,7 @@ export function outgoingDisposition(o: {
   exists: boolean; // has a node row (false = holder pane)
   live: boolean; // status active|idle
   resident: boolean; // lifecycle === 'resident' (human-driven → keep warm)
-  generating: boolean; // busy && pidAlive (mid-turn worker → keep running, F2)
+  generating: boolean; // busy && isPidAlive (mid-turn worker → keep running, F2)
 }): OutgoingAction {
   if (!o.exists) return { kind: 'kill' }; // holder pane
   if (!o.live) return { kind: 'kill' }; // done/dead/canceled — reap the pane
@@ -941,7 +931,7 @@ export function handFocusToManager(focusId: string, managerId: string | null): b
   // daemon never revives a live node (it only respawns dead-pi nodes), so this
   // synchronous swap is the ONLY way a live manager claims the frozen %m. Commit
   // the occupant repoint only here, on a path that genuinely takes the pane.
-  if (mgr.pane != null && isNodePaneAlive(mgr) && pidAlive(mgr.pi_pid) && f.pane != null) {
+  if (mgr.pane != null && isNodePaneAlive(mgr) && isPidAlive(mgr.pi_pid) && f.pane != null) {
     setFocusOccupant(focusId, managerId);
     const focusLoc = paneLocation(f.pane); // F2's window/session — the slot mgr swaps INTO (%m is currently there)
     if (swapPaneInPlace(mgr.pane, f.pane) && focusLoc !== null) {
