@@ -66,7 +66,7 @@ import {
   switchClient,
   selectWindow,
 } from './tmux.js';
-import { homeSessionOf, childBackstageOf, nodeSession, newNodeId } from './nodes.js';
+import { homeSessionOf, childBackstageOf, nodeSession, newNodeId, rootOfSpine } from './nodes.js';
 import { isBusy } from './busy.js';
 import { transition } from './lifecycle.js';
 
@@ -140,20 +140,6 @@ export function listFocuses(): FocusRow[] {
 // ---------------------------------------------------------------------------
 // Graph → focus routing (for surfacing human-in-the-loop prompts)
 // ---------------------------------------------------------------------------
-
-/** The root of a node's spine: walk the `parent` column up to `parent == null`.
- *  Cycle-guarded (parents must not cycle, but never loop forever). */
-function rootOfSpine(nodeId: string): string {
-  let cur = nodeId;
-  const seen = new Set<string>();
-  for (;;) {
-    if (seen.has(cur)) return cur;
-    seen.add(cur);
-    const row = getRow(cur);
-    if (row === null || row.parent == null) return cur;
-    cur = row.parent;
-  }
-}
 
 /** The on-screen viewport a human-in-the-loop prompt raised by `nodeId` should
  *  surface into: the HIGHEST FOCUSED node of nodeId's graph — the focused node
@@ -419,7 +405,7 @@ export function reviveIntoPlacement(nodeId: string, launch: ReviveLaunch): Place
   // is home_session for a managed child but `nodeSession()` for a root (whose
   // home_session may be a user session it adopted), so a refreshed front-door
   // root never re-points its subtree into the user's session.
-  const env = { ...launch.env, CRTR_ROOT_SESSION: childBackstageOf(nodeId) };
+  const env = { ...launch.env, CRTR_ROOT_SESSION: childBackstageOf(nodeId), CRTR_SUBTREE: rootOfSpine(nodeId) };
 
   if (decision.kind === 'focus-pane') {
     // F3: resume the pi INTO the live focus pane, in its CURRENT session (Q4 —

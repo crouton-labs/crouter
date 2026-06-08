@@ -22,7 +22,7 @@ import { join } from 'node:path';
 import { getNode, setPresence, updateNode, setFocusOccupant, fullName, type NodeMeta } from '../canvas/index.js';
 import { reportsDir } from '../canvas/paths.js';
 import { pushFinal } from '../feed/feed.js';
-import { spawnNode, nodeSession } from './nodes.js';
+import { spawnNode, nodeSession, rootOfSpine } from './nodes.js';
 import { buildLaunchSpec, buildPiArgv } from './launch.js';
 import { FRONT_DOOR_ENV } from './front-door.js';
 import { focusOf, recycleFocusPane, piCommand, paneLocation } from './placement.js';
@@ -112,7 +112,7 @@ export async function recycleNode(nodeId: string, callerPane?: string): Promise<
   if (f !== null) { try { setFocusOccupant(f.focus_id, root.node_id); } catch { /* best-effort */ } }
   const fresh = getNode(root.node_id) as NodeMeta;
   const inv = buildPiArgv(fresh);
-  const env = { ...inv.env, CRTR_ROOT_SESSION: nodeSession(), [FRONT_DOOR_ENV]: '1' };
+  const env = { ...inv.env, CRTR_ROOT_SESSION: nodeSession(), CRTR_SUBTREE: rootOfSpine(root.node_id), [FRONT_DOOR_ENV]: '1' };
   const ok = recycleFocusPane(root.node_id, pane, {
     command: piCommand(inv.argv), env, cwd: meta.cwd, name: fullName(fresh), resuming: false,
   });

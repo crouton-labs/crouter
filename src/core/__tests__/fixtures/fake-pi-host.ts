@@ -230,6 +230,7 @@ const boot = {
     CRTR_HOME: env['CRTR_HOME'] ?? null,
     CRTR_PARENT_NODE_ID: env['CRTR_PARENT_NODE_ID'] ?? null,
     CRTR_ROOT_SESSION: env['CRTR_ROOT_SESSION'] ?? null,
+    CRTR_SUBTREE: env['CRTR_SUBTREE'] ?? null,
     CRTR_FRONT_DOOR: env['CRTR_FRONT_DOOR'] ?? null,
   },
   injectedDuringBoot: injected.slice(),

@@ -11,7 +11,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { FRONT_DOOR_ENV } from './front-door.js';
-import { spawnNode, currentNodeContext, nodeEnv, resolveBirthSession, nodeSession } from './nodes.js';
+import { spawnNode, currentNodeContext, nodeEnv, resolveBirthSession, nodeSession, rootOfSpine } from './nodes.js';
 import { buildLaunchSpec, buildPiArgv } from './launch.js';
 import { writeGoal } from './kickoff.js';
 import { hasRoadmap, seedRoadmap } from './roadmap.js';
@@ -109,7 +109,7 @@ export function bootRoot(opts: BootRootOpts): NodeMeta {
   }
   const withSession = getNode(meta.node_id) as NodeMeta;
   const inv = buildPiArgv(withSession, { prompt: opts.prompt });
-  const env = { ...process.env, ...inv.env, CRTR_ROOT_SESSION: session, [FRONT_DOOR_ENV]: '1' } as NodeJS.ProcessEnv;
+  const env = { ...process.env, ...inv.env, CRTR_ROOT_SESSION: session, CRTR_SUBTREE: rootOfSpine(meta.node_id), [FRONT_DOOR_ENV]: '1' } as NodeJS.ProcessEnv;
   const r = spawnSync('pi', inv.argv, { stdio: 'inherit', env });
   process.exit(r.status ?? 0);
 }
@@ -143,6 +143,10 @@ export interface SpawnChildOpts {
    *  a <crtr-wake> block is prepended to the kickoff so the newborn knows a clock
    *  birthed it. */
   wakeOrigin?: WakeOrigin;
+  /** Which HOST launches + supervises this node: a tmux pane (default) or the
+   *  headless broker. Persisted as `host_kind` at birth (resolved from
+   *  `--headless` / the `headless` config default by the caller). */
+  hostKind?: 'tmux' | 'broker';
 }
 
 /** Resolve a `--fork-from` value to the source pi gets as `--fork <path|id>`.
@@ -214,6 +218,7 @@ export function spawnChild(opts: SpawnChildOpts): SpawnChildResult {
     // the boot intro can detect this is a fork and re-assert the node's own
     // identity over the source's copied-in conversation.
     forkFrom: opts.forkFrom,
+    hostKind: opts.hostKind,
     launch,
   });
 
@@ -274,7 +279,7 @@ export function spawnChild(opts: SpawnChildOpts): SpawnChildResult {
   updateNode(meta.node_id, { home_session: session });
 
   const inv = buildPiArgv(meta, { prompt: kickoff, forkFrom });
-  const env = { ...inv.env, CRTR_ROOT_SESSION: childSession, [FRONT_DOOR_ENV]: '1' };
+  const env = { ...inv.env, CRTR_ROOT_SESSION: childSession, CRTR_SUBTREE: rootOfSpine(meta.node_id), [FRONT_DOOR_ENV]: '1' };
   const command = piCommand(inv.argv);
 
   // openNodeWindow now returns {window, pane}; pane is unused until the
