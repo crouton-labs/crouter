@@ -53,7 +53,8 @@ import {
 } from '../core/canvas/index.js';
 import { transition } from '../core/runtime/lifecycle.js';
 import { isBusy } from '../core/runtime/busy.js';
-import { isNodePaneAlive, reconcile } from '../core/runtime/placement.js';
+import { reconcile } from '../core/runtime/placement.js';
+import { hostFor } from '../core/runtime/host.js';
 import { reviveNode } from '../core/runtime/revive.js';
 import { spawnChild, type SpawnChildOpts } from '../core/runtime/spawn.js';
 import { wakeOriginFrom } from '../core/runtime/bearings.js';
@@ -309,7 +310,7 @@ export async function superviseTick(now: number = Date.now()): Promise<void> {
       // even when its derived window/session cache is null.
       if (row.tmux_session == null && row.window == null && row.pane == null) continue;
 
-      if (isNodePaneAlive(row)) {
+      if (hostFor(row).isAlive(row)) {
         // The pane is up — but that alone doesn't mean pi is. Reconcile first
         // (follow any manual pane move, and lazy-backfill a legacy row's pane
         // from its live window), then judge pi liveness off the fresh row. The
