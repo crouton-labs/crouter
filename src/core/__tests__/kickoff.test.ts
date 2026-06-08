@@ -7,11 +7,12 @@
 // the regression guard for the old "build had hidden side effects" smell.
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { createNode, subscribe } from '../canvas/canvas.js';
+import { reportsDir } from '../canvas/paths.js';
 import { closeDb } from '../canvas/db.js';
 import type { NodeMeta } from '../canvas/types.js';
 import {
@@ -85,6 +86,36 @@ test('the feed block frames awaiting workers as alive + auto-waking, so a fresh 
   assert.ok(/alive and running/.test(msg), 'states the worker is alive and running');
   assert.ok(/wake you the moment/.test(msg), 'states the wake is automatic on push');
   assert.ok(/still working, not stalled/.test(msg), 'frames the empty feed as expected, not a problem');
+});
+
+test('a fresh revive is pointed at its subscriptions\' on-disk report history (catch-up bug)', () => {
+  // Regression for the fresh-revive catch-up bug: on a refresh-yield
+  // (resume:false) the old conversation is gone AND the inbox cursor has already
+  // advanced past everything drained pre-yield, so the revived node loses sight
+  // of reports its subscriptions pushed BEFORE the yield. The bodies persist
+  // forever at reports/<ts>-<kind>.md; the kickoff must point the node at those
+  // existing paths so it can catch up. Asserts the paths are rendered.
+  const parent = createNode(node('p1'));
+  const worker = createNode(node('w1'));
+  subscribe(parent.node_id, worker.node_id);
+
+  // The worker pushed two reports BEFORE the parent's refresh-yield.
+  const dir = reportsDir(worker.node_id);
+  mkdirSync(dir, { recursive: true });
+  const older = join(dir, '20260608T120000-update.md');
+  const newer = join(dir, '20260608T130000-final.md');
+  writeFileSync(older, '---\n---\nearly progress', 'utf8');
+  writeFileSync(newer, '---\n---\nthe result', 'utf8');
+
+  const msg = buildReviveKickoff(parent, drainBearings(parent));
+
+  // Both existing report PATHS surface (most recent first), so the revived node
+  // can dereference the history its advanced cursor would otherwise hide.
+  assert.ok(msg.includes(older), 'older report path surfaced');
+  assert.ok(msg.includes(newer), 'newer report path surfaced');
+  assert.ok(msg.indexOf(newer) < msg.indexOf(older), 'most recent report listed first');
+  // ...and the hint that the full inbox history is replayable cursor-independently.
+  assert.ok(/feed read --all/.test(msg), 'points at the cursor-independent full-history replay');
 });
 
 test('buildReviveKickoff is pure — building twice eats nothing', () => {

@@ -29,6 +29,7 @@ import {
 import { join } from 'node:path';
 import {
   contextDir,
+  reportsDir,
   getNode,
   subscriptionsOf,
   subscribersOf,
@@ -175,8 +176,48 @@ export function drainBearings(meta: NodeMeta): ReviveBearings {
   return { yieldMsg, unreadDigest, driftGuidance };
 }
 
-/** Render the <feed> block PURELY: the live "awaiting" roster (a read) plus the
- *  already-drained unread digest (from drainBearings). No cursor write here. */
+// Fresh-revive catch-up bug: on a refresh-yield (resume:false) the old
+// conversation is gone AND the monotonic inbox cursor has already advanced past
+// everything drained pre-yield, so the revived node loses sight of reports its
+// subscriptions pushed BEFORE the yield. The bodies are never lost — they persist
+// at reports/<ts>-<kind>.md forever — but nothing pointed the revived node at
+// them. reportHistoryLines renders those existing on-disk paths so it can catch
+// up; PATHS ONLY (the node dereferences what it needs), no body read, no parse.
+const REPORT_HISTORY_PER_SOURCE = 5;
+const REPORT_HISTORY_TOTAL_CAP = 20;
+
+/** Recent report file PATHS (most-recent-first), grouped by publisher, for each
+ *  ACTIVE subscription of `nodeId` — independent of publisher liveness, so a
+ *  finished worker's history still surfaces for catch-up. Skips subscriptions
+ *  whose reports dir is empty/missing. Returns [] when the node has no active
+ *  subscriptions or none have reports yet (caller renders nothing extra). */
+function reportHistoryLines(nodeId: string): string[] {
+  const lines: string[] = [];
+  let total = 0;
+  for (const sub of subscriptionsOf(nodeId).filter((s) => s.active)) {
+    if (total >= REPORT_HISTORY_TOTAL_CAP) break;
+    const dir = reportsDir(sub.node_id);
+    if (!existsSync(dir)) continue;
+    const files = readdirSync(dir)
+      .filter((f) => f.endsWith('.md'))
+      .sort() // YYYYMMDDTHHmmss-<kind>.md — lexical sort = chronological
+      .reverse() // most recent first
+      .slice(0, REPORT_HISTORY_PER_SOURCE);
+    if (files.length === 0) continue;
+    const pub = getNode(sub.node_id);
+    lines.push(`  ${pub !== null ? `${pub.name} (${sub.node_id})` : sub.node_id}:`);
+    for (const f of files) {
+      if (total >= REPORT_HISTORY_TOTAL_CAP) break;
+      lines.push(`    ${join(dir, f)}`);
+      total++;
+    }
+  }
+  return lines;
+}
+
+/** Render the <feed> block PURELY: the live "awaiting" roster (a read), the
+ *  already-drained unread digest (from drainBearings), and the on-disk report
+ *  history of this node's subscriptions (catch-up pointers). No cursor write. */
 function feedBlock(nodeId: string, unreadDigest: string | null): string {
   // Awaiting = active subscriptions whose publisher is still live (active|idle).
   const awaiting = subscriptionsOf(nodeId)
@@ -206,6 +247,22 @@ function feedBlock(nodeId: string, unreadDigest: string | null): string {
   } else {
     lines.push('Awaiting 0 nodes.');
     lines.push('', unreadDigest ?? '(no unread reports)');
+  }
+
+  // Catch-up history. The unread digest above only covers what arrived since the
+  // cursor; on a refresh-revive the cursor has already passed everything drained
+  // pre-yield, so point the node at the durable report history that persists on
+  // disk. Renders nothing when the node has no active subscriptions with reports.
+  const history = reportHistoryLines(nodeId);
+  if (history.length > 0) {
+    lines.push(
+      '',
+      'Report history on disk — the nodes you subscribe to keep every push they made; ' +
+        'these persist across your context refresh (the unread digest above only covers ' +
+        'what arrived since your cursor). Most recent first; dereference any you need. ' +
+        '`crtr feed read --all` replays the full inbox history, cursor-independent.',
+      ...history,
+    );
   }
 
   return `<feed>\n${lines.join('\n')}\n</feed>`;
