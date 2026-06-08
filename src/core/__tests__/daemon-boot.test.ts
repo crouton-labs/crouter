@@ -79,10 +79,14 @@ test('never-booted node is marked dead and surfaced to the parent as urgent', as
   assert.match(inbox[0]!.label, /Spawn failed/);
 });
 
-// A node that HAD booted (pi_session_id set) then lost its window is a genuine
-// crash, not a boot failure — it is marked dead but NOT surfaced as a spawn
-// failure (no false alarm to the parent).
-test('a crash after boot is marked dead without a boot-failure push', async () => {
+// A node that HAD booted (pi_session_id set) then died mid-generation is a
+// genuine crash, not a boot failure. It is marked dead AND wakes the inbox-
+// waiting parent — but with a "child died" notice (surfaceChildDeath), NOT a
+// "Spawn failed" boot-failure pointer (surfaceBootFailure). The parent-wake
+// itself was added by main's b5abf6e (parent-wake on child death) and is locked
+// in by child-death-wake.test.ts; this test preserves the discriminating intent
+// — a crash is never surfaced as a false spawn-failure alarm.
+test('a crash after boot wakes the parent with a child-death notice, not a boot-failure push', async () => {
   createNode(node('P2', { kind: 'developer', lifecycle: 'resident' }));
   createNode(
     node('C2', {
@@ -104,11 +108,10 @@ test('a crash after boot is marked dead without a boot-failure push', async () =
   await superviseTick();
 
   assert.equal(getNode('C2')!.status, 'dead', 'crashed child is dead');
-  assert.equal(
-    readInboxSince('P2').length,
-    0,
-    'a real crash does not push a boot-failure pointer',
-  );
+  const inbox = readInboxSince('P2');
+  assert.equal(inbox.length, 1, 'a genuine mid-run crash wakes the inbox-waiting parent (D-1 parent-wake)');
+  assert.match(inbox[0]!.label, /died/i, 'the wake is a child-death notice (surfaceChildDeath), not silence');
+  assert.doesNotMatch(inbox[0]!.label, /Spawn failed/, 'a crash is NOT surfaced as a false boot-failure alarm');
   clearBusy('C2');
 });
 
