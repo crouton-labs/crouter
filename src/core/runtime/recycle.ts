@@ -26,6 +26,7 @@ import { spawnNode, nodeSession, rootOfSpine } from './nodes.js';
 import { buildLaunchSpec, buildPiArgv } from './launch.js';
 import { FRONT_DOOR_ENV } from './front-door.js';
 import { focusOf, recycleFocusPane, piCommand, paneLocation } from './placement.js';
+import { hostFor } from './host.js';
 import { ensureDaemon } from '../../daemon/manage.js';
 
 export interface RecycleResult {
@@ -83,6 +84,15 @@ export async function recycleNode(nodeId: string, callerPane?: string): Promise<
     delivered = res.deliveredTo;
     finalized = true;
   } catch { /* recycle the pane even if the report failed */ }
+
+  // A broker node has NO tmux pane, so recycleFocusPane below (respawn-pane -k)
+  // never kills its engine — route its teardown through the Host seam so the
+  // broker PROCESS exits and releases the sole .jsonl writer (mirrors the T12
+  // close.ts/reset.ts fix; review reuse MINOR-3). Status is already flipped done
+  // by pushFinal above (crash-safe order: the daemon won't revive a done node).
+  if (meta.host_kind === 'broker') {
+    try { hostFor(meta).teardown(nodeId); } catch { /* best-effort */ }
+  }
 
   // Capture M's focus viewport (if any) BEFORE nulling — the fresh root inherits
   // it (the SAME focus row + pane). The demoted node no longer holds a pane: it is

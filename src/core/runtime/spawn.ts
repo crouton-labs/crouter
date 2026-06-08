@@ -280,6 +280,15 @@ export function spawnChild(opts: SpawnChildOpts): SpawnChildResult {
   updateNode(meta.node_id, { home_session: session });
 
   const inv = buildPiArgv(meta, { prompt: kickoff, forkFrom });
+  // Belt-and-suspenders backstage routing emitted at EVERY launch site: the
+  // authoritative CRTR_ROOT_SESSION (this subtree's shared backstage) +
+  // CRTR_SUBTREE (this node's spine root). Hoisted ABOVE the host branch so the
+  // broker launch and the tmux command consume ONE authoritative env — the
+  // broker host merges inv.env, so a --headless --root broker would otherwise
+  // inherit the SPAWNER's subtree id via the lossy nodeEnv passthrough (review
+  // reuse MINOR-2). FRONT_DOOR is added per-consumer below (the broker host sets
+  // it itself; the tmux env const adds it).
+  inv.env = { ...inv.env, CRTR_ROOT_SESSION: childSession, CRTR_SUBTREE: rootOfSpine(meta.node_id) };
 
   // Birth LAUNCH branch on the PERSISTED host_kind (set at birth by spawnNode).
   // A broker birth diverts AWAY from the tmux pane: the headless broker host
@@ -298,7 +307,7 @@ export function spawnChild(opts: SpawnChildOpts): SpawnChildResult {
     return { node: saved, window: placed.window, session: placed.session };
   }
 
-  const env = { ...inv.env, CRTR_ROOT_SESSION: childSession, CRTR_SUBTREE: rootOfSpine(meta.node_id), [FRONT_DOOR_ENV]: '1' };
+  const env = { ...inv.env, [FRONT_DOOR_ENV]: '1' };
   const command = piCommand(inv.argv);
 
   // openNodeWindow now returns {window, pane}; pane is unused until the
