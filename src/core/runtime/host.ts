@@ -13,7 +13,7 @@
 // needs no tmux verb at all.
 
 import { spawn } from 'node:child_process';
-import { mkdirSync, writeFileSync, existsSync, unlinkSync } from 'node:fs';
+import { mkdirSync, writeFileSync, existsSync, unlinkSync, openSync, closeSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { connect } from 'node:net';
@@ -24,10 +24,10 @@ import {
   piCommand,
 } from './placement.js';
 import { getNode, type NodeMeta, type NodeRow } from '../canvas/index.js';
-import { nodeDir } from '../canvas/paths.js';
+import { nodeDir, jobDir } from '../canvas/paths.js';
 import { encodeFrame } from './broker-protocol.js';
 import { FRONT_DOOR_ENV } from './front-door.js';
-import { isPidAlive } from './pid.js';
+import { isPidAlive } from '../canvas/pid.js';
 import type { PiInvocation } from './launch.js';
 
 /** View-side launch hints the legacy host needs beyond the PiInvocation. This is
@@ -124,18 +124,34 @@ function resolveBrokerEntry(): string {
   return join(here, 'broker-cli.js');
 }
 
+/** How long teardown waits after sending the graceful `shutdown` frame before
+ *  SIGTERMing a broker that connected but never exited (e.g. a hung dispose()). */
+const BROKER_SHUTDOWN_GRACE_MS = 2_000;
+
 export const headlessBrokerHost: Host = {
   launch(nodeId, inv, opts) {
     const dir = nodeDir(nodeId);
     mkdirSync(dir, { recursive: true });
     // The broker reads this recipe back via runBroker(nodeId) → broker-launch.json.
     writeFileSync(join(dir, 'broker-launch.json'), JSON.stringify(inv));
+    // Redirect the detached broker's stdout+stderr to a per-node log under the
+    // node's existing job/ dir (alongside log.jsonl / telemetry.json). Without
+    // this (stdio:'ignore') EVERY broker diagnostic — the version-skew warning,
+    // model-not-found, socket errors, first-prompt failure, and broker-cli's
+    // fatal-crash stack — goes to /dev/null, which is exactly what makes a boot
+    // failure invisible (review M-2). Append-mode so a crash-revive keeps history.
+    const logDir = jobDir(nodeId);
+    mkdirSync(logDir, { recursive: true });
+    const logFd = openSync(join(logDir, 'broker.log'), 'a');
     const child = spawn(process.execPath, [resolveBrokerEntry(), nodeId], {
       cwd: opts.cwd,
       detached: true,
-      stdio: 'ignore',
+      stdio: ['ignore', logFd, logFd],
       env: { ...process.env, ...inv.env, [FRONT_DOOR_ENV]: '1' },
     });
+    // The child holds its own dup of the fd; release the parent's copy so the
+    // launching process (CLI or daemon) never leaks it.
+    closeSync(logFd);
     child.unref();
     return { kind: 'broker', pid: child.pid ?? null, window: null, session: '', pane: null };
   },
@@ -181,6 +197,25 @@ export const headlessBrokerHost: Host = {
       }
       sock.end();
       cleanupSocket();
+      // Bounded exit confirmation (review Mn-3): a broker that connects fine but
+      // then HANGS inside session.dispose() (disposeAndExit catches a throw, not
+      // a hang) would leak the process holding the sole .jsonl writer. Arm a
+      // short UNREF'd timer; if the captured pid is still alive when it fires,
+      // SIGTERM it. unref'd so the happy path adds NO latency — a short-lived CLI
+      // caller's loop is kept alive only by the still-open socket, i.e. precisely
+      // the hung case where the fallback must run.
+      const pid = getNode(nodeId)?.pi_pid;
+      if (pid != null) {
+        setTimeout(() => {
+          if (isPidAlive(pid)) {
+            try {
+              process.kill(pid, 'SIGTERM');
+            } catch {
+              /* already gone */
+            }
+          }
+        }, BROKER_SHUTDOWN_GRACE_MS).unref();
+      }
     });
   },
   signal(nodeId, sig) {
