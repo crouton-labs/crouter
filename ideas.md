@@ -14,6 +14,19 @@ When I start crouter, I want to be able to switch between agent mode, tickets, a
 - when terminal agents use ask, that has to bubble up to top.
 
 
+
+Maybe solution to memory:
+- "Directive" documents that auto load, like memories. or "docs/..." . They are less like skills and more like "here's a behavior I want to see high level, read more here"
+- Maybe this gets combined with skills? Maybe memories, documents, and skills all get combined as part of the "document substrate accessed via CLI"! 
+  - Skills are just "playbooks on how to do something" that link
+  - Docs are just different versions of skills, in the shape of "here's documentation on how this works". We'd want docs for crtr there potentially
+  - Directives could be system or user based? Or are they just another flavor of memories? Stuff like "use lots of subagents" is sorta a directive. But no follow up doc worth reading.
+    - Maybe directives are just one-liners that get loaded in? It's sorta like prompts that have documents included. That's kinda what memories are too, tbh. 
+    - TBH, feels like when the user expresses some directive, the agent should almost pick up on this and try to understand WHEN this directive applies, and WHY it applies. It'd then be able to update/improve it's prompting.
+    - Feels like we need better skill-loading. Really the higher level pattern is: *When you're in situations like X, you should do Y, because Z*. 
+  - Memories are literally just that—memories the agent has of who the user is/preferences/etc
+
+
 Telemetry
 - Diff or snapshot at time of user propmt—that way if there are thigns that go wrong, I can see exact state at time of complaint
 - 

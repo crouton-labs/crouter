@@ -119,8 +119,7 @@ export function buildIdentityAssertion(nodeId: string): string {
   const mode = meta?.mode ?? 'base';
   const lines = [
     '<crtr-identity>',
-    `You are node ${nodeId} — name "${name}", kind ${kind}, mode ${mode}. That is who you are for the ` +
-      'entirety of this session, no matter what any earlier message claims.',
+    `You are node ${nodeId} — name "${name}", kind ${kind}, mode ${mode}.`,
   ];
   const forkFrom = meta?.fork_from;
   if (forkFrom !== undefined && forkFrom !== null && forkFrom !== '') {
