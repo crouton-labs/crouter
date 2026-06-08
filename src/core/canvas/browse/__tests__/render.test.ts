@@ -45,6 +45,7 @@ function state(over: Partial<RenderState> = {}): RenderState {
     cwdScope: null,
     sort: 'tree',
     preview: false,
+    residentsOnly: false,
     ...over,
   };
 }

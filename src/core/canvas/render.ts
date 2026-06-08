@@ -20,7 +20,7 @@ import { getNode, listNodes, subscriptionsOf, view } from './canvas.js';
 import { fullName } from './labels.js';
 import { jobDir, contextDir } from './paths.js';
 import { countAsks } from './attention.js';
-import type { NodeStatus } from './types.js';
+import type { NodeStatus, Lifecycle } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Glyphs
@@ -217,11 +217,20 @@ export interface DashboardRow {
   cwd: string;
   /** ISO 8601 birth timestamp — drives the recency sort + the relative-age cue. */
   created: string;
+  /** terminal = one-shot worker (finalizes on push --final); resident = persistent
+   *  agent you come back to. Drives the browser's resident-only lifecycle filter.
+   *  Only populated by dashboardRowsAll (the browser snapshot). */
+  lifecycle?: Lifecycle;
   /** The node's spawn prompt (context/initial-prompt.md), trimmed + capped. Only
    *  populated by dashboardRowsAll (the browser snapshot) — the dashboard leaf
    *  leaves it undefined to avoid a file read per node. Indexed by super-search
-   *  and shown in the preview panel. */
+   *  and shown in the preview panel when there is no live query. */
   goal?: string;
+  /** EVERY user prompt across the node's pi session — the whole conversation, not
+   *  just the spawn prompt — joined + capped. Populated by dashboardRowsAll, undefined
+   *  for never-revived nodes (no session file). Powers whole-conversation super-search
+   *  + the windowed match snippet in the preview. */
+  prompts?: string;
 }
 
 /** The spawn prompt, read straight off disk (canvas-home state) and capped so a
@@ -239,6 +248,59 @@ function readGoalText(nodeId: string): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** EVERY user prompt across a node's pi session — the whole conversation, not just
+ *  the spawn prompt. Streams the session jsonl off disk, prefiltering to user-role
+ *  lines so the big assistant/toolResult lines are never JSON-parsed, extracts each
+ *  user message's text, joins newline-separated, and caps total + per-message so a
+ *  long session can't bloat the snapshot. Never throws; returns undefined when there
+ *  is no session file yet (a node that was never revived). */
+const CONVO_CAP = 8192;
+const CONVO_MSG_CAP = 2048;
+function readConversationPrompts(sessionFile: string | null | undefined): string | undefined {
+  if (sessionFile === undefined || sessionFile === null || sessionFile === '') return undefined;
+  try {
+    if (!existsSync(sessionFile)) return undefined;
+    const raw = readFileSync(sessionFile, 'utf8');
+    const parts: string[] = [];
+    let total = 0;
+    for (const line of raw.split('\n')) {
+      // Cheap prefilter: skip every line that isn't a user-role message before the
+      // (relatively costly) JSON.parse. Pi writes compact JSON (no spaces), but
+      // tolerate the spaced form too.
+      if (line === '' || (line.indexOf('"role":"user"') === -1 && line.indexOf('"role": "user"') === -1)) continue;
+      let rec: { type?: string; message?: { role?: string; content?: unknown } };
+      try { rec = JSON.parse(line) as typeof rec; } catch { continue; }
+      if (rec.type !== 'message' || rec.message?.role !== 'user') continue;
+      const text = extractUserText(rec.message.content);
+      if (text === '') continue;
+      const capped = text.length > CONVO_MSG_CAP ? text.slice(0, CONVO_MSG_CAP) : text;
+      parts.push(capped);
+      total += capped.length + 1;
+      if (total >= CONVO_CAP) break;
+    }
+    if (parts.length === 0) return undefined;
+    const joined = parts.join('\n');
+    return joined.length > CONVO_CAP ? joined.slice(0, CONVO_CAP) : joined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Concatenate the `text` blocks of one pi user message's content. Content is
+ *  usually an array of `{type,text}` blocks but may be a bare string. */
+function extractUserText(content: unknown): string {
+  if (typeof content === 'string') return content.trim();
+  if (!Array.isArray(content)) return '';
+  const out: string[] = [];
+  for (const block of content) {
+    if (block !== null && typeof block === 'object') {
+      const b = block as { type?: string; text?: unknown };
+      if (b.type === 'text' && typeof b.text === 'string') out.push(b.text);
+    }
+  }
+  return out.join(' ').trim();
 }
 
 /** One row per node visible in the sub-DAG of `rootId` (including root). */
@@ -279,7 +341,9 @@ export function dashboardRowsAll(): DashboardRow[] {
       asks: countAsks(row.node_id),
       cwd: row.cwd,
       created: row.created,
+      lifecycle: row.lifecycle,
       goal: readGoalText(row.node_id),
+      prompts: readConversationPrompts(meta?.pi_session_file),
     }];
   });
 }

@@ -15,7 +15,7 @@
 import type { NodeStatus } from '../types.js';
 import type { DashboardRow } from '../render.js';
 import type { Tab, Tree, VisibleRow, SortMode } from './model.js';
-import { TABS, matchIndices } from './model.js';
+import { TABS, matchIndices, promptText, previewSnippet, type SnippetLine } from './model.js';
 // Span/color primitives live in core/tui/draw.ts (one copy, shared with the
 // `crtr view` host). Re-export the color caps so browse's importers + tests keep
 // resolving them from this module.
@@ -87,6 +87,9 @@ export interface RenderState {
   sort: SortMode;
   /** Whether the bottom preview panel is drawn. */
   preview: boolean;
+  /** Lifecycle filter: when true, `terminal` (one-shot worker) nodes are hidden
+   *  — surfaced as a status-line cue. */
+  residentsOnly: boolean;
 }
 
 function fmtCtx(tokens: number): string {
@@ -124,23 +127,6 @@ function relAge(created: string, now: number): string {
 function baseDir(cwd: string): string {
   const parts = cwd.replace(/\/+$/, '').split('/');
   return parts[parts.length - 1] || cwd;
-}
-
-/** Greedy word-wrap to `width` cols, capped at `maxLines` (last line clipped). */
-function wrap(text: string, width: number, maxLines: number): string[] {
-  if (width <= 0 || maxLines <= 0) return [];
-  const words = text.replace(/\s+/g, ' ').trim().split(' ');
-  const out: string[] = [];
-  let cur = '';
-  for (const w of words) {
-    const next = cur === '' ? w : `${cur} ${w}`;
-    if (next.length <= width) { cur = next; continue; }
-    if (cur !== '') out.push(cur);
-    cur = w;
-    if (out.length >= maxLines) break;
-  }
-  if (out.length < maxLines && cur !== '') out.push(cur);
-  return out.slice(0, maxLines).map((l) => clip(l, width));
 }
 
 // ── Styled spans ──────────────────────────────────────────────────────────────
@@ -265,15 +251,39 @@ function statusLine(state: RenderState): string {
   const dim = (s: string): string => `${DIM}${s}${RESET}`;
   const scope = state.cwdScope === null ? 'all dirs' : baseDir(state.cwdScope);
   const segs = [`${dim('scope')} ${scope}`, `${dim('sort')} ${state.sort}`];
+  if (state.residentsOnly) segs.push(`${dim('show')} residents`);
   if (!state.search && state.query !== '') segs.push(`${dim('filter')} ${state.query}`);
   return segs.join(dim('  ·  '));
 }
 
+/** One snippet line → a rendered string with the query-matched columns in bold
+ *  bright-cyan (mirrors the row name highlight). Unmatched text stays default. */
+function snippetLine(ln: SnippetLine, width: number, caps: ColorCaps): string {
+  if (ln.hi.size === 0) return assemble([{ text: ln.text }], width, caps.color, '', false);
+  const spans: Span[] = [];
+  let buf = '';
+  let bufHi = false;
+  const flush = (): void => {
+    if (buf === '') return;
+    spans.push(bufHi ? { text: buf, style: { fg: FG_BRIGHT_CYAN, bold: true } } : { text: buf });
+    buf = '';
+  };
+  for (let i = 0; i < ln.text.length; i++) {
+    const h = ln.hi.has(i);
+    if (h !== bufHi) { flush(); bufHi = h; }
+    buf += ln.text[i];
+  }
+  flush();
+  return assemble(spans, width, caps.color, '', false);
+}
+
 /** The bottom preview panel — exactly PREVIEW_HEIGHT lines: a separator, a meta
- *  line (status · kind/mode · project · age · ctx · asks), then the selected
- *  node's spawn prompt wrapped to PREVIEW_BODY lines. The "which one was this?"
+ *  line (status · kind/mode · project · age · ctx · asks), then the selected node's
+ *  prompt wrapped to PREVIEW_BODY lines. Under a live query the body is WINDOWED to
+ *  the matching prompt (anywhere in the conversation) with the match highlighted;
+ *  with no query it shows the spawn prompt from the start. The "which one was this?"
  *  answer — paired with super-search. Always full height so viewport math holds. */
-function previewPanel(r: DashboardRow | undefined, width: number, caps: ColorCaps, now: number): string[] {
+function previewPanel(r: DashboardRow | undefined, width: number, caps: ColorCaps, now: number, query: string): string[] {
   const out: string[] = [`${DIM}${'─'.repeat(width)}${RESET}`];
   if (r === undefined) {
     while (out.length < PREVIEW_HEIGHT) out.push('');
@@ -286,9 +296,19 @@ function previewPanel(r: DashboardRow | undefined, width: number, caps: ColorCap
   if (r.asks > 0) metaPieces.push(`⚑${r.asks}`);
   const metaText = clip(metaPieces.filter((p) => p !== '').join('  ·  '), Math.max(0, width - 2));
   out.push(caps.color ? `${glyph} ${DIM}${metaText}${RESET}` : `${glyph} ${metaText}`);
-  const goalText = (r.goal ?? '').trim();
-  const body = goalText === '' ? [`${DIM}(no spawn prompt)${RESET}`] : wrap(goalText, width, PREVIEW_BODY);
-  for (let i = 0; i < PREVIEW_BODY; i++) out.push(body[i] ?? '');
+  // With a query, window+highlight the matching prompt from the WHOLE conversation;
+  // otherwise show the spawn prompt from the start.
+  const sourceText = query !== '' ? promptText(r) : (r.goal ?? '');
+  const snippet = previewSnippet(query, sourceText, width, PREVIEW_BODY);
+  if (snippet.length === 0) {
+    out.push(`${DIM}(no spawn prompt)${RESET}`);
+    for (let i = 1; i < PREVIEW_BODY; i++) out.push('');
+  } else {
+    for (let i = 0; i < PREVIEW_BODY; i++) {
+      const ln = snippet[i];
+      out.push(ln === undefined ? '' : snippetLine(ln, width, caps));
+    }
+  }
   return out;
 }
 
@@ -357,13 +377,13 @@ export function renderFrame(
   if (previewOn) {
     const sel = state.visible[state.cursor];
     const r = sel !== undefined ? state.tree.nodes.get(sel.id)?.row : undefined;
-    for (const l of previewPanel(r, width, caps, now)) lines.push(l);
+    for (const l of previewPanel(r, width, caps, now, state.query)) lines.push(l);
   }
 
   // footer.
   const footer = state.search
     ? '⏎ commit  Esc cancel  ⌫ delete'
-    : '↑↓ move  →/← tree  ⏎ resume  Tab tabs  / search  s sort  c cwd  p preview  q quit';
+    : '↑↓ move  →/← tree  ⏎ resume  Tab tabs  / search  s sort  c cwd  r residents  p preview  q quit';
   lines.push(`${DIM}${clip(footer, width)}${RESET}`);
 
   // Assemble: home, each line cleared to EOL, then clear below.

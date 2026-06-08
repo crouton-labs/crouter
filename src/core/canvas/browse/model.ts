@@ -166,20 +166,133 @@ export function matchIndices(query: string, text: string): Set<number> {
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// Preview match snippet
+// ---------------------------------------------------------------------------
+
+/** One word-wrapped preview line: its text + the column indices WITHIN that text
+ *  to highlight (the query match). */
+export interface SnippetLine {
+  text: string;
+  hi: Set<number>;
+}
+
+/** Chars of leading context kept before the match start when windowing. */
+const SNIPPET_LEAD = 12;
+
+/** Highlight indices for the preview: the literal case-insensitive SUBSTRING span
+ *  when present (so "where does this text appear?" is answered exactly), else the
+ *  scattered subsequence indices, else empty (empty query). This is a different,
+ *  stricter model than the subsequence super-search on purpose — a contiguous span
+ *  is what reads as a highlight. */
+export function highlightIndices(query: string, text: string): Set<number> {
+  if (query === '') return new Set();
+  const lower = text.toLowerCase();
+  const q = query.toLowerCase();
+  const sub = lower.indexOf(q);
+  if (sub >= 0) {
+    const out = new Set<number>();
+    for (let i = sub; i < sub + q.length; i++) out.add(i);
+    return out;
+  }
+  return matchIndices(query, text);
+}
+
+/** Greedy word-wrap of single-spaced `s` (caller normalizes whitespace) to `width`
+ *  cols × `maxLines` lines, returning each line's text AND its start offset in `s`.
+ *  Only the single space at each wrap break is dropped, so a highlight index maps
+ *  to a line column as `idx - line.start` with no drift across the wrap. */
+function wrapTracked(s: string, width: number, maxLines: number): { text: string; start: number }[] {
+  const out: { text: string; start: number }[] = [];
+  if (width <= 0 || maxLines <= 0) return out;
+  const n = s.length;
+  let i = 0;
+  while (i < n && out.length < maxLines) {
+    const lineStart = i;
+    let lineEnd = i; // exclusive end of committed words
+    let j = i;
+    while (j < n) {
+      let ws = j;
+      while (ws < n && s[ws] === ' ') ws++;
+      let we = ws;
+      while (we < n && s[we] !== ' ') we++;
+      if (ws === we) break; // only trailing spaces remain
+      if (we - lineStart <= width || lineEnd === lineStart) {
+        lineEnd = we; // include this word (always take ≥1; a huge word is clipped below)
+        j = we;
+      } else break;
+    }
+    let text = s.slice(lineStart, lineEnd);
+    if (text.length > width) text = text.slice(0, width);
+    out.push({ text, start: lineStart });
+    i = lineEnd;
+    if (i < n && s[i] === ' ') i++; // drop the single break space
+  }
+  return out;
+}
+
+/**
+ * Build the preview snippet for `text` under the live `query`: up to `maxLines`
+ * word-wrapped lines (each ≤ `width` cols), WINDOWED so the best match is visible
+ * (long conversations: the match can be thousands of chars in), with the matched
+ * columns flagged for highlight. Empty query (or empty text) → a plain wrap from
+ * the start with no highlight. The snippet string itself is what carries the
+ * highlight indices, so they never drift across the windowing.
+ */
+export function previewSnippet(query: string, text: string, width: number, maxLines: number): SnippetLine[] {
+  const norm = text.replace(/\s+/g, ' ').trim();
+  if (norm === '' || width <= 0 || maxLines <= 0) return [];
+
+  // 1. Locate the match in the normalized text + choose a window start that keeps
+  //    a little leading context, snapped to a word boundary.
+  let matchStart = -1;
+  if (query !== '') {
+    const sub = norm.toLowerCase().indexOf(query.toLowerCase());
+    if (sub >= 0) matchStart = sub;
+    else { const ix = matchIndices(query, norm); if (ix.size > 0) matchStart = Math.min(...ix); }
+  }
+  let windowStart = 0;
+  if (matchStart > SNIPPET_LEAD) {
+    let s = matchStart - SNIPPET_LEAD;
+    while (s < matchStart && norm[s] !== ' ') s++; // forward to the next word boundary
+    windowStart = s < matchStart ? s + 1 : matchStart;
+  }
+  const snippet = (windowStart > 0 ? '… ' : '') + norm.slice(windowStart);
+
+  // 2. Recompute highlight indices on the FINAL snippet string (no drift), then
+  //    word-wrap with offset tracking and split the highlight into per-line cols.
+  const hi = highlightIndices(query, snippet);
+  return wrapTracked(snippet, width, maxLines).map(({ text: lt, start }) => {
+    const lhi = new Set<number>();
+    for (const idx of hi) if (idx >= start && idx < start + lt.length) lhi.add(idx - start);
+    return { text: lt, hi: lhi };
+  });
+}
+
 function shortId(id: string): string {
   return id.slice(0, 8);
 }
 
+/** The searchable conversation text for a row: EVERY user prompt across the pi
+ *  session (`prompts`) when present, else the spawn prompt (`goal`) for a
+ *  never-revived node that has no session yet. Searched by super-search and
+ *  windowed in the preview, so search matches a prompt from ANYWHERE in the
+ *  conversation, not just the first one. */
+export function promptText(row: DashboardRow): string {
+  return row.prompts ?? row.goal ?? '';
+}
+
 /** Does this row match the live query? Super-search spans name (which already
- *  folds in the pi-generated description), kind, short-id, AND the spawn prompt
- *  (`row.goal`). Empty query matches everything. */
+ *  folds in the pi-generated description), kind, short-id, AND every user prompt
+ *  in the conversation (`promptText`). Empty query matches everything. */
 export function queryMatch(query: string, row: DashboardRow): boolean {
   if (query === '') return true;
+  const prompt = promptText(row);
   return (
     fuzzyMatch(query, row.name) ||
     fuzzyMatch(query, row.kind) ||
     fuzzyMatch(query, shortId(row.node_id)) ||
-    (row.goal !== undefined && fuzzyMatch(query, row.goal))
+    (prompt !== '' && fuzzyMatch(query, prompt))
   );
 }
 
@@ -204,19 +317,20 @@ export function fieldScore(query: string, text: string): number {
   return fuzzyMatch(q, t) ? 0.2 : 0;                                // scattered subsequence
 }
 
-/** Per-field weights — name (handle + description) dominates, the spawn prompt
- *  is the long-tail super-search field. */
-const FIELD_WEIGHTS = { name: 4, kind: 2, id: 1, goal: 1.5 } as const;
+/** Per-field weights — name (handle + description) dominates, the conversation
+ *  prompts are the long-tail super-search field. */
+const FIELD_WEIGHTS = { name: 4, kind: 2, id: 1, prompt: 1.5 } as const;
 
 /** Weighted relevance of a row to the query across all searched fields. 0 means
  *  no field matched (excluded from relevance results, same as `queryMatch`). */
 export function scoreRow(query: string, row: DashboardRow): number {
   if (query === '') return 0;
+  const prompt = promptText(row);
   return (
     FIELD_WEIGHTS.name * fieldScore(query, row.name) +
     FIELD_WEIGHTS.kind * fieldScore(query, row.kind) +
     FIELD_WEIGHTS.id * fieldScore(query, shortId(row.node_id)) +
-    FIELD_WEIGHTS.goal * (row.goal !== undefined ? fieldScore(query, row.goal) : 0)
+    FIELD_WEIGHTS.prompt * (prompt !== '' ? fieldScore(query, prompt) : 0)
   );
 }
 
@@ -240,6 +354,11 @@ export interface FlattenOpts {
    *  undefined = All dirs (no cwd filter). Like the tab predicate, it gates the
    *  matched set — ancestors from other dirs still render dimmed for tree context. */
   cwdScope?: string | null;
+  /** Lifecycle filter: when true, hide `terminal` (one-shot worker) nodes so only
+   *  the persistent `resident` agents you come back to show. The resume picker
+   *  defaults this ON. Undefined/false = every lifecycle. Gates the matched set
+   *  like the tab + cwd predicates (ancestors of a match still render for context). */
+  residentsOnly?: boolean;
   /** Ordering. `tree` keeps the spanning tree + ancestor context; `relevance` /
    *  `recency` produce a FLAT ranked list of directly-matched rows. */
   sort?: SortMode;
@@ -248,6 +367,13 @@ export interface FlattenOpts {
 /** Is this row inside the active cwd scope? No scope (null/undefined) = All dirs. */
 export function cwdMatch(scope: string | null | undefined, row: DashboardRow): boolean {
   return scope === null || scope === undefined || row.cwd === scope;
+}
+
+/** Is this row inside the active lifecycle filter? `residentsOnly` hides `terminal`
+ *  nodes; off (false/undefined) = every lifecycle. A row with an unknown lifecycle
+ *  (older snapshot field absent) is treated as resident so it is never hidden. */
+export function lifecycleMatch(residentsOnly: boolean | undefined, row: DashboardRow): boolean {
+  return residentsOnly !== true || row.lifecycle !== 'terminal';
 }
 
 /**
@@ -263,12 +389,17 @@ export function cwdMatch(scope: string | null | undefined, row: DashboardRow): b
  * always reachable.
  */
 export function flatten(tree: Tree, opts: FlattenOpts): VisibleRow[] {
-  const { collapsed, tab, query, cwdScope, sort = 'tree' } = opts;
+  const { collapsed, tab, query, cwdScope, residentsOnly, sort = 'tree' } = opts;
 
-  // 1. Directly-matched nodes: tab predicate AND cwd scope AND query.
+  // 1. Directly-matched nodes: tab predicate AND cwd scope AND lifecycle AND query.
   const matched = new Set<string>();
   for (const [id, node] of tree.nodes) {
-    if (tabPredicate(tab, node.row) && cwdMatch(cwdScope, node.row) && queryMatch(query, node.row)) {
+    if (
+      tabPredicate(tab, node.row) &&
+      cwdMatch(cwdScope, node.row) &&
+      lifecycleMatch(residentsOnly, node.row) &&
+      queryMatch(query, node.row)
+    ) {
       matched.add(id);
     }
   }

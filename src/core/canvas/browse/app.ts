@@ -36,6 +36,9 @@ interface BrowseState {
   sort: SortMode;
   /** Bottom preview panel visibility. Toggled with `p`. */
   preview: boolean;
+  /** Lifecycle filter: when true, hide `terminal` (one-shot worker) nodes so only
+   *  persistent `resident` agents show. Defaults ON for the resume picker; `r` toggles. */
+  residentsOnly: boolean;
 }
 
 /** Viewport (body) height = total rows minus the header renderFrame draws (see
@@ -82,6 +85,7 @@ export async function runBrowse(opts: { returnPane?: string; cwd?: string } = {}
     cwdScope: launchCwd, // default: this dir
     sort: 'tree',
     preview: true,       // default ON (decision)
+    residentsOnly: true, // default ON: hide one-shot workers (decision)
   };
 
   let visible: VisibleRow[] = [];
@@ -119,6 +123,7 @@ export async function runBrowse(opts: { returnPane?: string; cwd?: string } = {}
       tab: state.tab,
       query: state.query,
       cwdScope: state.cwdScope,
+      residentsOnly: state.residentsOnly,
       sort: state.sort,
     });
     if (keepId !== undefined) {
@@ -142,6 +147,7 @@ export async function runBrowse(opts: { returnPane?: string; cwd?: string } = {}
         tree, visible, tab: state.tab, cursor: state.cursor, scrollOffset: state.scrollOffset,
         query: state.query, search: state.search, totalNodes,
         cwdScope: state.cwdScope, sort: state.sort, preview: state.preview,
+        residentsOnly: state.residentsOnly,
       },
       size,
       caps,
@@ -178,6 +184,14 @@ export async function runBrowse(opts: { returnPane?: string; cwd?: string } = {}
   const toggleScope = (): void => {
     const keep = curRow()?.id;
     state.cwdScope = state.cwdScope === null ? launchCwd : null;
+    recompute(keep);
+  };
+
+  // Toggle the resident-only lifecycle filter (hide/show one-shot worker nodes),
+  // keeping the selected node put when it survives the toggle.
+  const toggleResidents = (): void => {
+    const keep = curRow()?.id;
+    state.residentsOnly = !state.residentsOnly;
     recompute(keep);
   };
 
@@ -290,9 +304,10 @@ export async function runBrowse(opts: { returnPane?: string; cwd?: string } = {}
       return;
     }
 
-    // Sort / scope / preview.
+    // Sort / scope / residents / preview.
     if (input === 's') { cycleSort(); flush(); return; }
     if (input === 'c') { toggleScope(); flush(); return; }
+    if (input === 'r') { toggleResidents(); flush(); return; }
     if (input === 'p') { state.preview = !state.preview; flush(); return; }
 
     // Search. Starting a search ranks by relevance (decision) so the best prompt/
@@ -318,6 +333,13 @@ export async function runBrowse(opts: { returnPane?: string; cwd?: string } = {}
   // Boot. If the launch dir holds NO nodes, the default this-dir scope would show
   // a blank canvas — fall back to All dirs so browse is never empty on open.
   recompute();
+  // Relax the resident-only filter first (you're in this dir for a reason), then
+  // the cwd scope — so browse is never blank on open even if the launch dir holds
+  // only one-shot workers, or only nodes from other dirs.
+  if (visible.length === 0 && state.residentsOnly) {
+    state.residentsOnly = false;
+    recompute();
+  }
   if (visible.length === 0 && state.cwdScope !== null) {
     state.cwdScope = null;
     recompute();
