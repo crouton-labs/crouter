@@ -30,13 +30,12 @@ import { buildReviveKickoff, drainBearings } from './kickoff.js';
 import type { WakeOrigin } from './bearings.js';
 import { FRONT_DOOR_ENV } from './front-door.js';
 import {
-  reviveIntoPlacement,
   reconcile,
-  isNodePaneAlive,
   piCommand,
   respawnPane,
   type RespawnPaneOpts,
 } from './placement.js';
+import { hostFor } from './host.js';
 import { nodeSession, childBackstageOf } from './nodes.js';
 
 /** signal-0 liveness probe for a pi pid (mirrors the daemon's isPidAlive). A
@@ -112,7 +111,7 @@ export function reviveNode(
   // frozen pane), so the guard gates on pi liveness too, not pane-existence alone.
   reconcile(nodeId);
   const live = getNode(nodeId) ?? meta;
-  if (isNodePaneAlive(nodeId) && pidAlive(live.pi_pid)) {
+  if (hostFor(live).isAlive(nodeId) && pidAlive(live.pi_pid)) {
     return {
       window: live.window ?? null,
       session: live.tmux_session ?? nodeSession(),
@@ -162,9 +161,7 @@ export function reviveNode(
   // transition('boot') needs NO hook — a refresh is the same node continuing,
   // not leaving a dormancy.)
   cancelDeadlinesFor(nodeId);
-  const placed = reviveIntoPlacement(nodeId, {
-    command: piCommand(inv.argv),
-    env: inv.env,
+  const placed = hostFor(meta).launch(nodeId, inv, {
     cwd: meta.cwd,
     name: fullName(meta),
     resuming,
