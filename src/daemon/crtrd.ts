@@ -206,6 +206,52 @@ function handleLiveWindow(row: NodeRow, now: number, revivedThisTick: Set<string
   revivedThisTick.add(id);
 }
 
+/** A broker-hosted node has NO tmux pane — its only liveness signal is the
+ *  recorded broker pid (the engine-container pid the stophook records on
+ *  session_start, exactly like tmux pi). So the pane-gone user-close routing
+ *  never applies: every unexpected death is a genuine crash. Reuses the EXISTING
+ *  supervision primitive UNCHANGED — pid signal-0 + REVIVE_GRACE_MS grace +
+ *  unhealthySince + revivedThisTick — NO new machinery (decision §1.7 / R3).
+ *  Four cases:
+ *    • pid alive (or no pid yet — the SDK boot gap / a relaunch in flight) →
+ *      leave; clear any stale grace timer.
+ *    • intent==='refresh' → clean yield: respawn FRESH immediately, no grace
+ *      wait (matches the tmux refresh path / design "as today").
+ *    • intent==='idle-release' → dormant by choice; leave, the second pass
+ *      revives (resume) on the next unseen inbox entry.
+ *    • any other intent (crash / no clean intent) → grace-revive RESUME on the
+ *      saved .jsonl via handleLiveWindow. Its internal resume is
+ *      `row.intent !== 'refresh'`, which is true here (refresh + idle-release are
+ *      already handled above), so it resumes — no explicit resume flag needed. */
+function handleBrokerLiveness(row: NodeRow, now: number, revivedThisTick: Set<string>): void {
+  const id = row.node_id;
+  const pid = row.pi_pid;
+  // pid alive — or no pid yet recorded (the SDK boot gap / a relaunch in flight,
+  // mirroring handleLiveWindow's null-pid handling) → nothing pending.
+  if (pid == null || isPidAlive(pid)) {
+    unhealthySince.delete(id);
+    return;
+  }
+  // The broker pid is dead. Branch on intent.
+  if (row.intent === 'refresh') {
+    // Clean yield → respawn FRESH, immediately (no grace wait).
+    process.stderr.write(`[crtrd] revive ${id} (broker refresh-yield)\n`);
+    reviveNode(id, { resume: false });
+    revivedThisTick.add(id); // third-pass bare double-spawn guard (Maj-4)
+    return;
+  }
+  if (row.intent === 'idle-release') {
+    // Freed itself while dormant → leave idle; the second pass revives it
+    // (resume) the moment its inbox gains an unseen entry.
+    unhealthySince.delete(id);
+    return;
+  }
+  // Any other intent → grace-revive RESUME, reusing handleLiveWindow's
+  // livenessVerdict → REVIVE_GRACE_MS → unhealthySince → revivedThisTick path
+  // unchanged (it re-probes the now-dead pid and accrues the grace window).
+  handleLiveWindow(row, now, revivedThisTick);
+}
+
 /** Fail loud for a drifted/broken wake (design §6.6/Q5): wake the ARMER DIRECTLY
  *  via appendInbox — NOT pushUrgent, which fans to subscribersOf(owner), and a
  *  DETACHED spawn has no subscribers (so the armer would never be reached); the
@@ -301,6 +347,18 @@ export async function superviseTick(now: number = Date.now()): Promise<void> {
 
   for (const row of rows) {
     try {
+      // Broker-hosted node: it has NO tmux placement (tmux_session/window/pane
+      // are all NULL) but IS daemon-supervised via its recorded broker pid.
+      // Route it here BEFORE the inline-root carve-out below (which would
+      // wrongly skip a broker on the all-NULL placement) AND before the
+      // pane-gone block, whose first act (unhealthySince.delete) would wipe the
+      // broker's grace timer every tick. This single placement does both jobs
+      // (decision §1.6) — no edit to the carve-out is needed.
+      if (row.host_kind === 'broker') {
+        handleBrokerLiveness(row, now, revivedThisTick);
+        continue;
+      }
+
       // Runtime (tmux_session, window, intent, pi_pid) is now authoritative IN
       // the row — no per-node getNode re-read. Only the boot-failure split below
       // still needs identity (pi_session_id), read on demand there.
