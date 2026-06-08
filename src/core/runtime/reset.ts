@@ -36,7 +36,8 @@ import {
   openDb,
 } from '../canvas/index.js';
 import { transition } from './lifecycle.js';
-import { paneLocation, tearDownNode, focusOf } from './placement.js';
+import { hostFor } from './host.js';
+import { paneLocation, focusOf } from './placement.js';
 import { buildLaunchSpec } from './launch.js';
 import { roadmapPath } from './roadmap.js';
 import { spawnNode, newNodeId, nodeSession } from './nodes.js';
@@ -65,11 +66,12 @@ export function reapDescendants(rootId: string): string[] {
     try {
       // Reap BEFORE tearing down the placement (the crash-safety invariant the
       // `cancel` event encodes): a non-supervised status + cleared intent first, so
-      // the daemon can't revive a descendant mid-teardown. tearDownNode then
-      // closes any focus row it held, kills its pane (pane-keyed), and nulls its
-      // LOCATION.
-      transition(id, 'cancel');
-      tearDownNode(id);
+      // the daemon can't revive a descendant mid-teardown. Teardown then routes
+      // through the Host seam (hostFor): a tmux node closes any focus row it held,
+      // kills its pane (pane-keyed), and nulls its LOCATION; a broker node sends
+      // the `shutdown` frame so its PROCESS exits and releases the .jsonl writer.
+      const m = transition(id, 'cancel');
+      hostFor(m).teardown(id);
       reaped.push(id);
     } catch {
       /* one bad node never aborts the reap */
