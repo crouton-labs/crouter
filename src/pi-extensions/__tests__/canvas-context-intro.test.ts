@@ -108,10 +108,11 @@ test('boot intro asserts the node\'s OWN identity up front (regression: forked n
   assert.match(intro, /You are node alpha/, 'names the node by its own id');
   assert.match(intro, /kind developer/, 'states the node kind');
   // Gated (Option A): a fresh (non-fork) node's bearings are its FIRST entry, so
-  // there is no earlier narrative to disown — the INHERITED-CONTEXT disown line is
-  // fork-only and must NOT appear here.
+  // there is no earlier narrative to disown — the disown framing (the fork callout
+  // naming the copied history "inherited reference material") is fork-only and must
+  // NOT appear here.
   assert.ok(
-    !/INHERITED CONTEXT/.test(intro),
+    !/inherited reference material/.test(intro),
     'a non-fork node carries no disown-the-earlier-narrative line',
   );
   // The identity block must come BEFORE the <crtr-context> bearings, so it is the
@@ -134,8 +135,8 @@ test('a FORK\'s intro names the source and disowns it (regression: fork acted AS
   assert.match(intro, /You are NOT src7/, '"you are NOT the source" flag is present');
   // Carries the source's human label so the agent recognizes the copied persona.
   assert.match(intro, /looking-pi-crouter/, 'surfaces the source label');
-  // The fork DOES carry the disown line — it has a real referent (copied history).
-  assert.match(intro, /INHERITED CONTEXT/, 'the fork disowns the copied first-person narrative');
+  // The fork DOES carry the disown framing — it has a real referent (copied history).
+  assert.match(intro, /inherited reference material/, 'the fork disowns the copied first-person narrative');
   // It must NOT tell the fork it is the source node.
   assert.ok(!/You are node src7/.test(intro), 'fork is never told it is the source node');
 
@@ -145,7 +146,7 @@ test('a FORK\'s intro names the source and disowns it (regression: fork acted AS
   const plain = buildContextIntro('plain2');
   assert.match(plain, /You are node plain2/);
   assert.ok(!/FORK of/.test(plain), 'a fresh (non-fork) node carries no fork callout');
-  assert.ok(!/INHERITED CONTEXT/.test(plain), 'a non-fork node carries no disown line');
+  assert.ok(!/inherited reference material/.test(plain), 'a non-fork node carries no disown line');
 });
 
 test('session_start INJECTS the fork\'s own bearings despite the inherited source block (the misfiring-idempotency bug)', () => {

@@ -113,9 +113,9 @@ export function buildMemoryBlock(nodeId: string, cwd: string): string {
  *  impersonates the source (it kept "monitoring itself" as a phantom child).
  *  This block names the node unambiguously. ONLY when the node IS a fork does it
  *  additionally name the source AND disown the copied first-person narrative as
- *  INHERITED CONTEXT — a non-fork node's bearings are its first session entry, so
- *  there is no earlier narrative to disown (emitting the line there is dead
- *  weight that reads as a contradiction with no referent). Always the FIRST
+ *  inherited reference material — a non-fork node's bearings are its first session
+ *  entry, so there is no earlier narrative to disown (emitting a disown line there
+ *  is dead weight that reads as a contradiction with no referent). Always the FIRST
  *  thing the node reads. Exported for testing. */
 export function buildIdentityAssertion(nodeId: string): string {
   const meta = getNode(nodeId);
@@ -138,11 +138,6 @@ export function buildIdentityAssertion(nodeId: string): string {
         'conversation is THEIR first-person history — inherited reference material, not your own ' +
         'past. Do not speak or act as them, do not continue their task as if it were yours, and do ' +
         'not "monitor yourself" as though you were a child they spawned.',
-      // The disown-line is fork-ONLY: it only has a referent when prior
-      // first-person narrative was actually copied in. A fresh node's bearings
-      // are its first entry — there is nothing earlier to disown.
-      `Any earlier first-person narrative in this conversation ("I am …", "my task is …") is ` +
-        `INHERITED CONTEXT, NOT you. Your identity is fixed by this block — act as node ${nodeId}.`,
     );
   }
   lines.push('</crtr-identity>');

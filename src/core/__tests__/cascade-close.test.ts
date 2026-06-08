@@ -159,17 +159,27 @@ test(
       // ASSERT 3 — EXCLUSIVE-SUBTREE OWNERSHIP: nothing ABOVE (A) and nothing
       // SIDEWAYS (S, G) was reaped. close(B) reaped EXACTLY B's own subtree.
       // ===================================================================
-      // Ancestor A — fully untouched: still the live resident root, inbox intact.
+      // Ancestor A — lifecycle untouched (still the live resident root), but A is
+      // the SURVIVING manager of the close-root B, so the wake doctrine fix WAKES
+      // it: a "child closed" notice is fanned to a manager OUTSIDE the closing set
+      // (D-1 — previously A heard nothing and a dormant A could hang forever).
       {
         const a = h.node(A)!;
         assert.equal(a.status, 'active', 'A (ancestor) still active — untouched by the cascade');
         assert.equal(a.lifecycle, 'resident', 'A still resident');
         assert.equal(a.intent ?? null, null, 'A intent untouched');
+        // A's PRIOR entries are preserved; exactly ONE new child-closed entry
+        // from the closed child B is appended (the doctrine wake).
+        const aInbox = h.inbox(A);
         assert.deepEqual(
-          h.inbox(A),
+          aInbox.slice(0, aInboxBefore.length),
           aInboxBefore,
-          "A's inbox is byte-for-byte intact across the close (cascade touches only closed nodes' inboxes)",
+          "A's prior inbox entries are preserved across the close",
         );
+        const added = aInbox.slice(aInboxBefore.length);
+        assert.equal(added.length, 1, 'exactly one new entry appended to the surviving manager A');
+        assert.equal(added[0]!.from, B, 'the new entry is from the closed child B');
+        assert.match(added[0]!.label, /closed/i, 'the new entry tells A its child B was closed');
       }
       // Sideways subtree S→G — wholly alive: status active AND real panes alive.
       for (const id of sideways) {

@@ -41,6 +41,7 @@ import {
   setPresence,
   getNode,
   hasActiveLiveSubscription,
+  hasPendingSelfWake,
   dueWakes,
   consumeWake,
   advanceWake,
@@ -56,7 +57,7 @@ import { isNodePaneAlive, reconcile } from '../core/runtime/placement.js';
 import { reviveNode } from '../core/runtime/revive.js';
 import { spawnChild, type SpawnChildOpts } from '../core/runtime/spawn.js';
 import { wakeOriginFrom } from '../core/runtime/bearings.js';
-import { pushUrgent } from '../core/feed/feed.js';
+import { pushUrgent, pushUpdate } from '../core/feed/feed.js';
 import { appendInbox, readInboxSince, readCursor } from '../core/feed/inbox.js';
 import { nextSlotAfter } from '../core/wake.js';
 
@@ -80,6 +81,45 @@ async function surfaceBootFailure(meta: NodeMeta): Promise<void> {
     `a fault in the task itself.\n\n` +
     `If the work still needs doing, re-spawn it; if spawns keep dying, spawn fewer at a time.`;
   await pushUrgent(meta.node_id, body, { from: meta.node_id });
+}
+
+/** Wake an inbox-waiting PARENT when the daemon ends a child the child did NOT
+ *  end itself — a mid-generation CRASH (the pane died inside a turn) or a quiet-
+ *  turn FINALIZE (the pane was dismissed after the turn ended with nothing live
+ *  to wait for). Mirrors surfaceBootFailure: a single push fanned to
+ *  subscribersOf(child), so a purely-inbox-waiting parent is woken on the SAME
+ *  channel as a `push final` — its live inbox-watcher, or this daemon's dormant-
+ *  revive second pass. Without it a parent that delegated and just stopped hangs
+ *  forever on these outcomes (D-1 finding: today only `push final` / never-booted
+ *  wake it). The doctrine "delegate and stop; the runtime wakes you" requires
+ *  EVERY terminal child outcome to reach the parent.
+ *
+ *  Fires ONLY on genuine death — NEVER on healthy dormancy. The CALLER owns that
+ *  boundary: this is invoked from the crash + finalize branches only; a child
+ *  that ended its turn still awaiting a live grandchild OR holding a pending
+ *  self-wake routes to `release` (revivable) and never reaches here. A CRASH is
+ *  URGENT (a fault, like a boot failure); a quiet FINALIZE is a normal update (a
+ *  clean dismissal — wake the dormant parent without interrupting a live one
+ *  mid-turn). */
+async function surfaceChildDeath(meta: NodeMeta, cause: 'crash' | 'finalize'): Promise<void> {
+  if (cause === 'crash') {
+    await pushUrgent(
+      meta.node_id,
+      `⚠ Child died — \`${meta.name}\` (${meta.kind}) was killed mid-task.\n\n` +
+        `Its pi vehicle went away mid-generation (the pane was closed or crashed while it was ` +
+        `working), so it never pushed a final report. Re-spawn it if the work still needs doing.`,
+      { from: meta.node_id },
+    );
+  } else {
+    await pushUpdate(
+      meta.node_id,
+      `\`${meta.name}\` (${meta.kind}) ended without a final report.\n\n` +
+        `Its turn ended and its pane was closed with nothing live left to wait for, so the runtime ` +
+        `finalized it. It pushed no \`final\` — check its reports/ for anything it left, and re-spawn ` +
+        `if the result is incomplete.`,
+      { from: meta.node_id },
+    );
+  }
 }
 
 const DEFAULT_INTERVAL_MS = 2000;
@@ -309,30 +349,51 @@ export async function superviseTick(now: number = Date.now()): Promise<void> {
         //     killed inside a turn: a genuine mid-run death. (The pane is gone, so
         //     pi is dead; we read isBusy WITHOUT the usual AND-pidAlive guard on
         //     purpose — here a stale marker IS the proof it died mid-turn.)
-        //   • finished its turn (busy ABSENT) but still awaiting a LIVE child →
-        //     RELEASE (→idle + idle-release), NOT dead. Real orchestration is
-        //     outstanding; killing it would orphan the children's reports. Drop the
-        //     stale window and let the second pass revive it into the backstage on
-        //     the next child push, where the user can re-focus it. This is what
-        //     makes "close the pane" safe for a waiting orchestrator.
-        //   • finished its turn AND awaiting nothing live → finalize (→done): it
-        //     did its own work and the pane was closed to dismiss it.
+        //   • finished its turn (busy ABSENT) but STILL WAITING — awaiting a LIVE
+        //     child OR holding a pending self-wake → RELEASE (→idle + idle-release),
+        //     NOT dead, and NO parent wake. This is HEALTHY DORMANCY (the same
+        //     boundary the stop-guard draws): real orchestration / a scheduled
+        //     clock is outstanding; killing it would orphan in-flight work, and
+        //     waking its parent here would re-create the spurious-wake storm the
+        //     wake doctrine exists to kill. Drop the stale window; the second /
+        //     wakeups pass revives it on the next child push or clock fire.
+        //   • finished its turn AND nothing live to wait for AND no pending clock →
+        //     finalize (→done): it did its own work and the pane was closed to
+        //     dismiss it. GENUINE death → wake the inbox-waiting parent.
         const meta = getNode(row.node_id);
         const neverBooted = meta !== null && meta.pi_session_id == null;
         const finishedTurn = !neverBooted && !isBusy(row.node_id);
-        if (finishedTurn && !hasActiveLiveSubscription(row.node_id)) {
+        // The death-vs-dormancy boundary, drawn EXACTLY where the stop-guard draws
+        // it (stop-guard.ts): a live active subscription OR a pending self-wake is
+        // a legitimate wait. Only a finished node with NEITHER is genuinely done.
+        const stillWaiting =
+          hasActiveLiveSubscription(row.node_id) || hasPendingSelfWake(row.node_id);
+        if (finishedTurn && !stillWaiting) {
           transition(row.node_id, 'finalize');
           process.stderr.write(
-            `[crtrd] done ${row.node_id} (pane gone after turn end, no live child)\n`,
+            `[crtrd] done ${row.node_id} (pane gone after turn end, nothing live to wait for)\n`,
           );
+          // Wake the inbox-waiting parent: the child ended without a `push final`
+          // and was dismissed; without this the daemon-finalize reaches no one
+          // (D-1) and a purely-inbox-waiting parent hangs forever.
+          if (meta !== null) {
+            try {
+              await surfaceChildDeath(meta, 'finalize');
+            } catch (err) {
+              process.stderr.write(
+                `[crtrd] surfaceChildDeath(finalize) ${row.node_id} error: ${(err as Error).message}\n`,
+              );
+            }
+          }
         } else if (finishedTurn) {
-          // Awaiting a live child → revivable, not a death (closing the pane must
-          // not orphan in-flight work). Clear the stale window; the second pass
-          // revives it on the next unseen inbox entry.
+          // Still legitimately waiting (a live child OR a pending self-wake) →
+          // revivable, NOT a death: closing the pane must not orphan in-flight
+          // work, and healthy dormancy must NOT wake the parent. Clear the stale
+          // window; the second / wakeups pass revives it.
           setPresence(row.node_id, { tmux_session: row.tmux_session, window: null, pane: null });
           transition(row.node_id, 'release');
           process.stderr.write(
-            `[crtrd] release ${row.node_id} (pane gone while awaiting a live child → revivable)\n`,
+            `[crtrd] release ${row.node_id} (pane gone while still waiting → revivable, no parent wake)\n`,
           );
         } else {
           transition(row.node_id, 'crash');
@@ -351,6 +412,18 @@ export async function superviseTick(now: number = Date.now()): Promise<void> {
             process.stderr.write(
               `[crtrd] dead ${row.node_id} (pane gone mid-generation, intent=${String(row.intent)})\n`,
             );
+            // Wake the inbox-waiting parent on a GENUINE mid-run death (D-1): a
+            // booted child whose pane died inside a turn is unambiguously dead
+            // (busy marker present), never healthy dormancy.
+            if (meta !== null) {
+              try {
+                await surfaceChildDeath(meta, 'crash');
+              } catch (err) {
+                process.stderr.write(
+                  `[crtrd] surfaceChildDeath(crash) ${row.node_id} error: ${(err as Error).message}\n`,
+                );
+              }
+            }
           }
         }
       }

@@ -21,13 +21,9 @@ Be proactive — look ahead. If the current phase is wrapping up, prepare the ne
 
 ## Waiting and standing work
 
-You delegate and wait constantly — make every open-ended wait bounded. **Set a deadline on any delegation you go dormant behind** (`crtr node wake until <T>`): you wake when your workers report, or at T to chase the quiet ones, never hanging on a silent child.
+You delegate and wait constantly. When you delegate and go dormant, just stop — you auto-subscribe to every child, so the runtime wakes you the moment one reports; there is nothing to arm, poll, or verify, and a deadline set to chase a child is a belt-and-suspenders the runtime makes unnecessary.
 
-Choose the recurrence shape by intent:
-- **Adaptive** (re-arm one `crtr node wake at <interval>` each cycle) when the *next* interval depends on what *this* wake found — polling, settling, backoff. The chain stops the moment you stop re-arming.
-- **Declarative** (`--every <cadence>`) when the job must keep firing on a fixed cadence regardless of whether any one instance survives — the dependable agentic cron. Use `crtr node wake spawn --every` to **spawn a fresh instance** each cadence (right for standing jobs that finish and reap, like a nightly triage); use `crtr node wake at --every` to **revive the same node** each cadence (only for a genuinely persistent standing agent).
-
-**Reap what you no longer need.** `crtr node wake list` before you finish or re-arm; cancel stale rows. Closing or reaping a node auto-cancels the wakes anchored *to it* **and** the detached spawns / spawn-crons it armed (a deliberate close reaps by owner). But a node that **finishes** or **crashes** leaves its detached wakes running, so cancel them explicitly when you abandon the work they would do.
+You schedule wakes yourself only for work no one can push to you: recurring or scheduled standing work, or polling an external the spine can't deliver (CI, a deploy, a clock). The shapes differ — adaptive (re-decide the next interval from what this cycle found) versus declarative cron (a fixed cadence that fires whether or not any one run survives), spawning a fresh instance each cadence versus reviving the same node, and reaping the stale wakes you no longer need. `crtr node wake -h` covers them all.
 
 ## The roadmap is your memory
 

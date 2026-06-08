@@ -37,6 +37,7 @@ import {
 import { transition } from './lifecycle.js';
 import { tearDownNode } from './placement.js';
 import { appendInbox } from '../feed/inbox.js';
+import { appendPassive } from '../feed/passive.js';
 
 export interface CloseNodeResult {
   /** The focused node that was closed — the cascade root. */
@@ -167,6 +168,30 @@ export function closeNode(rootId: string): CloseNodeResult {
         label: cancellationLabel(id === rootId, deadChildren),
         data: { reason: 'user-close', cascade_root: rootId, canceled_children: deadChildren },
       });
+
+      // 4) Wake any SURVIVING manager subscribed to this node — the doctrine wake.
+      //    A node going dormant trusts the runtime to wake it on a child's
+      //    terminal outcome; D-1 found that `node close` notified ONLY the closed
+      //    node itself, never its subscribers, so a parent that delegated then
+      //    just stopped hangs forever when its child is closed out from under it.
+      //    Only the close ROOT can have a surviving subscriber (closingSet adds a
+      //    non-root node only when EVERY subscriber is itself closing), so this
+      //    reaches the still-living manager(s) of a deliberately-closed child and
+      //    never fires inside a self-contained cascade. Active → inbox (wakes a
+      //    dormant manager via its live watcher / the daemon's dormant-revive
+      //    second pass); passive → passive accumulator (delivered, not woken).
+      for (const sub of subscribersOf(id)) {
+        if (closing.has(sub.node_id)) continue; // also being torn down — pointless
+        const notice = {
+          from: id,
+          tier: 'normal' as const,
+          kind: 'message' as const,
+          label: `Child closed — ${m.name} (${id}) was closed from the canvas and is no longer running.`,
+          data: { reason: 'child-closed', child: id },
+        };
+        if (sub.active) appendInbox(sub.node_id, notice);
+        else appendPassive(sub.node_id, notice);
+      }
 
       closed.push(id);
     } catch {

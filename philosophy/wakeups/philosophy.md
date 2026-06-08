@@ -4,7 +4,7 @@ A node with nothing to do right now goes dormant: its pane closes, it burns no c
 
 ## The core principle
 
-> **A dormant node is waiting, not finished. Waiting is free — it holds no window and burns no compute — and the runtime wakes the node the instant a condition it waits on is met: a message arrives, a scheduled time comes, or a deadline on an awaited event passes.**
+> **A dormant node is waiting, not finished. Waiting is free — it holds no window and burns no compute — and the runtime wakes the node the instant a condition it waits on is met: a message arrives, or a scheduled time comes — a self-scheduled wake, or a deadline bounding a wait the runtime cannot push to.**
 
 Because waiting is dormant, a node can wait for minutes, hours, or days against something the canvas can't push to it — a CI run, a deploy going green, a human, tomorrow morning — without holding a single resource. The only cost a wait ever incurs is the wake itself.
 
@@ -45,11 +45,11 @@ A standing wait can recur, and there are two shapes because two intents pull in 
 
 > **Invariant E — Two recurrence shapes, chosen by intent.** Adaptive recurrence (the node re-arms itself each cycle) is for waits whose cadence is a live judgment; declarative recurrence (the runtime fires on a fixed cadence) is for standing jobs that must keep firing independent of any single instance's survival. The choice between them is the choice between adaptivity and reliability, made per use.
 
-## Event-or-deadline — waiting, but not forever
+## Bounded waits — the runtime's guarantee
 
-A wait can bind a time bound to an event wait: wake on the awaited message **or** at the deadline, whichever comes first. When the deadline wins, it is a timeout — the node wakes to reassess, chase a silent child, escalate, or give up. This is the highest-leverage combination in the model, because it turns every open-ended event-wait into a bounded one: a node can delegate and trust completion to wake it, while still guaranteeing it will not hang forever if its children go quiet.
+The runtime bounds every wait on a pushable event, so a node never bounds it by hand. It wakes the node on a human's reply, a sibling's message, and any terminal outcome of a delegate — a finish, a death, and a close all reach the inbox alike. A node that delegates and goes dormant therefore arms nothing and just stops. The one exception is a wait nothing can push to it — CI, a clock — where scheduling is the only way to wait (Invariant E).
 
-> **Invariant F — Event-or-deadline.** Any event-wait may carry a deadline, and the node wakes on whichever fires first. A node that delegates and waits is never obligated to wait indefinitely; "wait, but not past T" is expressible directly.
+> **Invariant F — A deadline bounds only the unpushable wait.** "You won't hang forever" is the runtime's guarantee, not a deadline a node sets against its delegates. Arming a timer on a pushable event is the belt-and-suspenders `trust-the-system` forbids.
 
 ## Durability and missed wakes
 
@@ -60,7 +60,7 @@ A wait is a durable fact about the canvas, not an in-memory timer, so it must ou
 ## What "good" feels like
 
 - A node waiting on CI sleeps fully dormant and wakes itself every couple of minutes to re-check, lengthening its own interval as the build drags, costing nothing in between.
-- A node delegates, sets a deadline, and goes dormant; when its children report it wakes to fold them in, and if they go silent past the deadline it wakes anyway to chase them — never hanging, never busy-waiting.
+- A node delegates, arms nothing, and goes dormant — and whether a child finishes, dies, or is closed, the runtime wakes it to fold the outcome in; stopping clean is the whole move.
 - A standing agent triages overnight failures every morning, reliably, even though last morning's instance reaped itself the moment it finished.
 - A node hands itself a one-line note before sleeping and wakes hours later knowing exactly why, in a clean window ready to act.
 - A once-focused node's scheduled wake resumes it in its own focus pane, indistinguishable from a child reporting up — no new window ever appears.

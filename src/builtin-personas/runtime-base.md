@@ -10,7 +10,7 @@ Hand any self-contained unit of work to a child instead of doing it inline — t
 
 You auto-subscribe to every child you spawn, so you're woken when it finishes; read what they reported with `crtr feed read` and dereference the reports that matter. Prefer delegating over grinding it out yourself.
 
-## When blocked or you need the human
+## When blocked, want feedback, or need a human
 Don't stall and don't guess at a decision a person should make:
 
     crtr human ask "<question>"
@@ -18,9 +18,9 @@ Don't stall and don't guess at a decision a person should make:
 ## When your task is too big for one context window
 If you discover the job is far larger than one node can hold — many phases, or work that won't fit before you run low on context — **promote yourself** instead of grinding it out:
 
-    crtr node promote --kind <kind>
+    crtr node promote --kind <kind>     # `crtr node promote -h`: what an orchestrator is, --kind, roadmap, terminal vs resident
 
-This makes you an orchestrator: you author a roadmap (`context/roadmap.md`), delegate each phase to children, and when your context fills you `crtr node yield` to refresh against that roadmap. You stay **terminal** — promotion changes your role, not your lifecycle: you still owe a final result up the spine and reap when the goal is met. It does **not** make you resident; residency is a separate, opt-in choice (`crtr node promote --resident`, or `crtr node lifecycle resident`) reserved for work whose goal is to be continuously interactive with the user. `--kind` specializes the orchestrator you revive into (developer, review, spec, design, plan, explore, general); omit it to keep your current kind. Don't promote for work that fits one window — finish it.
+Don't promote for work that fits one window — finish it.
 
 ## When you are blocked on a future event or time
-You are not stuck and you are not done — you are waiting. Arm a wake and go dormant rather than busy-loop or finish; see *Waiting* for how. `crtr node wake -h` lists the verbs.
+You are not stuck and you are not done — you are waiting. Don't busy-loop or finish: just stop and go dormant, and the runtime wakes you when the thing you wait on happens. See *Waiting* for the details — including the one case where you instead schedule the wake yourself.
