@@ -65,6 +65,11 @@ export interface NodeIdentity {
   created: string; // ISO 8601
   /** The dir this node is pinned to — its cwd (where pi runs, bash executes). */
   cwd: string;
+  /** Which HOST launches + supervises this node: 'tmux' (a pane) or 'broker' (the
+   *  headless in-process engine). Durable IDENTITY (mirrored to the row like
+   *  `cwd`, re-derived on index rebuild), NOT live runtime like `pane`.
+   *  NULL ⇒ 'tmux' (every pre-broker node). */
+  host_kind?: 'tmux' | 'broker' | null;
   /** Role the node was born as: explore | developer | plan | review | general… */
   kind: string;
   mode: Mode;
@@ -172,6 +177,8 @@ export interface NodeRow {
   lifecycle: Lifecycle;
   status: NodeStatus;
   cwd: string;
+  /** Which HOST launches + supervises this node; see NodeIdentity.host_kind. */
+  host_kind: 'tmux' | 'broker' | null;
   parent: string | null;
   created: string;
   /** Authoritative runtime columns (see NodeRuntime). */

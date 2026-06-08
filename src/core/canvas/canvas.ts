@@ -44,7 +44,7 @@ import type {
 /** The identity keys meta.json persists. Listed explicitly so no runtime field
  *  can ever leak onto disk even when a fully-hydrated NodeMeta is handed in. */
 const IDENTITY_KEYS: ReadonlyArray<keyof NodeIdentity> = [
-  'node_id', 'name', 'description', 'cycles', 'created', 'cwd', 'kind', 'mode',
+  'node_id', 'name', 'description', 'cycles', 'created', 'cwd', 'host_kind', 'kind', 'mode',
   'lifecycle', 'persona_ack', 'parent', 'spawned_by', 'fork_from', 'passive_default',
   'home_session', 'pi_session_id', 'pi_session_file', 'launch',
 ];
@@ -89,11 +89,12 @@ function writeMeta(meta: NodeIdentity): void {
 function upsertRow(meta: NodeIdentity): void {
   openDb()
     .prepare(
-      `INSERT INTO nodes (node_id, name, kind, mode, lifecycle, cwd, parent, created)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO nodes (node_id, name, kind, mode, lifecycle, cwd, host_kind, parent, created)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(node_id) DO UPDATE SET
          name=excluded.name, kind=excluded.kind, mode=excluded.mode,
-         lifecycle=excluded.lifecycle, cwd=excluded.cwd, parent=excluded.parent`,
+         lifecycle=excluded.lifecycle, cwd=excluded.cwd, host_kind=excluded.host_kind,
+         parent=excluded.parent`,
     )
     .run(
       meta.node_id,
@@ -102,6 +103,7 @@ function upsertRow(meta: NodeIdentity): void {
       meta.mode,
       meta.lifecycle,
       meta.cwd,
+      meta.host_kind ?? null,
       meta.parent ?? null,
       meta.created,
     );
@@ -115,12 +117,13 @@ function seedRow(meta: NodeMeta): void {
   openDb()
     .prepare(
       `INSERT INTO nodes
-         (node_id, name, kind, mode, lifecycle, cwd, parent, created,
+         (node_id, name, kind, mode, lifecycle, cwd, host_kind, parent, created,
           status, intent, pi_pid, "window", tmux_session, pane)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(node_id) DO UPDATE SET
          name=excluded.name, kind=excluded.kind, mode=excluded.mode,
-         lifecycle=excluded.lifecycle, cwd=excluded.cwd, parent=excluded.parent,
+         lifecycle=excluded.lifecycle, cwd=excluded.cwd, host_kind=excluded.host_kind,
+         parent=excluded.parent,
          status=excluded.status, intent=excluded.intent, pi_pid=excluded.pi_pid,
          "window"=excluded."window", tmux_session=excluded.tmux_session,
          pane=excluded.pane`,
@@ -132,6 +135,7 @@ function seedRow(meta: NodeMeta): void {
       meta.mode,
       meta.lifecycle,
       meta.cwd,
+      meta.host_kind ?? null,
       meta.parent ?? null,
       meta.created,
       meta.status ?? 'active',
@@ -152,6 +156,7 @@ function rowFrom(r: Record<string, unknown>): NodeRow {
     lifecycle: r['lifecycle'] as NodeRow['lifecycle'],
     status: r['status'] as NodeStatus,
     cwd: r['cwd'] as string,
+    host_kind: (r['host_kind'] as 'tmux' | 'broker' | null) ?? null,
     parent: (r['parent'] as string | null) ?? null,
     created: r['created'] as string,
     intent: (r['intent'] as ExitIntent) ?? null,

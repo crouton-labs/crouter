@@ -272,6 +272,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_wakeups_deadline ON wakeups(node_id) WHERE
 `);
 }
 
+/** v8 — additive identity column `host_kind`: which HOST launches + supervises a
+ *  node — `'tmux'` (a pane) or `'broker'` (the headless in-process engine). It is
+ *  durable IDENTITY mirrored from meta.json like `cwd` (NOT runtime like `pane`),
+ *  so it survives an index rebuild via the `IDENTITY_KEYS`/`upsertRow` path.
+ *  Defaults NULL ⇒ `'tmux'` (every existing node is tmux-hosted); no data
+ *  backfill. Additive, forward-only. */
+function addHostKindColumn(db: DatabaseSync): void {
+  db.exec(`ALTER TABLE nodes ADD COLUMN host_kind TEXT;`);
+}
+
 /** The ordered migration list. Index `i` is migration version `i + 1`; the db's
  *  `user_version` tracks how many have been applied. Append only. */
 export const MIGRATIONS: ReadonlyArray<(db: DatabaseSync) => void> = [
@@ -282,6 +292,7 @@ export const MIGRATIONS: ReadonlyArray<(db: DatabaseSync) => void> = [
   /* v5 */ addPaneColumn,
   /* v6 */ addFocusesTable,
   /* v7 */ appendWakeupsTable,
+  /* v8 */ addHostKindColumn,
 ];
 
 /** Bring `db` up to the latest schema version. Reads `user_version`, runs each
