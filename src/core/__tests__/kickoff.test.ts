@@ -8,7 +8,7 @@
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { createNode, subscribe } from '../canvas/canvas.js';
@@ -39,7 +39,9 @@ function node(id: string): NodeMeta {
 }
 
 before(() => {
-  home = mkdtempSync(join(tmpdir(), 'crtr-kickoff-'));
+  // Under homedir (not tmpdir) so report paths fall under the home prefix and
+  // exercise the tildify() collapse in reportHistoryLines.
+  home = mkdtempSync(join(homedir(), '.crtr-kickoff-'));
   process.env['CRTR_HOME'] = home;
 });
 beforeEach(() => {
@@ -110,10 +112,15 @@ test('a fresh revive is pointed at its subscriptions\' on-disk report history (c
   const msg = buildReviveKickoff(parent, drainBearings(parent));
 
   // Both existing report PATHS surface (most recent first), so the revived node
-  // can dereference the history its advanced cursor would otherwise hide.
-  assert.ok(msg.includes(older), 'older report path surfaced');
-  assert.ok(msg.includes(newer), 'newer report path surfaced');
-  assert.ok(msg.indexOf(newer) < msg.indexOf(older), 'most recent report listed first');
+  // can dereference the history its advanced cursor would otherwise hide. They
+  // render home-relative with a leading ~ (the absolute home prefix is wasted
+  // context tokens; ~ is still dereferenceable by the revived node).
+  const olderRel = '~' + older.slice(homedir().length);
+  const newerRel = '~' + newer.slice(homedir().length);
+  assert.ok(msg.includes(olderRel), 'older report path surfaced, home-relative (~)');
+  assert.ok(msg.includes(newerRel), 'newer report path surfaced, home-relative (~)');
+  assert.ok(!msg.includes(older), 'absolute home prefix not rendered');
+  assert.ok(msg.indexOf(newerRel) < msg.indexOf(olderRel), 'most recent report listed first');
   // ...and the hint that the full inbox history is replayable cursor-independently.
   assert.ok(/feed read --all/.test(msg), 'points at the cursor-independent full-history replay');
 });

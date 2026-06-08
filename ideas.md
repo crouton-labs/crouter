@@ -24,6 +24,31 @@ Maybe solution to memory:
     - Maybe directives are just one-liners that get loaded in? It's sorta like prompts that have documents included. That's kinda what memories are too, tbh. 
     - TBH, feels like when the user expresses some directive, the agent should almost pick up on this and try to understand WHEN this directive applies, and WHY it applies. It'd then be able to update/improve it's prompting.
     - Feels like we need better skill-loading. Really the higher level pattern is: *When you're in situations like X, you should do Y, because Z*. 
+
+        EXAMPLES
+
+        "yeah, let's save this as something to come back to" (should make a new document in its "memory + skills + directives" collection. Maybe it's a new form, "note".
+    memories/
+      MEMORY.md
+    skills/
+      how-to-prompt/
+        SKILL.md
+    directives/
+      use-orchestration/
+        DIRECTIVE.md
+    notes/
+      long-term-ideas/
+      how-creativity-works/
+        NOTE.md
+
+    docs/
+      crtr/
+      pi/
+
+    Each might have a different way of auto-loading. They probably all have yaml frontmatter, and probably all have a CLI surface that enables YAML actions of the markdown surface.
+    
+
+
   - Memories are literally just that—memories the agent has of who the user is/preferences/etc
 
 
@@ -32,8 +57,6 @@ Telemetry
 - 
 
 Something around the agent improving itself as it goes/fixing itself/taking feedback well.
-
-- Upstream pi want: system entries inside the messages array (mid-run instruction updates, cache-safe, no user turn) — would let us reassert node identity authoritatively without the user-role peer-message hack. Blocked on pi-ai. See [notes/pi-system-in-messages.md](notes/pi-system-in-messages.md).
 
 
 - nodes can be created in new worktrees, build in grove style secret cloning script, make sure the agent is able to verify
@@ -110,3 +133,59 @@ CALL OUT: Load up cache—we want a beautiful experience (e.g. click drag over r
     - Maybe a "sales" mode too where the system prompting is slightly tweaked?
 - App installation—users and us need to be able to publish apps for this world.
 
+
+#### Random Ideas
+
+App-Data—agent can create projects so nodes within them have hteir own project memories. Like workspaces! We'd have AGENT.md docs at all levels too.
+
+Rules move to docs? Docs taht autoload on reading files??
+Memory is sus, maybe replaceable by docs/rules/etc—all of these mds only need a flag essentially on wehther their context auto-loads, and to what degree.
+
+
+
+Crazy thought:  what if in order to like reach maximum activation, we had users also very smoothly and elegantly onboard onto a keybind native workflow because users who learn all the keybinds and come to love them can't stand switching because none of their keybinds work and also feel faster. And obviously it's really difficult onboarding keybinds, but because we have such a liquidy product surface and product experience that we can create, it seems feasible that we should be able to onboard them onto keybinds, in which case a potential new philosophy should be that keybinds that we as developers enjoy should also be mirrored to the pre-UI version for the sales version of of this application.
+
+
+All docs are teh same, episodic vs semantic vs preferrential / behavioral knoweldge is one axis, and auto-loaidng rules is another. 
+scale: full context, pointer, searchable only
+Before big tasks, search docs/memory/skills/etc. This is something  that scales with orchestration mode. Wehn it scales up, it needs to look at other avenues more (maybe other memories are relevant, for exmaple).
+
+
+Flatten it out, but have tags instead for organization
+
+
+An agent's node memory should be absorbed by its children too!
+
+It really does seem like there are jus these three kinds of types: episodic, preferential, and semantic.
+
+I think weave just those three types. I'd want to refactor how our skills and rules and everything else works: 
+- Episodic memory. This will be managed largely by the system itself (it's got conversation storage, it may get automatic summarization; let's not worry about this)
+- Semantic Memory. This breaks down into procedural (skills, sales playbook), referrential (org chart, docs for code, factual matters explaining how something works), and preferrential (behavioral directives). 
+
+I think everything boils down to those.
+Like our fancy pi-rules and regular claude rules, I want these md documents to sorta all load with same controllability (if a file matching a pattern in a subdir is read it gets autoinjected, if a md file with a certain yaml property is read, etc).
+Frontmatter would have:
+
+```
+kind: skill|preference|reference
+whenText: string // a short string describing when this document should be read
+whyText: string // a short string describing why this document is important to read
+short-form: string // a very abbreviated version/of the content within
+file-read-visibility: always|preview|name|none
+system-prompt-visibility: content|preview|name|none // what content from this auto-loads in the system prompt/relevant cli-docs when pi is run.
+```
+
+When the preview of the document is shown, the "preview" form of it will be "{{when}}, read this {{kind}}. {{why}}."
+
+When "content" form of the document is shown, the actual body of the file would be shown.
+
+The document's kind would determine various match pattern logic for when this document or preview should be auto-injected. It'd be configuration for what scenarios led to what information (path-name vs preview vs content) being injected). For example, CLAUDE.md becomes irrelevant—it's just a project reference document with visibility of "always". if it was "preview" then only it's preview pointer would show up auto-loaded. And if it was name, then only its name would show up. ANd if "none" then it only appears if searched for. 
+
+The idea here is that hte agent can write skills, referenecs, and peferences much more often and freely without worrying about bloating context—it can just intelligently determine when to it should become visible and how much should become visible so it can keep its context clean.
+
+With "system-prompt-visibility" this one would determine where it showed up in cli help and system prompting. If it was "content", then the preferences would show up in a dedicated "user-preferences" section, if it was references it'd show up in some dedicated "knowledge" section, and if it was "skills" it'd show up in a larger skill section. In each case, each instance would be its own section in a larger section, with skills, then preferences loading in that order, and references loading in an autoloaded message like the crtr context section for example.
+If the visibility was preview, instead the preview text would show up in those dedicated sections in the system prompt, and so on. 
+
+tbh, I think this indicates we should use a flat map of memory/<topic>.md files. 
+
+Also, we want the user memory dir out of the canvas dir. We can have per-node memory in the canvas, but that's it—the rest belongs in the project dir and the .crouter/memory/ dir.

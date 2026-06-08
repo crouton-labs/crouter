@@ -27,6 +27,7 @@ import {
   readdirSync,
 } from 'node:fs';
 import { join } from 'node:path';
+import { homedir } from 'node:os';
 import {
   contextDir,
   reportsDir,
@@ -186,6 +187,17 @@ export function drainBearings(meta: NodeMeta): ReviveBearings {
 const REPORT_HISTORY_PER_SOURCE = 5;
 const REPORT_HISTORY_TOTAL_CAP = 20;
 
+/** Collapse the home-dir prefix of an absolute path to a leading `~`, so report
+ *  paths render as `~/.crouter/canvas/nodes/<id>/reports/<ts>.md` instead of
+ *  repeating the long absolute home prefix on every catch-up line — cheaper
+ *  context, still dereferenceable by the revived node. A path NOT under the home
+ *  dir (e.g. a CRTR_HOME / project-scope home elsewhere) is returned unchanged,
+ *  so we never mangle a non-home path. */
+function tildify(p: string): string {
+  const home = homedir();
+  return p.startsWith(home) ? '~' + p.slice(home.length) : p;
+}
+
 /** Recent report file PATHS (most-recent-first), grouped by publisher, for each
  *  ACTIVE subscription of `nodeId` — independent of publisher liveness, so a
  *  finished worker's history still surfaces for catch-up. Skips subscriptions
@@ -208,7 +220,7 @@ function reportHistoryLines(nodeId: string): string[] {
     lines.push(`  ${pub !== null ? `${pub.name} (${sub.node_id})` : sub.node_id}:`);
     for (const f of files) {
       if (total >= REPORT_HISTORY_TOTAL_CAP) break;
-      lines.push(`    ${join(dir, f)}`);
+      lines.push(`    ${tildify(join(dir, f))}`);
       total++;
     }
   }
