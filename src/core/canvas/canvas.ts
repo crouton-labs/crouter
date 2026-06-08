@@ -15,6 +15,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { openDb } from './db.js';
+import { isPidAlive } from './pid.js';
 import {
   ensureHome,
   ensureNodeDirs,
@@ -466,17 +467,6 @@ export interface PruneResult {
   dryRun: boolean;
 }
 
-/** Is `pid` a live process? `kill(pid, 0)` sends no signal — it only probes
- *  existence/permission. ESRCH ⇒ gone; EPERM ⇒ alive but not ours (still alive). */
-function pidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return (e as NodeJS.ErrnoException).code === 'EPERM';
-  }
-}
-
 /** Retention sweep: remove TERMINAL nodes (status dead | done | canceled) whose
  *  `created` is older than `ttlDays`, bounding the otherwise-unbounded growth of
  *  node rows + dirs. The edges→nodes FK (`ON DELETE CASCADE`, migration v4) GCs
@@ -528,7 +518,7 @@ export function pruneNodes(opts: { ttlDays: number; dryRun?: boolean; includeSta
     .filter((r) => {
       if ((r['node_id'] as string) === selfId) return false;
       const pid = r['pi_pid'] as number | null;
-      return pid === null || !pidAlive(pid);
+      return !isPidAlive(pid);
     })
     .map((r): PrunedNode => ({
       node_id: r['node_id'] as string,

@@ -37,7 +37,7 @@ import {
 } from './placement.js';
 import { hostFor } from './host.js';
 import { nodeSession, childBackstageOf, rootOfSpine } from './nodes.js';
-import { isPidAlive } from './pid.js';
+import { isPidAlive } from '../canvas/pid.js';
 
 // ---------------------------------------------------------------------------
 // resumeArgs — which session source a revive resumes from

@@ -68,7 +68,7 @@ import {
 } from './tmux.js';
 import { homeSessionOf, childBackstageOf, nodeSession, newNodeId, rootOfSpine } from './nodes.js';
 import { isBusy } from './busy.js';
-import { isPidAlive } from './pid.js';
+import { isPidAlive } from '../canvas/pid.js';
 import { transition } from './lifecycle.js';
 
 // Re-export the durable REVIVE-HOME read so placement is the one front door for
