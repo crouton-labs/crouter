@@ -10,7 +10,6 @@ import { listLeaf } from './memory/list.js';
 import { readLeaf } from './memory/read.js';
 import { findLeaf } from './memory/find.js';
 import { writeLeaf } from './memory/write.js';
-import { migrateLeaf } from './memory/migrate.js';
 import { lintLeaf } from './memory/lint.js';
 
 export function registerMemory(): BranchDef {
@@ -28,6 +27,6 @@ export function registerMemory(): BranchDef {
       model:
         '`list` for a human inventory of what is stored — one line per document, the only surface that shows short-form. `read` (leaf) loads one document body by name, resolved project > user > builtin with leaf-name fallback; --frontmatter keeps the YAML header. `find` when you do not yet know which document applies — it ranks by relevance over name/when/why/short-form, --body to also weigh bodies, --grep for an exact regex over bodies. `write` creates or updates memory/<name>.md at a scope from frontmatter flags + a body piped on stdin. `lint` strict-parses the whole bounded corpus and fails on any invalid frontmatter — run it after authoring. Append `-h` at any leaf for its full schema.',
     },
-    children: [listLeaf, readLeaf, findLeaf, writeLeaf, migrateLeaf, lintLeaf],
+    children: [listLeaf, readLeaf, findLeaf, writeLeaf, lintLeaf],
   });
 }

@@ -20,11 +20,7 @@ import { contextDir } from '../canvas/paths.js';
 import { spawnNode } from '../runtime/nodes.js';
 import { promote } from '../runtime/promote.js';
 import { personaDrift } from '../runtime/persona.js';
-import {
-  memoryDir,
-  userMemoryDir,
-  projectMemoryDir,
-} from '../runtime/memory.js';
+import { memoryDir } from '../runtime/memory.js';
 import registerCanvasContextIntro, {
   buildContextIntro,
   renderContextMessage,
@@ -136,9 +132,9 @@ test('orchestrator bearings: no per-store stanzas or (empty) markers; a rung-non
 
   const block = buildContextIntro(meta.node_id);
   // No per-store stanza headers, no (empty) markers, no index paths.
-  assert.ok(!block.includes(`user-global · ${userMemoryDir()}`), 'no user-global stanza header');
-  assert.ok(!block.includes(`project · ${projectMemoryDir('/tmp/work')}`), 'no project stanza header');
   assert.ok(!block.includes(`node-local · ${memoryDir(meta.node_id)}`), 'no node-local stanza header');
+  assert.ok(!block.includes('user-global · '), 'no user-global stanza header');
+  assert.ok(!block.includes('project · '), 'no project stanza header');
   assert.doesNotMatch(block, /\(empty\)/, 'no (empty) markers');
   assert.ok(!block.includes('MEMORY.md'), 'no MEMORY.md path in the block');
   // M6: rung-none node-local doc surfaces as its title stub only.

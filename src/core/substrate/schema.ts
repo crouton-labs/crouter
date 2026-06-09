@@ -24,8 +24,6 @@ export function isDocKind(v: unknown): v is DocKind {
 // The 4-rung visibility ladder (design §4). A strict, monotone ordering where
 // each rung is a superset of disclosure over the one before:
 //   none < name < preview < content
-// `always` is NOT a separate rung — `always` IS `content` (design §4); the
-// parser normalizes the alias so a stale doc still resolves.
 // ---------------------------------------------------------------------------
 
 export const RUNGS = ['none', 'name', 'preview', 'content'] as const;
@@ -167,11 +165,11 @@ function strField(v: unknown): string {
 }
 
 /** Resolve a visibility field to a ladder rung, falling back to the kind
- *  default when absent/invalid. Maps the `always` alias → `content` (design §4). */
+ *  default when absent/invalid. */
 function parseRung(v: unknown, fallback: Rung): Rung {
-  if (typeof v !== 'string') return fallback;
-  const norm = v === 'always' ? 'content' : v;
-  return (RUNGS as readonly string[]).includes(norm) ? (norm as Rung) : fallback;
+  return typeof v === 'string' && (RUNGS as readonly string[]).includes(v)
+    ? (v as Rung)
+    : fallback;
 }
 
 /** A gate is engaged only when frontmatter carries a non-null, non-array object
