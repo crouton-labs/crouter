@@ -11,6 +11,7 @@ import { createNode, getNode, getRow, subscribersOf } from '../canvas/canvas.js'
 import { closeDb } from '../canvas/db.js';
 import { nodeDir } from '../canvas/paths.js';
 import { spawnNode } from '../runtime/nodes.js';
+import { resolveSpawner } from '../runtime/spawn.js';
 import type { NodeMeta } from '../canvas/types.js';
 
 let home: string;
@@ -77,6 +78,20 @@ test('independent root: provenance only, no parent, no subscription', () => {
     subscribersOf(root.node_id).length,
     0,
     'nobody is subscribed to an independent root — the spawner is not woken by it',
+  );
+});
+
+test('resolveSpawner: a --root spawn needs no caller; a managed child does (regression)', () => {
+  // Bug-regression: `crtr node new --root` from a human shell (no CRTR_NODE_ID,
+  // no --parent) threw "spawnChild requires a calling node" even though a root
+  // has no spine parent and the spawner id is provenance only.
+  assert.equal(resolveSpawner(undefined, null, true), null, 'human root spawn: no caller is fine');
+  assert.equal(resolveSpawner(undefined, 'A', true), 'A', 'node root spawn: provenance recorded');
+  assert.equal(resolveSpawner('A', null, false), 'A', 'explicit parent satisfies a child spawn');
+  assert.throws(
+    () => resolveSpawner(undefined, null, false),
+    /requires a calling node/,
+    'a managed child with no caller still throws',
   );
 });
 

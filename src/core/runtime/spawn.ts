@@ -173,6 +173,24 @@ export interface SpawnChildResult {
   session: string;
 }
 
+/** Resolve who a spawn is attributed to. A managed child needs a spine parent
+ *  (explicit `--parent` or the calling node's CRTR_NODE_ID). A --root spawn
+ *  does not: it is top-level by definition and the spawner identity is
+ *  provenance only — a human shell with no CRTR_NODE_ID is a legitimate root
+ *  spawner (regression: `crtr node new --root` from outside a node used to
+ *  throw here). */
+export function resolveSpawner(
+  parent: string | undefined,
+  ctxNodeId: string | null,
+  root: boolean,
+): string | null {
+  const spawner = parent ?? ctxNodeId ?? null;
+  if (!root && spawner === null) {
+    throw new Error('spawnChild requires a calling node (CRTR_NODE_ID) or an explicit parent');
+  }
+  return spawner;
+}
+
 /** Spawn a node from a live node. By default a managed terminal worker in a
  *  background window, with the spawner auto-subscribed (active) via spawnNode.
  *  With `root`: an independent resident root — parent=null, NO subscription back
@@ -181,12 +199,8 @@ export interface SpawnChildResult {
 export function spawnChild(opts: SpawnChildOpts): SpawnChildResult {
   try { ensureDaemon(); } catch { /* daemon is best-effort */ }
   const ctx = currentNodeContext();
-  const spawner = opts.parent ?? ctx.nodeId;
-  if (spawner === null || spawner === undefined) {
-    throw new Error('spawnChild requires a calling node (CRTR_NODE_ID) or an explicit parent');
-  }
-
   const root = opts.root === true;
+  const spawner = resolveSpawner(opts.parent, ctx.nodeId ?? null, root);
   const mode = opts.mode ?? 'base';
   // Lifecycle keys on ROOT-ness only, independent of mode: an independent root
   // (or `--root`) is resident (a conversation that persists, woken by inbox/
@@ -207,9 +221,10 @@ export function spawnChild(opts: SpawnChildOpts): SpawnChildResult {
     name: opts.name ?? opts.kind,
     description: generateSessionName(opts.prompt),
     // A root has no spine parent (top-level, nobody subscribes); it still
-    // records spawned_by=spawner. A child's parent IS its manager.
+    // records spawned_by=spawner when a node (not a human shell) spawned it.
+    // A child's parent IS its manager.
     parent: root ? null : spawner,
-    spawnedBy: root ? spawner : undefined,
+    spawnedBy: root ? (spawner ?? undefined) : undefined,
     // Persist the RAW fork reference (not the resolved path) as provenance, so
     // the boot intro can detect this is a fork and re-assert the node's own
     // identity over the source's copied-in conversation.
