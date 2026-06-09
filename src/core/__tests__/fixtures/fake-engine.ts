@@ -41,6 +41,8 @@ import {
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { DefaultResourceLoader, getAgentDir } from '@earendil-works/pi-coding-agent';
+import type { AgentSessionEvent } from '@earendil-works/pi-coding-agent';
+import type { AssistantMessage, AssistantMessageEvent } from '@earendil-works/pi-ai';
 
 /** Test seam (M-1 regression): a FRESH-start kickoff prompt carrying this token
  *  makes the fake engine THROW inside bindExtensions BEFORE it fires
@@ -175,6 +177,48 @@ interface ResourceLoader {
   getExtensions(): { extensions: LoadedExtension[]; errors?: unknown[]; runtime: ExtRuntime };
 }
 
+// ---------------------------------------------------------------------------
+// AgentSessionEvent stream synthesis (T8 / G1, G3, G4, G8). The fake emits a
+// REALISTIC streaming assistant turn through session.subscribe — the SAME channel
+// the real pi engine feeds the broker's fan-out — so the frames a `crtr attach`
+// client receives are byte-for-byte real AgentSessionEvents. The EMITTED event
+// shapes are typed against the real `AgentSessionEvent` union from pi (whose full
+// 17 variants are message_start/update/end, tool_execution_start/update/end,
+// agent_start/end, turn_start/end, queue_update, compaction_start/end, auto_retry_
+// start/end, session_info_changed, thinking_level_changed) — emit() takes that
+// union, so a drift in the shape of any variant emitTurn() constructs (the
+// streaming subset: the message_*, tool_execution_*, agent/turn start+end events)
+// fails the build, not a test.
+// ---------------------------------------------------------------------------
+
+/** A minimal but fully-typed AssistantMessage. `pad` bytes of filler text let a
+ *  test size a single frame to multiple MiB (G8 backpressure flood). */
+function assistantMessage(text: string, pad = 0): AssistantMessage {
+  return {
+    role: 'assistant',
+    content: [{ type: 'text', text: pad > 0 ? `${text} ${'x'.repeat(pad)}` : text }],
+    api: 'anthropic-messages',
+    provider: 'anthropic',
+    model: 'fake-sonnet',
+    usage: {
+      input: 10,
+      output: 5,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 15,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason: 'stop',
+    timestamp: Date.now(),
+  };
+}
+
+/** A streaming text-delta event (the `assistantMessageEvent` carried by a
+ *  message_update). Kept small (the big payload rides in message_update.message). */
+function textDelta(partial: AssistantMessage, delta: string): AssistantMessageEvent {
+  return { type: 'text_delta', contentIndex: 0, delta, partial };
+}
+
 class FakeSession {
   private readonly sm: SessionManager;
   private readonly loader: ResourceLoader | undefined;
@@ -187,6 +231,10 @@ class FakeSession {
   private disposed = false;
   private eventSeq = 0;
   private timer: ReturnType<typeof setInterval> | undefined;
+  // The broker's fan-out subscribers (broker.ts `session.subscribe(...)`) and the
+  // accumulating message history the catch-up snapshot serializes (G3).
+  private readonly listeners = new Set<(event: AgentSessionEvent) => void>();
+  private readonly messageLog: AssistantMessage[] = [];
 
   constructor(sm: SessionManager, loader: ResourceLoader | undefined) {
     this.sm = sm;
@@ -194,10 +242,11 @@ class FakeSession {
     this.dir = nodeDirFromEnv();
   }
 
-  // --- broker-read getters (cheap stubs; only buildSnapshot on hello reads the
-  //     stats/messages/model, and there are no clients in these tests) ----------
+  // --- broker-read getters. buildSnapshot (on a client hello) reads messages/
+  //     stats/model: T8 clients attach and assert on welcome.snapshot, so messages
+  //     returns the accrued history; stats/model stay cheap stubs. ---------------
   get messages(): unknown[] {
-    return [];
+    return this.messageLog;
   }
   get sessionId(): string {
     return this.sm.getSessionId();
@@ -221,11 +270,14 @@ class FakeSession {
   }
 
   // --- controller-drive stubs (no controller connects in these tests) ----------
-  prompt(_text: string): Promise<void> {
-    // A fresh start delivers the kickoff here; the test drives turns/stops via
-    // the command channel (exactly like fake-pi-host), so just RECORD it — never
-    // auto-fire agent_end.
-    return Promise.resolve();
+  prompt(text: string, _options?: unknown): Promise<void> {
+    // The broker calls this for BOTH the fresh-start kickoff AND a controller's
+    // `prompt` frame (G1/G4). Either way emit a realistic streaming turn on the
+    // subscribe channel; the broker fans it out to every attached viewer VERBATIM.
+    // This is the SUBSCRIBE channel only — it does NOT run the canvas stophook
+    // (that fires via the separate extension-handler channel in dispatch()/fire()),
+    // so it never tears the broker down. The broker fire-and-forgets the promise.
+    return this.emitTurn(text);
   }
   steer(_text: string): Promise<void> {
     return Promise.resolve();
@@ -237,11 +289,89 @@ class FakeSession {
     return Promise.resolve();
   }
 
-  // --- the single engine event stream the broker fans out (no clients here) ----
-  subscribe(_listener: (event: unknown) => void): () => void {
+  // --- the single engine event stream the broker fans out (broker.ts subscribes
+  //     here and broadcasts each event VERBATIM to every attached viewer) --------
+  subscribe(listener: (event: unknown) => void): () => void {
+    const l = listener as (event: AgentSessionEvent) => void;
+    this.listeners.add(l);
     return () => {
-      /* unsubscribe */
+      this.listeners.delete(l);
     };
+  }
+
+  /** Fan one typed AgentSessionEvent out to every broker subscriber. A throwing
+   *  listener is recorded, never propagated (mirrors the broker's m7 try/catch). */
+  private emit(event: AgentSessionEvent): void {
+    for (const l of this.listeners) {
+      try {
+        l(event);
+      } catch (e) {
+        recordError(this.dir, `subscribe listener threw: ${String(e)}`);
+      }
+    }
+  }
+
+  /** Emit a realistic streaming assistant turn on the subscribe channel:
+   *  agent_start → turn_start → message_start → message_update×N →
+   *  tool_execution_start/update/end → message_end → turn_end → agent_end. Drives
+   *  G1 (controller prompt relay), G3 (produce-while-detached, accrues messageLog),
+   *  and G8 (a fast event stream — `updates`/`padBytes` size the flood that sheds a
+   *  stalled viewer at the broker HWM). A per-update setImmediate yield lets a
+   *  fast viewer drain between frames so only the stalled one trips the HWM. */
+  private async emitTurn(
+    text: string,
+    opts: { updates?: number; padBytes?: number; tool?: boolean } = {},
+  ): Promise<void> {
+    if (this.disposed) return;
+    const updates = opts.updates ?? 3;
+    const pad = opts.padBytes ?? 0;
+    const withTool = opts.tool ?? true;
+    const small = assistantMessage(text);
+    // A normal turn yields with setImmediate (fast). A sized flood (G8, pad>0) is
+    // PACED with a small real delay so a fast (reading) viewer always drains each
+    // frame and stays under the HWM, while a stalled (non-reading) viewer's backlog
+    // still climbs monotonically past the 32 MiB byte cap and is shed. Without the
+    // pace the burst outruns the reader's event loop and sheds the fast viewer too.
+    const yieldTick = (): Promise<void> =>
+      pad > 0 ? new Promise((r) => setTimeout(r, 3)) : new Promise((r) => setImmediate(r));
+
+    this.streaming = true;
+    this.emit({ type: 'agent_start' });
+    this.emit({ type: 'turn_start' });
+    this.emit({ type: 'message_start', message: small });
+    for (let i = 0; i < updates; i++) {
+      if (this.disposed) return;
+      // The big payload (G8) rides only in `message`; assistantMessageEvent.partial
+      // stays small so a flood frame is ~padBytes, not 2×.
+      const partial = assistantMessage(`${text} [${i + 1}/${updates}]`, pad);
+      this.emit({
+        type: 'message_update',
+        message: partial,
+        assistantMessageEvent: textDelta(small, `chunk ${i + 1}`),
+      });
+      await yieldTick();
+    }
+    if (withTool) {
+      const toolCallId = `call-${++this.eventSeq}`;
+      this.emit({ type: 'tool_execution_start', toolCallId, toolName: 'read', args: { path: 'README.md' } });
+      this.emit({
+        type: 'tool_execution_update',
+        toolCallId,
+        toolName: 'read',
+        args: { path: 'README.md' },
+        partialResult: { bytes: 42 },
+      });
+      this.emit({ type: 'tool_execution_end', toolCallId, toolName: 'read', result: { ok: true }, isError: false });
+    }
+    if (this.disposed) return;
+    const finalMsg = assistantMessage(text);
+    this.emit({ type: 'message_end', message: finalMsg });
+    this.emit({ type: 'turn_end', message: finalMsg, toolResults: [] });
+    this.messageLog.push(finalMsg);
+    this.streaming = false;
+    // agent_end on the SUBSCRIBE channel is a relayed frame ONLY (willRetry=false);
+    // it never runs the stophook, so the broker stays alive (G2/G3/G4/G8).
+    this.emit({ type: 'agent_end', messages: this.messageLog.slice(), willRetry: false });
   }
 
   dispose(): void {
@@ -424,7 +554,18 @@ class FakeSession {
     if (this.disposed) return;
     const cmdFile = join(this.dir, 'fake-pi.cmd');
     if (!existsSync(cmdFile)) return;
-    let cmd: { cmd?: string; id?: string; reason?: string; text?: string; timeout?: number } | null = null;
+    let cmd:
+      | {
+          cmd?: string;
+          id?: string;
+          reason?: string;
+          text?: string;
+          timeout?: number;
+          updates?: number;
+          padBytes?: number;
+          tool?: boolean;
+        }
+      | null = null;
     try {
       cmd = JSON.parse(readFileSync(cmdFile, 'utf8')) as typeof cmd;
     } catch {
@@ -443,9 +584,23 @@ class FakeSession {
     reason?: string;
     text?: string;
     timeout?: number;
+    updates?: number;
+    padBytes?: number;
+    tool?: boolean;
   }): Promise<void> {
     const ctx = this.buildCtx();
     switch (cmd.cmd) {
+      case 'stream':
+        // Drive a subscribe-channel streaming turn WITHOUT a controller (G3:
+        // produce-while-detached) or with sized frames (G8: a fast event stream
+        // that sheds a stalled viewer at the HWM). Pure fan-out — no stophook, no
+        // exit — so the broker stays alive.
+        await this.emitTurn(cmd.text ?? 'streamed turn', {
+          updates: cmd.updates,
+          padBytes: cmd.padBytes,
+          tool: cmd.tool,
+        });
+        break;
       case 'turn':
         this.streaming = true;
         await this.fire('agent_start', {}, ctx);
@@ -474,11 +629,15 @@ class FakeSession {
         );
         break;
       case 'dialog':
-        // Exercise the broker's REAL uiContext zero-viewer path (C2): with NO
-        // controller connected, makeBrokerUiContext resolves the dialog to its
-        // default (false) IMMEDIATELY — noOp fallback, NOT a per-dialog timeout
-        // (the design §5.4 timeout premise is false). Even a passed `timeout` is
-        // ignored: forward progress is instant, never a deadlock and never a wait.
+        // Raise a blocking confirm() through the broker's REAL uiContext. The path
+        // taken depends on who is attached when it raises:
+        //   • ZERO viewers (C2 / G6a): makeBrokerUiContext resolves the default
+        //     (false) IMMEDIATELY — noOp fallback, no timer, no wait, no deadlock.
+        //   • a controller attached (G5): forwarded as an extension_ui_request the
+        //     controller answers via extension_ui_response — the engine proceeds.
+        //   • a controller attached but silent (G6b): resolves on the broker-side
+        //     timeout. Pass a SHORT explicit per-dialog `timeout` so that path is
+        //     fast and deterministic (never the broker's 120s default).
         await this.runDialog(cmd.timeout ?? 0);
         break;
       default:
