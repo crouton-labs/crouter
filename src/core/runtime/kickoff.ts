@@ -315,11 +315,25 @@ export function buildReviveKickoff(
   // original spawn prompt (context/initial-prompt.md) is deliberately NOT injected
   // — it lives on disk only as a log, and by now it is usually stale.
   const roadmap = readRoadmap(nodeId);
+  const hasRoadmapBody = roadmap !== null && roadmap.trim() !== '';
   parts.push(
     `<roadmap file="${roadmapPath(nodeId)}">\n${
-      roadmap !== null && roadmap.trim() !== '' ? roadmap.trim() : '(no roadmap on disk yet)'
+      hasRoadmapBody ? roadmap.trim() : '(no roadmap on disk yet)'
     }\n</roadmap>`,
   );
+
+  // With NO roadmap the kickoff above carries no mandate at all, and an
+  // amnesiac fresh boot just stops (and is auto-finalized by the stop-guard) —
+  // observed when the daemon relaunches a spawned-but-never-launched node
+  // (audit 2026-06-09, Bug 4: mq45b6ch-9ecc2f03), whose only mandate on disk IS
+  // the goal. Surface the goal then. When a roadmap exists it stays the sole
+  // source of truth (the goal is usually stale by comparison) — unchanged.
+  if (!hasRoadmapBody) {
+    const goal = readGoal(nodeId);
+    if (goal !== null && goal.trim() !== '') {
+      parts.push(`<goal file="${goalPath(nodeId)}">\n${goal.trim()}\n</goal>`);
+    }
+  }
 
   const files = listContextDir(nodeId);
   parts.push(
