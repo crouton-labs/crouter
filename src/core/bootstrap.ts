@@ -36,7 +36,7 @@ const BOOT_SKILL_MARKER_PREFIX = '<!-- crtr-boot-skill v';
 function bootSkillBody(): string {
   return `---
 name: crtr-skills
-description: Capture, list, search, and load skills via the crtr CLI. Skills are durable agent memory — markdown future LLM sessions load on demand. Use when the user wants to remember/save knowledge, build a context primer, or recall a previously saved skill. Triggers: "save", "remember", "build context for", "what skills do we have", "skill for X".
+description: 'Capture, list, search, and load skills via the crtr CLI. Skills are durable agent memory — markdown future LLM sessions load on demand. Use when the user wants to remember/save knowledge, build a context primer, or recall a previously saved skill. Triggers: "save", "remember", "build context for", "what skills do we have", "skill for X".'
 argument-hint: [topic or verb]
 ---
 

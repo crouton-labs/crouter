@@ -21,8 +21,9 @@ import {
   walkFiles,
 } from './fs-utils.js';
 import { readMarketplaceManifest, readPluginManifest } from './manifest.js';
-import { parseFrontmatter } from './frontmatter.js';
+import { parseFrontmatter, type ParsedFrontmatter } from './frontmatter.js';
 import { ambiguous, notFound, usage } from './errors.js';
+import { warn } from './output.js';
 import { InputError } from './io.js';
 import {
   builtinSkillsRoot,
@@ -128,6 +129,22 @@ export function effectiveSkillEnabled(
   return { enabled: true };
 }
 
+/** Parse one skill file's frontmatter at the COLLECTION layer: the strict
+ *  parser THROWS on invalid YAML (the frontmatter contract is "valid YAML"),
+ *  so a single malformed SKILL.md must not brick a whole `skill find`/catalog
+ *  scan across the corpus. On a parse error, emit a clear scoped notice naming
+ *  the file and return null so the iterator SKIPS it and continues. A doc with
+ *  no frontmatter block parses fine (data === null) and is kept. */
+function readSkillFrontmatterSafe(file: string): ParsedFrontmatter | null {
+  try {
+    return parseFrontmatter(readText(file));
+  } catch (e) {
+    const msg = (e instanceof Error ? e.message : String(e)).split('\n')[0];
+    warn(`invalid frontmatter in ${file}: ${msg}`);
+    return null;
+  }
+}
+
 export function listSkillsInPlugin(
   plugin: InstalledPlugin,
   cfgs?: ScopeConfigs,
@@ -141,8 +158,9 @@ export function listSkillsInPlugin(
     const rel = relative(skillsRoot, dirname(file));
     const name = rel.split(sep).join('/');
     if (!name) continue;
-    const source = readText(file);
-    const { data } = parseFrontmatter(source);
+    const parsed = readSkillFrontmatterSafe(file);
+    if (parsed === null) continue;
+    const { data } = parsed;
     const { enabled, disabledIn } = effectiveSkillEnabled(plugin.name, name, configs);
     skills.push({
       name,
@@ -172,8 +190,9 @@ export function listScopeRootSkills(
     const rel = relative(skillsRoot, dirname(file));
     const name = rel.split(sep).join('/');
     if (!name) continue;
-    const source = readText(file);
-    const { data } = parseFrontmatter(source);
+    const parsed = readSkillFrontmatterSafe(file);
+    if (parsed === null) continue;
+    const { data } = parsed;
     const { enabled, disabledIn } = effectiveSkillEnabled(
       SCOPE_SKILL_PLUGIN,
       name,

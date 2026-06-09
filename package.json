@@ -24,7 +24,7 @@
     "bin"
   ],
   "scripts": {
-    "build": "rm -rf dist && tsc && cp -R src/builtin-skills dist/builtin-skills && cp -R src/builtin-personas dist/builtin-personas && cp -R src/builtin-views dist/builtin-views",
+    "build": "rm -rf dist && tsc && cp -R src/builtin-skills dist/builtin-skills && cp -R src/builtin-personas dist/builtin-personas && cp -R src/builtin-views dist/builtin-views && cp -R src/builtin-memory dist/builtin-memory",
     "dev": "tsx src/cli.ts",
     "link": "npm link",
     "prepublishOnly": "npm run build",
@@ -38,7 +38,8 @@
   "dependencies": {
     "@crouton-kit/humanloop": "latest",
     "commander": "^13.0.0",
-    "cron-parser": "5.5.0"
+    "cron-parser": "5.5.0",
+    "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

@@ -33,6 +33,7 @@
 
 import { contextDir, getNode, fullName, type WakeKind, type Wakeup } from '../canvas/index.js';
 import { cadenceDisplay } from '../wake.js';
+import { renderReferencesBlock } from '../substrate/index.js';
 import {
   hasMemory,
   memoryDir,
@@ -243,13 +244,14 @@ export function buildContextBearings(nodeId: string): string {
   const identity = buildIdentityAssertion(nodeId);
   const dir = contextDir(nodeId);
   const node = getNode(nodeId);
-  const cwd = node?.cwd ?? process.cwd();
   const parts = [BASE_CONTEXT_NOTE];
   // Orchestrator-only: the across-cycles framing (a terminal has no future cycle).
   if (node?.mode === 'orchestrator') parts.push(orchestratorContextNote(nodeId));
-  // The three-scope memory block is the SAME for every node (one consistent
-  // surface); dropped only when the node has no stores at all (returns '').
-  const memory = buildMemoryBlock(nodeId, cwd);
-  if (memory !== '') parts.push(memory);
+  // The substrate references block replaces the old <memory> block: eligible
+  // `reference` docs at their system-prompt rung + node-local memory docs;
+  // dropped (returns '') when nothing is eligible. (buildMemoryBlock /
+  // memoryStanza are left present-but-dead — deleted in a later hard-cut step.)
+  const references = renderReferencesBlock(nodeId);
+  if (references !== '') parts.push(references);
   return `${identity}\n<crtr-context dir="${dir}">\n${parts.join('\n')}\n</crtr-context>`;
 }

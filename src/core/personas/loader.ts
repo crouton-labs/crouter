@@ -64,6 +64,23 @@ function personaSearchRoots(): string[] {
 }
 
 // ---------------------------------------------------------------------------
+// Frontmatter scalar coercion
+// ---------------------------------------------------------------------------
+
+/** Coerce a frontmatter scalar to its string form, matching the legacy
+ *  hand-rolled parser (which stringified every scalar). Strings pass through;
+ *  number/boolean coerce via String(); null/undefined and non-scalars
+ *  (objects/arrays) are dropped (→ null). The `yaml` package returns native
+ *  scalar types, so without this a `typeof === 'string'` guard would silently
+ *  DROP a numeric/boolean frontmatter value (e.g. blanking a menu line) where
+ *  the old parser kept its stringified form. */
+function scalarToString(v: unknown): string | null {
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // File resolution helpers
 // ---------------------------------------------------------------------------
 
@@ -238,7 +255,7 @@ export function kindWhenToUse(kind: string): string {
   const filePath = resolveFile(`${kind}/${PERSONA_FILE}`);
   if (!filePath) return '';
   const { data } = parseFrontmatterGeneric(readFileSync(filePath, 'utf8'));
-  return data && typeof data['whenToUse'] === 'string' ? (data['whenToUse'] as string) : '';
+  return scalarToString(data?.['whenToUse']) ?? '';
 }
 
 export interface SubPersona {
@@ -274,9 +291,10 @@ function parseAvailableTo(data: Record<string, unknown> | null, topKind: string)
   };
   const v = data ? data['availableTo'] : undefined;
   if (v === undefined) return [topKind];
-  if (typeof v === 'string') return isWild(v) ? '*' : [v];
+  const scalar = scalarToString(v);
+  if (scalar !== null) return isWild(scalar) ? '*' : [scalar];
   if (Array.isArray(v)) {
-    const arr = v.filter((x): x is string => typeof x === 'string');
+    const arr = v.map(scalarToString).filter((x): x is string => x !== null);
     if (arr.some(isWild)) return '*';
     return arr.length > 0 ? arr : [topKind];
   }
@@ -318,7 +336,7 @@ export function subPersonasFor(kind: string): SubPersona[] {
         const { data } = parseFrontmatterGeneric(readFileSync(file, 'utf8'));
         const availableTo = parseAvailableTo(data, topKind);
         if (availableTo !== '*' && !availableTo.includes(kind)) continue;
-        const whenToUse = data && typeof data['whenToUse'] === 'string' ? (data['whenToUse'] as string) : '';
+        const whenToUse = scalarToString(data?.['whenToUse']) ?? '';
         out.push({ kind: relKind, name: relKind.split('/').pop()!, whenToUse });
       }
     }

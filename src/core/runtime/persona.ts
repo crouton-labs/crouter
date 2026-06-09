@@ -47,6 +47,17 @@ export interface PersonaDriftResult {
 // promote.ts so the injector is the one place that builds it.
 // ---------------------------------------------------------------------------
 
+/** Coerce a frontmatter scalar to its string form, matching the legacy
+ *  hand-rolled parser. Strings pass through; number/boolean coerce via
+ *  String(); null/undefined and non-scalars are dropped (→ null). Without this,
+ *  the `yaml` package's native scalar types would let a numeric/boolean
+ *  `roadmapSkill` be silently dropped by a `typeof === 'string'` guard. */
+function scalarToString(v: unknown): string | null {
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  return null;
+}
+
 /** Load a skill's body text by name, or null if it can't be resolved. Used to
  *  inline a kind's roadmap-shaping skill into the orchestration guidance. */
 function loadSkillBody(name: string): string | null {
@@ -69,10 +80,7 @@ function loadSkillBody(name: string): string | null {
 function orchestrationGuidance(nodeId: string, kind: string): string {
   const kernel = loadKernel();
   const orch = loadPersona(kind, 'orchestrator');
-  const roadmapSkill =
-    typeof orch?.frontmatter?.['roadmapSkill'] === 'string'
-      ? (orch.frontmatter['roadmapSkill'] as string)
-      : undefined;
+  const roadmapSkill = scalarToString(orch?.frontmatter?.['roadmapSkill']) ?? undefined;
   const skillBody = roadmapSkill ? loadSkillBody(roadmapSkill) : null;
   const roadmap = readRoadmap(nodeId) ?? '(no roadmap yet)';
   const rmPath = roadmapPath(nodeId);

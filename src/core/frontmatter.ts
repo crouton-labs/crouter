@@ -1,3 +1,4 @@
+import { parse as parseYaml } from 'yaml';
 import { isSkillType, type SkillFrontmatter } from '../types.js';
 
 const FRONTMATTER_RE = /^---\s*\r?\n([\s\S]*?)\r?\n---\s*\r?\n?/;
@@ -15,7 +16,7 @@ export function parseFrontmatter(source: string): ParsedFrontmatter {
   }
   const raw = match[1];
   const body = source.slice(match[0].length);
-  return { data: toSkillFrontmatter(parseYamlRecord(raw)), body, raw };
+  return { data: toSkillFrontmatter(parseYamlBlock(raw)), body, raw };
 }
 
 export interface ParsedFrontmatterGeneric {
@@ -35,138 +36,52 @@ export function parseFrontmatterGeneric(source: string): ParsedFrontmatterGeneri
   }
   const raw = match[1];
   const body = source.slice(match[0].length);
-  return { data: parseYamlRecord(raw), body, raw };
+  return { data: parseYamlBlock(raw), body, raw };
 }
 
 function toSkillFrontmatter(out: Record<string, unknown>): SkillFrontmatter {
   const fm: SkillFrontmatter = {
-    name: typeof out.name === 'string' ? out.name : '',
-    description: typeof out.description === 'string' ? out.description : undefined,
-    keywords: Array.isArray(out.keywords) ? (out.keywords as string[]) : undefined,
+    name: scalarToString(out.name) ?? '',
+    description: scalarToString(out.description),
+    keywords: Array.isArray(out.keywords) ? out.keywords.map((k) => String(k)) : undefined,
     type: isSkillType(out.type) ? out.type : undefined,
   };
   return fm;
 }
 
-function parseYamlRecord(yaml: string): Record<string, unknown> {
-  const lines = yaml.split(/\r?\n/);
-  const out: Record<string, unknown> = {};
-  let i = 0;
-  while (i < lines.length) {
-    const raw = lines[i];
-    if (!raw.trim()) {
-      i++;
-      continue;
-    }
-    const idx = raw.indexOf(':');
-    if (idx === -1) {
-      i++;
-      continue;
-    }
-    const key = raw.slice(0, idx).trim();
-    const rest = raw.slice(idx + 1).trim();
-
-    // Block scalar: `key: |` or `key: >` with optional chomp indicator (-/+)
-    const blockMatch = rest.match(/^([|>])([-+]?)\s*$/);
-    if (blockMatch) {
-      const style = blockMatch[1];
-      const chomp = blockMatch[2];
-      const collected: string[] = [];
-      let blockIndent: number | null = null;
-      let j = i + 1;
-      while (j < lines.length) {
-        const r = lines[j];
-        if (r.trim() === '') {
-          collected.push('');
-          j++;
-          continue;
-        }
-        const ind = r.match(/^(\s*)/)?.[1].length ?? 0;
-        if (blockIndent === null) {
-          if (ind === 0) break;
-          blockIndent = ind;
-        }
-        if (ind < blockIndent) break;
-        collected.push(r.slice(blockIndent));
-        j++;
-      }
-      while (collected.length > 0 && collected[collected.length - 1] === '') collected.pop();
-
-      let value: string;
-      if (style === '|') {
-        value = collected.join('\n');
-      } else {
-        const parts: string[] = [];
-        let para: string[] = [];
-        for (const ln of collected) {
-          if (ln === '') {
-            if (para.length > 0) {
-              parts.push(para.join(' '));
-              para = [];
-            }
-            parts.push('');
-          } else {
-            para.push(ln);
-          }
-        }
-        if (para.length > 0) parts.push(para.join(' '));
-        const folded: string[] = [];
-        for (let k = 0; k < parts.length; k++) {
-          if (parts[k] === '' && (k === 0 || parts[k - 1] === '')) continue;
-          folded.push(parts[k]);
-        }
-        value = folded.join('\n').replace(/\n+$/, '');
-      }
-
-      if (chomp !== '+') value = value.replace(/\n+$/, '');
-      out[key] = value;
-      i = j;
-      continue;
-    }
-
-    // Empty value: could be a list on subsequent lines
-    if (rest === '') {
-      const buf: string[] = [];
-      let j = i + 1;
-      while (j < lines.length) {
-        const r = lines[j];
-        if (r.trim() === '') {
-          j++;
-          continue;
-        }
-        if (/^\s*-\s+/.test(r)) {
-          buf.push(stripQuotes(r.replace(/^\s*-\s+/, '').trim()));
-          j++;
-          continue;
-        }
-        break;
-      }
-      if (buf.length > 0) out[key] = buf;
-      i = j;
-      continue;
-    }
-
-    if (rest.startsWith('[') && rest.endsWith(']')) {
-      out[key] = rest
-        .slice(1, -1)
-        .split(',')
-        .map((s) => stripQuotes(s.trim()))
-        .filter(Boolean);
-      i++;
-      continue;
-    }
-
-    out[key] = stripQuotes(rest);
-    i++;
-  }
-  return out;
+/** Coerce a YAML scalar (string/number/boolean) to its string form. A skill's
+ *  `name`/`description` are always strings to consumers; native non-string
+ *  scalars (a numeric/boolean value) render as their string form, and
+ *  non-scalars (null/undefined/array/object) yield undefined. */
+function scalarToString(v: unknown): string | undefined {
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  return undefined;
 }
 
-function stripQuotes(s: string): string {
-  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
-    return s.slice(1, -1);
+/** Parse the inner YAML of a frontmatter block into a key/value record.
+ *
+ *  ONE strict parser, no fallback. The frontmatter contract IS "valid YAML":
+ *  the single `yaml`-package path handles the substrate's nested `gate:` maps,
+ *  inline `{…}` objects, and native scalar typing — and a doc whose frontmatter
+ *  is NOT valid YAML THROWS, by design. There is deliberately no second lenient
+ *  parser; a dual parsing strategy is the hedge we reject. Callers that iterate
+ *  MANY docs isolate a per-doc throw at the COLLECTION layer (a clear scoped
+ *  notice naming the bad file, then continue); single-doc callers let the error
+ *  surface so the user learns their one requested doc is malformed.
+ *
+ *  A VALID non-object document (a bare scalar, a top-level list, or an empty
+ *  block) normalizes to an empty record, preserving the contract that callers
+ *  always receive a Record for well-formed-but-non-mapping frontmatter. */
+function parseYamlBlock(raw: string): Record<string, unknown> {
+  return normalizeToRecord(parseYaml(raw));
+}
+
+function normalizeToRecord(parsed: unknown): Record<string, unknown> {
+  if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    return parsed as Record<string, unknown>;
   }
-  return s;
+  return {};
 }
 
 export function serializeFrontmatter(data: SkillFrontmatter): string {

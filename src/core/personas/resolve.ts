@@ -41,11 +41,18 @@ export interface ResolvedPersona {
 
 function toStringArray(v: unknown): string[] {
   if (!Array.isArray(v)) return [];
-  return v.filter((x): x is string => typeof x === 'string');
+  // yaml.parse coerces scalars to native types; the persona prompt needs strings,
+  // so coerce each scalar element (dropping nested objects/arrays/null) — this
+  // mirrors the prior hand-rolled parser, which returned every scalar as a string.
+  return v.filter((x) => x != null && typeof x !== 'object').map((x) => String(x));
 }
 
 function toOptionalString(v: unknown): string | undefined {
-  return typeof v === 'string' ? v : undefined;
+  if (typeof v === 'string') return v;
+  // Preserve the legacy parser's string-typed contract for native scalars
+  // (e.g. `model: 4` must compose as "4", not be dropped as a non-string).
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  return undefined;
 }
 
 /** The bare-minimum system prompt used when no persona file is found at all. */

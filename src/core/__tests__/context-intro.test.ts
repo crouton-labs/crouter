@@ -2,12 +2,12 @@
 //   1. Every node is born WITH its node-local MEMORY.md (seeded at spawn);
 //      promotion re-seeds idempotently (never clobbers).
 //   2. seedMemory is idempotent (never clobbers an evolved memory).
-//   3. Worker bearings carry the SAME three-scope <memory> block as an
-//      orchestrator (one consistent surface) but DROP the across-cycles framing;
-//      orchestrator bearings add that framing. Each store is a `label · dir`
-//      header over its live index POINTER LINES only (the how-to boilerplate is
-//      dropped — it lives once in the kernel); promotion delivers that same
-//      orchestrator context-dir framing to a node that spawned base.
+//   3. Worker and orchestrator bearings carry the `## References` block
+//      (substrate reference docs + node-local docs as `###` sub-sections) in
+//      place of the removed `<memory>` block — no `label · dir` stanzas, no
+//      `(empty)` markers, no MEMORY.md index inlining. Orchestrators add the
+//      across-cycles framing; promotion delivers that same orchestrator
+//      context-dir framing to a node that spawned base.
 //   4. canvas-context-intro injects the block as its own session message at
 //      session_start (before the first prompt), idempotent across resumes.
 //
@@ -83,65 +83,89 @@ test('seedMemory is idempotent — never clobbers an evolved memory', () => {
   assert.equal(readMemory(meta.node_id), evolved, 'left untouched');
 });
 
-test('worker bearings: the SAME three-scope memory block as an orchestrator, but NO across-cycles framing', () => {
+test('worker bearings: base framing + ## References block (no <memory>, no label·dir stanzas), NO across-cycles framing', () => {
+  // Bug-regression: review finding M1 — buildContextBearings was changed from
+  // buildMemoryBlock (<memory> + label·dir per-store stanzas) to
+  // renderReferencesBlock (## References + ### <name> sub-sections). This test
+  // locks in the new contract.
   const meta = spawnNode({ kind: 'general', cwd: '/tmp/work', parent: null });
   const block = buildContextIntro(meta.node_id);
   assert.match(block, new RegExp(`<crtr-context dir="${contextDir(meta.node_id)}">`));
   assert.match(block, /shared document store, not a task tracker/, 'base = shared docs, not tasks');
-  // A terminal worker is born with all three stores, so its bearings carry the
-  // full three-scope <memory> block — obvious + consistent with an orchestrator.
-  assert.match(block, /<memory>/, 'worker gets the memory block too');
-  assert.ok(block.includes(`user-global · ${userMemoryDir()}`), 'user-global scope present');
-  assert.ok(block.includes(`project · ${projectMemoryDir('/tmp/work')}`), 'project scope present');
-  assert.ok(block.includes(`node-local · ${memoryDir(meta.node_id)}`), 'node-local scope present');
-  // ...but NOT the orchestrator-only across-cycles framing (a worker has no
-  // future cycle).
+  // New contract: NO <memory> block — replaced by ## References.
+  assert.doesNotMatch(block, /<memory>/, 'no <memory> block');
+  // New contract: NO label·dir stanza headers (the removed per-store format).
+  assert.doesNotMatch(block, /user-global · /, 'no user-global label·dir stanza');
+  assert.doesNotMatch(block, /node-local · /, 'no node-local label·dir stanza');
+  // New contract: NO (empty) placeholder (the removed empty-store marker).
+  assert.doesNotMatch(block, /\(empty\)/, 'no (empty) placeholder');
+  // Reference content renders as ## References + ### sub-sections — no other shape.
+  assert.match(block, /## References\n\n###/, '## References followed by ### sub-sections');
+  // A terminal worker must NOT carry the orchestrator across-cycles framing.
   assert.doesNotMatch(block, /refresh cycles/, 'no across-cycles framing for a terminal worker');
   assert.match(block, /<\/crtr-context>/);
 });
 
-test('orchestrator bearings: across-cycles framing + a <memory> block whose body is the live pointer lines under `label · dir`', () => {
+test('orchestrator bearings: across-cycles framing + node-local substrate docs ride into ## References; the MEMORY.md index never renders', () => {
+  // Bug-regression: review finding M1 — buildContextBearings replaced the old
+  // <memory> pointer-line block with ## References. Node-local substrate docs
+  // render as ### sub-sections at their rung; the old index file never surfaces.
   const meta = spawnNode({ kind: 'general', cwd: '/tmp/work', parent: null });
   promote(meta.node_id); // flip to orchestrator mode — the across-cycles gate
-  // The seeded index carries the how-to comment + the empty marker; an evolved
-  // index adds a pointer line. The block must render ONLY the pointer line.
+  // The old-format index must NOT surface anywhere in the block.
   writeFileSync(
     memoryPath(meta.node_id),
     '# memory index — one pointer line per memory; how-to in "Your long-term memory".\n\n- [Flaky build](flaky-build.md) — first run fails\n',
+  );
+  // A node-local substrate doc DOES ride into ## References at its rung.
+  writeFileSync(
+    join(memoryDir(meta.node_id), 'flaky-build.md'),
+    '---\nkind: reference\nwhen: when the build flakes\nwhy: first run fails\nsystem-prompt-visibility: preview\n---\nFirst run always fails; rerun once.\n',
   );
 
   const block = buildContextIntro(meta.node_id);
   assert.match(block, /shared document store, not a task tracker/, 'still carries the base framing');
   assert.match(block, /refresh cycles/, 'orchestrator gets the across-cycles framing');
-  assert.match(block, /<memory>/, 'has a memory block');
-  // (a) the store renders just its pointer line under a `label · dir` header.
-  assert.ok(block.includes(`node-local · ${memoryDir(meta.node_id)}`), 'compact `label · dir` header');
-  assert.match(block, /- \[Flaky build\]\(flaky-build\.md\) — first run fails/, 'the live pointer line is inlined');
-  // (c) no `index:` line, no absolute index path, no inlined how-to boilerplate.
-  assert.ok(!block.includes('index:'), 'no index: substring');
-  assert.ok(!block.includes(memoryPath(meta.node_id)), 'no absolute index (MEMORY.md) path');
-  assert.ok(!block.includes('how-to in'), 'the index how-to boilerplate is NOT inlined');
+  assert.doesNotMatch(block, /<memory>/, 'no <memory> block');
+  assert.match(block, /## References\n/, 'references block present');
+  assert.match(block, /### flaky-build\n/, 'node-local doc gets its ### sub-section');
+  assert.match(
+    block,
+    /when the build flakes, read this reference\. first run fails\./,
+    'preview rung renders the routing line',
+  );
+  // The index file itself never renders: no header comment, no pointer line, no path.
   assert.ok(!block.includes('# memory index'), 'the index header comment is NOT inlined');
+  assert.ok(!block.includes('- [Flaky build](flaky-build.md)'), 'index pointer lines are NOT inlined');
+  assert.ok(!block.includes(memoryPath(meta.node_id)), 'no absolute index (MEMORY.md) path');
+  assert.ok(!block.includes('node-local · '), 'no label·dir stanza header');
   assert.match(block, /<\/crtr-context>/);
 });
 
-test('orchestrator bearings: a promoted node merges all THREE stores; template-only stores render (empty)', () => {
+test('orchestrator bearings: no per-store stanzas or (empty) markers; a rung-none node-local doc still surfaces as a ### title stub', () => {
+  // Bug-regression: review findings M1 + M6 — the three-store `label · dir`
+  // stanzas and (empty) markers are gone, and node-local docs are NOT filtered
+  // on rung: a migrated node-local reference defaults
+  // system-prompt-visibility: none and must still ride into ## References as
+  // its bare title (never its body).
   const meta = spawnNode({ kind: 'general', cwd: '/tmp/work', parent: null });
   promote(meta.node_id); // seeds user-global + project + node-local (all template-only)
+  writeFileSync(
+    join(memoryDir(meta.node_id), 'rung-none-fact.md'),
+    '---\nkind: reference\n---\nbody that must not render at the none rung\n',
+  );
 
   const block = buildContextIntro(meta.node_id);
-  // Each scope present as a `label · dir` header.
-  assert.ok(block.includes(`user-global · ${userMemoryDir()}`), 'merges the user-global store');
-  assert.ok(block.includes(`project · ${projectMemoryDir('/tmp/work')}`), 'merges the project store');
-  assert.ok(block.includes(`node-local · ${memoryDir(meta.node_id)}`), 'merges the node-local store');
-  // (b) a template-only / not-yet-written store renders the (empty) marker.
-  assert.match(block, /user-global · .*\n\(empty\)/, 'template-only user store renders (empty)');
-  assert.equal(block.match(/\(empty\)/g)?.length, 3, 'all three template-only stores render (empty)');
-  // (c) no absolute index paths leak in.
+  // No per-store stanza headers, no (empty) markers, no index paths.
+  assert.ok(!block.includes(`user-global · ${userMemoryDir()}`), 'no user-global stanza header');
+  assert.ok(!block.includes(`project · ${projectMemoryDir('/tmp/work')}`), 'no project stanza header');
+  assert.ok(!block.includes(`node-local · ${memoryDir(meta.node_id)}`), 'no node-local stanza header');
+  assert.doesNotMatch(block, /\(empty\)/, 'no (empty) markers');
   assert.ok(!block.includes(userMemoryPath()), 'no user-global MEMORY.md path');
   assert.ok(!block.includes(projectMemoryPath('/tmp/work')), 'no project MEMORY.md path');
-  // The type→store mapping is taught by the kernel; the block points at it.
-  assert.match(block, /type/, 'the block references the type that decides the store');
+  // M6: rung-none node-local doc surfaces as its title stub only.
+  assert.match(block, /### rung-none-fact\s*\n/, 'rung-none node-local doc surfaces as its title stub');
+  assert.ok(!block.includes('body that must not render'), 'none rung renders the title only, not the body');
 });
 
 test('promotion guidance delivers the orchestrator context-dir framing', () => {

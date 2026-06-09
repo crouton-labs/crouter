@@ -25,6 +25,19 @@ export function builtinViewsRoot(): string {
   return join(pkgDir, 'builtin-views');
 }
 
+export function builtinMemoryRoot(): string {
+  // The substrate's shipped built-in documents live in their OWN package dir,
+  // a sibling of builtin-skills — resolved relative to this file exactly like
+  // builtinSkillsRoot/builtinViewsRoot: dist/core/scope.js → dist/builtin-memory/
+  // (src/ at dev time). This is a HARD special case (design verdict m2): builtin
+  // memory is NOT scopeRoot('builtin')/memory, which would land under
+  // builtin-skills/ — builtin's scopeRoot is builtinSkillsRoot().
+  const thisFile = fileURLToPath(import.meta.url);
+  const coreDir = dirname(thisFile);
+  const pkgDir = dirname(coreDir); // src/ or dist/
+  return join(pkgDir, 'builtin-memory');
+}
+
 export function userScopeRoot(): string {
   return join(homedir(), CRTR_DIR_NAME);
 }
@@ -95,6 +108,16 @@ export function marketplacesDir(scope: Scope): string | null {
 export function scopeSkillsDir(scope: Scope): string | null {
   const root = scopeRoot(scope);
   return root ? join(root, 'skills') : null;
+}
+
+/** Where substrate memory documents live per scope. Builtin memory is the
+ *  special case — its own package dir (builtinMemoryRoot, a sibling of
+ *  builtin-skills), NOT scopeRoot('builtin')/memory — mirroring viewsDir's
+ *  builtin handling. User and project memory live at scopeRoot(scope)/memory. */
+export function scopeMemoryDir(scope: Scope): string | null {
+  if (scope === 'builtin') return builtinMemoryRoot();
+  const root = scope === 'user' ? userScopeRoot() : projectScopeRoot();
+  return root ? join(root, 'memory') : null;
 }
 
 /** Where view definition dirs live per scope. Builtin views sit directly under

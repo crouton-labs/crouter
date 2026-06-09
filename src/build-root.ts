@@ -1,6 +1,7 @@
 import { defineRoot } from './core/command.js';
 import type { RootDef } from './core/command.js';
 import { registerSkill } from './commands/skill.js';
+import { registerMemory } from './commands/memory.js';
 import { registerPkg } from './commands/pkg.js';
 import { registerHuman } from './commands/human.js';
 import { registerSys } from './commands/sys.js';
@@ -21,6 +22,7 @@ export function buildRoot(): RootDef {
     globals: [],
     subtrees: [
       registerSkill(),
+      registerMemory(),
       registerPkg(),
       registerHuman(),
       registerSys(),
