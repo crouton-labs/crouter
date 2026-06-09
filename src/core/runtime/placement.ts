@@ -26,6 +26,9 @@
 // NEVER read as a node death. Liveness is pane-existence, not window-existence,
 // and reconcile makes crtr follow a move instead of fighting it.
 
+import { spawnSync } from 'node:child_process';
+import { join } from 'node:path';
+
 import {
   getRow,
   getRowByPane,
@@ -42,6 +45,7 @@ import {
   listFocuses as listFocusRows,
   view,
   type NodeRow,
+  type NodeMeta,
   type FocusRow,
 } from '../canvas/index.js';
 import {
@@ -67,6 +71,7 @@ import {
   selectWindow,
 } from './tmux.js';
 import { homeSessionOf, childBackstageOf, nodeSession, newNodeId, rootOfSpine } from './nodes.js';
+import { nodeDir } from '../canvas/paths.js';
 import { isBusy } from './busy.js';
 import { isPidAlive } from '../canvas/pid.js';
 import { transition } from './lifecycle.js';
@@ -799,6 +804,18 @@ export function focus(
   const meta = getNode(nodeId);
   if (meta === null) return { focused: false, session: null, inPlace: false, revived: false };
 
+  // ── Phase-4 broker-focus opt-in (headless-broker model) ────────────────────
+  // A broker node has NO engine pane: headlessBrokerHost.launch spawns a
+  // DETACHED broker that hosts the single engine + binds view.sock, opening no
+  // tmux window. So focus cannot swap an engine pane into the caller's viewport
+  // — there is none. It instead (a) ensures the broker/engine is ALIVE via the
+  // sanctioned reviver, then (b) opens a tmux pane running the VIEWER
+  // `crtr attach to <id>`, which connects to view.sock. The viewer NEVER
+  // launches the engine (the one-writer invariant) — placement does, here. This
+  // is an ISOLATED opt-in BESIDE the engine-in-pane path: it fires ONLY for
+  // host_kind==='broker', so the tmux-host placement below stays byte-identical.
+  if (meta.host_kind === 'broker') return focusBroker(nodeId, meta, opts);
+
   const callerPane = opts.pane ?? process.env['TMUX_PANE'] ?? currentTmux()?.pane;
   if (callerPane === undefined || callerPane === '') {
     // Not in tmux — no viewport to swap into. Reconcile and report status.
@@ -826,6 +843,118 @@ export function focus(
     return { focused: false, session: meta.tmux_session ?? null, inPlace: false, revived: false };
   }
   return retargetFocus(f.focus_id, nodeId, opts.revive);
+}
+
+const BROKER_FOCUS_SOCKET_WAIT_MS = 30_000;
+const BROKER_FOCUS_SOCKET_RETRY_MS = 100;
+
+/** Synchronously wait until a broker's view.sock accepts a connection. `focus()`
+ *  is sync today (the command layer calls it directly), so the readiness probe
+ *  lives in a short child Node process that can use async net events while this
+ *  process blocks in `spawnSync`. Success proves more than file existence: it is
+ *  robust to a stale leftover socket that the launching broker has not unlinked
+ *  yet, because only an accepting listener exits 0. */
+function waitForBrokerViewSocket(nodeId: string): boolean {
+  const sockPath = join(nodeDir(nodeId), 'view.sock');
+  const probe = `
+const net = require('node:net');
+const sockPath = process.argv[1];
+const deadline = Date.now() + Number(process.argv[2]);
+const delay = Number(process.argv[3]);
+function attempt() {
+  let socket;
+  let settled = false;
+  const finish = (ok) => {
+    if (settled) return;
+    settled = true;
+    if (socket !== undefined) socket.destroy();
+    if (ok) process.exit(0);
+    if (Date.now() >= deadline) process.exit(1);
+    setTimeout(attempt, delay);
+  };
+  try {
+    socket = net.createConnection(sockPath);
+  } catch {
+    finish(false);
+    return;
+  }
+  socket.once('connect', () => finish(true));
+  socket.once('error', () => finish(false));
+  socket.setTimeout(delay, () => finish(false));
+}
+attempt();
+`;
+  const r = spawnSync(
+    process.execPath,
+    ['--input-type=commonjs', '-e', probe, sockPath, String(BROKER_FOCUS_SOCKET_WAIT_MS), String(BROKER_FOCUS_SOCKET_RETRY_MS)],
+    {
+      stdio: 'ignore',
+      timeout: BROKER_FOCUS_SOCKET_WAIT_MS + 1_000,
+      // Keep the probe deterministic: NODE_OPTIONS like --input-type=module or
+      // --inspect-brk can break/hang a tiny `node -e` readiness check.
+      env: { ...process.env, NODE_OPTIONS: '' },
+    },
+  );
+  return r.status === 0;
+}
+
+/** Phase-4 broker-focus (headless-broker model) — open an attached VIEWER pane
+ *  for a node whose engine runs in a DETACHED broker (host_kind==='broker'), the
+ *  small opt-in beside the engine-in-pane path. Two steps:
+ *    (a) ENSURE THE BROKER (engine) IS ALIVE via the sanctioned launcher — the
+ *        injected reviver (reviveNode → headlessBrokerHost.launch). A broker's
+ *        liveness IS its recorded pid (headlessBrokerHost.isAlive ===
+ *        isPidAlive(pi_pid)); reviveNode's double-revive guard makes this
+ *        idempotent: already-alive → no-op, dead → launch ONE detached broker —
+ *        never a second engine. The VIEWER never does this; placement does.
+ *    (b) OPEN THE VIEWER PANE — after a bounded view.sock readiness wait (closes
+ *        the cold-start race against attach's single connect), split a pane
+ *        beside the caller running exactly the VIEWER command `crtr attach to
+ *        <id>`, which connects to view.sock and renders/drives the live engine.
+ *
+ *  No FOCUS ROW is registered: a broker viewer pane is NOT an engine pane (the
+ *  engine lives in the detached broker; pi_pid is the broker's), so it stays out
+ *  of the focuses table / reconcile / retargetFocus, which track engine-in-pane
+ *  swap semantics. (Repeated focus thus stacks viewers — accepted for the Phase-4
+ *  opt-in; the Phase-5 default-swap owns any viewer dedup.) Reaches no engine
+ *  launcher directly (placement must not import revive.ts/host.ts — a cycle):
+ *  step (a) goes through the injected `revive`, step (b) through the existing
+ *  splitWindow driver verb. `--new-pane` is moot — a broker focus is ALWAYS a
+ *  fresh viewer pane — so the flag is ignored. */
+function focusBroker(
+  nodeId: string,
+  meta: NodeMeta,
+  opts: { pane?: string; revive: Reviver },
+): FocusResult {
+  const callerPane = opts.pane ?? process.env['TMUX_PANE'] ?? currentTmux()?.pane;
+  if (callerPane === undefined || callerPane === '') {
+    // crtr is tmux-only: no viewport to open and no non-tmux fallback.
+    return { focused: false, session: null, inPlace: false, revived: false };
+  }
+
+  // (a) Ensure the broker is alive (idempotent). Capture prior liveness so the
+  //     FocusResult reports whether THIS focus had to launch it.
+  const wasAlive = isPidAlive(getNode(nodeId)?.pi_pid ?? null);
+  opts.revive(nodeId);
+  const revived = !wasAlive;
+
+  // Close the cold-start race: a freshly launched broker records pid during
+  // extension bind, then opens view.sock later; attach connects once and exits
+  // "no broker" if we split before listen(). Probe for an ACCEPTING socket (not
+  // mere path existence) before opening the viewer pane.
+  if (!waitForBrokerViewSocket(nodeId)) {
+    return { focused: false, session: null, inPlace: false, revived };
+  }
+
+  // Propagate CRTR_HOME so the viewer resolves the SAME canvas home (and thus
+  // the right view.sock) under a non-default override; otherwise an empty env
+  // (the split inherits the tmux server env, like every other crtr chrome pane).
+  const crtrHome = process.env['CRTR_HOME'];
+  const env: Record<string, string> = crtrHome !== undefined ? { CRTR_HOME: crtrHome } : {};
+  // Node ids are shell-safe identifiers (base36-ts + hex); no quoting needed.
+  const pane = splitWindow(callerPane, { cwd: meta.cwd, env, command: `crtr attach to ${nodeId}` });
+  if (pane === null) return { focused: false, session: null, inPlace: false, revived };
+  return { focused: true, session: paneLocation(pane)?.session ?? null, inPlace: false, revived };
 }
 
 /** Register the caller's CURRENT pane as a focus so a `node focus`/`cycle` from a
