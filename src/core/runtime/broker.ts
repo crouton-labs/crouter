@@ -183,14 +183,9 @@ export async function runBroker(nodeId: string): Promise<void> {
   // eslint-disable-next-line prefer-const
   let { session, services, resuming, runtime } = await buildBrokerSession(engine, cfg);
   activeSession = session;
-
-  if (cfg.editorName !== undefined && cfg.editorName !== '') {
-    try {
-      session.setSessionName(cfg.editorName);
-    } catch {
-      /* non-fatal: naming is cosmetic */
-    }
-  }
+  // N3: the node's display name is re-applied inside rebindSession (below) so it
+  // survives a session replacement (new_session/switch_session/fork), not only at
+  // boot.
 
   // -------------------------------------------------------------------------
   // Socket fan-out + controller arbitration state
@@ -244,7 +239,12 @@ export async function runBroker(nodeId: string): Promise<void> {
     }
   };
 
-  const sendFrame = (client: BrokerClient, frame: BrokerToClient): void => {
+  // `bypassHwm` (F1): the catch-up `welcome` carries the full message history and
+  // can legitimately be tens of MiB — far larger than a steady-state live frame.
+  // It is still ACCOUNTED (so a genuinely stalled client that also floods on live
+  // events is still shed by the NEXT frame's check), but it must never be the
+  // REASON a healthy client is dropped before it has had a chance to drain it.
+  const sendFrame = (client: BrokerClient, frame: BrokerToClient, bypassHwm = false): void => {
     let data: string;
     try {
       data = encodeFrame(frame);
@@ -255,8 +255,9 @@ export async function runBroker(nodeId: string): Promise<void> {
     // M1 high-water mark: a viewer that has fallen too far behind on draining its
     // socket is shed rather than allowed to grow the broker's memory unbounded.
     if (
-      client.queuedFrames + 1 > MAX_QUEUED_FRAMES ||
-      client.pendingBytes + bytes > MAX_PENDING_BYTES
+      !bypassHwm &&
+      (client.queuedFrames + 1 > MAX_QUEUED_FRAMES ||
+        client.pendingBytes + bytes > MAX_PENDING_BYTES)
     ) {
       dropClient(
         client,
@@ -315,13 +316,17 @@ export async function runBroker(nodeId: string): Promise<void> {
   const sendWelcome = (client: BrokerClient): void => {
     const first =
       client.role === 'controller' ? pendingDialogs.values().next().value : undefined;
-    sendFrame(client, {
-      type: 'welcome',
-      snapshot: buildSnapshot(),
-      role: client.role,
-      controller_id: controllerId,
-      pending_dialog: first !== undefined ? first.request : null,
-    });
+    sendFrame(
+      client,
+      {
+        type: 'welcome',
+        snapshot: buildSnapshot(),
+        role: client.role,
+        controller_id: controllerId,
+        pending_dialog: first !== undefined ? first.request : null,
+      },
+      true, // F1: a large catch-up snapshot must not trip the HWM on a fresh client
+    );
   };
 
   // T4 re-route on become-controller: a dialog raised while a prior controller was
@@ -414,6 +419,13 @@ export async function runBroker(nodeId: string): Promise<void> {
       mode: 'print',
       shutdownHandler: () => disposeAndExit('shutdown-hook'),
     });
+    if (cfg.editorName !== undefined && cfg.editorName !== '') {
+      try {
+        session.setSessionName(cfg.editorName); // N3: re-apply across session replacement
+      } catch {
+        /* non-fatal: naming is cosmetic */
+      }
+    }
     unsubscribe?.();
     unsubscribe = session.subscribe((event) => {
       try {
@@ -602,7 +614,15 @@ export async function runBroker(nodeId: string): Promise<void> {
       // --- extended engine-command ops (T3, §1.2 floor set) ------------------
       case 'set_model': {
         if (notController(client, 'set the model')) break;
-        const model = findModelSpec(frame.model);
+        let model: ReturnType<typeof findModelSpec>;
+        try {
+          model = findModelSpec(frame.model);
+        } catch (err) {
+          // N2: registry.find should never throw on the real SDK, but a degenerate
+          // engine must still get a reply rather than a silently-dropped frame.
+          engineErrorTo(client)(err);
+          break;
+        }
         if (model === undefined) {
           sendFrame(client, {
             type: 'error',
@@ -1023,6 +1043,10 @@ export function makeBrokerUiContext(deps: BrokerDialogDeps): ExtensionUIContext 
         resolve(defaultValue);
       };
       opts?.signal?.addEventListener('abort', onAbort, { once: true });
+      // N1: honor the extension's EXPLICIT per-dialog timeout if it passed one
+      // (longer or shorter than the broker default is fine — both are bounded);
+      // otherwise fall back to the broker default. The broker never RELIES on the
+      // extension having passed one (C2).
       const ms = opts?.timeout !== undefined ? opts.timeout : DEFAULT_DIALOG_TIMEOUT_MS;
       timer = setTimeout(() => {
         cleanup();
