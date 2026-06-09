@@ -28,6 +28,8 @@ import type {
   AgentSessionEvent,
   SessionStats,
 } from '@earendil-works/pi-coding-agent';
+import type { ImageContent } from '@earendil-works/pi-ai';
+import { StringDecoder } from 'node:string_decoder';
 
 /** Emitted when an extension needs user input (mirror of pi rpc-types.d.ts). */
 export type RpcExtensionUIRequest =
@@ -67,6 +69,17 @@ export interface BrokerSnapshot {
     sessionFile: string | undefined;
     model: string | undefined;
     isStreaming: boolean;
+    // §1.3.2 — mirror RPC `get_state` so a (re)attaching viewer's header/footer
+    // renders at parity. Types are the exact AgentSession getter types (indexed
+    // access keeps them in lockstep with pi and avoids a deep import of
+    // ThinkingLevel from pi-agent-core, matching `messages` above). Populated in
+    // `buildSnapshot` (this change) via pure getter reads.
+    thinkingLevel: AgentSession['thinkingLevel'];
+    steeringMode: AgentSession['steeringMode'];
+    followUpMode: AgentSession['followUpMode'];
+    sessionName: AgentSession['sessionName'];
+    autoCompactionEnabled: AgentSession['autoCompactionEnabled'];
+    pendingMessageCount: AgentSession['pendingMessageCount'];
   };
 }
 
@@ -82,18 +95,25 @@ export interface HelloFrame {
   term?: { cols: number; rows: number };
 }
 
-/** Drive the engine — controller only. Map 1:1 to session.prompt/steer/followUp/abort. */
+/** Drive the engine — controller only. Map 1:1 to session.prompt/steer/followUp/abort.
+ *  `images` carries pasted/attached images to the engine (review M1): pi accepts
+ *  `prompt(text,{images})` / `steer(text,images)` / `followUp(text,images)` at
+ *  0.78.1. The wire TYPE lives here; T3/T6 wire the runtime side. The BROKER read
+ *  cap (`BROKER_READ_CAPS`) is sized to hold a resizeImage-bounded PNG's base64. */
 export interface PromptFrame {
   type: 'prompt';
   text: string;
+  images?: ImageContent[];
 }
 export interface SteerFrame {
   type: 'steer';
   text: string;
+  images?: ImageContent[];
 }
 export interface FollowUpFrame {
   type: 'follow_up';
   text: string;
+  images?: ImageContent[];
 }
 export interface AbortFrame {
   type: 'abort';
@@ -121,6 +141,91 @@ export interface ShutdownFrame {
   type: 'shutdown';
 }
 
+// ---------------------------------------------------------------------------
+// Engine-command frames (§1.2 floor set, C6/M9)
+// ---------------------------------------------------------------------------
+// Each is CONTROLLER-ONLY and maps 1:1 to an AgentSession method; the broker (T3)
+// implements the handlers and replies `ack`/`error`. Builtin slash commands are
+// NOT engine-interpreted (`prompt('/model')` ships `/model` to the LLM as literal
+// text), so the viewer parses builtins itself (BUILTIN_SLASH_COMMANDS, vendored in
+// pi-vendored.ts) and dispatches these frames. Speculative ops
+// (clear_queue/import_jsonl/bash/…) are deliberately EXCLUDED (§1.2).
+
+/** `setModel(model)` — `/model` (selector resolves → chosen id). */
+export interface SetModelFrame {
+  type: 'set_model';
+  model: string;
+}
+/** `cycleModel()`. */
+export interface CycleModelFrame {
+  type: 'cycle_model';
+}
+/** `setThinkingLevel(level)` — `/settings` thinking. */
+export interface SetThinkingLevelFrame {
+  type: 'set_thinking_level';
+  level: AgentSession['thinkingLevel'];
+}
+/** `setAutoRetryEnabled(enabled)`. */
+export interface SetAutoRetryFrame {
+  type: 'set_auto_retry';
+  enabled: boolean;
+}
+/** `setAutoCompactionEnabled(enabled)` — `/settings`. */
+export interface SetAutoCompactionFrame {
+  type: 'set_auto_compaction';
+  enabled: boolean;
+}
+/** `compact(instructions?)` — `/compact`. */
+export interface CompactFrame {
+  type: 'compact';
+  instructions?: string;
+}
+/** `runtimeHost.newSession()` + rebind — `/new`. */
+export interface NewSessionFrame {
+  type: 'new_session';
+}
+/** `runtimeHost.switchSession(path)` + rebind — `/resume` (selector). */
+export interface SwitchSessionFrame {
+  type: 'switch_session';
+  path: string;
+}
+/** `runtimeHost.fork(entryId)` + rebind — `/fork` (selector). */
+export interface ForkFrame {
+  type: 'fork';
+  entryId: string;
+}
+/** `setSessionName(name)` — `/name`. */
+export interface SetSessionNameFrame {
+  type: 'set_session_name';
+  name: string;
+}
+/** Registered commands + templates + skills, MERGED with BUILTIN_SLASH_COMMANDS
+ *  (M9: RPC omits builtins) — drives autocomplete. Broker replies via `ack`. */
+export interface GetCommandsFrame {
+  type: 'get_commands';
+}
+/** `navigateTree(targetId, options?)` — `/tree`. Options mirror AgentSession.navigateTree. */
+export interface NavigateTreeFrame {
+  type: 'navigate_tree';
+  targetId: string;
+  options?: {
+    summarize?: boolean;
+    customInstructions?: string;
+    replaceInstructions?: boolean;
+    label?: string;
+  };
+}
+/** `reload()` — `/reload`. */
+export interface ReloadFrame {
+  type: 'reload';
+}
+/** `exportToHtml(path)` / `exportToJsonl(path)` — `/export`. */
+export interface ExportFrame {
+  type: 'export';
+  path: string;
+  format: 'html' | 'jsonl';
+}
+
 /** Answer a blocking extension dialog — pi's public RPC response type. */
 export type ExtensionUIResponseFrame = RpcExtensionUIResponse;
 
@@ -134,6 +239,20 @@ export type ClientToBroker =
   | ReleaseControlFrame
   | ByeFrame
   | ShutdownFrame
+  | SetModelFrame
+  | CycleModelFrame
+  | SetThinkingLevelFrame
+  | SetAutoRetryFrame
+  | SetAutoCompactionFrame
+  | CompactFrame
+  | NewSessionFrame
+  | SwitchSessionFrame
+  | ForkFrame
+  | SetSessionNameFrame
+  | GetCommandsFrame
+  | NavigateTreeFrame
+  | ReloadFrame
+  | ExportFrame
   | ExtensionUIResponseFrame;
 
 // ---------------------------------------------------------------------------
@@ -162,6 +281,15 @@ export interface ErrorFrame {
   message: string;
 }
 
+/** Result of a controller command op (§1.3): `for` echoes the op name, `ok` the
+ *  outcome, `detail` an optional human-readable note. */
+export interface AckFrame {
+  type: 'ack';
+  for: string;
+  ok: boolean;
+  detail?: string;
+}
+
 /** A blocking dialog routed to the controller — pi's public RPC request type. */
 export type ExtensionUIRequestFrame = RpcExtensionUIRequest;
 
@@ -172,6 +300,7 @@ export type BrokerToClient =
   | WelcomeFrame
   | ControlChangedFrame
   | ErrorFrame
+  | AckFrame
   | ExtensionUIRequestFrame
   | AgentSessionEvent;
 
@@ -185,26 +314,111 @@ export function encodeFrame(frame: ClientToBroker | BrokerToClient): string {
   return JSON.stringify(frame) + '\n';
 }
 
+/** Byte bounds for a {@link FrameDecoder} (C5). */
+export interface FrameDecoderCaps {
+  /** Largest single (unterminated) frame the decoder will buffer before throwing. */
+  maxLineBytes: number;
+  /** Largest the internal buffer may peak to in one push before throwing. */
+  maxTotalBytes: number;
+}
+
+/** Thrown by {@link FrameDecoder.push} when a peer's buffered bytes exceed a cap
+ *  (C5). The caller catches it, best-effort sends `error{code:'frame_overflow'}`,
+ *  and DESTROYS that socket — cap-and-drop the peer, never grow-to-OOM. `kind`
+ *  says which bound tripped: a single oversized frame (`line`) or total backlog
+ *  (`total`). */
+export class FrameOverflowError extends Error {
+  constructor(
+    readonly kind: 'line' | 'total',
+    readonly bytes: number,
+    readonly cap: number,
+  ) {
+    super(`frame decoder overflow (${kind}): ${bytes} bytes exceeds cap ${cap}`);
+    this.name = 'FrameOverflowError';
+  }
+}
+
+/** Caps the CLIENT uses reading BROKER frames. The `welcome.snapshot` carries the
+ *  full message history and can be many MiB, so these are generous. Covers
+ *  realistic long sessions; snapshot CHUNKING is deferred (plan §1.1 known
+ *  limitation, review m3 — the long-lived broker makes a big welcome a realistic,
+ *  not pathological, trigger, but the fixed cap is accepted for Phase 4). */
+export const CLIENT_READ_CAPS: FrameDecoderCaps = {
+  maxLineBytes: 256 * 1024 * 1024,
+  maxTotalBytes: 256 * 1024 * 1024,
+};
+
+/** Caps the BROKER uses reading CLIENT frames. Plan §1.1 specified a tight
+ *  4/16 MiB, but review M1 requires image-paste frames to fit: a resizeImage-
+ *  bounded PNG's base64 is a few MiB and would clip a 4 MiB line cap. So these are
+ *  RAISED above the plan's 4/16 to hold an image-bearing `prompt`/`steer`/
+ *  `follow_up` frame (M1). Still bounded, so a malicious/buggy client→broker frame
+ *  is cap-and-dropped, never grow-to-OOM (C5). */
+export const BROKER_READ_CAPS: FrameDecoderCaps = {
+  maxLineBytes: 24 * 1024 * 1024,
+  maxTotalBytes: 48 * 1024 * 1024,
+};
+
 /** Incremental newline-delimited JSON reader: feed raw socket chunks, get back
  *  the complete frames decoded so far. Buffers a partial trailing line across
- *  pushes; silently drops a malformed line (a viewer must never crash the
- *  broker). The caller narrows the `unknown` against the frame unions. */
+ *  pushes; silently drops a malformed (unparseable) line (a viewer must never
+ *  crash the broker on bad JSON). The caller narrows the `unknown` against the
+ *  frame unions.
+ *
+ *  BOUNDED (C5): an oversized buffer is the THROW case. If a single push peaks the
+ *  internal buffer above `maxTotalBytes`, or the surviving (unterminated) partial
+ *  line exceeds `maxLineBytes`, {@link push} throws {@link FrameOverflowError}
+ *  instead of returning frames — the caller drops that peer rather than letting a
+ *  malicious/buggy stream grow the buffer to OOM. Bytes are measured with
+ *  `Buffer.byteLength`, never string length; a running counter makes each push's
+ *  size CHECK O(1) (no re-scan of the whole buffer to measure it) — the `\n` scan
+ *  itself still walks the buffer, so a single giant unterminated line is O(n²) in
+ *  chunk count, acceptable since snapshot chunking is deferred (§1.1).
+ *
+ *  A `StringDecoder` decodes incoming Buffer chunks: an incomplete trailing
+ *  multibyte sequence is held back across pushes instead of being mangled to
+ *  U+FFFD, so a char split at a `node:net` chunk boundary is never corrupted, and
+ *  `bufBytes` stays in EXACT lockstep with `this.buf` (the add and the subtract
+ *  both count decoded-string bytes — a raw `chunk.length` would desync and weaken
+ *  the C5 cap on multibyte/invalid input). */
 export class FrameDecoder {
   private buf = '';
+  private bufBytes = 0;
+  private readonly utf8 = new StringDecoder('utf8');
+
+  constructor(private readonly caps: FrameDecoderCaps) {}
 
   push(chunk: Buffer | string): unknown[] {
-    this.buf += typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+    // A string input is already complete text; a Buffer goes through the
+    // StringDecoder so a boundary-split multibyte char is buffered, not corrupted.
+    // Both branches append `str` to `this.buf` and count `Buffer.byteLength(str)`,
+    // keeping bufBytes === Buffer.byteLength(this.buf) exactly.
+    const str = typeof chunk === 'string' ? chunk : this.utf8.write(chunk);
+    this.buf += str;
+    this.bufBytes += Buffer.byteLength(str);
+    // Peak-buffer bound: caps the most we ever hold in one push (e.g. a single OS
+    // chunk dumping a huge blob), before draining complete frames.
+    if (this.bufBytes > this.caps.maxTotalBytes) {
+      throw new FrameOverflowError('total', this.bufBytes, this.caps.maxTotalBytes);
+    }
     const out: unknown[] = [];
     let nl: number;
     while ((nl = this.buf.indexOf('\n')) >= 0) {
+      const consumed = this.buf.slice(0, nl + 1); // line + the newline
+      this.bufBytes -= Buffer.byteLength(consumed);
       const line = this.buf.slice(0, nl).trim();
       this.buf = this.buf.slice(nl + 1);
       if (line === '') continue;
       try {
         out.push(JSON.parse(line));
       } catch {
-        /* drop a malformed frame — never throw out of the reader */
+        /* drop a malformed frame — never throw out of the reader for bad JSON */
       }
+    }
+    // Single-frame bound: a partial line that has grown past one frame's cap is a
+    // peer streaming bytes with no newline — drop it rather than buffer forever.
+    if (this.bufBytes > this.caps.maxLineBytes) {
+      throw new FrameOverflowError('line', this.bufBytes, this.caps.maxLineBytes);
     }
     return out;
   }

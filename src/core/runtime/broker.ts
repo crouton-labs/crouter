@@ -32,6 +32,7 @@ import { assertEngineVersion, loadBrokerEngine, type BrokerEngine } from './brok
 import {
   encodeFrame,
   FrameDecoder,
+  BROKER_READ_CAPS,
   type BrokerSnapshot,
   type BrokerToClient,
   type ClientRole,
@@ -198,6 +199,13 @@ export async function runBroker(nodeId: string): Promise<void> {
       sessionFile: session.sessionFile,
       model: session.model?.id,
       isStreaming: session.isStreaming,
+      // §1.3.2 — pure getter reads mirroring RPC get_state (viewer footer parity).
+      thinkingLevel: session.thinkingLevel,
+      steeringMode: session.steeringMode,
+      followUpMode: session.followUpMode,
+      sessionName: session.sessionName,
+      autoCompactionEnabled: session.autoCompactionEnabled,
+      pendingMessageCount: session.pendingMessageCount,
     },
   });
 
@@ -390,7 +398,7 @@ export async function runBroker(nodeId: string): Promise<void> {
       id: '',
       role: 'observer',
       socket,
-      decoder: new FrameDecoder(),
+      decoder: new FrameDecoder(BROKER_READ_CAPS),
       helloed: false,
     };
     clients.add(client);
