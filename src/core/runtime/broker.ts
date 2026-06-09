@@ -21,6 +21,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import {
   getAgentDir,
+  initTheme,
   type AgentSessionRuntime,
   type AgentSessionServices,
   type CreateAgentSessionResult,
@@ -184,6 +185,20 @@ export async function runBroker(nodeId: string): Promise<void> {
   // eslint-disable-next-line prefer-const
   let { session, services, resuming, runtime } = await buildBrokerSession(engine, cfg);
   activeSession = session;
+  // Initialize pi's process-global theme. The pi binary does this at boot
+  // (main.js: initTheme(settingsManager.getTheme(), appMode === 'interactive')),
+  // but the SDK convenience path the broker uses does NOT. Without it, ANY
+  // extension hook that reads `ctx.ui.theme` throws "Theme not initialized" —
+  // and the extension runner SILENTLY swallows that throw and discards the
+  // hook's returned payload. The visible symptom was the OAuth billing adapter's
+  // before_provider_request handler throwing, so its injected Claude-Code billing
+  // header was dropped and subscription turns 400'd ("draws from extra usage").
+  // headless ⇒ no file watcher (false). Idempotent global; call once at boot.
+  try {
+    initTheme(services.settingsManager.getTheme(), false);
+  } catch (err) {
+    process.stderr.write(`[broker] WARNING: initTheme failed: ${String(err)}\n`);
+  }
   // N3: the node's display name is re-applied inside rebindSession (below) so it
   // survives a session replacement (new_session/switch_session/fork), not only at
   // boot.
@@ -1083,6 +1098,22 @@ export function makeBrokerUiContext(deps: BrokerDialogDeps): ExtensionUIContext 
 
   const noop = (): void => {};
   const ctx = {
+    // pi's ExtensionUIContext exposes `theme`; package extensions (e.g. the OAuth
+    // billing adapter's status rendering) read it from ANY lifecycle hook. The
+    // SDK's noOpUIContext returns the process-global theme proxy here; we mirror
+    // that by reading the same global symbol (populated by initTheme() at broker
+    // boot — see runBroker). Without this property `ctx.ui.theme` is undefined and
+    // the hook throws, which the runner silently swallows while dropping the hook's
+    // returned payload (the OAuth 400 root cause).
+    get theme(): unknown {
+      const t = (globalThis as Record<symbol, unknown>)[
+        Symbol.for('@earendil-works/pi-coding-agent:theme')
+      ];
+      if (t === undefined || t === null) {
+        throw new Error('Theme not initialized. Call initTheme() first.');
+      }
+      return t;
+    },
     select: (title: string, options: string[], opts?: { signal?: AbortSignal; timeout?: number }) =>
       dialogPromise<string | undefined>(
         undefined,
