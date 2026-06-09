@@ -48,6 +48,23 @@ export interface SlashContext {
 /** Builtins with no Phase-4 engine method — scoped out (review m2). */
 const SCOPED_OUT = new Set(['login', 'logout', 'share', 'trust']);
 
+/** Valid `/settings thinking` levels — the `SetThinkingLevelFrame['level']`
+ *  union (= AgentSession['thinkingLevel'], pi-agent-core ThinkingLevel),
+ *  mirrored as a runtime set so an invalid arg is rejected with the options
+ *  rather than shipped as a frame the engine would throw on. Built from a
+ *  `Record<level, true>` so the build fails BOTH ways if the union drifts: a
+ *  missing key (union GAINED a level) or an extra key (union dropped one). */
+const THINKING_LEVELS = new Set<string>(
+  Object.keys({
+    off: true,
+    minimal: true,
+    low: true,
+    medium: true,
+    high: true,
+    xhigh: true,
+  } satisfies Record<SetThinkingLevelFrame['level'], true>),
+);
+
 const BUILTIN_NAMES = new Set(BUILTIN_SLASH_COMMANDS.map((c) => c.name));
 
 /** True if `text` is a leading-slash command (vs. a normal prompt). */
@@ -186,6 +203,10 @@ function handleSettings(arg: string, ctx: SlashContext): true {
   switch (sub) {
     case 'thinking':
       if (!value) return usage(ctx, '/settings thinking <level>');
+      if (!THINKING_LEVELS.has(value)) {
+        ctx.notify(`Invalid thinking level "${value}" — choose one of: ${[...THINKING_LEVELS].join(', ')}`);
+        return true;
+      }
       ctx.send({ type: 'set_thinking_level', level: value as SetThinkingLevelFrame['level'] });
       return true;
     case 'auto-retry':

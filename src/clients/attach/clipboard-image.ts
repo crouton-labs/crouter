@@ -8,12 +8,19 @@
 //
 // The bytes are then resized AGGRESSIVELY through pi's exported `resizeImage`
 // (which is reusable, unlike the reader) so the base64 stays well within the
-// broker's client-read line cap (`BROKER_READ_CAPS.maxLineBytes` = 24 MiB). We
-// bound the encoded image to MAX_BYTES (3 MiB) → base64 ≈ 4.1 MiB, comfortable.
-// `resizeImage` already tries PNG and JPEG and picks the smaller, so it doubles
-// as format normalization; `convertToPng` is the fallback when the Photon
-// resizer is unavailable. The result is an `ImageContent` (pi-ai) ready to drop
-// straight into a `prompt`/`steer`/`follow_up` frame's `images?` array.
+// broker's client-read line cap (`BROKER_READ_CAPS.maxLineBytes` = 24 MiB).
+// `resizeImage`'s `maxBytes` is the BASE64-PAYLOAD ceiling (it compares the
+// encoded size, not raw bytes — see image-resize-core), so MAX_BYTES (3 MiB)
+// bounds the base64 itself, far under 24 MiB. `resizeImage` already tries PNG and
+// JPEG and picks the smaller, so it doubles as format normalization;
+// `convertToPng` is the fallback when the Photon resizer is unavailable. The
+// fallbacks (convertToPng / raw bytes) are NOT size-bounded by `resizeImage`, so
+// each is gated on the SAME MAX_BYTES base64 ceiling (review M1): over it → the
+// image is DROPPED with a user-visible note rather than shipped as an over-cap
+// frame that would overflow BROKER_READ_CAPS.maxLineBytes (24 MiB) and destroy
+// the viewer socket. The result is an `ImageContent` (pi-ai) ready to drop
+// straight into a `prompt`/`steer`/`follow_up` frame's `images?` array (or, when
+// dropped, a `note`-only result and no image).
 
 import { spawnSync } from 'node:child_process';
 import {
@@ -26,8 +33,10 @@ import type { ImageContent } from '@earendil-works/pi-ai';
 /** Longest edge (px) the pasted image is resized to — aggressive, matches the
  *  ~1568px long-edge guidance vision models use. */
 const MAX_EDGE = 1568;
-/** Largest encoded image (bytes) `resizeImage` will produce. 3 MiB → base64
- *  ≈ 4.1 MiB, far under BROKER_READ_CAPS.maxLineBytes (24 MiB). */
+/** Largest BASE64 payload per image — the ceiling for BOTH paths: passed as
+ *  `resizeImage`'s `maxBytes` (which bounds the encoded base64, not raw bytes)
+ *  on the primary path, and compared against the fallbacks' base64 length. 3 MiB
+ *  base64, far under BROKER_READ_CAPS.maxLineBytes (24 MiB). */
 const MAX_BYTES = 3 * 1024 * 1024;
 /** Bound the shell read so a giant/garbage clipboard can't blow up memory. */
 const SPAWN_MAX_BUFFER = 64 * 1024 * 1024;
@@ -36,9 +45,12 @@ const SPAWN_TIMEOUT_MS = 3000;
 /** A clipboard image ready to attach, plus an optional human-readable note about
  *  the resize (from pi's `formatDimensionNote`) for the controller to surface. */
 export interface ClipboardImageResult {
-  /** Ready to push into a `prompt`/`steer`/`follow_up` frame's `images?`. */
-  image: ImageContent;
-  /** e.g. "Resized from 4032×3024 to 1568×1176" — present only when resized. */
+  /** Ready to push into a `prompt`/`steer`/`follow_up` frame's `images?`. ABSENT
+   *  when the image was read but DROPPED (a fallback exceeded MAX_BYTES base64);
+   *  `note` then carries the drop reason and the caller attaches nothing. */
+  image?: ImageContent;
+  /** Either a resize note ("Resized from 4032×3024 to 1568×1176", present only
+   *  when resized) or, when `image` is absent, the reason the image was dropped. */
   note?: string;
 }
 
@@ -63,12 +75,26 @@ export async function readClipboardImage(): Promise<ClipboardImageResult | null>
   }
 
   // Fallback: the Photon resizer is unavailable — at least normalize to PNG so
-  // the engine gets a format it accepts.
+  // the engine gets a format it accepts. Capped at MAX_BYTES (base64).
   const png = await convertToPng(raw.bytes.toString('base64'), raw.mimeType);
-  if (png) return { image: { type: 'image', data: png.data, mimeType: png.mimeType } };
+  if (png) return capped({ type: 'image', data: png.data, mimeType: png.mimeType });
 
-  // Last resort: ship the raw bytes (still bounded by SPAWN_MAX_BUFFER above).
-  return { image: { type: 'image', data: raw.bytes.toString('base64'), mimeType: raw.mimeType } };
+  // Last resort: ship the raw bytes — also capped, never an over-cap frame.
+  return capped({ type: 'image', data: raw.bytes.toString('base64'), mimeType: raw.mimeType });
+}
+
+/** Gate a FALLBACK image on the per-image base64 ceiling (MAX_BYTES): under it →
+ *  attach; over → DROP with a user-visible note rather than ship a frame that
+ *  would overflow the broker's 24 MiB read cap and destroy the viewer socket.
+ *  base64 is ASCII, so its byte length equals the bytes the frame puts on the
+ *  wire. */
+function capped(image: ImageContent): ClipboardImageResult {
+  const encodedBytes = Buffer.byteLength(image.data);
+  if (encodedBytes <= MAX_BYTES) return { image };
+  const mib = (n: number): number => Math.round(n / (1024 * 1024));
+  return {
+    note: `Image not attached: ${mib(encodedBytes)} MiB exceeds the ${mib(MAX_BYTES)} MiB attach limit (clipboard resizer unavailable)`,
+  };
 }
 
 // ---------------------------------------------------------------------------
