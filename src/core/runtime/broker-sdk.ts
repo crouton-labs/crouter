@@ -15,12 +15,19 @@ import { execFileSync } from 'node:child_process';
 import {
   createAgentSessionServices,
   createAgentSessionFromServices,
+  createAgentSessionRuntime,
   SessionManager,
   VERSION,
 } from '@earendil-works/pi-coding-agent';
 
 // Static re-exports — the real SDK surface the broker drives in production.
-export { createAgentSessionServices, createAgentSessionFromServices, SessionManager, VERSION };
+export {
+  createAgentSessionServices,
+  createAgentSessionFromServices,
+  createAgentSessionRuntime,
+  SessionManager,
+  VERSION,
+};
 
 /**
  * The minimal slice of the pi SDK the broker needs. Both the real package and the
@@ -36,6 +43,14 @@ export { createAgentSessionServices, createAgentSessionFromServices, SessionMana
 export interface BrokerEngine {
   createAgentSessionServices: typeof createAgentSessionServices;
   createAgentSessionFromServices: typeof createAgentSessionFromServices;
+  /**
+   * The session-replacement runtime factory (T3 new_session/switch_session/fork).
+   * OPTIONAL: the real SDK (0.78.1) exposes it, so production gets full session
+   * replacement; the `fake-engine` test fixture does NOT provide it, so the
+   * broker degrades those three ops to an `error{engine_error}` reply rather than
+   * failing engine validation. Everything else works on both.
+   */
+  createAgentSessionRuntime?: typeof createAgentSessionRuntime;
   SessionManager: typeof SessionManager;
   VERSION: string;
 }
@@ -63,6 +78,11 @@ export async function loadBrokerEngine(): Promise<BrokerEngine> {
   return {
     createAgentSessionServices: mod.createAgentSessionServices,
     createAgentSessionFromServices: mod.createAgentSessionFromServices,
+    // Optional — passed through only when the engine exposes it (real SDK yes,
+    // fake-engine no). The broker checks for its presence before the three
+    // session-replacing ops.
+    createAgentSessionRuntime:
+      typeof mod.createAgentSessionRuntime === 'function' ? mod.createAgentSessionRuntime : undefined,
     SessionManager: mod.SessionManager,
     VERSION: typeof mod.VERSION === 'string' ? mod.VERSION : 'unknown',
   };

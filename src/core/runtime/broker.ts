@@ -21,17 +21,21 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import {
   getAgentDir,
+  type AgentSessionRuntime,
   type AgentSessionServices,
   type CreateAgentSessionResult,
+  type CreateAgentSessionRuntimeFactory,
   type ExtensionUIContext,
 } from '@earendil-works/pi-coding-agent';
 import { nodeDir } from '../canvas/paths.js';
 import { FRONT_DOOR_ENV } from './front-door.js';
 import { piInvocationToSdkConfig, type BrokerSdkConfig, type PiInvocation } from './launch.js';
 import { assertEngineVersion, loadBrokerEngine, type BrokerEngine } from './broker-sdk.js';
+import { BUILTIN_SLASH_COMMANDS } from './pi-vendored.js';
 import {
   encodeFrame,
   FrameDecoder,
+  FrameOverflowError,
   BROKER_READ_CAPS,
   type BrokerSnapshot,
   type BrokerToClient,
@@ -40,6 +44,25 @@ import {
   type RpcExtensionUIRequest,
   type RpcExtensionUIResponse,
 } from './broker-protocol.js';
+
+// ---------------------------------------------------------------------------
+// Tunables (T3 backpressure / T4 dialog anti-deadlock)
+// ---------------------------------------------------------------------------
+
+/** Per-viewer outbound high-water mark (M1). A viewer whose unflushed backlog
+ *  exceeds EITHER bound is DROPPED (socket destroyed) rather than allowed to
+ *  apply indefinite backpressure to the shared engine. Modeled on pi's RPC
+ *  output-guard: bound the queue, shed the slow viewer. */
+const MAX_QUEUED_FRAMES = 1000;
+const MAX_PENDING_BYTES = 32 * 1024 * 1024; // 32 MiB
+
+/** Broker-side default dialog timeout (C2 anti-deadlock, T4). When an extension
+ *  dialog is forwarded to a controller, the broker ALWAYS arms a timeout (this
+ *  default, or a shorter per-dialog `opts.timeout` if the extension passed one)
+ *  so a controller that never answers — or detaches and is never replaced — can
+ *  never hang the agent turn forever. On fire it resolves to the SAFE default
+ *  (deny for confirm; cancel/undefined for select/input/editor). */
+const DEFAULT_DIALOG_TIMEOUT_MS = 120_000; // 120 s
 
 // ---------------------------------------------------------------------------
 // Per-client connection state
@@ -51,15 +74,25 @@ interface BrokerClient {
   socket: Socket;
   decoder: FrameDecoder;
   helloed: boolean;
+  /** Unflushed outbound bytes handed to `socket.write` but not yet flushed to the
+   *  OS (M1 backpressure accounting). Incremented before each write, decremented
+   *  in that write's completion callback. */
+  pendingBytes: number;
+  /** Outbound frames written but not yet flushed (the queue-depth half of the
+   *  high-water mark). */
+  queuedFrames: number;
 }
 
-/** A blocking dialog awaiting the controller's response (or an abort/detach). */
+/** A blocking dialog awaiting the controller's response, the broker-side default
+ *  timeout, or the engine's abort. */
 interface PendingDialog {
-  /** The controller answered — resolve with its parsed response. */
+  /** The original request (T4) — retained so `welcome.pending_dialog` and the
+   *  re-route-on-become-controller path can re-deliver a still-pending dialog to
+   *  a (new) controller. The Wave-0 shape stored only the resolver. */
+  request: RpcExtensionUIRequest;
+  /** The controller answered — resolve with its parsed response (also clears the
+   *  broker-side timeout and removes the entry from the registry). */
   resolve: (response: RpcExtensionUIResponse) => void;
-  /** Every viewer dropped while in flight — resolve to the dialog's noOp default
-   *  (deny/cancel/undefined) so a detached controller never hangs the turn (M-1). */
-  cancel: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -140,7 +173,15 @@ export async function runBroker(nodeId: string): Promise<void> {
   // 2–4. Build the engine session via the SERVICES path (C3) — see
   //       buildBrokerSession below. Register it so the FATAL exit path (M3) can
   //       dispose it and reap detached bash children.
-  const { session, resuming } = await buildBrokerSession(engine, cfg);
+  // `session` + `services` are MUTABLE holders (T3 session-rebind): when the
+  // controller drives new_session/switch_session/fork, the AgentSessionRuntime
+  // tears down the old session and builds the next one, then runs our rebind
+  // callback which reassigns these. Every closure below (buildSnapshot,
+  // driveEngine, handleFrame, disposeAndExit) reads through them, so they all
+  // follow the live session automatically. `runtime` is undefined for an engine
+  // that does not expose the replacement API (the fake-engine fixture).
+  // eslint-disable-next-line prefer-const
+  let { session, services, resuming, runtime } = await buildBrokerSession(engine, cfg);
   activeSession = session;
 
   if (cfg.editorName !== undefined && cfg.editorName !== '') {
@@ -167,11 +208,77 @@ export async function runBroker(nodeId: string): Promise<void> {
     return null;
   };
 
-  const sendFrame = (client: BrokerClient, frame: BrokerToClient): void => {
+  // The host redirects the broker's stdout+stderr to job/broker.log (host.ts), so
+  // stderr is the broker's durable log sink (boot/crash diagnostics already use it).
+  const logBroker = (msg: string): void => {
     try {
-      client.socket.write(encodeFrame(frame));
+      process.stderr.write(`[broker] ${msg}\n`);
     } catch {
-      /* a dead viewer must never crash the broker */
+      /* best effort */
+    }
+  };
+
+  // Free control if the departing/dropped client held it (shared by drop +
+  // dropSlowClient). controllerId can outlive the socket until 'close' fires, so
+  // releasing here keeps arbitration correct the instant a controller is shed.
+  const releaseControlIfHeldBy = (client: BrokerClient): void => {
+    if (client.id !== '' && client.id === controllerId) {
+      controllerId = null;
+      broadcastControlChanged();
+    }
+  };
+
+  // Shed a client — destroy the socket + remove it + release its control — used by
+  // both the M1 backpressure drop and the G7 frame-overflow drop. 'close' (→ drop)
+  // follows the destroy; releasing control here makes the shed immediate so a
+  // misbehaving controller can't keep arbitration pinned until 'close' fires.
+  const dropClient = (client: BrokerClient, reason: string): void => {
+    if (!clients.has(client)) return; // already gone
+    logBroker(`dropping viewer ${client.id || '(pre-hello)'} — ${reason}`);
+    clients.delete(client);
+    releaseControlIfHeldBy(client);
+    try {
+      client.socket.destroy();
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const sendFrame = (client: BrokerClient, frame: BrokerToClient): void => {
+    let data: string;
+    try {
+      data = encodeFrame(frame);
+    } catch {
+      return; // an unserializable frame must never crash the broker
+    }
+    const bytes = Buffer.byteLength(data);
+    // M1 high-water mark: a viewer that has fallen too far behind on draining its
+    // socket is shed rather than allowed to grow the broker's memory unbounded.
+    if (
+      client.queuedFrames + 1 > MAX_QUEUED_FRAMES ||
+      client.pendingBytes + bytes > MAX_PENDING_BYTES
+    ) {
+      dropClient(
+        client,
+        `backpressure high-water mark exceeded (queued=${client.queuedFrames}, pending=${client.pendingBytes}B)`,
+      );
+      return;
+    }
+    client.queuedFrames += 1;
+    client.pendingBytes += bytes;
+    try {
+      // The per-write completion callback fires when THIS chunk is flushed to the
+      // OS — a finer-grained drain signal than a socket-wide 'drain' event, and it
+      // keeps the accounting exact. write()'s boolean return is the coarse
+      // "buffer full" hint; the per-chunk callback is what we account on.
+      client.socket.write(data, () => {
+        client.queuedFrames -= 1;
+        client.pendingBytes -= bytes;
+      });
+    } catch {
+      // Dead socket: undo this frame's accounting; 'close' → drop() cleans the rest.
+      client.queuedFrames -= 1;
+      client.pendingBytes -= bytes;
     }
   };
 
@@ -181,15 +288,6 @@ export async function runBroker(nodeId: string): Promise<void> {
 
   const broadcastControlChanged = (): void =>
     broadcast({ type: 'control_changed', controller_id: controllerId });
-
-  // M-1 (review): when the controller leaves (detach OR release_control) there are
-  // ZERO viewers, so every in-flight forwarded dialog must resolve to its noOp
-  // default instead of hanging the agent turn forever — the exact failure C2
-  // exists to kill, just reached via departure rather than a never-arriving
-  // answer. Snapshot the values: cancel() deletes from the map as it runs.
-  const cancelPendingDialogs = (): void => {
-    for (const d of [...pendingDialogs.values()]) d.cancel();
-  };
 
   const buildSnapshot = (): BrokerSnapshot => ({
     messages: session.messages,
@@ -208,6 +306,38 @@ export async function runBroker(nodeId: string): Promise<void> {
       pendingMessageCount: session.pendingMessageCount,
     },
   });
+
+  // Send a client its catch-up snapshot. welcome.pending_dialog carries a single
+  // still-in-flight dialog to a controller attaching mid-dialog (T4); only the
+  // controller can answer one, so observers get null. The pendingDialogs map is
+  // insertion-ordered — the first entry is the canonical one carried here; any
+  // extras are re-routed explicitly by the caller (rare: concurrent dialogs).
+  const sendWelcome = (client: BrokerClient): void => {
+    const first =
+      client.role === 'controller' ? pendingDialogs.values().next().value : undefined;
+    sendFrame(client, {
+      type: 'welcome',
+      snapshot: buildSnapshot(),
+      role: client.role,
+      controller_id: controllerId,
+      pending_dialog: first !== undefined ? first.request : null,
+    });
+  };
+
+  // T4 re-route on become-controller: a dialog raised while a prior controller was
+  // attached stays pending after that controller detaches (it is NOT cancelled —
+  // see makeBrokerUiContext / the M2 keep-pending fix), so whoever takes control
+  // next must be handed it to answer.
+  const reroutePendingDialogsTo = (client: BrokerClient): void => {
+    for (const d of pendingDialogs.values()) sendFrame(client, d.request);
+  };
+
+  // After a session-replacing op (new_session/switch_session/fork) the engine's
+  // entire message history changed, so every attached viewer must rebuild from a
+  // fresh snapshot of the NEW session.
+  const reWelcomeAll = (): void => {
+    for (const c of clients) if (c.helloed) sendWelcome(c);
+  };
 
   // -------------------------------------------------------------------------
   // The single exit helper (plan §0): dispose the engine, close + unlink the
@@ -250,35 +380,55 @@ export async function runBroker(nodeId: string): Promise<void> {
   });
 
   // -------------------------------------------------------------------------
-  // 3 (plan): bind the FULL canvas extensions, mode 'print'. THIS fires
-  // session_start → the stophook records pi_session_id/file + recordPid(pid).
-  // The shutdownHandler is the precise broker-exit trigger: the stophook calls
-  // ctx.shutdown() in exactly the done / idle-release / refresh branches (and
-  // NOT when it reprompts), so this fires only when the broker should exit.
+  // 3+4 (plan): bind the FULL canvas extensions (mode 'print') AND fan the single
+  // engine event stream to all clients, VERBATIM — both wrapped in one
+  // `rebindSession` so a session-replacing op (new_session/switch_session/fork)
+  // can re-run them against the NEW session. This mirrors pi's rpc-mode
+  // rebindSession (rpc-mode.js:227): the AgentSessionRuntime tears down the old
+  // session, builds the next, then calls this back; we re-bind extensions and
+  // re-subscribe so the canvas hooks + the fan-out follow the live session.
+  //
+  // bindExtensions fires session_start → the stophook records pi_session_id/file
+  // + recordPid(pid); the shutdownHandler is the precise broker-exit trigger (the
+  // stophook calls ctx.shutdown() only in its done / idle-release / refresh
+  // branches, NOT on reprompt). The engine-driven exit is deliberately NOT
+  // inferred from raw agent_end in the relay: the bound stophook is the SOLE
+  // authority on when the node stops — it exits synchronously at
+  // agent-session.js:266, BEFORE this subscriber runs at :268, with intent
+  // already persisted; in every OTHER branch it STAYS ALIVE. An agent_end idle
+  // heuristic would override those stay-alive decisions, so there is no such
+  // backstop; shutdownHandler + the inbound `shutdown` frame are the only exits.
+  //
+  // m7: the subscriber body is wrapped in try/catch — a synchronous throw out of
+  // a subscriber otherwise propagates as a run failure that would crash the broker.
   // -------------------------------------------------------------------------
-  await session.bindExtensions({
-    uiContext,
-    mode: 'print',
-    shutdownHandler: () => disposeAndExit('shutdown-hook'),
+  let unsubscribe: (() => void) | undefined;
+  const rebindSession = async (): Promise<void> => {
+    if (runtime !== undefined) {
+      session = runtime.session; // the runtime replaced it; follow the new one
+      services = runtime.services;
+    }
+    activeSession = session; // keep the fatal-exit hook pointed at the live session
+    await session.bindExtensions({
+      uiContext,
+      mode: 'print',
+      shutdownHandler: () => disposeAndExit('shutdown-hook'),
+    });
+    unsubscribe?.();
+    unsubscribe = session.subscribe((event) => {
+      try {
+        broadcast(event as BrokerToClient);
+      } catch (err) {
+        logBroker(`event relay threw: ${String(err)}`);
+      }
+    });
+  };
+  // Register the rebind BEFORE the first bind so a replacement triggered during
+  // startup is honored; then do the initial bind + subscribe.
+  runtime?.setRebindSession(async () => {
+    await rebindSession();
   });
-
-  // -------------------------------------------------------------------------
-  // 4 (plan): fan the single engine event stream to all clients, VERBATIM — the
-  // broker is a transparent multiplexer. The engine-driven exit is deliberately
-  // NOT inferred from raw agent_end here: the bound stophook is the SOLE
-  // authority on when the node stops, and it calls ctx.shutdown() (→ our
-  // shutdownHandler) in exactly its done / idle-release / refresh branches —
-  // exiting synchronously at agent-session.js:266, BEFORE this subscriber runs
-  // at :268, with intent already persisted. In every OTHER branch the stophook
-  // deliberately STAYS ALIVE (reprompt, transient provider error, attended/
-  // focused root). An agent_end idle heuristic would override those stay-alive
-  // decisions — e.g. exit on a recoverable provider error, forcing a needless
-  // ~20s grace-revive — so there is no such backstop; shutdownHandler + the
-  // inbound `shutdown` frame are the only exits.
-  // -------------------------------------------------------------------------
-  session.subscribe((event) => {
-    broadcast(event as BrokerToClient);
-  });
+  await rebindSession();
 
   // -------------------------------------------------------------------------
   // Drive the engine on behalf of the single controller.
@@ -302,6 +452,91 @@ export async function runBroker(nodeId: string): Promise<void> {
     }
   };
 
+  // -------------------------------------------------------------------------
+  // Command-op helpers (T3, §2.3). The controller guard is hoisted here (it was
+  // inlined twice) and reused by all controller-only ops; the ack/error replies
+  // and a few resolvers keep the per-op cases one-liners.
+  // -------------------------------------------------------------------------
+  /** Reject a non-controller for a controller-only op. Returns true when rejected
+   *  (the caller should `break`). */
+  const notController = (client: BrokerClient, what: string): boolean => {
+    if (client.id === controllerId) return false;
+    sendFrame(client, {
+      type: 'error',
+      code: 'not_controller',
+      message: `only the controlling client may ${what}`,
+    });
+    return true;
+  };
+  const ackTo = (client: BrokerClient, op: string, ok = true, detail?: string): void =>
+    sendFrame(client, { type: 'ack', for: op, ok, ...(detail !== undefined ? { detail } : {}) });
+  const engineErrorTo =
+    (client: BrokerClient) =>
+    (err: unknown): void =>
+      sendFrame(client, { type: 'error', code: 'engine_error', message: String(err) });
+
+  /** Resolve a `provider/id` model spec against the LIVE services registry (which
+   *  carries any extension-registered providers). Pure: returns undefined on a
+   *  malformed spec or an unknown model. */
+  const findModelSpec = (
+    spec: string,
+  ): ReturnType<AgentSessionServices['modelRegistry']['find']> => {
+    const slash = spec.indexOf('/');
+    if (slash <= 0) return undefined;
+    return services.modelRegistry.find(spec.slice(0, slash), spec.slice(slash + 1));
+  };
+
+  /** The merged command list for `get_commands` (C6/M9): the engine's registered
+   *  extension + skill commands and file-based prompt templates, MERGED with the
+   *  vendored BUILTIN_SLASH_COMMANDS (RPC omits builtins). Returned to the viewer
+   *  as JSON in `ack.detail` (see the get_commands case). */
+  const buildCommandList = (): Array<{ name: string; description: string; source: string }> => {
+    const out: Array<{ name: string; description: string; source: string }> = [];
+    for (const b of BUILTIN_SLASH_COMMANDS) {
+      out.push({ name: b.name, description: b.description, source: 'builtin' });
+    }
+    try {
+      // Skill commands surface here too — pi registers each skill as a command.
+      for (const c of session.extensionRunner.getRegisteredCommands()) {
+        out.push({ name: c.invocationName, description: c.description ?? '', source: 'command' });
+      }
+    } catch {
+      /* an engine without a live extensionRunner (e.g. the fake) — builtins only */
+    }
+    try {
+      for (const t of session.promptTemplates) {
+        out.push({ name: t.name, description: t.description, source: 'template' });
+      }
+    } catch {
+      /* ignore */
+    }
+    return out;
+  };
+
+  /** Run a session-replacing op (new_session/switch_session/fork). The runtime
+   *  rebinds extensions + re-subscribes via setRebindSession before it resolves,
+   *  so on success we just re-snapshot every viewer onto the new session. */
+  const runReplacement = (
+    client: BrokerClient,
+    op: string,
+    run: (rt: AgentSessionRuntime) => Promise<{ cancelled: boolean }>,
+  ): void => {
+    if (runtime === undefined) {
+      sendFrame(client, {
+        type: 'error',
+        code: 'engine_error',
+        message: 'session replacement unsupported at this engine pin',
+      });
+      return;
+    }
+    void run(runtime)
+      .then((r) => {
+        if (!r.cancelled) reWelcomeAll();
+        ackTo(client, op, !r.cancelled, r.cancelled ? 'cancelled by extension' : undefined);
+      })
+      .catch(engineErrorTo(client));
+  };
+
   const handleFrame = (client: BrokerClient, frame: ClientToBroker): void => {
     switch (frame.type) {
       case 'hello': {
@@ -315,40 +550,26 @@ export async function runBroker(nodeId: string): Promise<void> {
         } else {
           client.role = 'observer';
         }
-        sendFrame(client, {
-          type: 'welcome',
-          snapshot: buildSnapshot(),
-          role: client.role,
-          controller_id: controllerId,
-          pending_dialog: null, // populated in Phase 4
-        });
-        if (client.role === 'controller') broadcastControlChanged();
+        sendWelcome(client);
+        if (client.role === 'controller') {
+          // welcome carried the FIRST pending dialog (T4); forward any extras so a
+          // controller attaching mid-dialog can answer every in-flight dialog.
+          const pend = [...pendingDialogs.values()];
+          for (let i = 1; i < pend.length; i++) sendFrame(client, pend[i]!.request);
+          broadcastControlChanged();
+        }
         break;
       }
       case 'prompt':
       case 'steer':
       case 'follow_up':
       case 'abort': {
-        if (client.id !== controllerId) {
-          sendFrame(client, {
-            type: 'error',
-            code: 'not_controller',
-            message: 'only the controlling client may drive the engine',
-          });
-          break;
-        }
+        if (notController(client, 'drive the engine')) break;
         driveEngine(client, frame);
         break;
       }
       case 'extension_ui_response': {
-        if (client.id !== controllerId) {
-          sendFrame(client, {
-            type: 'error',
-            code: 'not_controller',
-            message: 'only the controlling client may answer dialogs',
-          });
-          break;
-        }
+        if (notController(client, 'answer dialogs')) break;
         pendingDialogs.get(frame.id)?.resolve(frame);
         break;
       }
@@ -357,6 +578,7 @@ export async function runBroker(nodeId: string): Promise<void> {
           controllerId = client.id;
           client.role = 'controller';
           broadcastControlChanged();
+          reroutePendingDialogsTo(client); // T4: hand the new controller pending dialogs
         } else {
           sendFrame(client, {
             type: 'error',
@@ -370,9 +592,136 @@ export async function runBroker(nodeId: string): Promise<void> {
         if (client.id === controllerId) {
           controllerId = null;
           client.role = 'observer';
-          cancelPendingDialogs(); // M-1: zero viewers now → resolve in-flight dialogs
+          // M2 (T4): do NOT cancel in-flight dialogs on release — keep them pending
+          // under the broker-side default timeout so a brief release/reattach (or a
+          // handoff to another observer) never loses an answerable dialog.
           broadcastControlChanged();
         }
+        break;
+      }
+      // --- extended engine-command ops (T3, §1.2 floor set) ------------------
+      case 'set_model': {
+        if (notController(client, 'set the model')) break;
+        const model = findModelSpec(frame.model);
+        if (model === undefined) {
+          sendFrame(client, {
+            type: 'error',
+            code: 'engine_error',
+            message: `model '${frame.model}' not found in the registry`,
+          });
+          break;
+        }
+        void session.setModel(model).then(() => ackTo(client, 'set_model')).catch(engineErrorTo(client));
+        break;
+      }
+      case 'cycle_model': {
+        if (notController(client, 'cycle the model')) break;
+        void session.cycleModel().then(() => ackTo(client, 'cycle_model')).catch(engineErrorTo(client));
+        break;
+      }
+      case 'set_thinking_level': {
+        if (notController(client, 'set the thinking level')) break;
+        try {
+          session.setThinkingLevel(frame.level);
+          ackTo(client, 'set_thinking_level');
+        } catch (err) {
+          engineErrorTo(client)(err);
+        }
+        break;
+      }
+      case 'set_auto_retry': {
+        if (notController(client, 'set auto-retry')) break;
+        try {
+          session.setAutoRetryEnabled(frame.enabled);
+          ackTo(client, 'set_auto_retry');
+        } catch (err) {
+          engineErrorTo(client)(err);
+        }
+        break;
+      }
+      case 'set_auto_compaction': {
+        if (notController(client, 'set auto-compaction')) break;
+        try {
+          session.setAutoCompactionEnabled(frame.enabled);
+          ackTo(client, 'set_auto_compaction');
+        } catch (err) {
+          engineErrorTo(client)(err);
+        }
+        break;
+      }
+      case 'compact': {
+        if (notController(client, 'compact the session')) break;
+        void session
+          .compact(frame.instructions)
+          .then(() => ackTo(client, 'compact'))
+          .catch(engineErrorTo(client));
+        break;
+      }
+      case 'set_session_name': {
+        if (notController(client, 'rename the session')) break;
+        try {
+          session.setSessionName(frame.name);
+          ackTo(client, 'set_session_name');
+        } catch (err) {
+          engineErrorTo(client)(err);
+        }
+        break;
+      }
+      case 'get_commands': {
+        if (notController(client, 'list commands')) break;
+        // The merged command list rides in ack.detail as JSON (the foundation's
+        // AckFrame.detail field) — the viewer (T6) JSON.parses it when for ===
+        // 'get_commands'. Keeps every command op a uniform ack reply.
+        try {
+          ackTo(client, 'get_commands', true, JSON.stringify(buildCommandList()));
+        } catch (err) {
+          engineErrorTo(client)(err);
+        }
+        break;
+      }
+      case 'navigate_tree': {
+        if (notController(client, 'navigate the session tree')) break;
+        void session
+          .navigateTree(frame.targetId, frame.options)
+          .then((r) => ackTo(client, 'navigate_tree', !r.cancelled))
+          .catch(engineErrorTo(client));
+        break;
+      }
+      case 'reload': {
+        if (notController(client, 'reload')) break;
+        void session.reload().then(() => ackTo(client, 'reload')).catch(engineErrorTo(client));
+        break;
+      }
+      case 'export': {
+        if (notController(client, 'export the session')) break;
+        if (frame.format === 'jsonl') {
+          try {
+            session.exportToJsonl(frame.path);
+            ackTo(client, 'export');
+          } catch (err) {
+            engineErrorTo(client)(err);
+          }
+        } else {
+          void session
+            .exportToHtml(frame.path)
+            .then(() => ackTo(client, 'export'))
+            .catch(engineErrorTo(client));
+        }
+        break;
+      }
+      case 'new_session': {
+        if (notController(client, 'start a new session')) break;
+        runReplacement(client, 'new_session', (rt) => rt.newSession());
+        break;
+      }
+      case 'switch_session': {
+        if (notController(client, 'switch sessions')) break;
+        runReplacement(client, 'switch_session', (rt) => rt.switchSession(frame.path));
+        break;
+      }
+      case 'fork': {
+        if (notController(client, 'fork the session')) break;
+        runReplacement(client, 'fork', (rt) => rt.fork(frame.entryId));
         break;
       }
       case 'bye':
@@ -400,10 +749,28 @@ export async function runBroker(nodeId: string): Promise<void> {
       socket,
       decoder: new FrameDecoder(BROKER_READ_CAPS),
       helloed: false,
+      pendingBytes: 0,
+      queuedFrames: 0,
     };
     clients.add(client);
     socket.on('data', (chunk) => {
-      for (const raw of client.decoder.push(chunk)) {
+      let frames: unknown[];
+      try {
+        frames = client.decoder.push(chunk);
+      } catch (err) {
+        // G7: a client frame over the bounded decoder caps (FrameOverflowError) is
+        // cap-and-dropped — best-effort error frame, then destroy the peer. The
+        // broker survives. The try/catch is around push() itself (not just the
+        // per-frame loop) because push() throws BEFORE returning any frames.
+        if (err instanceof FrameOverflowError) {
+          sendFrame(client, { type: 'error', code: 'frame_overflow', message: err.message });
+          dropClient(client, `frame overflow: ${err.message}`);
+        } else {
+          dropClient(client, `decoder error: ${String(err)}`);
+        }
+        return;
+      }
+      for (const raw of frames) {
         try {
           handleFrame(client, raw as ClientToBroker);
         } catch {
@@ -413,11 +780,12 @@ export async function runBroker(nodeId: string): Promise<void> {
     });
     const drop = (): void => {
       clients.delete(client);
-      if (client.id !== '' && client.id === controllerId) {
-        controllerId = null; // controller detach frees control (§5.3)
-        cancelPendingDialogs(); // M-1: zero viewers now → resolve in-flight dialogs
-        broadcastControlChanged();
-      }
+      // M2 (T4): controller detach frees control but does NOT cancel in-flight
+      // dialogs — they stay pending under the broker-side default timeout so a
+      // brief detach/reattach (or a handoff to another observer who takes control)
+      // never loses an answerable dialog. Only the timeout or a new controller's
+      // answer resolves one.
+      releaseControlIfHeldBy(client);
     };
     socket.on('close', drop);
     socket.on('error', () => {
@@ -456,6 +824,10 @@ export async function buildBrokerSession(
   session: CreateAgentSessionResult['session'];
   services: AgentSessionServices;
   resuming: boolean;
+  /** The session-replacement runtime, present iff the engine exposes
+   *  createAgentSessionRuntime (real SDK yes, fake-engine no). The broker wires
+   *  its new_session/switch_session/fork ops + rebind through it. */
+  runtime?: AgentSessionRuntime;
 }> {
   // Fork-on-spawn is the runtime.fork() path (createAgentSessionRuntime), not
   // wired headless in Phase 3. Fail loud rather than silently mis-resume.
@@ -483,43 +855,62 @@ export async function buildBrokerSession(
   //    `settingsManager: SettingsManager.create(cfg.cwd, getAgentDir(), { projectTrusted: true })`
   //    so headless trust defaults TRUSTED — and do NOT re-introduce the CLI's
   //    resolveProjectTrust, which returns false with no TTY.
-  const services = await engine.createAgentSessionServices({
-    cwd: cfg.cwd,
-    agentDir: getAgentDir(),
-    resourceLoaderOptions: {
-      additionalExtensionPaths: cfg.extensionPaths,
-      appendSystemPrompt:
-        cfg.appendSystemPromptPath !== undefined ? [cfg.appendSystemPromptPath] : undefined,
-    },
-  });
+  //
+  //    T3 session-rebind: services + model + session creation is factored into
+  //    `buildForManager` so it can serve BOTH the initial boot AND the
+  //    AgentSessionRuntime factory it is reused as below (new_session/
+  //    switch_session/fork rebuild the session by re-invoking it for a new
+  //    SessionManager). Mirrors pi main.js's `createRuntime`.
+  const agentDir = getAgentDir();
+  const buildForManager = async (o: {
+    cwd: string;
+    agentDir: string;
+    sessionManager: Parameters<BrokerEngine['createAgentSessionFromServices']>[0]['sessionManager'];
+    sessionStartEvent?: Parameters<
+      BrokerEngine['createAgentSessionFromServices']
+    >[0]['sessionStartEvent'];
+  }): Promise<CreateAgentSessionResult & { services: AgentSessionServices }> => {
+    const services = await engine.createAgentSessionServices({
+      cwd: o.cwd,
+      agentDir: o.agentDir,
+      resourceLoaderOptions: {
+        additionalExtensionPaths: cfg.extensionPaths,
+        appendSystemPrompt:
+          cfg.appendSystemPromptPath !== undefined ? [cfg.appendSystemPromptPath] : undefined,
+      },
+    });
 
-  // 3. Resolve the model spec (`anthropic/sonnet` → a Model) against the SERVICES
-  //    registry — which now has any extension-provided providers registered (C3).
-  //    A fresh ModelRegistry would miss custom providers entirely. Undefined model
-  //    ⇒ the SDK picks the settings default.
-  let model: ReturnType<AgentSessionServices['modelRegistry']['find']>;
-  if (cfg.model !== undefined && cfg.model !== '') {
-    const slash = cfg.model.indexOf('/');
-    if (slash > 0) {
-      const provider = cfg.model.slice(0, slash);
-      const id = cfg.model.slice(slash + 1);
-      model = services.modelRegistry.find(provider, id);
-      if (model === undefined) {
+    // 3. Resolve the model spec (`anthropic/sonnet` → a Model) against the
+    //    SERVICES registry — which has any extension-provided providers (C3).
+    //    Undefined ⇒ the SDK picks the settings default.
+    let model: ReturnType<AgentSessionServices['modelRegistry']['find']>;
+    if (cfg.model !== undefined && cfg.model !== '') {
+      const slash = cfg.model.indexOf('/');
+      if (slash > 0) {
+        model = services.modelRegistry.find(cfg.model.slice(0, slash), cfg.model.slice(slash + 1));
+        if (model === undefined) {
+          process.stderr.write(
+            `[broker] WARNING: model '${cfg.model}' not found in registry — ` +
+              `falling back to the SDK default model.\n`,
+          );
+        }
+      } else {
         process.stderr.write(
-          `[broker] WARNING: model '${cfg.model}' not found in registry — ` +
-            `falling back to the SDK default model.\n`,
+          `[broker] WARNING: model '${cfg.model}' has no 'provider/id' form — ` +
+            `using the SDK default model.\n`,
         );
       }
-    } else {
-      // normalizeModel (launch.ts) gives bare aliases a 'provider/id' form, so a
-      // slashless spec here is a non-standard passthrough. Warn rather than
-      // silently fall to the SDK default.
-      process.stderr.write(
-        `[broker] WARNING: model '${cfg.model}' has no 'provider/id' form — ` +
-          `using the SDK default model.\n`,
-      );
     }
-  }
+
+    const created = await engine.createAgentSessionFromServices({
+      services,
+      sessionManager: o.sessionManager,
+      model,
+      tools: cfg.tools,
+      sessionStartEvent: o.sessionStartEvent,
+    });
+    return { ...created, services };
+  };
 
   // 4. Open (resume) or create (fresh) the session — the broker is the sole writer.
   const resumePath = cfg.resumeSessionPath;
@@ -544,14 +935,31 @@ export async function buildBrokerSession(
     ? engine.SessionManager.open(resumePath as string)
     : engine.SessionManager.create(cfg.cwd);
 
-  const { session } = await engine.createAgentSessionFromServices({
-    services,
-    sessionManager,
-    model,
-    tools: cfg.tools,
-  });
+  // When the engine exposes the replacement API (real SDK), wrap the builder in an
+  // AgentSessionRuntime so new_session/switch_session/fork work; the runtime
+  // re-invokes `buildForManager` for each new SessionManager. The fake-engine
+  // fixture omits it — fall back to a single direct build (those three ops then
+  // reply error{engine_error}).
+  if (engine.createAgentSessionRuntime !== undefined) {
+    const factory: CreateAgentSessionRuntimeFactory = async (o) => {
+      const r = await buildForManager({
+        cwd: o.cwd,
+        agentDir: o.agentDir,
+        sessionManager: o.sessionManager,
+        sessionStartEvent: o.sessionStartEvent,
+      });
+      return { ...r, diagnostics: r.services.diagnostics ?? [] };
+    };
+    const runtime = await engine.createAgentSessionRuntime(factory, {
+      cwd: cfg.cwd,
+      agentDir,
+      sessionManager,
+    });
+    return { session: runtime.session, services: runtime.services, resuming, runtime };
+  }
 
-  return { session, services, resuming };
+  const r = await buildForManager({ cwd: cfg.cwd, agentDir, sessionManager });
+  return { session: r.session, services: r.services, resuming, runtime: undefined };
 }
 
 // ---------------------------------------------------------------------------
@@ -593,13 +1001,20 @@ export function makeBrokerUiContext(deps: BrokerDialogDeps): ExtensionUIContext 
   ): Promise<T> => {
     if (opts?.signal?.aborted) return Promise.resolve(defaultValue);
     const controller = deps.controller();
-    // C2: zero viewers → noOp, resolved at once. No timer, no wait, no deadlock.
+    // C2 (Wave-0, KEEP): no controller at raise time → noOp, resolved at once. No
+    // timer, no wait, no deadlock. This is the genuine zero-controller path.
     if (controller === null) return Promise.resolve(defaultValue);
-    // A controller is attached: forward the dialog and await its response (or an
-    // abort). TODO(Phase 4 / C2 WITH-viewer path): wrap this forwarded dialog in a
-    // broker-side timeout+abort so a controller that never answers cannot hang.
+    // A controller is attached: forward the dialog, register it (so a re-routed /
+    // re-attaching controller can answer it — T4), and ALWAYS arm a broker-side
+    // timeout (T4/C2 anti-deadlock): a controller that never answers — or detaches
+    // and is never replaced — can never hang the turn. Honor a shorter per-dialog
+    // timeout if the extension passed one; otherwise the broker default. On fire
+    // it resolves to the SAFE default (deny/cancel/undefined). NOTE: controller
+    // detach does NOT cancel this (M2) — only an answer, the timeout, or an abort.
     return new Promise<T>((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
       const cleanup = (): void => {
+        if (timer !== undefined) clearTimeout(timer);
         opts?.signal?.removeEventListener('abort', onAbort);
         deps.pending.delete(request.id);
       };
@@ -608,16 +1023,17 @@ export function makeBrokerUiContext(deps: BrokerDialogDeps): ExtensionUIContext 
         resolve(defaultValue);
       };
       opts?.signal?.addEventListener('abort', onAbort, { once: true });
+      const ms = opts?.timeout !== undefined ? opts.timeout : DEFAULT_DIALOG_TIMEOUT_MS;
+      timer = setTimeout(() => {
+        cleanup();
+        resolve(defaultValue);
+      }, ms);
+      if (typeof timer.unref === 'function') timer.unref();
       deps.pending.set(request.id, {
+        request,
         resolve: (r) => {
           cleanup();
           resolve(parse(r));
-        },
-        // M-1: viewers all dropped → resolve to the noOp default (zero viewers is
-        // the C2 case), called by the broker's cancelPendingDialogs on detach.
-        cancel: () => {
-          cleanup();
-          resolve(defaultValue);
         },
       });
       deps.forward(controller, request);

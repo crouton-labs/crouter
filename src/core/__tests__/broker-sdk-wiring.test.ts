@@ -146,14 +146,15 @@ test('C2 — zero-viewer UI context resolves dialogs to deny/cancel immediately 
 });
 
 // ===========================================================================
-// M-1 (review mq5vv95w) — a dialog forwarded to a controller that then DETACHES
-// must resolve to its noOp default, not hang. With a controller attached the
-// dialog is registered as pending (not yet resolved); when every viewer drops,
-// the broker drains pendingDialogs via each entry's cancel() — zero viewers is
-// the C2 case reached by departure rather than a never-arriving answer.
+// M2 (review mq5wkqep / T4) — REPLACES the Wave-0 M-1 cancel-on-detach. A dialog
+// forwarded to a controller that then DETACHES must NOT be cancelled: it stays
+// pending so a brief detach/reattach (or a handoff to another controller) does
+// not lose an answerable dialog. The broker-side default timeout is the ONLY
+// non-answer resolution (proven here with a short per-dialog timeout standing in
+// for the 120s default). Guards against regressing to the over-eager cancel.
 // ===========================================================================
-test('M-1 — a forwarded dialog resolves to its default when the controller detaches (no hang)', async () => {
-  const pending = new Map<string, { resolve: (r: unknown) => void; cancel: () => void }>();
+test('M2 — a forwarded dialog stays pending on controller detach, resolving only on the broker-side timeout', async () => {
+  const pending = new Map<string, { request: unknown; resolve: (r: unknown) => void }>();
   let attached = true;
   const ctx = makeBrokerUiContext({
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -165,19 +166,28 @@ test('M-1 — a forwarded dialog resolves to its default when the controller det
     pending: pending as any,
   });
 
-  // Controller attached → confirm() forwards + registers a pending dialog and does
-  // NOT resolve yet (awaiting the controller's answer).
-  const p = ctx.confirm('proceed?', 'really?');
-  assert.equal(pending.size, 1, 'M-1: a forwarded dialog is pending while a controller is attached');
+  // Controller attached → confirm() forwards + registers a pending dialog (with the
+  // request retained for welcome.pending_dialog / re-route, T4) and does NOT
+  // resolve yet. A short per-dialog timeout stands in for the 120s broker default.
+  const p = ctx.confirm('proceed?', 'really?', { timeout: 80 });
+  assert.equal(pending.size, 1, 'M2: a forwarded dialog is pending while a controller is attached');
+  const entry = [...pending.values()][0]!;
+  assert.ok(entry.request, 'M2: the pending entry retains the request (welcome/re-route need it)');
+  assert.equal(
+    (entry as { cancel?: unknown }).cancel,
+    undefined,
+    'M2: there is no cancel-on-detach path anymore',
+  );
 
-  // Controller detaches → the broker drains in-flight dialogs to their defaults.
+  // Controller detaches → the dialog STAYS pending (the broker no longer cancels it).
   attached = false;
-  for (const d of [...pending.values()]) d.cancel();
+  assert.equal(pending.size, 1, 'M2: detach does NOT cancel the in-flight dialog');
 
+  // Only the broker-side timeout resolves it, to the SAFE default (deny).
   const resolved = await Promise.race([
     p,
     new Promise<'HANG'>((r) => setTimeout(() => r('HANG'), 2_000)),
   ]);
-  assert.equal(resolved, false, 'M-1: the in-flight dialog resolves to deny on detach, not hang');
-  assert.equal(pending.size, 0, 'M-1: the pending registry is drained');
+  assert.equal(resolved, false, 'M2: resolves to deny on the broker-side timeout, never hangs');
+  assert.equal(pending.size, 0, 'M2: the pending registry is drained after the timeout');
 });
