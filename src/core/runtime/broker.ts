@@ -20,16 +20,15 @@ import { existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import {
-  AuthStorage,
-  DefaultResourceLoader,
   getAgentDir,
-  ModelRegistry,
+  type AgentSessionServices,
+  type CreateAgentSessionResult,
   type ExtensionUIContext,
 } from '@earendil-works/pi-coding-agent';
 import { nodeDir } from '../canvas/paths.js';
 import { FRONT_DOOR_ENV } from './front-door.js';
 import { piInvocationToSdkConfig, type BrokerSdkConfig, type PiInvocation } from './launch.js';
-import { assertEngineVersion, loadBrokerEngine } from './broker-sdk.js';
+import { assertEngineVersion, loadBrokerEngine, type BrokerEngine } from './broker-sdk.js';
 import {
   encodeFrame,
   FrameDecoder,
@@ -53,9 +52,38 @@ interface BrokerClient {
   helloed: boolean;
 }
 
-/** A blocking dialog awaiting a controller's response (or its own timeout). */
+/** A blocking dialog awaiting the controller's response (or an abort/detach). */
 interface PendingDialog {
+  /** The controller answered — resolve with its parsed response. */
   resolve: (response: RpcExtensionUIResponse) => void;
+  /** Every viewer dropped while in flight — resolve to the dialog's noOp default
+   *  (deny/cancel/undefined) so a detached controller never hangs the turn (M-1). */
+  cancel: () => void;
+}
+
+// ---------------------------------------------------------------------------
+// M3 (scout mq5thyli): the active engine session, exposed so broker-cli's FATAL
+// handlers (uncaughtException / unhandledRejection / the runBroker reject) can
+// dispose it before process.exit. The bash tool spawns children `detached` (own
+// pgid); only session.dispose() (→ abortBash / agent.abort → killProcessTree)
+// reaps them. The graceful exit path already disposes; without this the crash
+// path would `process.exit(1)` and ORPHAN every in-flight bash subprocess.
+// ---------------------------------------------------------------------------
+let activeSession: { dispose: () => void } | null = null;
+
+/** Dispose the live engine session if one exists (idempotent). Called by
+ *  broker-cli's fatal handlers before exit so a crash never orphans detached
+ *  bash children. No-op before the session is built or after a clean dispose. */
+export function disposeActiveSession(): void {
+  const s = activeSession;
+  activeSession = null;
+  if (s !== null) {
+    try {
+      s.dispose();
+    } catch {
+      /* dispose must not block the fatal exit */
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -83,6 +111,17 @@ export async function runBroker(nodeId: string): Promise<void> {
   const engine = await loadBrokerEngine();
   assertEngineVersion(engine.VERSION);
 
+  // M4 / M6 (scout mq5thyli) — DELIBERATELY SKIPPED on the 0.78.1 pin. Both
+  // `configureHttpDispatcher` (M4: proxy support + the undici decompression fix)
+  // and `runMigrations` (M6: config/auth migration for a box where the pi CLI
+  // never ran) are CLI-only helpers that the pinned SDK does NOT re-export: the
+  // package's `exports` map is `.`-only, neither symbol is in `dist/index.d.ts`,
+  // a deep import (`.../dist/core/http-dispatcher.js`) is blocked with
+  // ERR_PACKAGE_PATH_NOT_EXPORTED, and the only exports-map entries are `.` and
+  // `./hooks` (neither carries these symbols). Per the "verify export; skip-with-
+  // note if absent" directive we do not vendor or reach around the export wall.
+  // Revisit when the SDK pin bumps to a version that re-exports them publicly.
+
   const dir = nodeDir(nodeId);
   const launchFile = join(dir, 'broker-launch.json');
   const inv = JSON.parse(readFileSync(launchFile, 'utf8')) as PiInvocation;
@@ -97,73 +136,11 @@ export async function runBroker(nodeId: string): Promise<void> {
     );
   }
 
-  // 2. Build the resource loader (loads the canvas extensions + append-system-
-  //    prompt exactly as the `-e` / --append-system-prompt CLI flags do).
-  const loader = new DefaultResourceLoader({
-    cwd: cfg.cwd,
-    agentDir: getAgentDir(),
-    additionalExtensionPaths: cfg.extensionPaths,
-    appendSystemPrompt:
-      cfg.appendSystemPromptPath !== undefined ? [cfg.appendSystemPromptPath] : undefined,
-  });
-  await loader.reload();
-
-  // 3. Resolve the model spec (`anthropic/sonnet` → a Model) via the registry.
-  //    Undefined model ⇒ the SDK picks the settings default.
-  let model: ReturnType<ModelRegistry['find']> | undefined;
-  if (cfg.model !== undefined && cfg.model !== '') {
-    const slash = cfg.model.indexOf('/');
-    if (slash > 0) {
-      const provider = cfg.model.slice(0, slash);
-      const id = cfg.model.slice(slash + 1);
-      model = ModelRegistry.create(AuthStorage.create()).find(provider, id);
-      if (model === undefined) {
-        process.stderr.write(
-          `[broker] WARNING: model '${cfg.model}' not found in registry — ` +
-            `falling back to the SDK default model.\n`,
-        );
-      }
-    } else {
-      // normalizeModel (launch.ts) gives bare aliases a 'provider/id' form, so a
-      // slashless spec here is a non-standard passthrough. Warn rather than
-      // silently fall to the SDK default.
-      process.stderr.write(
-        `[broker] WARNING: model '${cfg.model}' has no 'provider/id' form — ` +
-          `using the SDK default model.\n`,
-      );
-    }
-  }
-
-  // 4. Open (resume) or create (fresh) the session — the broker is the sole writer.
-  const resumePath = cfg.resumeSessionPath;
-  if (
-    (resumePath === undefined || resumePath === '') &&
-    cfg.resumeSessionId !== undefined &&
-    cfg.resumeSessionId !== ''
-  ) {
-    // SessionManager.open() takes a FILE path — it only path-normalizes; it does
-    // NOT resolve a bare uuid to its .jsonl the way pi's CLI does (via
-    // SessionManager.list). A bare-id-only resume would open a nonexistent
-    // <cwd>/<uuid> and silently start an EMPTY session. Fail loud: revive always
-    // passes the .jsonl path, so a bare id means an old node that never captured
-    // pi_session_file — mis-resuming it silently is worse than a crash.
-    throw new Error(
-      `[broker] resume requires a session .jsonl PATH; got only a bare id ` +
-        `'${cfg.resumeSessionId}' (pi_session_file was never captured for this node)`,
-    );
-  }
-  const resuming = resumePath !== undefined && resumePath !== '';
-  const sessionManager = resuming
-    ? engine.SessionManager.open(resumePath as string)
-    : engine.SessionManager.create(cfg.cwd);
-
-  const { session } = await engine.createAgentSession({
-    cwd: cfg.cwd,
-    model,
-    tools: cfg.tools,
-    resourceLoader: loader,
-    sessionManager,
-  });
+  // 2–4. Build the engine session via the SERVICES path (C3) — see
+  //       buildBrokerSession below. Register it so the FATAL exit path (M3) can
+  //       dispose it and reap detached bash children.
+  const { session, resuming } = await buildBrokerSession(engine, cfg);
+  activeSession = session;
 
   if (cfg.editorName !== undefined && cfg.editorName !== '') {
     try {
@@ -204,6 +181,15 @@ export async function runBroker(nodeId: string): Promise<void> {
   const broadcastControlChanged = (): void =>
     broadcast({ type: 'control_changed', controller_id: controllerId });
 
+  // M-1 (review): when the controller leaves (detach OR release_control) there are
+  // ZERO viewers, so every in-flight forwarded dialog must resolve to its noOp
+  // default instead of hanging the agent turn forever — the exact failure C2
+  // exists to kill, just reached via departure rather than a never-arriving
+  // answer. Snapshot the values: cancel() deletes from the map as it runs.
+  const cancelPendingDialogs = (): void => {
+    for (const d of [...pendingDialogs.values()]) d.cancel();
+  };
+
   const buildSnapshot = (): BrokerSnapshot => ({
     messages: session.messages,
     stats: session.getSessionStats(),
@@ -222,6 +208,7 @@ export async function runBroker(nodeId: string): Promise<void> {
   const disposeAndExit = (_reason: string): void => {
     if (disposed) return;
     disposed = true;
+    activeSession = null; // graceful path owns dispose; keep the fatal hook a no-op
     try {
       session.dispose();
     } catch {
@@ -241,57 +228,18 @@ export async function runBroker(nodeId: string): Promise<void> {
   };
 
   // -------------------------------------------------------------------------
-  // Extension-dialog routing (design §5.4): route to the controller; arm the
-  // dialog's own timeout; auto-resolve to default when unattended. Modeled on
-  // pi's rpc-mode createDialogPromise (rpc-mode.js:46-76). Phase 3 exercises
-  // only the no-controller path.
+  // Extension-dialog routing (C2). makeBrokerUiContext owns the dialogPromise;
+  // here we just give it the three broker-side hooks it needs: who the current
+  // controller is (null = zero viewers → noOp fallback), how to forward a dialog
+  // to that controller, and the pending-dialog registry the controller answers
+  // through. The zero-viewer path NEVER hangs and NEVER waits on a per-dialog
+  // timeout (design §5.4's timeout premise is false — see makeBrokerUiContext).
   // -------------------------------------------------------------------------
-  const dialogPromise = <T>(
-    defaultValue: T,
-    request: RpcExtensionUIRequest,
-    parse: (r: RpcExtensionUIResponse) => T,
-    opts?: { signal?: AbortSignal; timeout?: number },
-  ): Promise<T> => {
-    if (opts?.signal?.aborted) return Promise.resolve(defaultValue);
-    return new Promise<T>((resolve) => {
-      let timer: NodeJS.Timeout | undefined;
-      const cleanup = (): void => {
-        if (timer !== undefined) clearTimeout(timer);
-        opts?.signal?.removeEventListener('abort', onAbort);
-        pendingDialogs.delete(request.id);
-      };
-      const onAbort = (): void => {
-        cleanup();
-        resolve(defaultValue);
-      };
-      opts?.signal?.addEventListener('abort', onAbort, { once: true });
-
-      const controller = controllerClient();
-      if (opts?.timeout !== undefined && opts.timeout > 0) {
-        timer = setTimeout(() => {
-          cleanup();
-          resolve(defaultValue);
-        }, opts.timeout);
-      } else if (controller === null) {
-        // No controller AND no timeout → resolve to default immediately so a
-        // fully unattended node never deadlocks (design §5.4 forward progress).
-        resolve(defaultValue);
-        return;
-      }
-
-      pendingDialogs.set(request.id, {
-        resolve: (r) => {
-          cleanup();
-          resolve(parse(r));
-        },
-      });
-      // A controller within the timeout window answers; an attaching controller
-      // would receive it via welcome.pending_dialog (Phase 4).
-      if (controller !== null) sendFrame(controller, request);
-    });
-  };
-
-  const uiContext = makeBrokerUiContext(dialogPromise);
+  const uiContext = makeBrokerUiContext({
+    controller: controllerClient,
+    forward: (client, request) => sendFrame(client, request),
+    pending: pendingDialogs,
+  });
 
   // -------------------------------------------------------------------------
   // 3 (plan): bind the FULL canvas extensions, mode 'print'. THIS fires
@@ -414,6 +362,7 @@ export async function runBroker(nodeId: string): Promise<void> {
         if (client.id === controllerId) {
           controllerId = null;
           client.role = 'observer';
+          cancelPendingDialogs(); // M-1: zero viewers now → resolve in-flight dialogs
           broadcastControlChanged();
         }
         break;
@@ -458,6 +407,7 @@ export async function runBroker(nodeId: string): Promise<void> {
       clients.delete(client);
       if (client.id !== '' && client.id === controllerId) {
         controllerId = null; // controller detach frees control (§5.3)
+        cancelPendingDialogs(); // M-1: zero viewers now → resolve in-flight dialogs
         broadcastControlChanged();
       }
     };
@@ -487,6 +437,116 @@ export async function runBroker(nodeId: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// buildBrokerSession (plan T4 steps 2–4) — turn the launch recipe into a live
+// engine session via the pi SDK SERVICES path. Exported so the C3/C4 real-SDK
+// regression tests can drive the EXACT production wiring (not the mock).
+// ---------------------------------------------------------------------------
+export async function buildBrokerSession(
+  engine: BrokerEngine,
+  cfg: BrokerSdkConfig,
+): Promise<{
+  session: CreateAgentSessionResult['session'];
+  services: AgentSessionServices;
+  resuming: boolean;
+}> {
+  // Fork-on-spawn is the runtime.fork() path (createAgentSessionRuntime), not
+  // wired headless in Phase 3. Fail loud rather than silently mis-resume.
+  if (cfg.forkFrom !== undefined && cfg.forkFrom !== '') {
+    throw new Error(
+      `[broker] --fork is not supported by the headless broker in Phase 3 ` +
+        `(forkFrom=${cfg.forkFrom}); the SDK fork path is createAgentSessionRuntime.fork()`,
+    );
+  }
+
+  // 2. Build cwd-bound runtime services via the SERVICES path (C3) — NOT plain
+  //    createAgentSession. createAgentSessionServices builds + reloads the
+  //    resource loader (the `-e` canvas extensions + --append-system-prompt) and
+  //    REGISTERS extension-provided model providers into the ModelRegistry (it is
+  //    also where extension flag values would be applied — the broker recipe
+  //    carries none today). Plain createAgentSession does NEITHER, so a node whose
+  //    model comes from a custom-provider extension would get NO model. Mirrors pi
+  //    main.js (createAgentSessionServices → …FromServices).
+  //
+  //    C4 note: the pinned SDK (0.78.1) has NO project-trust concept at all —
+  //    project context files (AGENTS.md/CLAUDE.md) load UNCONDITIONALLY (gated
+  //    only by `noContextFiles`, left default-false), so the headless "trust
+  //    resolves false → context silently dropped" gap cannot occur here. WHEN the
+  //    SDK pin bumps to 0.79.0+ (which adds project-trust), pass an explicit
+  //    `settingsManager: SettingsManager.create(cfg.cwd, getAgentDir(), { projectTrusted: true })`
+  //    so headless trust defaults TRUSTED — and do NOT re-introduce the CLI's
+  //    resolveProjectTrust, which returns false with no TTY.
+  const services = await engine.createAgentSessionServices({
+    cwd: cfg.cwd,
+    agentDir: getAgentDir(),
+    resourceLoaderOptions: {
+      additionalExtensionPaths: cfg.extensionPaths,
+      appendSystemPrompt:
+        cfg.appendSystemPromptPath !== undefined ? [cfg.appendSystemPromptPath] : undefined,
+    },
+  });
+
+  // 3. Resolve the model spec (`anthropic/sonnet` → a Model) against the SERVICES
+  //    registry — which now has any extension-provided providers registered (C3).
+  //    A fresh ModelRegistry would miss custom providers entirely. Undefined model
+  //    ⇒ the SDK picks the settings default.
+  let model: ReturnType<AgentSessionServices['modelRegistry']['find']>;
+  if (cfg.model !== undefined && cfg.model !== '') {
+    const slash = cfg.model.indexOf('/');
+    if (slash > 0) {
+      const provider = cfg.model.slice(0, slash);
+      const id = cfg.model.slice(slash + 1);
+      model = services.modelRegistry.find(provider, id);
+      if (model === undefined) {
+        process.stderr.write(
+          `[broker] WARNING: model '${cfg.model}' not found in registry — ` +
+            `falling back to the SDK default model.\n`,
+        );
+      }
+    } else {
+      // normalizeModel (launch.ts) gives bare aliases a 'provider/id' form, so a
+      // slashless spec here is a non-standard passthrough. Warn rather than
+      // silently fall to the SDK default.
+      process.stderr.write(
+        `[broker] WARNING: model '${cfg.model}' has no 'provider/id' form — ` +
+          `using the SDK default model.\n`,
+      );
+    }
+  }
+
+  // 4. Open (resume) or create (fresh) the session — the broker is the sole writer.
+  const resumePath = cfg.resumeSessionPath;
+  if (
+    (resumePath === undefined || resumePath === '') &&
+    cfg.resumeSessionId !== undefined &&
+    cfg.resumeSessionId !== ''
+  ) {
+    // SessionManager.open() takes a FILE path — it only path-normalizes; it does
+    // NOT resolve a bare uuid to its .jsonl the way pi's CLI does (via
+    // SessionManager.list). A bare-id-only resume would open a nonexistent
+    // <cwd>/<uuid> and silently start an EMPTY session. Fail loud: revive always
+    // passes the .jsonl path, so a bare id means an old node that never captured
+    // pi_session_file — mis-resuming it silently is worse than a crash.
+    throw new Error(
+      `[broker] resume requires a session .jsonl PATH; got only a bare id ` +
+        `'${cfg.resumeSessionId}' (pi_session_file was never captured for this node)`,
+    );
+  }
+  const resuming = resumePath !== undefined && resumePath !== '';
+  const sessionManager = resuming
+    ? engine.SessionManager.open(resumePath as string)
+    : engine.SessionManager.create(cfg.cwd);
+
+  const { session } = await engine.createAgentSessionFromServices({
+    services,
+    sessionManager,
+    model,
+    tools: cfg.tools,
+  });
+
+  return { session, services, resuming };
+}
+
+// ---------------------------------------------------------------------------
 // makeBrokerUiContext — the dialog router as an ExtensionUIContext.
 //
 // Only the 4 blocking dialogs (select/confirm/input/editor) carry behavior; the
@@ -496,14 +556,66 @@ export async function runBroker(nodeId: string): Promise<void> {
 // 'print' the canvas Surface-chrome extensions self-gate off, so none of the
 // no-op'd methods are reached by a Model hook in Phase 3.
 // ---------------------------------------------------------------------------
-function makeBrokerUiContext(
-  dialogPromise: <T>(
+/** Broker-side hooks the UI context needs to route (or noOp) extension dialogs. */
+export interface BrokerDialogDeps {
+  /** The controller client, or null when ZERO viewers are attached. */
+  controller: () => BrokerClient | null;
+  /** Forward a dialog request to the (non-null) controller. */
+  forward: (client: BrokerClient, request: RpcExtensionUIRequest) => void;
+  /** Pending-dialog registry, keyed by request id (answered via extension_ui_response). */
+  pending: Map<string, PendingDialog>;
+}
+
+export function makeBrokerUiContext(deps: BrokerDialogDeps): ExtensionUIContext {
+  // The dialog router. C2 (scout mq5thyli): the design §5.4 premise — that an
+  // unattended dialog auto-resolves on its OWN timeout — is FALSE. `timeout` is
+  // OPTIONAL on dialog opts, editor() takes none, and almost no real extension
+  // passes one (permission-gate / confirm-destructive / plan-mode / subagent all
+  // omit it). A timeout-reliant unattended node therefore deadlocks the agent
+  // turn FOREVER. So with ZERO viewers attached we fall back to the SDK's noOp UI
+  // behavior — resolve to the default (deny / cancel / undefined) IMMEDIATELY,
+  // never arming a timer, never waiting. (Phase 4 adds the WITH-viewer forwarding
+  // path, wrapped in a broker-side timeout+abort so a controller that attaches
+  // but never answers cannot hang the turn either.)
+  const dialogPromise = <T>(
     defaultValue: T,
     request: RpcExtensionUIRequest,
     parse: (r: RpcExtensionUIResponse) => T,
     opts?: { signal?: AbortSignal; timeout?: number },
-  ) => Promise<T>,
-): ExtensionUIContext {
+  ): Promise<T> => {
+    if (opts?.signal?.aborted) return Promise.resolve(defaultValue);
+    const controller = deps.controller();
+    // C2: zero viewers → noOp, resolved at once. No timer, no wait, no deadlock.
+    if (controller === null) return Promise.resolve(defaultValue);
+    // A controller is attached: forward the dialog and await its response (or an
+    // abort). TODO(Phase 4 / C2 WITH-viewer path): wrap this forwarded dialog in a
+    // broker-side timeout+abort so a controller that never answers cannot hang.
+    return new Promise<T>((resolve) => {
+      const cleanup = (): void => {
+        opts?.signal?.removeEventListener('abort', onAbort);
+        deps.pending.delete(request.id);
+      };
+      const onAbort = (): void => {
+        cleanup();
+        resolve(defaultValue);
+      };
+      opts?.signal?.addEventListener('abort', onAbort, { once: true });
+      deps.pending.set(request.id, {
+        resolve: (r) => {
+          cleanup();
+          resolve(parse(r));
+        },
+        // M-1: viewers all dropped → resolve to the noOp default (zero viewers is
+        // the C2 case), called by the broker's cancelPendingDialogs on detach.
+        cancel: () => {
+          cleanup();
+          resolve(defaultValue);
+        },
+      });
+      deps.forward(controller, request);
+    });
+  };
+
   const noop = (): void => {};
   const ctx = {
     select: (title: string, options: string[], opts?: { signal?: AbortSignal; timeout?: number }) =>

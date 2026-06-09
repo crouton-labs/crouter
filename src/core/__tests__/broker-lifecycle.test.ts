@@ -194,19 +194,23 @@ test('clean teardown — node close → broker shutdown frame → exit, socket u
 });
 
 // ===========================================================================
-// §5.4 forward-progress (zero-viewer path) — an unattended blocking dialog
-// resolves to its default (false) on its own timeout: the broker's REAL
-// dialogPromise/makeBrokerUiContext arms a setTimeout when no controller is
-// connected, so the engine never deadlocks. (Supports acceptance item 7: the
-// existing suite stays green; this only ADDS coverage.)
+// C2 forward-progress (zero-viewer path) — an unattended blocking dialog
+// resolves to its default (false) IMMEDIATELY: with no controller connected the
+// broker's REAL makeBrokerUiContext falls back to noOp resolution, so the engine
+// never deadlocks AND never waits on a per-dialog timeout (the design §5.4
+// timeout premise is false). Red/green: the OLD broker armed a setTimeout and
+// resolved only after `timeout` ms; the fixed broker resolves in ~0ms. (Supports
+// acceptance item 7: the existing suite stays green; this only ADDS coverage.)
 // ===========================================================================
-test('unattended dialog resolves to its default on timeout — forward progress, no deadlock', { skip: !hasTmux() }, async () => {
+test('C2 — unattended dialog resolves to its default IMMEDIATELY (noOp), never waits on a timeout', { skip: !hasTmux() }, async () => {
   const id = await h.spawnHeadlessChild(root, 'headless worker — dialog');
   const pid = h.node(id)!.pi_pid!;
 
-  // Drive the fake engine to call uiContext.confirm(...,{timeout:600}); with NO
-  // controller, dialogPromise resolves the default (false) after ~600ms.
-  h.fakeCmd(id, { cmd: 'dialog', timeout: 600 });
+  // Drive the fake engine to call uiContext.confirm(..., { timeout: 5000 }) with
+  // NO controller. C2 fix: makeBrokerUiContext resolves the default (false) AT
+  // ONCE — it does NOT arm/await the timeout. A generous < 2000ms bound is still a
+  // hard fail against the old ~5000ms timeout-wait while staying robust on slow CI.
+  h.fakeCmd(id, { cmd: 'dialog', timeout: 5000 });
 
   const results = await h.waitFor(
     () => {
@@ -215,7 +219,11 @@ test('unattended dialog resolves to its default on timeout — forward progress,
     },
     { timeoutMs: 15_000, label: 'unattended dialog resolved' },
   );
-  assert.equal(results[0]!.resolved, false, 'unattended confirm resolves to its default (false)');
+  assert.equal(results[0]!.resolved, false, 'unattended confirm resolves to its default (false / deny)');
+  assert.ok(
+    results[0]!.ms < 2000,
+    `C2: resolved IMMEDIATELY (noOp), not after the 5000ms timeout — got ${results[0]!.ms}ms`,
+  );
   assert.equal(isPidAlive(pid), true, 'the broker made forward progress (still alive, did not hang or exit)');
 });
 

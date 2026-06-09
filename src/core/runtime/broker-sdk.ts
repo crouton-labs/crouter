@@ -12,18 +12,30 @@
 // lifecycle suite stays green until the broker is wired up.
 
 import { execFileSync } from 'node:child_process';
-import { createAgentSession, SessionManager, VERSION } from '@earendil-works/pi-coding-agent';
+import {
+  createAgentSessionServices,
+  createAgentSessionFromServices,
+  SessionManager,
+  VERSION,
+} from '@earendil-works/pi-coding-agent';
 
 // Static re-exports — the real SDK surface the broker drives in production.
-export { createAgentSession, SessionManager, VERSION };
+export { createAgentSessionServices, createAgentSessionFromServices, SessionManager, VERSION };
 
 /**
  * The minimal slice of the pi SDK the broker needs. Both the real package and the
  * T11 `fake-engine` fixture satisfy this shape, so the broker can be driven by
  * either via the `CRTR_BROKER_ENGINE` seam below.
+ *
+ * C3 (viewer-reuse scout `mq5thyli`): the broker drives the SERVICES path
+ * (`createAgentSessionServices` → `createAgentSessionFromServices`), NOT plain
+ * `createAgentSession`. Only the services path runs `registerProvider` (extension
+ * model-providers) + `applyExtensionFlagValues`, so a node whose model comes from
+ * a custom-provider extension actually gets a model. Mirrors pi `main.js`.
  */
 export interface BrokerEngine {
-  createAgentSession: typeof createAgentSession;
+  createAgentSessionServices: typeof createAgentSessionServices;
+  createAgentSessionFromServices: typeof createAgentSessionFromServices;
   SessionManager: typeof SessionManager;
   VERSION: string;
 }
@@ -38,14 +50,19 @@ export interface BrokerEngine {
 export async function loadBrokerEngine(): Promise<BrokerEngine> {
   const spec = process.env.CRTR_BROKER_ENGINE ?? '@earendil-works/pi-coding-agent';
   const mod = (await import(spec)) as Partial<BrokerEngine>;
-  if (typeof mod.createAgentSession !== 'function' || typeof mod.SessionManager !== 'function') {
+  if (
+    typeof mod.createAgentSessionServices !== 'function' ||
+    typeof mod.createAgentSessionFromServices !== 'function' ||
+    typeof mod.SessionManager !== 'function'
+  ) {
     throw new Error(
-      `[broker] engine '${spec}' does not export createAgentSession/SessionManager — ` +
-        `not a valid pi-SDK-compatible engine`,
+      `[broker] engine '${spec}' does not export createAgentSessionServices/` +
+        `createAgentSessionFromServices/SessionManager — not a valid pi-SDK-compatible engine`,
     );
   }
   return {
-    createAgentSession: mod.createAgentSession,
+    createAgentSessionServices: mod.createAgentSessionServices,
+    createAgentSessionFromServices: mod.createAgentSessionFromServices,
     SessionManager: mod.SessionManager,
     VERSION: typeof mod.VERSION === 'string' ? mod.VERSION : 'unknown',
   };

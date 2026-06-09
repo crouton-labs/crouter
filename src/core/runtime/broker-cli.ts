@@ -5,12 +5,28 @@
 // rewrite) on every broker boot. Mirrors src/daemon/crtrd-cli.ts: parse the one
 // positional arg and hand off; keep this file a thin shim.
 
-import { runBroker } from './broker.js';
+import { runBroker, disposeActiveSession } from './broker.js';
 
 const nodeId = process.argv[2];
 if (nodeId === undefined || nodeId.trim() === '') {
   process.stderr.write('[broker] usage: broker-cli <nodeId>\n');
   process.exit(1);
+}
+
+// M3 (scout mq5thyli): dispose the live engine before a FATAL exit. The bash tool
+// spawns children `detached` (own pgid); only session.dispose() (→ abortBash /
+// agent.abort → killProcessTree) reaps them. The graceful path (shutdownHandler /
+// SIGTERM → disposeAndExit) already disposes; this routes the crash path —
+// uncaughtException / unhandledRejection / a runBroker reject — through dispose
+// too, so a fatal error never ORPHANS in-flight bash subprocesses. dispose is
+// idempotent + a no-op once the graceful path has run.
+function disposeAndExit(code: number): never {
+  try {
+    disposeActiveSession();
+  } catch {
+    /* dispose must not block the fatal exit */
+  }
+  process.exit(code);
 }
 
 // Last-resort safety net (review N-4): a stray throw/rejection from the SDK event
@@ -21,16 +37,16 @@ if (nodeId === undefined || nodeId.trim() === '') {
 // boot grace → surfaceBootFailure); post-session_start it is a clean grace-revive.
 process.on('uncaughtException', (err) => {
   process.stderr.write(`[broker] uncaughtException: ${err instanceof Error ? err.stack ?? err.message : String(err)}\n`);
-  process.exit(1);
+  disposeAndExit(1);
 });
 process.on('unhandledRejection', (reason) => {
   process.stderr.write(
     `[broker] unhandledRejection: ${reason instanceof Error ? reason.stack ?? reason.message : String(reason)}\n`,
   );
-  process.exit(1);
+  disposeAndExit(1);
 });
 
 runBroker(nodeId).catch((err) => {
   process.stderr.write(`[broker] fatal: ${err instanceof Error ? err.stack ?? err.message : String(err)}\n`);
-  process.exit(1);
+  disposeAndExit(1);
 });

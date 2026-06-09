@@ -40,6 +40,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { DefaultResourceLoader, getAgentDir } from '@earendil-works/pi-coding-agent';
 
 /** Test seam (M-1 regression): a FRESH-start kickoff prompt carrying this token
  *  makes the fake engine THROW inside bindExtensions BEFORE it fires
@@ -473,10 +474,11 @@ class FakeSession {
         );
         break;
       case 'dialog':
-        // Exercise the broker's REAL uiContext timeout branch (design §5.4): with
-        // NO controller connected, dialogPromise arms a setTimeout that resolves
-        // the default (false) after `timeout` ms — proving the engine makes
-        // forward progress on the zero-viewer path instead of deadlocking.
+        // Exercise the broker's REAL uiContext zero-viewer path (C2): with NO
+        // controller connected, makeBrokerUiContext resolves the dialog to its
+        // default (false) IMMEDIATELY — noOp fallback, NOT a per-dialog timeout
+        // (the design §5.4 timeout premise is false). Even a passed `timeout` is
+        // ignored: forward progress is instant, never a deadlock and never a wait.
         await this.runDialog(cmd.timeout ?? 0);
         break;
       default:
@@ -501,17 +503,47 @@ class FakeSession {
 }
 
 // ---------------------------------------------------------------------------
-// createAgentSession — the broker's entry: hand it the SessionManager + the REAL
-// resourceLoader it built, get back { session }. Unlike fake-pi-host we do NOT
-// re-load extensions; we adopt the loader's already-loaded ones in bindExtensions
-// (the broker always reload()s the real loader first, which registers them).
+// The SERVICES path (C3) — the broker now drives createAgentSessionServices →
+// createAgentSessionFromServices (broker-sdk.ts BrokerEngine), NOT plain
+// createAgentSession. We mirror the real SDK's split: createAgentSessionServices
+// builds + reloads the REAL DefaultResourceLoader (the `-e` canvas extensions —
+// exactly the construction broker.ts did before C3 moved it into the services
+// path) and returns it as a services bundle; createAgentSessionFromServices wraps
+// it in a FakeSession. We do NOT register real model providers (these lifecycle
+// tests pass no custom-provider model), so modelRegistry.find always returns
+// undefined — the broker then uses the SDK default (no model), correct for the
+// fake. C3's actual provider-registration behavior is proven against the REAL SDK
+// in broker-sdk-wiring.test.ts.
 // ---------------------------------------------------------------------------
 
-export async function createAgentSession(options: {
+interface FakeServices {
+  resourceLoader: ResourceLoader;
+  modelRegistry: { find: (provider: string, id: string) => undefined };
+}
+
+export async function createAgentSessionServices(options: {
+  cwd: string;
+  agentDir?: string;
+  resourceLoaderOptions?: { additionalExtensionPaths?: string[]; appendSystemPrompt?: string[] };
+}): Promise<FakeServices> {
+  const loader = new DefaultResourceLoader({
+    cwd: options.cwd,
+    agentDir: options.agentDir ?? getAgentDir(),
+    additionalExtensionPaths: options.resourceLoaderOptions?.additionalExtensionPaths,
+    appendSystemPrompt: options.resourceLoaderOptions?.appendSystemPrompt,
+  });
+  await loader.reload();
+  return {
+    resourceLoader: loader as unknown as ResourceLoader,
+    modelRegistry: { find: () => undefined },
+  };
+}
+
+export async function createAgentSessionFromServices(options: {
+  services: FakeServices;
   sessionManager: SessionManager;
-  resourceLoader?: ResourceLoader;
 }): Promise<{ session: FakeSession }> {
-  return { session: new FakeSession(options.sessionManager, options.resourceLoader) };
+  return { session: new FakeSession(options.sessionManager, options.services.resourceLoader) };
 }
 
 // ---------------------------------------------------------------------------
