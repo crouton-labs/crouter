@@ -8,6 +8,7 @@ import { transition } from '../../core/runtime/lifecycle.js';
 import { appendInbox } from '../../core/feed/inbox.js';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import {
   inbox,
   scanInbox,
@@ -275,6 +276,16 @@ export const humanRun = defineLeaf({
           renderPane = display(rc.file as string, { window: 'split' }).paneId;
         } catch {
           /* render pane is best-effort; the review itself must not die */
+        }
+        // Dock the render pane BESIDE this worker pane. tmux resolves an
+        // untargeted split-window against the attached client's current window
+        // (which wins over $TMUX_PANE), so the pane can land in whatever window
+        // the user happens to be looking at — away from the editor. move-pane
+        // with explicit src/dst is deterministic: raw source and rendered doc
+        // always sit side by side.
+        const selfPane = process.env['TMUX_PANE'];
+        if (renderPane !== undefined && selfPane !== undefined && selfPane !== '') {
+          spawnSync('tmux', ['move-pane', '-h', '-s', renderPane, '-t', selfPane], { stdio: 'ignore' });
         }
         if (renderPane !== undefined) {
           const rcPath = join(dir, 'run.json');
