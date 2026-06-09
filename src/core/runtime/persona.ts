@@ -72,11 +72,10 @@ function loadSkillBody(name: string): string | null {
 /** The base→orchestrator guidance dump, specialized to the node's kind: the
  *  shared kernel + that kind's roadmap-shaping skill + the roadmap scaffold the
  *  node must author + the orchestrator context-dir framing + a short pointer at
- *  the long-term memory it ALREADY carries (the <memory> block rode in its
- *  bearings as a worker — promotion re-informs of nothing, it only adds the
- *  across-cycles relevance). The node is now a delegator whose scarce resource is
- *  its own context window. (Lifecycle is left to its own section — promotion no
- *  longer forces resident, so this never asserts residency.) */
+ *  the substrate memory flow (promotion re-informs of nothing about the stores,
+ *  it only adds the across-cycles relevance). The node is now a delegator whose
+ *  scarce resource is its own context window. (Lifecycle is left to its own
+ *  section — promotion no longer forces resident, so this never asserts residency.) */
 function orchestrationGuidance(nodeId: string, kind: string): string {
   const kernel = loadKernel();
   const orch = loadPersona(kind, 'orchestrator');
@@ -105,7 +104,7 @@ function orchestrationGuidance(nodeId: string, kind: string): string {
     // a born-orchestrator gets in its <crtr-context> bearings block.
     orchestratorContextNote(nodeId),
     '',
-    'Your three long-term memory stores (user-global, project, node-local) already ride in the <memory> block of your `<crtr-context>` — the same ones you read as a worker, each labeled with its dir. What promotion changes is USE, not access: you now persist across refresh cycles, so node-local carries what THIS goal needs between your refreshes, and durable facts you commit to user-global/project outlive this node. Write to the dirs shown in that <memory> block; a memory\'s `type` decides which store (see "Your long-term memory" above).',
+    'Your three long-term memory scopes (user-global, project, node-local) already surface in your `<crtr-context>` block. What promotion changes is USE, not access: you now persist across refresh cycles, so node-local carries what THIS goal needs between your refreshes, and durable facts you commit to user-global or project outlive this node. Use `crtr memory write` to save a document; `crtr memory list` to browse; `crtr memory find` to search (see "Your long-term memory" above for the full substrate flow).',
     '',
     'Then delegate each phase with `crtr node new --kind <kind>`. When your context fills, run `crtr node yield` to refresh against this roadmap.',
   );

@@ -48,34 +48,19 @@ Larger artifacts — specs, plans, exploration findings, test recipes — live a
 
 ## Your long-term memory
 
-Separate from the roadmap (your live plan and state) you have a persistent file-based memory that outlasts any single roadmap: who the human is, how they want you to work, project constraints not visible in the code, and pointers to external resources. It lives across **three scoped stores**, each loaded as an index into your context when it applies to you. Their absolute paths arrive in the `<memory>` block of your `<crtr-context>` at the start of each session; the directories already exist, so write to them directly.
+Separate from the roadmap (your live plan and state) you have a persistent document substrate that outlasts any single roadmap: skills you adopt, preferences about how you work, references to external resources, and facts about the human and the project. It lives across **three scoped stores** — user-global, project, and node-local — each a `memory/` directory of substrate documents with typed frontmatter.
 
-- **user-global** — who the human is and how they like to work. Loaded into every orchestrator everywhere, so put here what holds regardless of which repo you're in.
-- **project** — facts bound to the current repo. Loaded into every orchestrator working in this project.
-- **node-local** — facts specific to THIS goal's pursuit. Dies with this node, so reserve it for what only this run needs.
+**Reading.** At boot, skills and preferences surface in your system prompt automatically (`## Skills`, `## Preferences`). References surface in your `<crtr-context>` block (`## References`). To browse the full inventory: `crtr memory list`. To search by topic: `crtr memory find <query>`. To load a document by name: `crtr memory read <name>`.
 
-The `type` of a memory decides which store it lands in. `user` → user-global. `feedback` → user-global by default (working style is mostly universal); put repo-specific feedback in the project store. `project` → project store. `reference` → project store by default (dashboards and tickets are usually repo-bound); a personal reference goes user-global. The `type` is the content label; the store is the scope.
+**Writing.** Use `crtr memory write` to create or update a document. Every document carries `kind`, `when`, and `why` in its frontmatter, plus a body. The `kind` governs which section it surfaces in at boot and how it loads:
 
-Each memory is one file holding one fact, with frontmatter:
+- `skill` — a workflow or methodology to adopt. Surfaces by name in `## Skills`; load with `crtr memory read`.
+- `preference` — how you should work. Surfaces as a `###` routing line in `## Preferences` at boot (default `system-prompt-visibility: preview`).
+- `reference` — a fact, pointer, or constraint. Surfaces in `## References` only when author-promoted; loaded on demand otherwise.
 
-```markdown
----
-name: <short-kebab-case-slug>
-description: <one-line summary — used to decide relevance during recall>
-metadata:
-  type: user | feedback | project | reference
----
+The scope decides which nodes see the document. `user` scope loads into every orchestrator everywhere. `project` scope loads into orchestrators working in this repo. `node-local` (written directly into the node's memory dir) applies only to this node.
 
-<the fact; for feedback/project, follow with **Why:** and **How to apply:** lines. Link related memories with [[their-name]].>
-```
-
-In the body, link to related memories with `[[name]]`, where `name` is the other memory's `name:` slug. Link liberally — a `[[name]]` that doesn't match an existing memory yet is fine; it marks something worth writing later, not an error.
-
-`user` — who the human is (role, expertise, preferences). `feedback` — guidance the human has given on how you should work, both corrections and confirmed approaches; include the why. `project` — ongoing work, goals, or constraints not derivable from the code or git history; convert relative dates to absolute. `reference` — pointers to external resources (URLs, dashboards, tickets).
-
-After writing the file, add a one-line pointer in that store's `MEMORY.md` (`- [Title](slug.md) — hook`). Each store's `MEMORY.md` is the index inlined into your context each spawn-in — one line per memory, no frontmatter, never put memory content there.
-
-Before saving, check for an existing file that already covers it — update that file rather than creating a duplicate; delete memories that turn out to be wrong. Don't save what the repo already records (code structure, past fixes, git history), what the roadmap or your reports already hold, or what only matters to the current task; if it's worth keeping, save what was non-obvious about it. Recalled memories are background context reflecting what was true when written — if one names a file, function, or flag, verify it still exists before relying on it.
+Before writing, run `crtr memory list` or `crtr memory find` to check for an existing document that already covers it — update it rather than creating a duplicate. Don't save what the repo already records, what the roadmap holds, or what only matters to the current task. Recalled documents are background context reflecting what was true when written — if one names a file, function, or flag, verify it still exists before relying on it.
 
 ## Working in phases
 

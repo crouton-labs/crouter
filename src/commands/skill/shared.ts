@@ -1,12 +1,9 @@
-import { stateBlock } from '../../core/help.js';
 import { usage } from '../../core/errors.js';
 import { SCOPE_SKILL_PLUGIN } from '../../types.js';
 import type { Skill, Scope } from '../../types.js';
 import {
   listSkillSiblings,
   listSkillChildren,
-  listAllSkills,
-  listAllPlugins,
 } from '../../core/resolver.js';
 import { resolveScopeArg, projectScopeRoot } from '../../core/scope.js';
 
@@ -33,7 +30,7 @@ export function buildNeighborsSection(skill: Skill): string | null {
 
   const lines: string[] = [
     '## Neighbors',
-    '*Auto-discovered from filesystem. Run `crtr skill read <name>` for full description + body.*',
+    '*Auto-discovered from filesystem. Run `crtr memory read <name>` for full description + body.*',
     '',
   ];
   if (siblings.length > 0) {
@@ -81,69 +78,12 @@ export function resolveWriteScope(scopeStr: string | undefined): Scope {
 export const VALID_TYPES = ['playbook', 'primer', 'reference', 'runbook', 'freeform'] as const;
 
 // ---------------------------------------------------------------------------
-// Loaded-skills catalog (dynamicState for `skill -h`)
+// Skill catalog rendering (used by the substrate boot renderer)
 // ---------------------------------------------------------------------------
 
-// Sections: Project first (most relevant to cwd), then User (folding user-
-// and builtin-scope plugins together). Within a section, sentinel-plugin
-// skills list bare; named plugins render inline unless they have 2+ distinct
-// top-level subcategories — those break into a subcategory tree. Forest-root
-// skills only (nested children stay discoverable via `skill find list`).
-type CatalogSource = { plugin: string; roots: string[] };
+export type CatalogSource = { plugin: string; roots: string[] };
 
 const CATALOG_T = 5;
-
-/** The skill subtree's live state: the loaded-skills catalog as a self-named
- *  `<skills count="N">` element. The tag carries the label and the count is an
- *  attribute, so the body is the grouped tree alone — no "Loaded skills (N)"
- *  header to duplicate. Returns null (block omitted) when discovery fails or
- *  nothing is loaded. */
-export function buildSkillCatalog(): string | null {
-  let skills: Skill[];
-  try {
-    skills = listAllSkills().filter((s) => s.enabled);
-  } catch {
-    return null;
-  }
-  if (skills.length === 0) return null;
-
-  const pluginDescriptions = new Map<string, string>();
-  for (const p of listAllPlugins()) {
-    if (p.manifest.description) pluginDescriptions.set(p.name, p.manifest.description);
-  }
-
-  const bySource = new Map<string, Skill[]>();
-  for (const s of skills) {
-    const key = `${s.scope}\t${s.plugin}`;
-    const arr = bySource.get(key);
-    if (arr) arr.push(s);
-    else bySource.set(key, [s]);
-  }
-
-  const projectSources: CatalogSource[] = [];
-  const userSources: CatalogSource[] = [];
-  for (const [key, group] of bySource) {
-    const [scope, plugin] = key.split('\t');
-    const names = group.map((g) => g.name);
-    const roots = names
-      .filter((n) => !names.some((m) => m !== n && n.startsWith(m + '/')))
-      .sort();
-    if (roots.length === 0) continue;
-    (scope === 'project' ? projectSources : userSources).push({ plugin, roots });
-  }
-
-  const body: string[] = [];
-  renderCatalogSection('Project', projectSources, pluginDescriptions, body);
-  renderCatalogSection('User', userSources, pluginDescriptions, body);
-  // renderCatalogSection leads each section with a blank separator; drop the
-  // leading one so the element body starts on its first real line.
-  while (body.length > 0 && body[0] === '') body.shift();
-  body.push('');
-  body.push(
-    "Groups shown as `name/  N skills` are collapsed. Read the group to get its menu before assuming a skill is or isn't there: `crtr skill read <group>` (or `crtr skill find list --plugin <group>`). Search across everything with `crtr skill find search <topic>`.",
-  );
-  return stateBlock('skills', { count: skills.length }, body.join('\n'));
-}
 
 export function renderCatalogSection(
   label: string,

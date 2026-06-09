@@ -1,41 +1,29 @@
-// Tests for the <crtr-context> bearings preamble + scoped memory:
-//   1. Every node is born WITH its node-local MEMORY.md (seeded at spawn);
-//      promotion re-seeds idempotently (never clobbers).
-//   2. seedMemory is idempotent (never clobbers an evolved memory).
-//   3. Worker and orchestrator bearings carry the `## References` block
+// Tests for the <crtr-context> bearings preamble:
+//   1. Worker and orchestrator bearings carry the `## References` block
 //      (substrate reference docs + node-local docs as `###` sub-sections) in
 //      place of the removed `<memory>` block — no `label · dir` stanzas, no
 //      `(empty)` markers, no MEMORY.md index inlining. Orchestrators add the
 //      across-cycles framing; promotion delivers that same orchestrator
 //      context-dir framing to a node that spawned base.
-//   4. canvas-context-intro injects the block as its own session message at
+//   2. canvas-context-intro injects the block as its own session message at
 //      session_start (before the first prompt), idempotent across resumes.
 //
 // Run: node --import tsx/esm --test src/core/__tests__/context-intro.test.ts
 
 import { test, before, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-
-import { existsSync } from 'node:fs';
 import { closeDb } from '../canvas/db.js';
 import { contextDir } from '../canvas/paths.js';
 import { spawnNode } from '../runtime/nodes.js';
 import { promote } from '../runtime/promote.js';
 import { personaDrift } from '../runtime/persona.js';
 import {
-  memoryPath,
   memoryDir,
-  readMemory,
-  seedMemory,
-  hasMemory,
-  MEMORY_TEMPLATE,
   userMemoryDir,
-  userMemoryPath,
   projectMemoryDir,
-  projectMemoryPath,
 } from '../runtime/memory.js';
 import registerCanvasContextIntro, {
   buildContextIntro,
@@ -62,33 +50,19 @@ after(() => {
   delete process.env['CRTR_NODE_ID'];
 });
 
-test('every node is born with its node-local memory store (seeded at spawn)', () => {
-  const meta = spawnNode({ kind: 'general', cwd: '/tmp/work', parent: null });
-  assert.ok(hasMemory(meta.node_id), 'MEMORY.md index exists from birth');
-  assert.ok(existsSync(memoryDir(meta.node_id)), 'memory dir created for direct writes');
-  assert.ok(memoryPath(meta.node_id).endsWith('/memory/MEMORY.md'), 'index lives inside the memory dir');
-  assert.equal(readMemory(meta.node_id), MEMORY_TEMPLATE);
-
-  promote(meta.node_id); // idempotent — never re-clobbers the born-with store
-  assert.equal(readMemory(meta.node_id), MEMORY_TEMPLATE, 'promotion does not clobber');
-});
-
-test('seedMemory is idempotent — never clobbers an evolved memory', () => {
-  const meta = spawnNode({ kind: 'general', cwd: '/tmp/work', parent: null });
-  seedMemory(meta.node_id);
-  const evolved = '# Memory\n\n## Lessons\n- never trust the cache\n';
-  writeFileSync(memoryPath(meta.node_id), evolved);
-
-  assert.equal(seedMemory(meta.node_id), false, 'returns false when one exists');
-  assert.equal(readMemory(meta.node_id), evolved, 'left untouched');
-});
-
 test('worker bearings: base framing + ## References block (no <memory>, no label·dir stanzas), NO across-cycles framing', () => {
   // Bug-regression: review finding M1 — buildContextBearings was changed from
   // buildMemoryBlock (<memory> + label·dir per-store stanzas) to
   // renderReferencesBlock (## References + ### <name> sub-sections). This test
   // locks in the new contract.
   const meta = spawnNode({ kind: 'general', cwd: '/tmp/work', parent: null });
+  // Seed a node-local substrate doc so the ## References block is non-empty.
+  const dir = memoryDir(meta.node_id);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, 'test-ref.md'),
+    '---\nkind: reference\nwhen: when testing\nwhy: regression fixture\nsystem-prompt-visibility: preview\n---\nTest body.\n',
+  );
   const block = buildContextIntro(meta.node_id);
   assert.match(block, new RegExp(`<crtr-context dir="${contextDir(meta.node_id)}">`));
   assert.match(block, /shared document store, not a task tracker/, 'base = shared docs, not tasks');
@@ -112,14 +86,17 @@ test('orchestrator bearings: across-cycles framing + node-local substrate docs r
   // render as ### sub-sections at their rung; the old index file never surfaces.
   const meta = spawnNode({ kind: 'general', cwd: '/tmp/work', parent: null });
   promote(meta.node_id); // flip to orchestrator mode — the across-cycles gate
-  // The old-format index must NOT surface anywhere in the block.
+  const dir = memoryDir(meta.node_id);
+  mkdirSync(dir, { recursive: true });
+  // Write a MEMORY.md file to verify it is never surfaced in the block.
+  const legacyIndexPath = join(dir, 'MEMORY.md');
   writeFileSync(
-    memoryPath(meta.node_id),
+    legacyIndexPath,
     '# memory index — one pointer line per memory; how-to in "Your long-term memory".\n\n- [Flaky build](flaky-build.md) — first run fails\n',
   );
   // A node-local substrate doc DOES ride into ## References at its rung.
   writeFileSync(
-    join(memoryDir(meta.node_id), 'flaky-build.md'),
+    join(dir, 'flaky-build.md'),
     '---\nkind: reference\nwhen: when the build flakes\nwhy: first run fails\nsystem-prompt-visibility: preview\n---\nFirst run always fails; rerun once.\n',
   );
 
@@ -137,7 +114,7 @@ test('orchestrator bearings: across-cycles framing + node-local substrate docs r
   // The index file itself never renders: no header comment, no pointer line, no path.
   assert.ok(!block.includes('# memory index'), 'the index header comment is NOT inlined');
   assert.ok(!block.includes('- [Flaky build](flaky-build.md)'), 'index pointer lines are NOT inlined');
-  assert.ok(!block.includes(memoryPath(meta.node_id)), 'no absolute index (MEMORY.md) path');
+  assert.ok(!block.includes(legacyIndexPath), 'no absolute index (MEMORY.md) path');
   assert.ok(!block.includes('node-local · '), 'no label·dir stanza header');
   assert.match(block, /<\/crtr-context>/);
 });
@@ -149,9 +126,11 @@ test('orchestrator bearings: no per-store stanzas or (empty) markers; a rung-non
   // system-prompt-visibility: none and must still ride into ## References as
   // its bare title (never its body).
   const meta = spawnNode({ kind: 'general', cwd: '/tmp/work', parent: null });
-  promote(meta.node_id); // seeds user-global + project + node-local (all template-only)
+  promote(meta.node_id); // flip to orchestrator mode
+  const dir = memoryDir(meta.node_id);
+  mkdirSync(dir, { recursive: true });
   writeFileSync(
-    join(memoryDir(meta.node_id), 'rung-none-fact.md'),
+    join(dir, 'rung-none-fact.md'),
     '---\nkind: reference\n---\nbody that must not render at the none rung\n',
   );
 
@@ -161,8 +140,7 @@ test('orchestrator bearings: no per-store stanzas or (empty) markers; a rung-non
   assert.ok(!block.includes(`project · ${projectMemoryDir('/tmp/work')}`), 'no project stanza header');
   assert.ok(!block.includes(`node-local · ${memoryDir(meta.node_id)}`), 'no node-local stanza header');
   assert.doesNotMatch(block, /\(empty\)/, 'no (empty) markers');
-  assert.ok(!block.includes(userMemoryPath()), 'no user-global MEMORY.md path');
-  assert.ok(!block.includes(projectMemoryPath('/tmp/work')), 'no project MEMORY.md path');
+  assert.ok(!block.includes('MEMORY.md'), 'no MEMORY.md path in the block');
   // M6: rung-none node-local doc surfaces as its title stub only.
   assert.match(block, /### rung-none-fact\s*\n/, 'rung-none node-local doc surfaces as its title stub');
   assert.ok(!block.includes('body that must not render'), 'none rung renders the title only, not the body');

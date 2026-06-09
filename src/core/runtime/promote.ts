@@ -4,7 +4,7 @@
 //   1. Promotion → mode flips to orchestrator (mid-turn). This call flips the
 //      node's mode and (optionally) its KIND, REWRITES its launch spec to that
 //      kind's orchestrator persona (so the next revive comes back as that
-//      orchestrator), and seeds a roadmap scaffold + the three memory stores.
+//      orchestrator), and seeds a roadmap scaffold.
 //      The transition guidance the node needs is injected CENTRALLY by the
 //      persona injector (runtime/persona.ts) at the turn boundary — promote()
 //      itself no longer returns or hand-emits guidance.
@@ -23,11 +23,6 @@ import { getNode, updateNode, type NodeMeta } from '../canvas/index.js';
 import { transition } from './lifecycle.js';
 import { buildLaunchSpec } from './launch.js';
 import { hasRoadmap, seedRoadmap, roadmapPath } from './roadmap.js';
-import {
-  seedMemory, memoryPath,
-  seedUserMemory, userMemoryPath,
-  seedProjectMemory, projectMemoryPath,
-} from './memory.js';
 import { readGoal, goalPath } from './kickoff.js';
 
 export interface PromoteResult {
@@ -37,12 +32,6 @@ export interface PromoteResult {
   roadmapPath: string;
   /** Absolute path to the node's goal doc (context/initial-prompt.md). */
   goalPath: string;
-  /** Absolute path to the node-local memory index (context/memory/MEMORY.md). */
-  memoryPath: string;
-  /** Absolute path to the user-global memory index (<crtrHome>/memory/MEMORY.md). */
-  userMemoryPath: string;
-  /** Absolute path to the project memory index (<crtrHome>/projects/<key>/memory/MEMORY.md). */
-  projectMemoryPath: string;
 }
 
 /** Promote a node to an orchestrator (mode→orchestrator), optionally
@@ -82,14 +71,6 @@ export function promote(nodeId: string, opts: { kind?: string; resident?: boolea
     roadmapWritten = true;
   }
 
-  // Seed all three scoped memory stores alongside the roadmap — user-global,
-  // project (keyed off this node's cwd), and node-local. Each is a durable,
-  // refresh-surviving artifact; each guarded so a re-seed never clobbers an
-  // evolved memory.
-  seedUserMemory();
-  seedProjectMemory(node.cwd);
-  seedMemory(nodeId);
-
   // Flip mode→orchestrator + kind + launch spec. Lifecycle is independent:
   // only set resident when the caller asked for it (the common self-promotion
   // stays terminal/orchestrator — it still reports up + reaps).
@@ -104,9 +85,6 @@ export function promote(nodeId: string, opts: { kind?: string; resident?: boolea
     roadmapWritten,
     roadmapPath: roadmapPath(nodeId),
     goalPath: goalPath(nodeId),
-    memoryPath: memoryPath(nodeId),
-    userMemoryPath: userMemoryPath(),
-    projectMemoryPath: projectMemoryPath(node.cwd),
   };
 }
 

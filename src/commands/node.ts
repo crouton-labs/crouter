@@ -675,13 +675,10 @@ const nodePromote = defineLeaf({
       { name: 'roadmap_written', type: 'boolean', required: true, constraint: 'True if a roadmap scaffold was seeded by this call.' },
       { name: 'roadmap_path', type: 'string', required: true, constraint: 'Absolute path to your roadmap doc (context/roadmap.md) — edit it to author your plan.' },
       { name: 'goal_path', type: 'string', required: true, constraint: 'Absolute path to your goal doc (context/initial-prompt.md) — the mandate you were spawned with.' },
-      { name: 'memory_path', type: 'string', required: true, constraint: 'Absolute path to your NODE-LOCAL memory index (context/memory/MEMORY.md) — facts specific to this goal; dies with this node.' },
-      { name: 'user_memory_path', type: 'string', required: true, constraint: 'Absolute path to your USER-GLOBAL memory index (<crtrHome>/memory/MEMORY.md) — who the human is, how they like to work; loaded into every orchestrator everywhere.' },
-      { name: 'project_memory_path', type: 'string', required: true, constraint: 'Absolute path to your PROJECT memory index (<crtrHome>/projects/<key>/memory/MEMORY.md) — facts bound to this repo; loaded into every orchestrator working here.' },
     ],
     dynamicState: () => kindsStateBlock(),
     outputKind: 'object',
-    effects: ['Flips mode→orchestrator + kind→chosen (lifecycle unchanged unless --resident, which also flips lifecycle→resident); rewrites the launch spec to that kind\'s orchestrator persona; seeds context/roadmap.md scaffold + all three scoped memory stores (user-global, project, node-local) if absent.', 'Your new-role guidance is injected automatically at the turn boundary by the persona injector — the command no longer returns it.'],
+    effects: ['Flips mode→orchestrator + kind→chosen (lifecycle unchanged unless --resident, which also flips lifecycle→resident); rewrites the launch spec to that kind\'s orchestrator persona; seeds context/roadmap.md scaffold if absent.', 'Your new-role guidance is injected automatically at the turn boundary by the persona injector — the command no longer returns it.'],
   },
   run: async (input) => {
     const id = (input['node'] as string | undefined) ?? process.env['CRTR_NODE_ID'];
@@ -690,7 +687,7 @@ const nodePromote = defineLeaf({
     if (kind !== undefined) assertKind(kind);
     const resident = input['resident'] === true;
     const res = promote(id, { ...(kind !== undefined ? { kind } : {}), ...(resident ? { resident: true } : {}) });
-    return { node_id: res.meta.node_id, kind: res.meta.kind, mode: res.meta.mode, lifecycle: res.meta.lifecycle, roadmap_written: res.roadmapWritten, roadmap_path: res.roadmapPath, goal_path: res.goalPath, memory_path: res.memoryPath, user_memory_path: res.userMemoryPath, project_memory_path: res.projectMemoryPath };
+    return { node_id: res.meta.node_id, kind: res.meta.kind, mode: res.meta.mode, lifecycle: res.meta.lifecycle, roadmap_written: res.roadmapWritten, roadmap_path: res.roadmapPath, goal_path: res.goalPath };
   },
 });
 

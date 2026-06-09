@@ -19,35 +19,19 @@
 // one place other nodes on the canvas can read from, so it is for documents
 // worth a shared reference, NOT a task tracker, and NOT a "future memory-wiped
 // you" stash (a terminal worker has no future cycle — that framing only makes
-// sense once a node is a resident orchestrator). Every node — terminal or
-// orchestrator — ALSO carries the same three-scope <memory> block (user-global,
-// project, node-local): one obvious, consistent long-term-memory surface, since
-// every node is born with all three stores (seeded at spawn — runtime/nodes.ts).
+// sense once a node is a resident orchestrator). The `## References` block
+// (substrate reference docs + node-local docs) rides into the context message.
 //
 // Orchestrator addendum (gated on orchestrator MODE): the dir ALSO survives
 // refresh cycles, so it is where a future cycle of the orchestrator resumes.
-// This across-cycles note is the ONE thing a terminal worker's bearings drop (a
-// one-shot worker has no future cycle); the <memory> block itself is identical
-// for both, its index pointer lines inlined (the how-to lives once in the
-// kernel, not here).
+// This across-cycles note is the ONE thing a terminal worker's bearings drop.
 
 import { contextDir, getNode, fullName, type WakeKind, type Wakeup } from '../canvas/index.js';
 import { cadenceDisplay } from '../wake.js';
 import { renderReferencesBlock } from '../substrate/index.js';
-import {
-  hasMemory,
-  memoryDir,
-  readMemory,
-  hasUserMemory,
-  userMemoryDir,
-  readUserMemory,
-  hasProjectMemory,
-  projectMemoryDir,
-  readProjectMemory,
-} from './memory.js';
 
 /** Base framing — present for every node. No path baked in: the caller carries
- *  the dir in the <crtr-context dir="…"> attribute. */
+ *  the dir in the `<crtr-context dir="…">` attribute. */
 export const BASE_CONTEXT_NOTE =
   'This is your context directory — durable scratch space on disk, and the one place the other ' +
   'nodes on the canvas can read from. Put documents here that you want to share by reference ' +
@@ -63,47 +47,6 @@ export function orchestratorContextNote(nodeId: string): string {
     `Because you persist across refresh cycles, your context directory (${contextDir(nodeId)}) is ` +
     `also where a future cycle of you resumes the work — keep the working notes and decisions a ` +
     `refreshed you would need there, alongside the docs you share with the nodes you spawn.`
-  );
-}
-
-/** One labeled store stanza inside <memory>: a compact `label · dir` header (the
- *  scope name + where to WRITE this kind of memory), then the LIVE pointer lines
- *  extracted fresh from the store's index — only lines matching `- [...` — with
- *  the index's how-to boilerplate dropped (it lives once in the kernel) and
- *  detail files loaded on demand. Falls back to `(empty)` when the index carries
- *  no pointers, which also covers the not-seeded / template-only case. */
-function memoryStanza(label: string, dir: string, index: string | null): string {
-  const pointers = (index ?? '')
-    .split('\n')
-    .filter((line) => /^\s*-\s*\[/.test(line))
-    .map((line) => line.trim());
-  const body = pointers.length > 0 ? pointers.join('\n') : '(empty)';
-  return `${label} · ${dir}\n${body}`;
-}
-
-/** The <memory> block (the SAME for every node): the scoped stores merged, each
- *  a `label · dir` header over its live index pointer lines. A memory's `type`
- *  decides which store it lands in — the mapping + the how-to live once in the
- *  orchestration kernel ("Your long-term memory"); here we carry only the live
- *  data + a one-line pointer back to it. Each scope rides in when its store
- *  exists — which, since every node is born with all three (seeded at spawn), is
- *  normally all three; the existence guards just keep the block robust for the
- *  rare store-less node (a human-bridge row, or a legacy node). Returns '' when
- *  no store exists at all, so the caller can drop the block entirely. */
-export function buildMemoryBlock(nodeId: string, cwd: string): string {
-  const stanzas: string[] = [];
-  if (hasUserMemory()) stanzas.push(memoryStanza('user-global', userMemoryDir(), readUserMemory()));
-  if (hasProjectMemory(cwd)) stanzas.push(memoryStanza('project', projectMemoryDir(cwd), readProjectMemory(cwd)));
-  if (hasMemory(nodeId)) stanzas.push(memoryStanza('node-local', memoryDir(nodeId), readMemory(nodeId)));
-  if (stanzas.length === 0) return '';
-  const n = stanzas.length;
-  return (
-    '<memory>\n' +
-    `Long-term memory, ${n} scope${n === 1 ? '' : 's'}. Each line ` +
-    '`- [Title](slug.md) — hook`; load a detail file by slug from the scope dir on demand. ' +
-    'Write a new fact to the scope matching its `type` (see "Your long-term memory").\n\n' +
-    stanzas.join('\n\n') +
-    '\n</memory>'
   );
 }
 
@@ -235,11 +178,11 @@ export function buildWakeBearings(origin: WakeOrigin): string {
 }
 
 /** The full boot intro: the IDENTITY assertion (always first, so it overrides
- *  any copied-in persona) followed by the <crtr-context> bearings block. Base
- *  framing + the shared three-scope <memory> block ride for EVERY node; the
- *  across-cycles context-dir note is added ONLY for an orchestrator (by mode) —
- *  the one node whose dir a future cycle resumes from. The project store is keyed
- *  off the node's cwd (its working dir on disk). */
+ *  any copied-in persona) followed by the `<crtr-context>` bearings block. Base
+ *  framing rides for EVERY node; the across-cycles context-dir note is added
+ *  ONLY for an orchestrator (by mode) — the one node whose dir a future cycle
+ *  resumes from. The `## References` block (substrate reference docs +
+ *  node-local docs) replaces the old `<memory>` block. */
 export function buildContextBearings(nodeId: string): string {
   const identity = buildIdentityAssertion(nodeId);
   const dir = contextDir(nodeId);
@@ -247,10 +190,9 @@ export function buildContextBearings(nodeId: string): string {
   const parts = [BASE_CONTEXT_NOTE];
   // Orchestrator-only: the across-cycles framing (a terminal has no future cycle).
   if (node?.mode === 'orchestrator') parts.push(orchestratorContextNote(nodeId));
-  // The substrate references block replaces the old <memory> block: eligible
-  // `reference` docs at their system-prompt rung + node-local memory docs;
-  // dropped (returns '') when nothing is eligible. (buildMemoryBlock /
-  // memoryStanza are left present-but-dead — deleted in a later hard-cut step.)
+  // The substrate references block: eligible `reference` docs at their
+  // system-prompt rung + node-local memory docs; dropped (returns '') when
+  // nothing is eligible.
   const references = renderReferencesBlock(nodeId);
   if (references !== '') parts.push(references);
   return `${identity}\n<crtr-context dir="${dir}">\n${parts.join('\n')}\n</crtr-context>`;
