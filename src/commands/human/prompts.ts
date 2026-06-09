@@ -162,7 +162,7 @@ export const humanReview = defineLeaf({
     outputKind: 'object',
     effects: [
       'Creates a kind:"human" node under you and writes run.json to the interaction dir.',
-      'Spawns a live, read-only review session (in a detached tmux pane when in tmux) that tracks the file and re-renders on save.',
+      'Spawns a live review surface (detached tmux panes when in tmux): the raw source in a read-only editor for anchoring comments, beside a termrender-rendered view of the doc; both track the file and re-render on save.',
       'Returns instantly; the anchored comments fan into your inbox when the human submits (off-tmux, drain via `crtr human inbox`).',
     ],
   },

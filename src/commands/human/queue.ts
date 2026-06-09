@@ -19,6 +19,7 @@ import {
   ask,
   launchReview,
   readJson,
+  display,
 } from '@crouton-kit/humanloop';
 import type { InboxItem, Deck, ResolutionEnvelope, FeedbackResult } from '@crouton-kit/humanloop';
 import { killPane, type RunRecord } from './shared.js';
@@ -162,6 +163,13 @@ export const humanCancel = defineLeaf({
     //     carries CRTR_HUMAN_DIR=idir) — never the agent's own pane or a shell.
     const rc = readJson<RunRecord>(join(idir, 'run.json'));
     if (rc?.pane_id !== undefined && rc.pane_id !== '') killPane(rc.pane_id, idir);
+    // A review also opened a live termrender render pane beside the editor —
+    // kill it too or it outlives the canceled job. Verified against the
+    // reviewed file path, which termrender bakes into the pane's start command
+    // (`termrender doc watch ... <file>`), so this can only ever hit our pane.
+    if (rc?.render_pane_id !== undefined && rc.render_pane_id !== '' && typeof rc.file === 'string' && rc.file !== '') {
+      killPane(rc.render_pane_id, rc.file);
+    }
 
     // (2) Drop it from the human queue: a response.json marks the dir resolved,
     //     so scanInbox (human list/inbox) skips it.
@@ -251,13 +259,37 @@ export const humanRun = defineLeaf({
       } else if (rc.mode === 'review') {
         // The _run worker is already its own dedicated tmux pane with a TTY, so
         // run nvim directly in it (noTmux) instead of letting launchReview
-        // split off a SECOND pane and sit polling. This matches how ask/approve
-        // render in-place and avoids the redundant side pane.
-        const res: FeedbackResult = await launchReview(rc.file as string, {
-          output: rc.output as string,
-          noTmux: true,
-        });
-        await pushFinal(rc.job_id as string, JSON.stringify(res));
+        // split off a SECOND pane and sit polling.
+        //
+        // BUG REGRESSION (raw-markdown review): the nvim buffer must stay the
+        // RAW source — anchored comments hang off source line numbers — so the
+        // termrender render the help promises (panels/callouts/mermaid) lives
+        // in its OWN live pane opened beside this worker. `display` spawns the
+        // managed termrender binary in watch mode, so it re-renders on every
+        // save exactly like the nvim buffer reloads. Best-effort: off-tmux or
+        // renderer-unavailable degrades to editor-only. The pane id is merged
+        // into run.json so `human cancel` can kill it; the finally clears it on
+        // every exit of the editor (submit, quit, or failure).
+        let renderPane: string | undefined;
+        try {
+          renderPane = display(rc.file as string, { window: 'split' }).paneId;
+        } catch {
+          /* render pane is best-effort; the review itself must not die */
+        }
+        if (renderPane !== undefined) {
+          const rcPath = join(dir, 'run.json');
+          const cur = readJson<RunRecord>(rcPath);
+          if (cur !== null) atomicWriteJson(rcPath, { ...cur, render_pane_id: renderPane });
+        }
+        try {
+          const res: FeedbackResult = await launchReview(rc.file as string, {
+            output: rc.output as string,
+            noTmux: true,
+          });
+          await pushFinal(rc.job_id as string, JSON.stringify(res));
+        } finally {
+          if (renderPane !== undefined) killPane(renderPane, rc.file as string);
+        }
       }
     } catch (e) {
       if (rc.job_id !== undefined) {

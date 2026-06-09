@@ -27,6 +27,8 @@ export interface RunRecord {
   output?: string;
   /** tmux pane id of the detached TUI, recorded so `human cancel` can kill it. */
   pane_id?: string;
+  /** tmux pane id of a review's live termrender render pane, so cancel/finish can clear it. */
+  render_pane_id?: string;
 }
 
 export function resolveMaxPanes(): number {
