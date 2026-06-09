@@ -1,12 +1,14 @@
 // crtrd — the thin supervisor daemon. One instance per canvas.
 //
-// Sole responsibility: supervise tmux window exit and revive nodes. No
-// orchestration logic lives here. The daemon is a process-lifecycle watcher.
+// Sole responsibility: supervise engine-container exit (a tmux pane or a
+// headless broker process — `host_kind`) and revive nodes. No orchestration
+// logic lives here. The daemon is a process-lifecycle watcher.
 //
-// Model (v3: liveness is PANE-existence, not window-existence — a manual
-// move-pane/join-pane/break-pane must never read as a node death)
+// Model (v3: tmux liveness is PANE-existence, not window-existence — a manual
+// move-pane/join-pane/break-pane must never read as a node death; broker-hosted
+// nodes are supervised via their recorded pid — see handleBrokerLiveness)
 //   • Poll every intervalMs (default 2000ms).
-//   • For each active|idle node: check whether its tmux PANE is still alive
+//   • For each active|idle tmux node: check whether its tmux PANE is still alive
 //     (isNodePaneAlive; window-existence is only a legacy/no-pane fallback).
 //   • Pane alive → reconcile its LOCATION (follow any manual move; lazy-backfill
 //     a legacy row's pane), then judge pi liveness — healthy, skip otherwise.

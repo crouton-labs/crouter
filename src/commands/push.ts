@@ -80,7 +80,7 @@ function makeTierLeaf(tier: Tier): LeafDef {
       effects: [
         'Writes nodes/<nodeId>/reports/<ts>-<tier>.md.',
         'Appends one inbox pointer per subscriber.',
-        ...(tier === 'final' ? ['Marks the node done (status + intent); its window closes on next stop.'] : []),
+        ...(tier === 'final' ? ['Marks the node done (status + intent); its engine shuts down on next stop.'] : []),
       ],
     },
     run: async (input) => {
@@ -106,8 +106,8 @@ function makeTierLeaf(tier: Tier): LeafDef {
         }
         // A RESIDENT node with no subscribers is human-driven and has no one to
         // submit a canonical result to: `push final` fans to subscribers, and a
-        // resident root conversation has none. Finishing it would close its window
-        // mid-conversation. Block that unless the user confirms (--force). Keyed on
+        // resident root conversation has none. Finishing it would shut its
+        // engine down mid-conversation. Block that unless the user confirms (--force). Keyed on
         // lifecycle, NOT subscriber-count alone: a TERMINAL node with no subscribers
         // was deliberately terminalized to owe a final — it self-completes here
         // (records the result, reaps) rather than being blocked for lack of a recipient.
@@ -117,7 +117,7 @@ function makeTierLeaf(tier: Tier): LeafDef {
             throw new InputError({
               error: 'no_final_recipient',
               message:
-                'This node is working directly with the user — it has no manager to submit a final result to. `push final` would close its window mid-conversation.',
+                'This node is working directly with the user — it has no manager to submit a final result to. `push final` would end the conversation mid-stream.',
               next:
                 'You almost certainly do NOT need to finish here — just keep working with the user. If the user has explicitly asked you to finish and close this node, confirm with them first, then rerun with `crtr push final --force "<result>"`.',
             });
@@ -131,7 +131,7 @@ function makeTierLeaf(tier: Tier): LeafDef {
       const n = Array.isArray(r['delivered_to']) ? (r['delivered_to'] as unknown[]).length : 0;
       const line =
         tier === 'final'
-          ? 'Result recorded — node finished; its window closes on next stop. Nothing more to do here: STOP your turn immediately. Reply with just "Done." and nothing else.'
+          ? 'Result recorded — node finished; its engine shuts down on next stop. Nothing more to do here: STOP your turn immediately. Reply with just "Done." and nothing else.'
           : tier === 'urgent'
             ? `Urgent report fanned to ${n} subscriber(s) — they are force-woken.`
             : `Progress report fanned to ${n} subscriber(s).`;

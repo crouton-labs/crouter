@@ -1,7 +1,8 @@
 // `crtr canvas daemon` — thin supervisor daemon management.
 //
-// The daemon (crtrd) polls active+idle nodes and handles window exit:
-//   • crash (window gone, no intent) → mark 'dead'
+// The daemon (crtrd) polls active+idle nodes and handles engine-container exit
+// (a tmux pane or a headless broker process):
+//   • crash (container gone, no intent) → mark 'dead'
 //   • refresh-yield (intent=refresh) → fresh respawn
 //
 // This subtree starts, checks, and stops the daemon process.

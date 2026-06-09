@@ -18,12 +18,17 @@
 // alt+c is a tmux display-menu (not a pi key), so prefix chords (m/e/1-9/custom)
 // are tmux menu items that route through `crtr canvas chord`.
 //
-// Selection / liveness signals:
-//   CURSOR (selected) = reverse-video bar (ESC[7m), full width — an attribute,
-//                       not a colour, so it reads under NO_COLOR.
-//   ACTIVE (running)  = a coloured background bar (status 'active'); the dot
-//                       glyph still carries the signal where colour is stripped.
-//   SELF              = bold name — a quiet "you are here" marker.
+// Selection / attachment signals:
+//   CURSOR (selected)  = reverse-video bar (ESC[7m), full width — an attribute,
+//                        not a colour, so it reads under NO_COLOR.
+//   ATTACHED (watched) = a coloured background bar — a human is currently
+//                        viewing the node: a `focuses` viewport points at it
+//                        (tmux host) or ≥1 helloed viewer is connected to its
+//                        broker (job/attach.json). Running is a separate axis,
+//                        signaled by the dot glyph alone (● = engine active on
+//                        its host — which may be an unwatched backstage pane
+//                        or a paneless broker).
+//   SELF               = bold name — a quiet "you are here" marker.
 //
 // Folding is auto by default: a branch stays COLLAPSED unless its subtree holds
 // a running ('active') agent or self. h/l override that per-node and persist.
@@ -43,7 +48,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { getNode, subscribersOf, subscriptionsOf, jobDir, fullName } from '../core/canvas/index.js';
+import { getNode, subscribersOf, subscriptionsOf, jobDir, fullName, listFocuses } from '../core/canvas/index.js';
 import type { NodeMeta } from '../core/canvas/index.js';
 import { readConfig } from '../core/config.js';
 import type { CanvasNavConfig, CanvasBind } from '../types.js';
@@ -148,8 +153,9 @@ const VIEWPORT_FALLBACK_ROWS = 30;
 // ANSI styling. pi renders embedded escapes in widget lines and measures width
 // ANSI-aware, so raw escapes are safe and need no pi-tui dependency. The cursor
 // (selected row) uses a theme-agnostic ATTRIBUTE (reverse), so it reads under
-// NO_COLOR; the active-row tint is a background COLOUR, but the differing dot
-// glyph (●/○/✓/✗) keeps the running signal even where colour is stripped.
+// NO_COLOR; the attached-row tint is a background COLOUR, while the dot glyph
+// (●/○/✓/✗) carries the running signal independently, even where colour is
+// stripped.
 // ---------------------------------------------------------------------------
 
 const ESC = '\x1b[';
@@ -157,9 +163,10 @@ const RESET = `${ESC}0m`;
 const BOLD = `${ESC}1m`;
 const DIM = `${ESC}2m`;
 const REVERSE = `${ESC}7m`;
-/** Dark-green background bar marking a running ('active') node — distinct from
- *  the cursor's reverse-video bar; chosen so default-fg text stays readable. */
-const BG_ACTIVE = `${ESC}48;5;22m`;
+/** Dark-green background bar marking an ATTACHED node (a human is currently
+ *  watching it) — distinct from the cursor's reverse-video bar; chosen so
+ *  default-fg text stays readable. */
+const BG_ATTACHED = `${ESC}48;5;22m`;
 const GREEN = `${ESC}32m`;
 const RED = `${ESC}31m`;
 const YELLOW = `${ESC}33m`;
@@ -219,7 +226,7 @@ function fillWidth(): number {
 }
 
 /** Wrap `content` in a full-width background bar opened by `open` (REVERSE for
- *  the cursor, BG_ACTIVE for a running node). `open` is re-asserted after every
+ *  the cursor, BG_ATTACHED for a human-watched node). `open` is re-asserted after every
  *  embedded RESET so a coloured cell (the status dot) can't punch a hole in the
  *  bar; the visible width is padded out to `width`; the line closes with a real
  *  RESET so the style never bleeds into the editor below. */
@@ -258,6 +265,40 @@ function tokensCell(id: string): string {
 
 function shortId(id: string): string {
   return id.slice(0, 8);
+}
+
+// ---------------------------------------------------------------------------
+// Attachment — is a human currently WATCHING a node? A separate axis from
+// running (status 'active' = the engine is live on its host, which may be an
+// unwatched backstage pane or a paneless broker). Two hosts, two signals:
+//   tmux   — a `focuses` row points at the node (one cheap sqlite read per
+//            render pass; pane-existence alone is NOT the signal).
+//   broker — the broker persists its helloed-viewer count to job/attach.json
+//            on every viewer change (src/core/runtime/broker.ts). Trusted only
+//            while the node is 'active': a broker crash can leave a stale file.
+// ---------------------------------------------------------------------------
+
+/** Node ids currently shown in a tmux focus viewport. Built once per render. */
+function focusedNodeIds(): Set<string> {
+  try {
+    return new Set(listFocuses().map((f) => f.node_id));
+  } catch {
+    return new Set();
+  }
+}
+
+/** True when a human is watching `id` right now (tmux focus or broker viewer). */
+function isAttached(id: string, node: NodeMeta | null, focused: ReadonlySet<string>): boolean {
+  if (focused.has(id)) return true;
+  if (node?.status !== 'active') return false; // stale attach.json from a crash
+  try {
+    const p = join(jobDir(id), 'attach.json');
+    if (!existsSync(p)) return false;
+    const rec = JSON.parse(readFileSync(p, 'utf8')) as { viewers?: number };
+    return typeof rec.viewers === 'number' && rec.viewers > 0;
+  } catch {
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -454,13 +495,14 @@ function buildGraphModel(self: string): FlatRow[] {
   return rows;
 }
 
-/** Render one GRAPH row. CURSOR (selected) → reverse-video bar; an ACTIVE
- *  (running) node → a coloured background bar; SELF → bold name. The cursor
- *  outranks the active tint when both land on the same row. */
-function renderGraphRow(r: FlatRow, isCursor: boolean): string {
-  const wrap = (line: string, active: boolean): string =>
+/** Render one GRAPH row. CURSOR (selected) → reverse-video bar; an ATTACHED
+ *  (human-watched) node → a coloured background bar; SELF → bold name. The
+ *  cursor outranks the attached tint when both land on the same row. Running
+ *  is signaled by the dot glyph alone (● green = active engine). */
+function renderGraphRow(r: FlatRow, isCursor: boolean, focused: ReadonlySet<string>): string {
+  const wrap = (line: string, attached: boolean): string =>
     isCursor ? fillBar(line, fillWidth(), REVERSE)
-    : active ? fillBar(line, fillWidth(), BG_ACTIVE)
+    : attached ? fillBar(line, fillWidth(), BG_ATTACHED)
     : truncate(line);
   if (r.cycle) {
     const line = `${r.branch}  ${DIM}↺ ${shortId(r.id)}${RESET}`;
@@ -479,7 +521,7 @@ function renderGraphRow(r: FlatRow, isCursor: boolean): string {
   const caret = !isCursor && expandable ? `${DIM}▸${RESET} ` : '  ';
   const fold = expandable ? ` ${DIM}[+${childCount(r.id)}]${RESET}` : '';
   const line = `${r.branch}${caret}${dot} ${name} ${kind} ${tokens}${childBadge(node)}${fold}${askBadge(r.id)}`;
-  return wrap(line, node?.status === 'active');
+  return wrap(line, isAttached(r.id, node, focused));
 }
 
 /** Total lines the GRAPH widget may emit. pi hard-caps extension widgets at
@@ -692,8 +734,9 @@ export function registerCanvasNav(pi: PiLike): void {
     const end = Math.min(rows.length, scrollTop + viewportH);
 
     const lines: string[] = [];
+    const focused = focusedNodeIds(); // one sqlite read per render pass
     if (scrollTop > 0) lines.push(`${DIM}  ↑ ${scrollTop} more${RESET}`);
-    for (let i = scrollTop; i < end; i++) lines.push(renderGraphRow(rows[i]!, i === cursorIdx));
+    for (let i = scrollTop; i < end; i++) lines.push(renderGraphRow(rows[i]!, i === cursorIdx, focused));
     if (end < rows.length) lines.push(`${DIM}  ↓ ${rows.length - end} more${RESET}`);
 
     const hint = pendingConfirm !== undefined

@@ -15,10 +15,11 @@
 //
 // Crash-safety invariant (was a comment repeated in reset/close/reapDescendants):
 // "flip status to a non-supervised value + clear intent BEFORE killing the
-// window" — the daemon only ever revives active|idle nodes, so a teardown must
+// host" (tmux pane or headless broker) — the daemon only ever revives
+// active|idle nodes, so a teardown must
 // leave the node done/canceled first to close the revive race. That invariant is
 // now the DEFINITION of the `cancel` event: callers flip via transition()
-// and only THEN kill the window.
+// and only THEN tear the host down.
 //
 // Unification (A5, human-confirmed 2026-06-06): an externally-reaped node — torn
 // down because the user moved on (close cascade) OR because a root reset/relaunch
@@ -43,9 +44,9 @@ import type { NodeMeta, NodeStatus, ExitIntent } from '../canvas/types.js';
 export type LifecycleEvent =
   | 'finalize'  // → done, intent='done'       (push --final / job complete / clean quit)
   | 'cancel'    // → canceled, intent cleared    (node close cascade · reapDescendants · relaunch park-old)
-  | 'crash'     // → dead, intent unchanged      (daemon: window gone, no yield/release)
+  | 'crash'     // → dead, intent unchanged      (daemon: engine container gone, no yield/release)
   | 'yield'     // intent='refresh', status unchanged (requestYield / relaunch new-node safety net)
-  | 'release'   // → idle, intent='idle-release'       (idle-release: free the window, wake on inbox)
+  | 'release'   // → idle, intent='idle-release'       (idle-release: free the host, wake on inbox)
   | 'revive'    // → active, intent cleared      (reviveNode / resetRoot / boot-confirm clear)
   | 'boot';     // → active, intent unchanged    (reviveInPlace: re-exec in place, keep the refresh net)
 
@@ -73,12 +74,12 @@ const TRANSITIONS: Readonly<Record<LifecycleEvent, TransitionSpec>> = {
   // of a node that did NOT finish its own work → canceled, intent cleared. (A5:
   // done is reserved for finalize; every external reap unifies on canceled.)
   cancel: { status: 'canceled', intent: null, from: ANY },
-  // daemon superviseTick: window gone with no yield/release intent. Intent KEPT
-  // (the dead log line still reports it).
+  // daemon superviseTick: engine container gone (tmux pane or broker process)
+  // with no yield/release intent. Intent KEPT (the dead log line still reports it).
   crash: { status: 'dead', from: LIVE },
   // requestYield · relaunchRoot new-node safety net. Status KEPT (already active).
   yield: { intent: 'refresh', from: LIVE },
-  // stophook idle-release: free the window, stay woken by the inbox.
+  // stophook idle-release: free the host, stay woken by the inbox.
   release: { status: 'idle', intent: 'idle-release', from: LIVE },
   // reviveNode · resetRoot · stophook boot-confirm (clear a pending refresh net).
   revive: { status: 'active', intent: null, from: ANY },

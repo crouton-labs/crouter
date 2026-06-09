@@ -13,9 +13,12 @@
 // than duplicate its shape and risk drift.
 import type { SpawnChildOpts } from '../runtime/spawn.js';
 
-/** What a node is doing right now. UI shows active+idle; `done` is hidden but
- *  revivable; `canceled` is a user-closed node (also hidden, also revivable —
- *  not a fault); only `dead` is a fault. */
+/** What a node is doing right now. `active` means the engine process is live on
+ *  its host — a tmux pane OR a headless broker (`host_kind`) — NOT that it holds
+ *  a window or that anyone is watching it (attachment is a separate axis: the
+ *  `focuses` table for tmux, the broker's viewer set for headless). UI shows
+ *  active+idle; `done` is hidden but revivable; `canceled` is a user-closed node
+ *  (also hidden, also revivable — not a fault); only `dead` is a fault. */
 export type NodeStatus = 'active' | 'idle' | 'done' | 'dead' | 'canceled';
 
 /** Does stopping finalize the node? terminal = worker (finalizes on push --final);

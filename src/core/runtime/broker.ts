@@ -16,7 +16,7 @@
 // the real canvas-stophook fires session_start).
 
 import { createServer, type Server, type Socket } from 'node:net';
-import { existsSync, readFileSync, unlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import {
@@ -29,7 +29,7 @@ import {
   type ExtensionUIContext,
   type PromptOptions,
 } from '@earendil-works/pi-coding-agent';
-import { nodeDir } from '../canvas/paths.js';
+import { jobDir, nodeDir } from '../canvas/paths.js';
 import { FRONT_DOOR_ENV } from './front-door.js';
 import { piInvocationToSdkConfig, type BrokerSdkConfig, type PiInvocation } from './launch.js';
 import { assertEngineVersion, loadBrokerEngine, type BrokerEngine } from './broker-sdk.js';
@@ -207,6 +207,7 @@ export async function runBroker(nodeId: string): Promise<void> {
   // Socket fan-out + controller arbitration state
   // -------------------------------------------------------------------------
   const sockPath = join(dir, 'view.sock');
+  const attachPath = join(jobDir(nodeId), 'attach.json');
   const clients = new Set<BrokerClient>();
   const pendingDialogs = new Map<string, PendingDialog>();
   let controllerId: string | null = null;
@@ -217,6 +218,34 @@ export async function runBroker(nodeId: string): Promise<void> {
     if (controllerId === null) return null;
     for (const c of clients) if (c.id === controllerId) return c;
     return null;
+  };
+
+  // Persist viewer presence to job/attach.json on every viewer state change
+  // (hello accepted, client drop/shed, control handoff) so out-of-process
+  // readers (the GRAPH view's attached-row tint) can see whether a human is
+  // watching this paneless node. Plain writeFileSync, matching telemetry.json's
+  // convention; best-effort — presence writing must never crash the broker.
+  // disposeAndExit unlinks the file, so a clean exit never leaves a stale claim
+  // (readers additionally trust it only while the node is 'active', fencing off
+  // a crash-orphaned file).
+  const persistAttachState = (): void => {
+    try {
+      let viewers = 0;
+      for (const c of clients) if (c.helloed) viewers += 1;
+      const dirPath = jobDir(nodeId);
+      if (!existsSync(dirPath)) mkdirSync(dirPath, { recursive: true });
+      writeFileSync(
+        attachPath,
+        JSON.stringify(
+          { viewers, controller_id: controllerId, updated: new Date().toISOString() },
+          null,
+          2,
+        ),
+        'utf8',
+      );
+    } catch {
+      /* presence is best-effort; never crash the broker */
+    }
   };
 
   // The host redirects the broker's stdout+stderr to job/broker.log (host.ts), so
@@ -247,6 +276,7 @@ export async function runBroker(nodeId: string): Promise<void> {
     if (!clients.has(client)) return; // already gone
     logBroker(`dropping viewer ${client.id || '(pre-hello)'} — ${reason}`);
     clients.delete(client);
+    persistAttachState(); // a viewer was shed
     releaseControlIfHeldBy(client);
     try {
       client.socket.destroy();
@@ -303,8 +333,10 @@ export async function runBroker(nodeId: string): Promise<void> {
     for (const c of clients) if (c.helloed) sendFrame(c, frame);
   };
 
-  const broadcastControlChanged = (): void =>
+  const broadcastControlChanged = (): void => {
+    persistAttachState(); // every control change is a viewer-state change
     broadcast({ type: 'control_changed', controller_id: controllerId });
+  };
 
   const buildSnapshot = (): BrokerSnapshot => ({
     messages: session.messages,
@@ -380,6 +412,12 @@ export async function runBroker(nodeId: string): Promise<void> {
     }
     try {
       if (existsSync(sockPath)) unlinkSync(sockPath);
+    } catch {
+      /* ignore */
+    }
+    try {
+      // A clean exit never leaves a stale presence claim behind.
+      if (existsSync(attachPath)) unlinkSync(attachPath);
     } catch {
       /* ignore */
     }
@@ -595,6 +633,7 @@ export async function runBroker(nodeId: string): Promise<void> {
           client.role = 'observer';
         }
         sendWelcome(client);
+        persistAttachState(); // a helloed viewer arrived
         if (client.role === 'controller') {
           // welcome carried the FIRST pending dialog (T4); forward any extras so a
           // controller attaching mid-dialog can answer every in-flight dialog.
@@ -832,6 +871,7 @@ export async function runBroker(nodeId: string): Promise<void> {
     });
     const drop = (): void => {
       clients.delete(client);
+      persistAttachState(); // a viewer disconnected
       // M2 (T4): controller detach frees control but does NOT cancel in-flight
       // dialogs — they stay pending under the broker-side default timeout so a
       // brief detach/reattach (or a handoff to another observer who takes control)
@@ -848,6 +888,9 @@ export async function runBroker(nodeId: string): Promise<void> {
     process.stderr.write(`[broker] socket server error: ${String(err)}\n`);
   });
   server.listen(sockPath);
+  // Initialize presence to the truthful zero state at boot — this also
+  // overwrites a stale attach.json a crashed prior incarnation left behind.
+  persistAttachState();
 
   // OS-signal teardown (daemon kill / T6 fallback) → same clean exit path.
   process.on('SIGTERM', () => disposeAndExit('SIGTERM'));
