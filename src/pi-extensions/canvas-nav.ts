@@ -75,6 +75,9 @@ interface UIContext {
 
 interface ExtensionCtx {
   ui: UIContext;
+  /** Current run mode: "tui" | "rpc" | "json" | "print". The nav chrome +
+   *  ask-poll timer are interactive-only; headless brokers bind 'print'. */
+  mode: string;
 }
 
 interface CommandCtx {
@@ -590,6 +593,10 @@ export function registerCanvasNav(pi: PiLike): void {
   // Captured from session_start; used in every subsequent render.
   let ui: UIContext | undefined;
   let renderScheduled = false;
+  // Run mode captured at session_start. The nav chrome + ask-poll timer are
+  // interactive-only; a headless ('print') broker leaves this non-'tui' so the
+  // timer no-ops (no per-tick `crtr` shell-out) and no chrome is rendered.
+  let liveMode: string | undefined;
 
   // Cache config once (binds rarely change within a session; readConfig is sync
   // and never throws). prefixKey drives the non-tmux GRAPH toggle shortcut.
@@ -904,6 +911,11 @@ export function registerCanvasNav(pi: PiLike): void {
   // -------------------------------------------------------------------------
 
   pi.on('session_start', (_event: any, ctx: ExtensionCtx): void => {
+    liveMode = ctx.mode;
+    // The nav chrome (widgets, key taps, the ask-poll timer) is interactive-only.
+    // A headless (print-mode) broker loads this extension but renders no chrome
+    // and must not poll. Under tmux ctx.mode is always 'tui' — byte-identical.
+    if (ctx.mode !== 'tui') return;
     ui = ctx.ui;
 
     // Fresh session / hot-swap: start in BASE and clear any legacy or
@@ -939,6 +951,8 @@ export function registerCanvasNav(pi: PiLike): void {
   if (liveTimer !== undefined) clearInterval(liveTimer);
 
   const timer = setInterval((): void => {
+    // Inert in a headless ('print') broker — never shell out to `crtr` per tick.
+    if (liveMode !== 'tui') return;
     try {
       const rootId = climbRoot(nodeId);
       const fresh = fetchAsksMap(rootId);

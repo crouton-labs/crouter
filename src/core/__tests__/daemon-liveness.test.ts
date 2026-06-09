@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 
 import { createNode, getNode, subscribe } from '../canvas/canvas.js';
 import { closeDb } from '../canvas/db.js';
@@ -43,6 +43,18 @@ function deadPid(): number {
   return r.pid ?? 0x7ffffffe; // fall back to an implausibly-high pid
 }
 
+/** A pid that is ALIVE for the test's duration but expendable. Pane-gone
+ *  fixtures must NEVER use process.pid for an alive pi: the gone-pane zombie
+ *  sweep (b92082e) SIGKILLs a pane-gone node's live pid, which took the whole
+ *  test runner down with it. The daemon (or the after hook) reaps these. */
+const livePids: number[] = [];
+function disposableLivePid(): number {
+  const child = spawn('sleep', ['600'], { stdio: 'ignore', detached: true });
+  child.unref();
+  livePids.push(child.pid!);
+  return child.pid!;
+}
+
 before(() => {
   home = mkdtempSync(join(tmpdir(), 'crtr-daemon-liveness-'));
   process.env['CRTR_HOME'] = home;
@@ -57,6 +69,13 @@ after(() => {
   closeDb();
   rmSync(home, { recursive: true, force: true });
   delete process.env['CRTR_HOME'];
+  for (const pid of livePids) {
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      /* already reaped by the daemon's zombie sweep — fine */
+    }
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -189,7 +208,7 @@ test('pane GONE while its old window is still alive → the gone-branch fires (c
       pane: dead,
       tmux_session: session,
       window,
-      pi_pid: process.pid, // alive — irrelevant once the pane reads gone
+      pi_pid: disposableLivePid(), // alive zombie — the gone-pane sweep SIGKILLs it
       pi_session_id: 'booted',
       intent: null,
     }));
@@ -222,7 +241,7 @@ test('pane gone + booted + busy ABSENT + no live subscription → finalize (done
       pane: dead,
       tmux_session: session,
       window,
-      pi_pid: process.pid,
+      pi_pid: disposableLivePid(), // alive zombie — swept before finalize routing
       pi_session_id: 'booted',
       intent: null,
     }));

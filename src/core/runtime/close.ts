@@ -35,7 +35,7 @@ import {
   subscribersOf,
 } from '../canvas/index.js';
 import { transition } from './lifecycle.js';
-import { tearDownNode } from './placement.js';
+import { hostFor } from './host.js';
 import { appendInbox } from '../feed/inbox.js';
 import { appendPassive } from '../feed/passive.js';
 
@@ -154,11 +154,13 @@ export function closeNode(rootId: string): CloseNodeResult {
       // 1) Canceled + intent cleared BEFORE the window dies (daemon race).
       transition(id, 'cancel');
 
-      // 2) Tear the node off its placement (pane-keyed): close any focus row it
-      //    occupies, kill its PANE (the window closes once its last pane goes, so
-      //    sibling nodes the user co-located in one window survive), and null its
-      //    LOCATION (closing the focus row is the record — no pointer to clear).
-      tearDownNode(id);
+      // 2) Tear the node's ENGINE down through the Host seam (hostFor): a tmux
+      //    node runs tearDownNode (close any focus row it occupies, kill its
+      //    PANE — the window closes once its last pane goes, so sibling nodes the
+      //    user co-located in one window survive — and null its LOCATION); a
+      //    broker node sends the `shutdown` frame so the broker PROCESS exits and
+      //    releases the sole .jsonl writer (a paneless node has no pane to kill).
+      hostFor(m).teardown(id);
 
       // 3) Leave the resume notice AFTER the watcher is gone, so it survives.
       appendInbox(id, {

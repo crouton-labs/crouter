@@ -54,6 +54,11 @@ const HERE = dirname(fileURLToPath(import.meta.url)); // src/core/__tests__/help
 const CROUTER = join(HERE, '..', '..', '..', '..'); // package root
 const CLI_SRC = join(CROUTER, 'src', 'cli.ts');
 const FAKE_PI_HOST = join(HERE, '..', 'fixtures', 'fake-pi-host.ts');
+// The in-process fake BrokerEngine (the SDK analog of the fake-pi vehicle). The
+// REAL broker loads it via the CRTR_BROKER_ENGINE seam (broker-sdk.ts). Point at
+// the absolute `.ts` path — the broker runs under tsx (see NODE_OPTIONS below),
+// which resolves it.
+const FAKE_ENGINE = join(HERE, '..', 'fixtures', 'fake-engine.ts');
 const TSX_ESM = createRequire(import.meta.url).resolve('tsx/esm');
 // A multi-word launcher, baked verbatim ahead of the (shell-quoted) argv by the
 // seam. Absolute paths so it works regardless of the spawned window's cwd.
@@ -74,6 +79,7 @@ const CANVAS_ENV_KEYS = [
   'CRTR_NODE_ID',
   'CRTR_HOME',
   'CRTR_ROOT_SESSION',
+  'CRTR_SUBTREE',
   'CRTR_NODE_SESSION',
   'CRTR_PARENT_NODE_ID',
   'CRTR_FRONT_DOOR',
@@ -82,6 +88,10 @@ const CANVAS_ENV_KEYS = [
   'CRTR_LIFECYCLE',
   'CRTR_NODE_CWD',
   'CRTR_PI_BINARY',
+  // Scrubbed then re-added (controlled) in childEnv, mirroring CRTR_PI_BINARY —
+  // so the headless-broker seam can't leak the REAL engine into the isolated
+  // test, and the CLI subprocess that spawns a broker carries the FAKE one.
+  'CRTR_BROKER_ENGINE',
   'TMUX',
   'TMUX_PANE',
 ];
@@ -169,6 +179,13 @@ export interface Harness {
   // run any real CLI verb AS a node (subprocess; body must be a positional).
   cli(nodeId: string | null, args: string[]): CliResult;
 
+  // spawn a HEADLESS broker child through the REAL CLI `node new --headless`, AS
+  // `parentId`, then awaitBoot. The broker process loads the fake engine.
+  spawnHeadlessChild(parentId: string, task: string, o?: SpawnOpts): Promise<string>;
+  // same, but DO NOT awaitBoot — for the boot-failure case (the broker dies
+  // before session_start, so it never produces a boot proof to await).
+  spawnHeadlessChildNoBoot(parentId: string, task: string, o?: SpawnOpts): Promise<string>;
+
   // drive a fake-pi over its control channel — fires the REAL hooks.
   turn(nodeId: string, text?: string): Promise<void>;
   stop(nodeId: string, reason?: 'stop' | 'length' | 'aborted' | 'error'): Promise<void>;
@@ -194,6 +211,14 @@ export interface Harness {
   paneAlive(nodeId: string): boolean;
   inbox(nodeId: string): InboxEntry[];
   injected(nodeId: string): Injected[];
+
+  // headless-broker observability: write a raw fake-engine command (turn|stop|
+  // dialog) atomically; read the resolved unattended-dialog log; the node's
+  // broker view.sock path.
+  fakeCmd(nodeId: string, cmd: Record<string, unknown>): void;
+  dialogResults(nodeId: string): { resolved: unknown; ms: number }[];
+  brokerSock(nodeId: string): string;
+  bootCount(nodeId: string): number;
   subscribers(nodeId: string): { node_id: string; active: boolean }[];
   subscriptions(nodeId: string): { node_id: string; active: boolean }[];
 
@@ -206,8 +231,19 @@ export async function createHarness(opts: HarnessOpts = {}): Promise<Harness> {
   const origHome = process.env['CRTR_HOME'];
   const origPiBinary = process.env['CRTR_PI_BINARY'];
   const origNodeSession = process.env['CRTR_NODE_SESSION'];
+  const origNodeOptions = process.env['NODE_OPTIONS'];
+  const origBrokerEngine = process.env['CRTR_BROKER_ENGINE'];
 
-  const home = mkdtempSync(join(tmpdir(), 'crtr-harness-home-'));
+  // The headless broker binds a unix socket at <home>/nodes/<id>/view.sock. A
+  // unix socket path (sun_path) has a ~104-char OS limit, and macOS's per-user
+  // $TMPDIR (/var/folders/<…>/T/, ~49 chars) alone pushes that path past the
+  // limit — server.listen() then fails EINVAL and the broker's loop drains
+  // (boots, never serves). NOT a production concern (~/.crouter/canvas/… is
+  // short); a test-only artifact of the long temp base. Use a SHORT base + short
+  // prefix for the canvas home so broker sockets fit. tmpHome (HOME) hosts no
+  // socket, so it can stay on the standard temp base.
+  const shortTmpBase = existsSync('/tmp') ? '/tmp' : tmpdir();
+  const home = mkdtempSync(join(shortTmpBase, 'crh-'));
   const tmpHome = mkdtempSync(join(tmpdir(), 'crtr-harness-HOME-'));
   const session = `${opts.sessionPrefix ?? 'crtr-harness'}-${process.pid}-${Date.now().toString(36)}`;
 
@@ -217,7 +253,33 @@ export async function createHarness(opts: HarnessOpts = {}): Promise<Harness> {
   process.env['CRTR_HOME'] = home;
   process.env['CRTR_PI_BINARY'] = FAKE_PI_BINARY;
   delete process.env['CRTR_NODE_SESSION'];
+  // The headless broker (host.ts) launches `node <broker-cli.js> <id>` with a
+  // plain `process.execPath` (no tsx) and resolveBrokerEntry returns a `.js`
+  // path that, under the src test tree, only exists as `.ts`. Putting
+  // `--import <tsx/esm>` in the broker's NODE_OPTIONS makes the spawned broker
+  // run under tsx (resolving broker-cli.js→.ts AND the `.ts` fake engine). We set
+  // it on OUR process.env so it propagates to BOTH broker-launch callers: the
+  // in-process daemon revive (headlessBrokerHost.launch spreads {...process.env})
+  // and the initial `node new --headless` CLI subprocess (cleanBaseEnv copies it,
+  // since NODE_OPTIONS is deliberately NOT in CANVAS_ENV_KEYS). NODE_OPTIONS is
+  // read at process START, so setting it on the already-running harness does NOT
+  // re-trigger tsx here — it only propagates to spawned children (verified).
+  process.env['NODE_OPTIONS'] = [process.env['NODE_OPTIONS'], `--import ${TSX_ESM}`]
+    .filter((s) => s !== undefined && s !== '')
+    .join(' ');
+  process.env['CRTR_BROKER_ENGINE'] = FAKE_ENGINE;
   closeDb();
+
+  // Neutralize ensureDaemon (spawn.ts calls it on every `node new`): write a
+  // fake-live-daemon pidfile pointing at OUR (always-alive) pid, so
+  // isDaemonRunning() is true and no REAL crtrd is spawned against the isolated
+  // home. Required now that the broker's NODE_OPTIONS=--import tsx propagates to
+  // the crtrd spawn (pre-broker, the tsx-less `node crtrd-cli.js` spawn silently
+  // failed, so no daemon ever started); a stray real daemon would race the
+  // in-process superviseTick + the fixed-clock crash/grace scenarios. The harness
+  // drives the daemon pass itself via `tick()`. (fakeLiveDaemon pattern,
+  // home-session.test.ts.) home/ is rmSync'd in dispose.
+  writeFileSync(join(home, 'crtrd.pid'), String(process.pid), 'utf8');
 
   // Pre-create the isolated session on the DEFAULT server so teardown always
   // has a target and `node new`'s ensureSession no-ops.
@@ -248,6 +310,7 @@ export async function createHarness(opts: HarnessOpts = {}): Promise<Harness> {
     e['HOME'] = tmpHome;
     e['CRTR_NODE_SESSION'] = session;
     e['CRTR_PI_BINARY'] = FAKE_PI_BINARY;
+    e['CRTR_BROKER_ENGINE'] = FAKE_ENGINE;
     if (nodeId !== null) e['CRTR_NODE_ID'] = nodeId;
     return e;
   }
@@ -370,6 +433,44 @@ export async function createHarness(opts: HarnessOpts = {}): Promise<Harness> {
       const childId = added[0]!;
       await harness.awaitBoot(childId);
       return childId;
+    },
+
+    async spawnHeadlessChild(parentId, task, o = {}): Promise<string> {
+      const before = new Set(nodeDirs());
+      const args = ['node', 'new', task, '--parent', parentId, '--cwd', CROUTER, '--headless'];
+      if (o.kind) args.push('--kind', o.kind);
+      if (o.mode) args.push('--mode', o.mode);
+      const res = cli(parentId, args);
+      if (res.code !== 0) {
+        throw new Error(
+          `spawnHeadlessChild(${parentId}) failed (code ${res.code})\n--stdout--\n${res.stdout}\n--stderr--\n${res.stderr}`,
+        );
+      }
+      const added = nodeDirs().filter((d) => !before.has(d));
+      if (added.length !== 1) {
+        throw new Error(`spawnHeadlessChild: expected exactly 1 new node dir, got [${added.join(', ')}]`);
+      }
+      const childId = added[0]!;
+      await harness.awaitBoot(childId);
+      return childId;
+    },
+
+    async spawnHeadlessChildNoBoot(parentId, task, o = {}): Promise<string> {
+      const before = new Set(nodeDirs());
+      const args = ['node', 'new', task, '--parent', parentId, '--cwd', CROUTER, '--headless'];
+      if (o.kind) args.push('--kind', o.kind);
+      if (o.mode) args.push('--mode', o.mode);
+      const res = cli(parentId, args);
+      if (res.code !== 0) {
+        throw new Error(
+          `spawnHeadlessChildNoBoot(${parentId}) failed (code ${res.code})\n--stdout--\n${res.stdout}\n--stderr--\n${res.stderr}`,
+        );
+      }
+      const added = nodeDirs().filter((d) => !before.has(d));
+      if (added.length !== 1) {
+        throw new Error(`spawnHeadlessChildNoBoot: expected exactly 1 new node dir, got [${added.join(', ')}]`);
+      }
+      return added[0]!;
     },
 
     cli,
@@ -505,6 +606,24 @@ export async function createHarness(opts: HarnessOpts = {}): Promise<Harness> {
       return readInboxSince(nodeId);
     },
     injected,
+    fakeCmd(nodeId, cmd): void {
+      sendCmd(nodeId, cmd);
+    },
+    dialogResults(nodeId): { resolved: unknown; ms: number }[] {
+      return readLines(join(nodeDir(nodeId), 'fake-pi.dialog.jsonl'))
+        .map((l) => {
+          try {
+            return JSON.parse(l) as { resolved: unknown; ms: number };
+          } catch {
+            return null;
+          }
+        })
+        .filter((x): x is { resolved: unknown; ms: number } => x !== null);
+    },
+    brokerSock(nodeId): string {
+      return join(nodeDir(nodeId), 'view.sock');
+    },
+    bootCount,
     subscribers(nodeId): { node_id: string; active: boolean }[] {
       closeDb();
       return subscribersOf(nodeId).map((s) => ({ node_id: s.node_id, active: s.active }));
@@ -532,6 +651,10 @@ export async function createHarness(opts: HarnessOpts = {}): Promise<Harness> {
       else process.env['CRTR_PI_BINARY'] = origPiBinary;
       if (origNodeSession === undefined) delete process.env['CRTR_NODE_SESSION'];
       else process.env['CRTR_NODE_SESSION'] = origNodeSession;
+      if (origNodeOptions === undefined) delete process.env['NODE_OPTIONS'];
+      else process.env['NODE_OPTIONS'] = origNodeOptions;
+      if (origBrokerEngine === undefined) delete process.env['CRTR_BROKER_ENGINE'];
+      else process.env['CRTR_BROKER_ENGINE'] = origBrokerEngine;
     },
   };
 

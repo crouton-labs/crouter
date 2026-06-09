@@ -79,12 +79,14 @@ test('never-booted node is marked dead and surfaced to the parent as urgent', as
   assert.match(inbox[0]!.label, /Spawn failed/);
 });
 
-// A node that HAD booted (pi_session_id set) then lost its window mid-generation
-// is a genuine crash — NOT a spawn failure — and the daemon surfaces it to the
-// parent as an urgent crash notice (surfaceChildDeath, not surfaceBootFailure).
-// The parent is woken exactly once, with tier=urgent, and the label must NOT
-// match the "Spawn failed" boot-failure message (different human-visible text).
-test('a crash after boot is marked dead and wakes the parent as urgent crash (not boot-failure)', async () => {
+// A node that HAD booted (pi_session_id set) then died mid-generation is a
+// genuine crash, not a boot failure. It is marked dead AND wakes the inbox-
+// waiting parent — but with a "child died" notice (surfaceChildDeath), NOT a
+// "Spawn failed" boot-failure pointer (surfaceBootFailure). The parent-wake
+// itself was added by main's b5abf6e (parent-wake on child death) and is locked
+// in by child-death-wake.test.ts; this test preserves the discriminating intent
+// — a crash is never surfaced as a false spawn-failure alarm.
+test('a crash after boot wakes the parent with a child-death notice, not a boot-failure push', async () => {
   createNode(node('P2', { kind: 'developer', lifecycle: 'resident' }));
   createNode(
     node('C2', {
@@ -108,11 +110,11 @@ test('a crash after boot is marked dead and wakes the parent as urgent crash (no
   assert.equal(getNode('C2')!.status, 'dead', 'crashed child is dead');
 
   const inbox = readInboxSince('P2');
-  assert.equal(inbox.length, 1, 'parent receives exactly one crash notice');
+  assert.equal(inbox.length, 1, 'a genuine mid-run crash wakes the inbox-waiting parent (D-1 parent-wake)');
   assert.equal(inbox[0]!.tier, 'urgent', 'mid-run crash is delivered as urgent');
   assert.equal(inbox[0]!.from, 'C2');
-  // Must NOT be the boot-failure message — this is a post-boot crash notice.
-  assert.doesNotMatch(inbox[0]!.label, /Spawn failed/);
+  assert.match(inbox[0]!.label, /died/i, 'the wake is a child-death notice (surfaceChildDeath), not silence');
+  assert.doesNotMatch(inbox[0]!.label, /Spawn failed/, 'a crash is NOT surfaced as a false boot-failure alarm');
   clearBusy('C2');
 });
 

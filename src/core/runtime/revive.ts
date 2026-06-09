@@ -30,26 +30,14 @@ import { buildReviveKickoff, drainBearings } from './kickoff.js';
 import type { WakeOrigin } from './bearings.js';
 import { FRONT_DOOR_ENV } from './front-door.js';
 import {
-  reviveIntoPlacement,
   reconcile,
-  isNodePaneAlive,
   piCommand,
   respawnPane,
   type RespawnPaneOpts,
 } from './placement.js';
-import { nodeSession, childBackstageOf } from './nodes.js';
-
-/** signal-0 liveness probe for a pi pid (mirrors the daemon's isPidAlive). A
- *  null pid (legacy / never-booted) reads dead. */
-function pidAlive(pid: number | null | undefined): boolean {
-  if (pid == null) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return (e as NodeJS.ErrnoException).code === 'EPERM';
-  }
-}
+import { hostFor } from './host.js';
+import { nodeSession, childBackstageOf, rootOfSpine } from './nodes.js';
+import { isPidAlive } from '../canvas/pid.js';
 
 // ---------------------------------------------------------------------------
 // resumeArgs — which session source a revive resumes from
@@ -112,7 +100,7 @@ export function reviveNode(
   // frozen pane), so the guard gates on pi liveness too, not pane-existence alone.
   reconcile(nodeId);
   const live = getNode(nodeId) ?? meta;
-  if (isNodePaneAlive(nodeId) && pidAlive(live.pi_pid)) {
+  if (hostFor(live).isAlive(nodeId) && isPidAlive(live.pi_pid)) {
     return {
       window: live.window ?? null,
       session: live.tmux_session ?? nodeSession(),
@@ -162,9 +150,7 @@ export function reviveNode(
   // transition('boot') needs NO hook — a refresh is the same node continuing,
   // not leaving a dormancy.)
   cancelDeadlinesFor(nodeId);
-  const placed = reviveIntoPlacement(nodeId, {
-    command: piCommand(inv.argv),
-    env: inv.env,
+  const placed = hostFor(meta).launch(nodeId, inv, {
     cwd: meta.cwd,
     name: fullName(meta),
     resuming,
@@ -223,7 +209,7 @@ export function reviveInPlace(
   // home_session may itself be a user session it adopted via the inline front
   // door — sourcing children from it would re-point the root's whole subtree
   // into the user's session on every refresh-yield).
-  const env = { ...inv.env, CRTR_ROOT_SESSION: childBackstageOf(nodeId) };
+  const env = { ...inv.env, CRTR_ROOT_SESSION: childBackstageOf(nodeId), CRTR_SUBTREE: rootOfSpine(nodeId) };
 
   const ok = respawn({ pane, cwd: meta.cwd, env, command: piCommand(inv.argv) });
   if (!ok) {
@@ -275,7 +261,7 @@ export function relaunchRootInPane(nodeId: string, pane: string): void {
   // reviveInPlace. relaunchRootInPane runs only on a root, whose children must
   // flow to the shared backstage `nodeSession()` — never the root's own adopted
   // user session — so both in-pane revive paths stay sourced identically.
-  const env = { ...inv.env, CRTR_ROOT_SESSION: childBackstageOf(nodeId), [FRONT_DOOR_ENV]: '1' };
+  const env = { ...inv.env, CRTR_ROOT_SESSION: childBackstageOf(nodeId), CRTR_SUBTREE: rootOfSpine(nodeId), [FRONT_DOOR_ENV]: '1' };
 
   const ok = respawnPane({ pane, cwd: meta.cwd, env, command: piCommand(inv.argv) });
   if (!ok) {

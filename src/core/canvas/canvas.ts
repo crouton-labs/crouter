@@ -15,6 +15,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import { openDb } from './db.js';
+import { isPidAlive } from './pid.js';
 import {
   ensureHome,
   ensureNodeDirs,
@@ -44,7 +45,7 @@ import type {
 /** The identity keys meta.json persists. Listed explicitly so no runtime field
  *  can ever leak onto disk even when a fully-hydrated NodeMeta is handed in. */
 const IDENTITY_KEYS: ReadonlyArray<keyof NodeIdentity> = [
-  'node_id', 'name', 'description', 'cycles', 'created', 'cwd', 'kind', 'mode',
+  'node_id', 'name', 'description', 'cycles', 'created', 'cwd', 'host_kind', 'kind', 'mode',
   'lifecycle', 'persona_ack', 'parent', 'spawned_by', 'fork_from', 'passive_default',
   'home_session', 'pi_session_id', 'pi_session_file', 'launch',
 ];
@@ -89,11 +90,12 @@ function writeMeta(meta: NodeIdentity): void {
 function upsertRow(meta: NodeIdentity): void {
   openDb()
     .prepare(
-      `INSERT INTO nodes (node_id, name, kind, mode, lifecycle, cwd, parent, created)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO nodes (node_id, name, kind, mode, lifecycle, cwd, host_kind, parent, created)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(node_id) DO UPDATE SET
          name=excluded.name, kind=excluded.kind, mode=excluded.mode,
-         lifecycle=excluded.lifecycle, cwd=excluded.cwd, parent=excluded.parent`,
+         lifecycle=excluded.lifecycle, cwd=excluded.cwd, host_kind=excluded.host_kind,
+         parent=excluded.parent`,
     )
     .run(
       meta.node_id,
@@ -102,6 +104,7 @@ function upsertRow(meta: NodeIdentity): void {
       meta.mode,
       meta.lifecycle,
       meta.cwd,
+      meta.host_kind ?? null,
       meta.parent ?? null,
       meta.created,
     );
@@ -115,12 +118,13 @@ function seedRow(meta: NodeMeta): void {
   openDb()
     .prepare(
       `INSERT INTO nodes
-         (node_id, name, kind, mode, lifecycle, cwd, parent, created,
+         (node_id, name, kind, mode, lifecycle, cwd, host_kind, parent, created,
           status, intent, pi_pid, "window", tmux_session, pane)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(node_id) DO UPDATE SET
          name=excluded.name, kind=excluded.kind, mode=excluded.mode,
-         lifecycle=excluded.lifecycle, cwd=excluded.cwd, parent=excluded.parent,
+         lifecycle=excluded.lifecycle, cwd=excluded.cwd, host_kind=excluded.host_kind,
+         parent=excluded.parent,
          status=excluded.status, intent=excluded.intent, pi_pid=excluded.pi_pid,
          "window"=excluded."window", tmux_session=excluded.tmux_session,
          pane=excluded.pane`,
@@ -132,6 +136,7 @@ function seedRow(meta: NodeMeta): void {
       meta.mode,
       meta.lifecycle,
       meta.cwd,
+      meta.host_kind ?? null,
       meta.parent ?? null,
       meta.created,
       meta.status ?? 'active',
@@ -152,6 +157,7 @@ function rowFrom(r: Record<string, unknown>): NodeRow {
     lifecycle: r['lifecycle'] as NodeRow['lifecycle'],
     status: r['status'] as NodeStatus,
     cwd: r['cwd'] as string,
+    host_kind: (r['host_kind'] as 'tmux' | 'broker' | null) ?? null,
     parent: (r['parent'] as string | null) ?? null,
     created: r['created'] as string,
     intent: (r['intent'] as ExitIntent) ?? null,
@@ -461,17 +467,6 @@ export interface PruneResult {
   dryRun: boolean;
 }
 
-/** Is `pid` a live process? `kill(pid, 0)` sends no signal — it only probes
- *  existence/permission. ESRCH ⇒ gone; EPERM ⇒ alive but not ours (still alive). */
-function pidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return (e as NodeJS.ErrnoException).code === 'EPERM';
-  }
-}
-
 /** Retention sweep: remove TERMINAL nodes (status dead | done | canceled) whose
  *  `created` is older than `ttlDays`, bounding the otherwise-unbounded growth of
  *  node rows + dirs. The edges→nodes FK (`ON DELETE CASCADE`, migration v4) GCs
@@ -523,7 +518,7 @@ export function pruneNodes(opts: { ttlDays: number; dryRun?: boolean; includeSta
     .filter((r) => {
       if ((r['node_id'] as string) === selfId) return false;
       const pid = r['pi_pid'] as number | null;
-      return pid === null || !pidAlive(pid);
+      return !isPidAlive(pid);
     })
     .map((r): PrunedNode => ({
       node_id: r['node_id'] as string,

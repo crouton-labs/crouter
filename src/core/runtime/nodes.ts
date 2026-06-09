@@ -18,6 +18,7 @@ import { mkdirSync } from 'node:fs';
 import {
   createNode,
   getNode,
+  getRow,
   subscribe,
   recordSpawn,
   type NodeMeta,
@@ -30,6 +31,23 @@ import { memoryDir } from './memory.js';
 /** Generate a node id in the same shape as job ids (time-sortable + random). */
 export function newNodeId(): string {
   return `${Date.now().toString(36)}-${randomBytes(4).toString('hex')}`;
+}
+
+/** The root of a node's spine: walk the `parent` column up to `parent == null`.
+ *  Cycle-guarded (parents must not cycle, but never loop forever). Lives in the
+ *  node layer (not placement) so the env-builder and placement both reach it
+ *  without an import cycle — `CRTR_SUBTREE` is emitted as `rootOfSpine(nodeId)`
+ *  at every launch site. */
+export function rootOfSpine(nodeId: string): string {
+  let cur = nodeId;
+  const seen = new Set<string>();
+  for (;;) {
+    if (seen.has(cur)) return cur;
+    seen.add(cur);
+    const row = getRow(cur);
+    if (row === null || row.parent == null) return cur;
+    cur = row.parent;
+  }
 }
 
 /** The single, shared tmux session that ALL canvas node windows live in.
@@ -149,6 +167,11 @@ export function nodeEnv(meta: NodeMeta): Record<string, string> {
   // into the same root session.
   const rootSession = process.env['CRTR_ROOT_SESSION'];
   if (rootSession !== undefined && rootSession !== '') env['CRTR_ROOT_SESSION'] = rootSession;
+  // Propagate the subtree-root node id (additive in Phase 3; tmux still keys on
+  // CRTR_ROOT_SESSION). The broker uses it to group a subtree; each launch site
+  // also emits the authoritative rootOfSpine(nodeId) over this passthrough.
+  const subtree = process.env['CRTR_SUBTREE'];
+  if (subtree !== undefined && subtree !== '') env['CRTR_SUBTREE'] = subtree;
   // Merge any launch-spec env last (it may override / extend).
   return { ...env, ...(meta.launch?.env ?? {}) };
 }
@@ -176,6 +199,9 @@ export interface SpawnNodeOpts {
    *  the boot intro can re-assert this node's OWN identity over the source's
    *  copied-in conversation. Omit for a fresh node. */
   forkFrom?: string | null;
+  /** Which HOST launches + supervises this node: a tmux pane (default) or the
+   *  headless broker. Persisted to `meta.host_kind` (NULL/'tmux' ⇒ tmux). */
+  hostKind?: 'tmux' | 'broker';
   /** New subscriptions this node opens default to passive when true. */
   passiveDefault?: boolean;
   /** Resolved pi launch recipe (from resolve(kind,mode)). */
@@ -206,6 +232,7 @@ export function spawnNode(opts: SpawnNodeOpts): NodeMeta {
     cycles: 0,
     created: new Date().toISOString(),
     cwd: opts.cwd,
+    host_kind: opts.hostKind ?? 'tmux',
     kind: opts.kind,
     mode,
     lifecycle,

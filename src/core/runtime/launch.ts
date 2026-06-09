@@ -186,3 +186,95 @@ export function buildPiArgv(
 
   return { argv, env: nodeEnv(meta) };
 }
+
+// ---------------------------------------------------------------------------
+// The inverse of buildPiArgv: PiInvocation → headless-broker SDK config
+// ---------------------------------------------------------------------------
+
+/** The pi-SDK launch config the headless broker drives an in-process engine
+ *  with — the structural inverse of `buildPiArgv`'s flag vocabulary. Each field
+ *  maps one of buildPiArgv's emitted flags back to its SDK option:
+ *  `-e`→`extensionPaths`, `-n`→`editorName`, `--fork`→`forkFrom`,
+ *  `--session`→`resumeSessionPath|resumeSessionId`, `--model`→`model`,
+ *  `--tools`→`tools`, `--append-system-prompt`→`appendSystemPromptPath`, the
+ *  trailing positional→`firstPrompt`. */
+export interface BrokerSdkConfig {
+  /** The node's pinned working dir (from `CRTR_NODE_CWD`, else `process.cwd()`). */
+  cwd: string;
+  /** Absolute `.js` extension paths (the canvas extensions). */
+  extensionPaths: string[];
+  /** Session label (`-n`). */
+  editorName?: string;
+  /** Spawn-time fork source (`--fork <path|id>`). */
+  forkFrom?: string;
+  /** Resume by absolute `.jsonl` path (preferred — `SessionManager.open`). */
+  resumeSessionPath?: string;
+  /** Resume by bare session uuid (legacy fallback). */
+  resumeSessionId?: string;
+  /** Model spec, e.g. `anthropic/sonnet` (`--model`). */
+  model?: string;
+  /** Tool allowlist (`--tools a,b,c` → `['a','b','c']`). */
+  tools?: string[];
+  /** `--append-system-prompt` arg — a file path in practice (pi's loader
+   *  resolves a path or literal text identically). */
+  appendSystemPromptPath?: string;
+  /** The fresh-start kickoff message (the trailing positional). */
+  firstPrompt?: string;
+}
+
+/** Translate a `PiInvocation` (the recipe `buildPiArgv` produced) into the SDK
+ *  config the broker hosts an engine with. This is the EXACT inverse of
+ *  `buildPiArgv` and must track its flag set 1:1 — co-located here so the two
+ *  never drift. Safe because `buildPiArgv` is the SOLE producer of these flags
+ *  (we own both ends). SIDE EFFECT: merges `inv.env` into `process.env` so the
+ *  in-process engine + the bound canvas extensions see the same env a forked pi
+ *  would (CRTR_NODE_ID, CRTR_ROOT_SESSION, CRTR_SUBTREE, …). */
+export function piInvocationToSdkConfig(inv: PiInvocation): BrokerSdkConfig {
+  for (const [k, v] of Object.entries(inv.env)) process.env[k] = v;
+
+  const cfg: BrokerSdkConfig = {
+    cwd: inv.env['CRTR_NODE_CWD'] ?? process.cwd(),
+    extensionPaths: [],
+  };
+
+  const argv = inv.argv;
+  for (let i = 0; i < argv.length; i++) {
+    const tok = argv[i];
+    switch (tok) {
+      case '-e':
+        cfg.extensionPaths.push(argv[++i]);
+        break;
+      case '-n':
+        cfg.editorName = argv[++i];
+        break;
+      case '--fork':
+        cfg.forkFrom = argv[++i];
+        break;
+      case '--session': {
+        const v = argv[++i];
+        // A path (contains `/` or ends `.jsonl`) resumes via SessionManager.open;
+        // a bare uuid is the legacy fallback. Same classification buildPiArgv
+        // documents (path preferred, immune to cwd discrepancy).
+        if (v.includes('/') || v.endsWith('.jsonl')) cfg.resumeSessionPath = v;
+        else cfg.resumeSessionId = v;
+        break;
+      }
+      case '--model':
+        cfg.model = argv[++i];
+        break;
+      case '--tools':
+        cfg.tools = argv[++i].split(',').filter((t) => t !== '');
+        break;
+      case '--append-system-prompt':
+        cfg.appendSystemPromptPath = argv[++i];
+        break;
+      default:
+        // buildPiArgv consumes every flag's value via the cases above, so any
+        // token reaching here is the single trailing positional (the prompt).
+        cfg.firstPrompt = tok;
+        break;
+    }
+  }
+
+  return cfg;
+}

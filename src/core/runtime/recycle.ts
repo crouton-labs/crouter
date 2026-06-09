@@ -22,10 +22,11 @@ import { join } from 'node:path';
 import { getNode, setPresence, updateNode, setFocusOccupant, fullName, type NodeMeta } from '../canvas/index.js';
 import { reportsDir } from '../canvas/paths.js';
 import { pushFinal } from '../feed/feed.js';
-import { spawnNode, nodeSession } from './nodes.js';
+import { spawnNode, nodeSession, rootOfSpine } from './nodes.js';
 import { buildLaunchSpec, buildPiArgv } from './launch.js';
 import { FRONT_DOOR_ENV } from './front-door.js';
 import { focusOf, recycleFocusPane, piCommand, paneLocation } from './placement.js';
+import { hostFor } from './host.js';
 import { ensureDaemon } from '../../daemon/manage.js';
 
 export interface RecycleResult {
@@ -84,6 +85,15 @@ export async function recycleNode(nodeId: string, callerPane?: string): Promise<
     finalized = true;
   } catch { /* recycle the pane even if the report failed */ }
 
+  // A broker node has NO tmux pane, so recycleFocusPane below (respawn-pane -k)
+  // never kills its engine — route its teardown through the Host seam so the
+  // broker PROCESS exits and releases the sole .jsonl writer (mirrors the T12
+  // close.ts/reset.ts fix; review reuse MINOR-3). Status is already flipped done
+  // by pushFinal above (crash-safe order: the daemon won't revive a done node).
+  if (meta.host_kind === 'broker') {
+    try { hostFor(meta).teardown(nodeId); } catch { /* best-effort */ }
+  }
+
   // Capture M's focus viewport (if any) BEFORE nulling — the fresh root inherits
   // it (the SAME focus row + pane). The demoted node no longer holds a pane: it is
   // being reclaimed.
@@ -112,7 +122,7 @@ export async function recycleNode(nodeId: string, callerPane?: string): Promise<
   if (f !== null) { try { setFocusOccupant(f.focus_id, root.node_id); } catch { /* best-effort */ } }
   const fresh = getNode(root.node_id) as NodeMeta;
   const inv = buildPiArgv(fresh);
-  const env = { ...inv.env, CRTR_ROOT_SESSION: nodeSession(), [FRONT_DOOR_ENV]: '1' };
+  const env = { ...inv.env, CRTR_ROOT_SESSION: nodeSession(), CRTR_SUBTREE: rootOfSpine(root.node_id), [FRONT_DOOR_ENV]: '1' };
   const ok = recycleFocusPane(root.node_id, pane, {
     command: piCommand(inv.argv), env, cwd: meta.cwd, name: fullName(fresh), resuming: false,
   });
