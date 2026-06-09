@@ -37,9 +37,9 @@
   "license": "MIT",
   "dependencies": {
     "@crouton-kit/humanloop": "latest",
-    "@earendil-works/pi-ai": "0.78.1",
-    "@earendil-works/pi-coding-agent": "0.78.1",
-    "@earendil-works/pi-tui": "0.78.1",
+    "@earendil-works/pi-ai": "^0.79.0",
+    "@earendil-works/pi-coding-agent": "^0.79.0",
+    "@earendil-works/pi-tui": "^0.79.0",
     "commander": "^13.0.0",
     "cron-parser": "5.5.0"
   },
