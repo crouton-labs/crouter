@@ -8,6 +8,7 @@ import { registerPush, registerFeed } from './commands/push.js';
 import { registerNode } from './commands/node.js';
 import { registerCanvas } from './commands/canvas.js';
 import { registerView } from './commands/view.js';
+import { registerAttach } from './clients/attach/attach-cmd.js';
 
 /** Assemble the full crtr command tree. Root owns only the tagline; every
  *  subtree declares its own root representation via its rootEntry, and every
@@ -29,6 +30,7 @@ export function buildRoot(): RootDef {
       registerFeed(),
       registerCanvas(),
       registerView(),
+      registerAttach(),
     ],
   });
 }
