@@ -494,6 +494,41 @@ test('G1 — controller prompt runs the engine and the streamed AgentSessionEven
 });
 
 // ---------------------------------------------------------------------------
+// G1b — message_update coalescing preserves ordering (regression for the F2
+// attach typing-lag fix, 2026-06-09). The broker holds the latest message_update
+// on a ~75ms timer; any OTHER event must flush it FIRST, so a viewer can never
+// observe message_update AFTER its message_end (which would resurrect stale
+// streaming text over the final message), and the LAST coalesced update must not
+// be silently dropped at end-of-turn. Failure modes: a flush ordered after the
+// non-update event, or a pending update discarded when message_end wins the race.
+// ---------------------------------------------------------------------------
+test('G1b — coalesced message_update never arrives after message_end; updates still relayed', { skip: !hasTmux() }, async () => {
+  const id = await h.spawnHeadlessChild(root, 'headless worker — G1b');
+  const c = await attach(id, 'controller', 'g1b-ctrl');
+
+  const token = tok('G1B');
+  // 12 updates at the fake engine's setImmediate pace — far faster than the 75ms
+  // coalesce window, so coalescing genuinely engages (fewer relayed than emitted).
+  h.fakeCmd(id, { cmd: 'stream', text: token, updates: 12 });
+  await c.waitFrame((f) => f.type === 'agent_end' && frameHas(f, token), 'G1b turn relayed');
+
+  const types = c.frames.map((f) => f.type);
+  const lastUpdate = types.lastIndexOf('message_update');
+  const msgEnd = types.indexOf('message_end');
+  assert.ok(lastUpdate >= 0, 'G1b: at least one message_update relayed (coalescing must not starve updates)');
+  assert.ok(msgEnd >= 0, 'G1b: message_end relayed');
+  assert.ok(
+    lastUpdate < msgEnd,
+    `G1b: a message_update arrived AFTER message_end (update@${lastUpdate} vs end@${msgEnd}) — the coalescer flushed out of order`,
+  );
+  // tool/turn/agent frames must also never precede a stale held update.
+  for (const t of ['tool_execution_start', 'turn_end', 'agent_end'] as const) {
+    const i = types.indexOf(t);
+    assert.ok(i < 0 || lastUpdate < i, `G1b: message_update relayed after ${t}`);
+  }
+});
+
+// ---------------------------------------------------------------------------
 // G2 — detach leaves the engine running. Guards: `bye`/close drops ONE listener,
 // never the engine. Failure mode: a detach that disposes the broker/engine.
 // ---------------------------------------------------------------------------

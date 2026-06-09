@@ -371,19 +371,29 @@ export const BROKER_READ_CAPS: FrameDecoderCaps = {
  *  instead of returning frames — the caller drops that peer rather than letting a
  *  malicious/buggy stream grow the buffer to OOM. Bytes are measured with
  *  `Buffer.byteLength`, never string length; a running counter makes each push's
- *  size CHECK O(1) (no re-scan of the whole buffer to measure it) — the `\n` scan
- *  itself still walks the buffer, so a single giant unterminated line is O(n²) in
- *  chunk count, acceptable since snapshot chunking is deferred (§1.1).
+ *  size CHECK O(1) (no re-scan of the whole buffer to measure it).
+ *
+ *  AMORTIZED O(total bytes) (perf regression fix, 2026-06-09): the partial line
+ *  carried across pushes is held as an ARRAY of chunk strings (`parts`), joined
+ *  only when its terminating `\n` arrives. The `\n` scan looks at each incoming
+ *  chunk ONCE — never re-scanning the accumulated carry — so a multi-MiB frame
+ *  arriving in ~64 KiB socket chunks costs O(frame) total instead of O(frame ×
+ *  chunks). The old `buf += chunk; buf.indexOf('\n')` shape flattened + re-walked
+ *  the whole carry per chunk: a 16 MiB welcome snapshot cost ~250 ms of
+ *  event-loop stall in `crtr attach` (typing lag) and the same again in the
+ *  broker; this shape decodes it in ~13 ms.
  *
  *  A `StringDecoder` decodes incoming Buffer chunks: an incomplete trailing
  *  multibyte sequence is held back across pushes instead of being mangled to
  *  U+FFFD, so a char split at a `node:net` chunk boundary is never corrupted, and
- *  `bufBytes` stays in EXACT lockstep with `this.buf` (the add and the subtract
- *  both count decoded-string bytes — a raw `chunk.length` would desync and weaken
- *  the C5 cap on multibyte/invalid input). */
+ *  `partBytes` counts decoded-string bytes (a raw `chunk.length` would desync
+ *  and weaken the C5 cap on multibyte/invalid input). */
 export class FrameDecoder {
-  private buf = '';
-  private bufBytes = 0;
+  /** The unterminated partial line carried across pushes, as unjoined chunks
+   *  (never contains a '\n'). Joined lazily when its newline arrives. */
+  private parts: string[] = [];
+  /** Byte length (Buffer.byteLength) of `parts` joined — kept in exact lockstep. */
+  private partBytes = 0;
   private readonly utf8 = new StringDecoder('utf8');
 
   constructor(private readonly caps: FrameDecoderCaps) {}
@@ -391,23 +401,29 @@ export class FrameDecoder {
   push(chunk: Buffer | string): unknown[] {
     // A string input is already complete text; a Buffer goes through the
     // StringDecoder so a boundary-split multibyte char is buffered, not corrupted.
-    // Both branches append `str` to `this.buf` and count `Buffer.byteLength(str)`,
-    // keeping bufBytes === Buffer.byteLength(this.buf) exactly.
     const str = typeof chunk === 'string' ? chunk : this.utf8.write(chunk);
-    this.buf += str;
-    this.bufBytes += Buffer.byteLength(str);
-    // Peak-buffer bound: caps the most we ever hold in one push (e.g. a single OS
-    // chunk dumping a huge blob), before draining complete frames.
-    if (this.bufBytes > this.caps.maxTotalBytes) {
-      throw new FrameOverflowError('total', this.bufBytes, this.caps.maxTotalBytes);
+    const strBytes = Buffer.byteLength(str);
+    // Peak-buffer bound: caps the most we ever hold in one push (carry + this
+    // entire chunk, before draining complete frames) — identical accounting to
+    // the old whole-buffer check.
+    if (this.partBytes + strBytes > this.caps.maxTotalBytes) {
+      throw new FrameOverflowError(
+        'total',
+        this.partBytes + strBytes,
+        this.caps.maxTotalBytes,
+      );
     }
     const out: unknown[] = [];
+    let from = 0; // scan offset into `str` — each chunk is scanned exactly once
     let nl: number;
-    while ((nl = this.buf.indexOf('\n')) >= 0) {
-      const consumed = this.buf.slice(0, nl + 1); // line + the newline
-      this.bufBytes -= Buffer.byteLength(consumed);
-      const line = this.buf.slice(0, nl).trim();
-      this.buf = this.buf.slice(nl + 1);
+    while ((nl = str.indexOf('\n', from)) >= 0) {
+      const tail = str.slice(from, nl);
+      // First line of the push completes the carried partial; later lines live
+      // entirely inside `str` (parts is empty after the first join).
+      const line = (this.parts.length > 0 ? this.parts.join('') + tail : tail).trim();
+      this.parts.length = 0;
+      this.partBytes = 0;
+      from = nl + 1;
       if (line === '') continue;
       try {
         out.push(JSON.parse(line));
@@ -415,10 +431,15 @@ export class FrameDecoder {
         /* drop a malformed frame — never throw out of the reader for bad JSON */
       }
     }
+    if (from < str.length) {
+      const rest = from === 0 ? str : str.slice(from);
+      this.parts.push(rest);
+      this.partBytes += from === 0 ? strBytes : Buffer.byteLength(rest);
+    }
     // Single-frame bound: a partial line that has grown past one frame's cap is a
     // peer streaming bytes with no newline — drop it rather than buffer forever.
-    if (this.bufBytes > this.caps.maxLineBytes) {
-      throw new FrameOverflowError('line', this.bufBytes, this.caps.maxLineBytes);
+    if (this.partBytes > this.caps.maxLineBytes) {
+      throw new FrameOverflowError('line', this.partBytes, this.caps.maxLineBytes);
     }
     return out;
   }

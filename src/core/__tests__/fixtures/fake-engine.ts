@@ -339,17 +339,50 @@ class FakeSession {
     this.emit({ type: 'agent_start' });
     this.emit({ type: 'turn_start' });
     this.emit({ type: 'message_start', message: small });
+    // F2 (message_update coalescing): the broker now coalesces message_update
+    // relays (latest-wins, ~75 ms window), so a padded flood riding message_update
+    // can no longer climb a stalled viewer's backlog — the coalescer would shed
+    // the flood before the HWM does. A sized flood (pad>0, G8) therefore rides
+    // tool_execution_update frames, which the broker relays VERBATIM (only
+    // message_update is coalesced — tool output streams remain the realistic
+    // unbounded-backlog vector M1 guards against). The flood gets its own
+    // tool_execution_start so the frame sequence stays well-formed.
+    const floodToolCallId = pad > 0 ? `flood-${++this.eventSeq}` : undefined;
+    if (floodToolCallId !== undefined) {
+      this.emit({
+        type: 'tool_execution_start',
+        toolCallId: floodToolCallId,
+        toolName: 'read',
+        args: { path: 'flood.txt' },
+      });
+    }
     for (let i = 0; i < updates; i++) {
       if (this.disposed) return;
-      // The big payload (G8) rides only in `message`; assistantMessageEvent.partial
-      // stays small so a flood frame is ~padBytes, not 2×.
-      const partial = assistantMessage(`${text} [${i + 1}/${updates}]`, pad);
       this.emit({
         type: 'message_update',
-        message: partial,
+        message: assistantMessage(`${text} [${i + 1}/${updates}]`),
         assistantMessageEvent: textDelta(small, `chunk ${i + 1}`),
       });
+      if (floodToolCallId !== undefined) {
+        // The big payload (G8) rides the partialResult; ~padBytes per frame.
+        this.emit({
+          type: 'tool_execution_update',
+          toolCallId: floodToolCallId,
+          toolName: 'read',
+          args: { path: 'flood.txt' },
+          partialResult: { chunk: 'x'.repeat(pad) },
+        });
+      }
       await yieldTick();
+    }
+    if (floodToolCallId !== undefined) {
+      this.emit({
+        type: 'tool_execution_end',
+        toolCallId: floodToolCallId,
+        toolName: 'read',
+        result: { ok: true },
+        isError: false,
+      });
     }
     if (withTool) {
       const toolCallId = `call-${++this.eventSeq}`;

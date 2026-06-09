@@ -58,6 +58,17 @@ import {
 const MAX_QUEUED_FRAMES = 1000;
 const MAX_PENDING_BYTES = 32 * 1024 * 1024; // 32 MiB
 
+/** F2 (attach typing-lag fix, 2026-06-09): coalesce window for relayed
+ *  `message_update` frames. pi emits one per content delta and each carries the
+ *  FULL accumulated assistant message, so a verbatim relay re-serializes (and
+ *  every viewer re-parses + re-renders) the whole message per token — O(len²)
+ *  bytes over a long reply, and measured ~3× the viewer's render CPU vs 75 ms
+ *  coalescing. Only the LATEST pending update matters (each supersedes the
+ *  last), so the relay keeps one and flushes it on this timer — or immediately,
+ *  BEFORE any other event type, preserving ordering (an update never arrives
+ *  after its message_end). */
+const MESSAGE_UPDATE_COALESCE_MS = 75;
+
 /** Broker-side default dialog timeout (C2 anti-deadlock, T4). When an extension
  *  dialog is forwarded to a controller, the broker ALWAYS arms a timeout (this
  *  default, or a shorter per-dialog `opts.timeout` if the extension passed one)
@@ -333,6 +344,41 @@ export async function runBroker(nodeId: string): Promise<void> {
     for (const c of clients) if (c.helloed) sendFrame(c, frame);
   };
 
+  // ---------------------------------------------------------------------------
+  // F2: message_update coalescing. `relayEvent` is the single entry point for
+  // engine events headed to viewers: a message_update is held (latest wins) and
+  // flushed on a short timer; ANY other event flushes the held update first,
+  // synchronously, so cross-type ordering is exactly the engine's. The timer is
+  // unref'd — it must never hold the broker process open past dispose.
+  // ---------------------------------------------------------------------------
+  let pendingUpdate: BrokerToClient | null = null;
+  let pendingUpdateTimer: ReturnType<typeof setTimeout> | null = null;
+  const flushPendingUpdate = (): void => {
+    if (pendingUpdateTimer !== null) {
+      clearTimeout(pendingUpdateTimer);
+      pendingUpdateTimer = null;
+    }
+    if (pendingUpdate !== null) {
+      const frame = pendingUpdate;
+      pendingUpdate = null;
+      broadcast(frame);
+    }
+  };
+  const relayEvent = (event: BrokerToClient): void => {
+    if ((event as { type?: string }).type === 'message_update') {
+      pendingUpdate = event; // latest full-message update supersedes the held one
+      if (pendingUpdateTimer === null) {
+        pendingUpdateTimer = setTimeout(flushPendingUpdate, MESSAGE_UPDATE_COALESCE_MS);
+        if (typeof pendingUpdateTimer.unref === 'function') pendingUpdateTimer.unref();
+      }
+      return;
+    }
+    // Any non-update event: flush the held update FIRST so a viewer never sees
+    // (e.g.) message_end before the update it supersedes — then relay verbatim.
+    flushPendingUpdate();
+    broadcast(event);
+  };
+
   const broadcastControlChanged = (): void => {
     persistAttachState(); // every control change is a viewer-state change
     broadcast({ type: 'control_changed', controller_id: controllerId });
@@ -481,9 +527,17 @@ export async function runBroker(nodeId: string): Promise<void> {
       }
     }
     unsubscribe?.();
+    // F2: a session replacement abandons the old session's stream — drop (don't
+    // flush) a held update from it; its message history is superseded by the
+    // reWelcomeAll() snapshot of the NEW session.
+    if (pendingUpdateTimer !== null) {
+      clearTimeout(pendingUpdateTimer);
+      pendingUpdateTimer = null;
+    }
+    pendingUpdate = null;
     unsubscribe = session.subscribe((event) => {
       try {
-        broadcast(event as BrokerToClient);
+        relayEvent(event as BrokerToClient);
       } catch (err) {
         logBroker(`event relay threw: ${String(err)}`);
       }
