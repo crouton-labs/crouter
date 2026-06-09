@@ -23,7 +23,7 @@ So your `orchestrator.md` body carries **only the delta** — what is specific t
 
 2. **The child kinds it drives, and the pipeline.** Name the specialists this orchestrator delegates to and the order it runs them: developer drives `explore → spec → plan → developer → review` as a "spec → plan → implement → review → fix → validate" pipeline; spec runs `SHAPE → DESIGN → REQUIREMENTS` stages; review fans `review` children across units. The flow is the kind's signature — make it explicit so delegation isn't ad hoc.
 
-3. **A pointer to the methodology skill — don't inline it.** Set `roadmapSkill: <skill>` in frontmatter and tell the body to read `crtr skill read <kind>` before shaping the roadmap. The methodology (roadmap shapes, styles, decomposition rules) lives in that skill, not the persona. The persona points; the skill teaches.
+3. **A pointer to the methodology skill — don't inline it.** Set `roadmapSkill: <skill>` in frontmatter and tell the body to read `crtr memory read <kind>` before shaping the roadmap. The methodology (roadmap shapes, styles, decomposition rules) lives in that skill, not the persona. The persona points; the skill teaches.
 
 4. **The kind's quality bar.** State the domain-specific exit criteria the kernel can't: developer's "implementation is done when provably correct against the spec, review done when a non-implementer cleared all Major/Critical findings, validation done end-to-end in the real runtime." This is where you set the ceiling for *this* kind of work.
 

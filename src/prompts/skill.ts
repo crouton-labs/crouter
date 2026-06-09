@@ -106,7 +106,7 @@ ${topicLine(topic)}
 - \`ls\` repo top level
 - check stack manifests
 - \`git log --oneline -15\` in this area
-- \`crtr skill find search "<topic>"\` / \`crtr skill find list\` — does a primer already exist?
+- \`crtr memory find "<topic>"\` / \`crtr memory list\` — does a primer already exist?
 
 If subsystem is small/self-evident, **stop**. Suggest a CLAUDE.md note. Primers
 are for large, complicated, or unintuitive systems only.
@@ -114,7 +114,7 @@ are for large, complicated, or unintuitive systems only.
 ## 2. Scope + name
 
 - **Scope**: \`project\` by default. \`user\` only if cross-repo.
-- **Name**: kebab-case. Confirm no collision: \`crtr skill read <name> --no-body\` (returns \`.path\`, \`.scope\`, \`.plugin\`).
+- **Name**: kebab-case. Confirm no collision: \`crtr memory read <name>\` (returns \`.path\`, \`.scope\`).
 
 ## 3. Parallel exploration
 
@@ -180,9 +180,8 @@ Domain terms, invariants, non-obvious constraints.
 Non-obvious coupling. Looks-broken-but-isn't. Past footguns.
 \`\`\`
 
-**No \`## Related\` for within-plugin siblings** — the CLI auto-appends a
-\`## Neighbors\` section on \`crtr skill read <name>\`. Add a manual \`## Related\`
-only for cross-plugin or distant refs.
+Add a \`## Related\` section only for genuinely related skills — cross-plugin
+or distant refs included; skip it when there is nothing worth pointing at.
 
 **Density rules:**
 - \`file:line\` over prose
@@ -198,9 +197,8 @@ only for cross-plugin or distant refs.
 Output is JSON; \`.content\` has the body, \`.path\` has the location:
 
 \`\`\`
-crtr skill read <name> --no-body
-crtr skill read <name>
-crtr skill find search "<keyword>"    # confirm description triggers discovery
+crtr memory read <name>
+crtr memory find "<keyword>"    # confirm description triggers discovery
 \`\`\`
 
 Sharpen description if discovery misses. Cut body if bloated.
@@ -250,7 +248,7 @@ PR over many small ones for refactors here, because review churn dominates"*
 
 - **Scope**: \`user\` for cross-project methodology. \`project\` for repo-specific.
 - **Name**: kebab-case, verb-or-noun-phrase. Not "guide-to-X".
-- Check \`crtr skill read <name> --no-body\` (returns \`.path\`, \`.scope\`, \`.plugin\`).
+- Check \`crtr memory read <name>\` (returns \`.path\`, \`.scope\`).
 
 ## 3. Scaffold
 
@@ -300,9 +298,8 @@ to read the whole thing for value, you've buried the judgment.
 - **<name>**: what it looks like; how to avoid
 \`\`\`
 
-**No \`## Related\` for within-plugin siblings** — the CLI auto-appends a
-\`## Neighbors\` section on \`crtr skill read <name>\`. Add a manual \`## Related\`
-only for cross-plugin or distant refs.
+Add a \`## Related\` section only for genuinely related skills — cross-plugin
+or distant refs included; skip it when there is nothing worth pointing at.
 
 ## 6. Progressive disclosure
 
@@ -323,9 +320,8 @@ loads supporting files only when needed.
 Output is JSON; \`.content\` has the body, \`.path\` has the location:
 
 \`\`\`
-crtr skill read <name> --no-body
-crtr skill read <name>
-crtr skill find search "<keyword>"
+crtr memory read <name>
+crtr memory find "<keyword>"
 \`\`\`
 
 ## Constraints
@@ -415,9 +411,8 @@ Or invent your own. Stay tight — no padding.
 Output is JSON; \`.content\` has the body, \`.path\` has the location:
 
 \`\`\`
-crtr skill read <name> --no-body
-crtr skill read <name>
-crtr skill find search "<keyword>"
+crtr memory read <name>
+crtr memory find "<keyword>"
 \`\`\`
 
 ## Switch templates if needed
@@ -470,7 +465,7 @@ field/flag/code values** — pull verbatim from source.
 
 - **Scope**: \`user\` for cross-project facts. \`project\` for repo-specific.
 - **Name**: noun-phrase. \`http-status-codes\` not \`learn-http-status\`.
-- Check \`crtr skill read <name> --no-body\` (returns \`.path\`, \`.scope\`, \`.plugin\`).
+- Check \`crtr memory read <name>\` (returns \`.path\`, \`.scope\`).
 
 ## 3. Scaffold
 
@@ -531,9 +526,8 @@ SKILL.md links to siblings (\`see [full-table.md](full-table.md)\`).
 Output is JSON; \`.content\` has the body, \`.path\` has the location:
 
 \`\`\`
-crtr skill read <name> --no-body
-crtr skill read <name>
-crtr skill find search "<keyword>"
+crtr memory read <name>
+crtr memory find "<keyword>"
 \`\`\`
 
 Search must surface the skill on a typical lookup query. Sharpen the
@@ -584,7 +578,7 @@ push to \\\`main\\\`, wait for green CI, click promote"* is a runbook step.
 
 - **Scope**: \`project\` for repo-specific procedures. \`user\` for cross-project.
 - **Name**: verb-phrase. \`deploy-to-prod\` not \`production-deployment-guide\`.
-- Check \`crtr skill read <name> --no-body\` (returns \`.path\`, \`.scope\`, \`.plugin\`).
+- Check \`crtr memory read <name>\` (returns \`.path\`, \`.scope\`).
 
 ## 3. Scaffold
 
@@ -639,9 +633,8 @@ crtr skill author scaffold <name> --type runbook --scope <user|project> --descri
 Output is JSON; \`.content\` has the body, \`.path\` has the location:
 
 \`\`\`
-crtr skill read <name> --no-body
-crtr skill read <name>
-crtr skill find search "<keyword>"
+crtr memory read <name>
+crtr memory find "<keyword>"
 \`\`\`
 
 Walk through the runbook mentally. Each step verifiable? Each decision

@@ -49,6 +49,14 @@ The on-read hook triggers **positionally** by default: a document lives in the `
 
 Scope resolves the way skills and personas already do — project over user over builtin — but the unit of project scope is **any directory with a `.crouter/`**, not just a repo root. A directory's `.crouter/memory/` dictates the knowledge, behavior, and references of an agent working there. Memory lives where that scope resolver already looks: **user-global at `~/.crouter/memory/`, project at `<dir>/.crouter/memory/`** — out of the canvas home, which now holds only ephemeral per-node memory. Memory joins the workspace, instead of sitting in a machine-global store keyed on the git root.
 
+## Choosing the boot rung — the content bar (human ruling, 2026-06-09)
+
+`content` is reserved for guidance that should be in **every** agent's face regardless of what it is working on — and a content-rung body must be extremely concise and basic: essentially **one bullet point worth of text** that you always want read. The test is two-part — *always relevant* AND *a bullet's worth* — and failing either one means `preview`. A real example of failing the first: "prefer agent-driven over algorithmic" is genuine taste, but it just isn't relevant to most tasks, so inlining it at boot is noise; it routes at `preview`.
+
+Situational guidance — relevant only when doing a certain kind of work — belongs at `preview` no matter how short it is, and anything with longer instructions belongs at `preview` no matter how universal it feels. The routing line is what earns its place at boot; the body is read on demand. Long catalog-style documents whose name already routes well sit at `name`.
+
+And the routing line only works if `when`/`why` are **routing statements, not content paraphrases**: `when` names the situation the agent is in ("When you are refactoring…"), `why` names the payoff of reading ("…because it informs how to perform good refactors"). A reader must be able to decide whether to open the document from that one line alone; restating the document's content there defeats the ladder.
+
 ## The payoff, and the stance
 
 The point of all of this is that an agent can write skills, references, and preferences **freely** — as often as a thought is worth keeping — without fear of bloating its context, because it also declares when and how much each should surface. Context stays clean by construction, not by restraint. This is self-improving prompting and progressive disclosure made into storage: the agent keeps learning, and the cost of what it learns is paid only when it is relevant.

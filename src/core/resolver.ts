@@ -756,9 +756,7 @@ export function buildCategoryIndex(cat: CategoryResolution): string {
   }
   lines.push('');
   lines.push(
-    `Read one with \`crtr skill read <full-id>\`. Narrow with \`crtr skill find list --plugin ${
-      cat.plugin ?? cat.id
-    }\`.`,
+    'Read one with `crtr memory read <full-id>`. Search with `crtr memory find "<topic>"`.',
   );
 
   return lines.join('\n');

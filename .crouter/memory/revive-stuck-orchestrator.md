@@ -1,13 +1,13 @@
 ---
 kind: reference
-when: When a task relates to revive stuck orchestrator
-why: How to recover a stuck/false-finished orchestrator node — use critical node
-  msg, never canvas revive --fresh
+when: When an orchestrator sits idle with a dead pi and intent=idle-release,
+  or got falsely auto-finalized
+why: The one safe recovery is a critical node msg — canvas revive
+  --fresh makes it worse
 short-form: How to recover a stuck/false-finished orchestrator node — use
   critical node msg, never canvas revive --fresh
 system-prompt-visibility: none
 file-read-visibility: preview
-needs-refinement: true
 ---
 
 A `node yield` can get STUCK if a message lands in the node's pane and races the yield: the node ends up `status=idle / intent=idle-release` with its pi dead and `window=null`, and the refresh-revival never fires (the healthy daemon won't revive an `idle` node — idle reads as "intentionally waiting"). Symptom: an orchestrator sits idle for minutes with all children done and work remaining; `crtr node inspect show <id>` shows `idle` + `idle-release` + dead `pi_pid`.

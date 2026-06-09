@@ -1,13 +1,13 @@
 ---
 kind: preference
-when: When a task relates to cto rejects fallback hedges
-why: CTO rejects fallback/compat-hedge code paths — fix the source data +
-  isolate the bad case + enforce with a lint, never a runtime second-path hedge
+when: When a strict parser, validator, or schema rejects real inputs and you
+  are tempted to add a lenient fallback path
+why: It gives the pattern the CTO will accept instead — fix the data,
+  isolate the bad case, enforce with a lint
 short-form: CTO rejects fallback/compat-hedge code paths — fix the source data +
   isolate the bad case + enforce with a lint, never a runtime second-path hedge
 system-prompt-visibility: preview
 file-read-visibility: none
-needs-refinement: true
 ---
 
 When a strict path (parser, validator, schema) throws on some real inputs, do NOT add a fallback / lenient second path to tolerate them. The CTO's words: "I really hate fallbacks." He killed a pre-authorized hybrid `yaml`+lenient-fallback frontmatter parser in favor of: (1) ONE strict parser, (2) FIX the small set of invalid source docs so the real corpus is valid, (3) ISOLATE the bad case at the collection/iterator layer (per-item catch → scoped "invalid X in <path>" notice → continue; not a second parser), (4) make the gate a permanent LINT that enforces validity at authoring time.

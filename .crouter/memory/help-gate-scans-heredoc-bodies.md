@@ -1,15 +1,14 @@
 ---
 kind: reference
-when: When a task relates to help gate scans heredoc bodies
-why: crtr help-gate scans the literal command string (incl. inline heredoc
-  bodies) for crtr command mentions and blocks — pipe report bodies from a file
-  instead
+when: When the crtr help-gate blocks a command whose inline heredoc body merely
+  mentions other crtr commands
+why: The gate scans the whole literal command string — pipe the body
+  from a file instead
 short-form: crtr help-gate scans the literal command string (incl. inline
   heredoc bodies) for crtr command mentions and blocks — pipe report bodies from
   a file instead
 system-prompt-visibility: none
 file-read-visibility: preview
-needs-refinement: true
 ---
 
 `crtr push <tier> <<'EOF' … EOF` is blocked by the help-gate when the heredoc BODY contains a literal `crtr <subcommand>` string you haven't `-h`'d this session (e.g. a report mentioning `crtr canvas daemon stop`). The gate scans the whole literal command text, not just argv, so it sees the heredoc content.

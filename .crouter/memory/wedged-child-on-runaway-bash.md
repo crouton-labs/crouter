@@ -1,15 +1,14 @@
 ---
 kind: reference
-when: When a task relates to wedged child on runaway bash
-why: a child stuck mid-turn on a runaway bash command sends NO wake and looks
-  "active" forever — detect by pane/process inspection, fix by killing the
-  subprocess
+when: When a child node has been "active" implausibly long with no report and
+  its wave is not advancing
+why: The child may be wedged mid-turn on a runaway bash command — it
+  shows how to detect that and recover by killing the subprocess, not the node
 short-form: a child stuck mid-turn on a runaway bash command sends NO wake and
   looks "active" forever — detect by pane/process inspection, fix by killing the
   subprocess
 system-prompt-visibility: none
 file-read-visibility: preview
-needs-refinement: true
 ---
 
 A base node can wedge INDEFINITELY on a single runaway bash command (classic: `grep -rln "..." /` — a recursive grep from filesystem root that scans all of disk and never returns; also any unbounded find/scan over `/` or a network mount). The node's pi turn is blocked waiting on the bash call, so it never `push`es and never finishes.

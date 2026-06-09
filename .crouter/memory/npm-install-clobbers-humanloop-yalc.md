@@ -1,11 +1,12 @@
 ---
 kind: reference
-when: When a task relates to npm install clobbers humanloop yalc
-why: "`npm install` clobbers the humanloop yalc link mid-wave"
+when: When you are about to run an install in crouter, or crtr suddenly breaks
+  everywhere with a missing-approveDeck / module-not-found error
+why: Installs clobber the humanloop yalc link, and it gives the exact
+  restore procedure
 short-form: "`npm install` clobbers the humanloop yalc link mid-wave"
 system-prompt-visibility: none
 file-read-visibility: preview
-needs-refinement: true
 ---
 
 # `npm install` clobbers the humanloop yalc link mid-wave

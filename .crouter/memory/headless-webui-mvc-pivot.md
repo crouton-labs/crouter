@@ -1,13 +1,13 @@
 ---
 kind: reference
-when: When a task relates to headless webui mvc pivot
-why: Active initiative — decouple crouter's tmux rendering from its model (MVC)
-  toward headless nodes + a web UI
+when: When you are changing crouter's rendering, node lifecycle, or anything
+  that touches tmux
+why: An active initiative is splitting host from surface, and your
+  change should align with the headless/web-UI end-state
 short-form: Active initiative — decouple crouter's tmux rendering from its model
   (MVC) toward headless nodes + a web UI
 system-prompt-visibility: none
 file-read-visibility: preview
-needs-refinement: true
 ---
 
 Active initiative (as of 2026-06-08): make crouter runnable headless behind a web UI by splitting **Host** (engine-process lifecycle) from **Surface** (a detachable viewer). End state = a hard cut to a single host: every node is a per-node **broker** that runs one pi engine in-process via the pi SDK (sole `.jsonl` writer, multi-listener fan-out); `crtr attach` (tmux pane) and `crtr web` (browser) are interchangeable viewers. tmux survives only as a viewer host + placement substrate.

@@ -1,13 +1,12 @@
 ---
 kind: preference
-when: When a task relates to vision docs are desired state
-why: In crouter's vision/ dir, vision docs describe the desired end-state (how
-  it should work + why), never current problems/gaps or implementation.
+when: When you are writing or editing anything under crouter's vision/ directory
+why: Vision docs must describe the desired end-state, and it tells you
+  what never belongs in one
 short-form: In crouter's vision/ dir, vision docs describe the desired end-state
   (how it should work + why), never current problems/gaps or implementation.
 system-prompt-visibility: preview
 file-read-visibility: none
-needs-refinement: true
 ---
 
 A vision doc in `crouter/vision/` describes the DESIRED END-STATE — how the system should work and why — in present tense, as the target the code is measured against. It never opens with "## The problem", a current-state audit, "today X does Y wrong", or implementation mechanics. Motivation is the desired principle, not the present deficiency. Invariants are stated plainly so they can be audited.

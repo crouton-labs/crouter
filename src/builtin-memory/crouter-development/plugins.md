@@ -111,7 +111,7 @@ ln -s $(pwd) ~/.crouter/plugins/my-plugin
 # Verify
 crtr pkg plugin inspect list                       # my-plugin appears
 crtr pkg plugin inspect show my-plugin             # lists its skills
-crtr skill find list --plugin my-plugin            # just my-plugin's skills
+crtr memory list --plugin my-plugin            # just my-plugin's skills
 crtr sys doctor                                    # validates manifest + every skill
 ```
 
@@ -131,7 +131,7 @@ Standard semver:
 
 ## Enable/disable
 
-`crtr pkg plugin manage disable <name>` flips the per-scope config without removing files. Disabled plugins are hidden from `crtr skill find list` and don't resolve via `crtr skill read <name>`. Re-enable with `crtr pkg plugin manage enable <name>`.
+`crtr pkg plugin manage disable <name>` flips the per-scope config without removing files. Disabled plugins are hidden from `crtr memory list` and don't resolve via `crtr memory read <name>`. Re-enable with `crtr pkg plugin manage enable <name>`.
 
 Individual skills inside an enabled plugin can also be disabled: `crtr skill state disable <plugin>/<skill>`.
 

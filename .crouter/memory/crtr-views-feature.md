@@ -1,11 +1,11 @@
 ---
 kind: reference
-when: When a task relates to crtr views feature
-why: The `crtr view` TUI view library — what it is and its load-bearing constraints
+when: When you are building, changing, or launching a crtr view
+why: Views carry easy-to-violate load-bearing constraints — plain .mjs
+  modules, sessionless launch, the tmux-import lint
 short-form: The `crtr view` TUI view library — what it is and its load-bearing constraints
 system-prompt-visibility: none
 file-read-visibility: preview
-needs-refinement: true
 ---
 
 `crtr view` is a pluggable terminal-view library (committed 9cf8417). A view = a
