@@ -79,10 +79,12 @@ test('never-booted node is marked dead and surfaced to the parent as urgent', as
   assert.match(inbox[0]!.label, /Spawn failed/);
 });
 
-// A node that HAD booted (pi_session_id set) then lost its window is a genuine
-// crash, not a boot failure — it is marked dead but NOT surfaced as a spawn
-// failure (no false alarm to the parent).
-test('a crash after boot is marked dead without a boot-failure push', async () => {
+// A node that HAD booted (pi_session_id set) then lost its window mid-generation
+// is a genuine crash — NOT a spawn failure — and the daemon surfaces it to the
+// parent as an urgent crash notice (surfaceChildDeath, not surfaceBootFailure).
+// The parent is woken exactly once, with tier=urgent, and the label must NOT
+// match the "Spawn failed" boot-failure message (different human-visible text).
+test('a crash after boot is marked dead and wakes the parent as urgent crash (not boot-failure)', async () => {
   createNode(node('P2', { kind: 'developer', lifecycle: 'resident' }));
   createNode(
     node('C2', {
@@ -104,11 +106,13 @@ test('a crash after boot is marked dead without a boot-failure push', async () =
   await superviseTick();
 
   assert.equal(getNode('C2')!.status, 'dead', 'crashed child is dead');
-  assert.equal(
-    readInboxSince('P2').length,
-    0,
-    'a real crash does not push a boot-failure pointer',
-  );
+
+  const inbox = readInboxSince('P2');
+  assert.equal(inbox.length, 1, 'parent receives exactly one crash notice');
+  assert.equal(inbox[0]!.tier, 'urgent', 'mid-run crash is delivered as urgent');
+  assert.equal(inbox[0]!.from, 'C2');
+  // Must NOT be the boot-failure message — this is a post-boot crash notice.
+  assert.doesNotMatch(inbox[0]!.label, /Spawn failed/);
   clearBusy('C2');
 });
 

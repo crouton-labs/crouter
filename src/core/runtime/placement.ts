@@ -94,6 +94,7 @@ export {
   setPaneOption,
   getPaneOption,
   paneCurrentPath,
+  listLivePanes,
 } from './tmux.js';
 export type { RespawnPaneOpts } from './tmux.js';
 export { nodeSession } from './nodes.js';

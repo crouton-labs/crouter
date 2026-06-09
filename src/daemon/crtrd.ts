@@ -32,9 +32,10 @@ import {
   rmSync,
   existsSync,
   mkdirSync,
+  statSync,
 } from 'node:fs';
 import { join } from 'node:path';
-import { crtrHome } from '../core/canvas/paths.js';
+import { crtrHome, nodeDir, jobDir } from '../core/canvas/paths.js';
 import {
   listNodes,
   getRow,
@@ -45,6 +46,8 @@ import {
   dueWakes,
   consumeWake,
   advanceWake,
+  listFocuses,
+  closeFocusRow,
   type NodeRow,
   type NodeMeta,
   type Wakeup,
@@ -53,7 +56,7 @@ import {
 } from '../core/canvas/index.js';
 import { transition } from '../core/runtime/lifecycle.js';
 import { isBusy } from '../core/runtime/busy.js';
-import { isNodePaneAlive, reconcile } from '../core/runtime/placement.js';
+import { isNodePaneAlive, reconcile, listLivePanes, tearDownNode } from '../core/runtime/placement.js';
 import { reviveNode } from '../core/runtime/revive.js';
 import { spawnChild, type SpawnChildOpts } from '../core/runtime/spawn.js';
 import { wakeOriginFrom } from '../core/runtime/bearings.js';
@@ -135,6 +138,24 @@ const REVIVE_GRACE_MS = 20_000;
 // only — a daemon restart resets it (worst case: one extra grace interval).
 const unhealthySince = new Map<string, number>();
 
+// How long a node may sit with intent='refresh', its turn OVER (busy marker
+// absent) and its pi still ALIVE before the daemon concludes the yield stalled
+// and kills the pi. The healthy window is seconds: agent_end dispatches the
+// in-place respawn (which kills the old pi) immediately after clearing busy.
+// Minutes of that state means the shutdown/respawn path hung (observed at
+// ~200k-token contexts) and nothing else will ever unstick it — the daemon
+// only revives DEAD pis.
+export const YIELD_STALL_GRACE_MS = 3 * 60_000;
+
+// After a yield-stall SIGTERM, how long the pi gets to die gracefully before
+// escalating to SIGKILL (a pi hung at context overflow may not run handlers).
+const KILL_ESCALATE_MS = 20_000;
+
+// Per-node yield-stall clocks (audit 2026-06-09, Bug 1). In-memory like
+// unhealthySince — a daemon restart resets them (worst case: one extra grace).
+const yieldStallSince = new Map<string, number>();
+const yieldTermAt = new Map<string, number>();
+
 // Wake-failure dedup latch (third pass): wakeup_ids we've already fail-loud
 // notified about, so a permanently-broken spawn-cron (or a quarantined recurrence)
 // notifies the armer ONCE and then stays quiet until the next success or cancel —
@@ -142,6 +163,119 @@ const unhealthySince = new Map<string, number>();
 // only, like unhealthySince; a daemon restart resets it (worst case: one repeat
 // notice). A successful spawn clears its entry so a future failure re-notifies.
 const notifiedWakeFailures = new Set<string>();
+
+// How old a spawned-but-sessionless node must be before the daemon treats it as
+// "never launched" and relaunches it. MUST generously exceed worst-case pi boot
+// under load: a healthy fresh spawn is sessionless (no pi_session_id, no pid,
+// zero cycles) for its whole boot, and relaunching into that window would
+// double-spawn.
+export const NEVER_LAUNCHED_GRACE_MS = 5 * 60_000;
+
+/** Never-launched decision (audit 2026-06-09, Bug 4 — node mq45b6ch-9ecc2f03):
+ *  a spawn that opened its window but whose pi never came up leaves a row with
+ *  ZERO cycles, NO session, NO pid — and, when the window lingers (e.g. a
+ *  remain-on-exit corpse), the live-pane pass read "no pid to judge" and left it
+ *  forever; the parent waited on a node that was never going to run. Pure core:
+ *  a node that has ever booted (session recorded) or ever been revived (cycles
+ *  bumped) is NOT never-launched — the cycles gate also bounds this to ONE
+ *  automatic retry (the relaunch bumps cycles), so a persistently failing
+ *  launch can't loop. Age below the grace is a normal in-flight boot. */
+export function neverLaunchedVerdict(
+  piSessionId: string | null,
+  cycles: number,
+  ageMs: number,
+): 'leave' | 'relaunch' {
+  if (piSessionId != null || cycles > 0) return 'leave';
+  return ageMs >= NEVER_LAUNCHED_GRACE_MS ? 'relaunch' : 'leave';
+}
+
+/** Enact the never-launched relaunch for a pane-alive, pid-less node (Bug 4):
+ *  verify against meta (pi_session_id is identity, read on demand), reap the
+ *  stale spawn window, and relaunch fresh via reviveNode — whose kickoff
+ *  carries the node's goal (context/initial-prompt.md) when no roadmap exists,
+ *  so the relaunched worker receives its original mandate. */
+function handleNeverLaunched(row: NodeRow, now: number, revivedThisTick: Set<string>): void {
+  const age = now - Date.parse(row.created); // NaN compares false → leave
+  if (!(age >= NEVER_LAUNCHED_GRACE_MS)) return;
+  const meta = getNode(row.node_id);
+  if (meta === null) return;
+  if (neverLaunchedVerdict(meta.pi_session_id ?? null, meta.cycles ?? 0, age) !== 'relaunch') {
+    return;
+  }
+  process.stderr.write(
+    `[crtrd] relaunch ${row.node_id} (spawned but never launched: 0 cycles, no session, age ${Math.round(age / 1000)}s)\n`,
+  );
+  tearDownNode(row.node_id); // reap the stale spawn pane — reviveNode opens a fresh window
+  reviveNode(row.node_id, { resume: false });
+  revivedThisTick.add(row.node_id);
+}
+
+/** Yield-stall decision (audit 2026-06-09, Bug 1 — node mq5v9hfa-74493d45 and
+ *  three sibling orchestrators): a `node yield` records intent='refresh' and
+ *  agent_end dispatches the in-place respawn, but at very large contexts the pi
+ *  process can HANG instead of exiting — leaving pi alive, the turn over, and
+ *  the intent pending forever. The daemon only revives DEAD pis, so without
+ *  this verdict the node is permanently stuck (no revive, no wake). Pure core,
+ *  mirroring livenessVerdict; the kill side effects live in handleYieldStall.
+ *
+ *  'kill' ONLY when ALL of: pi alive, intent='refresh', the turn is over (busy
+ *  marker absent — a node may legitimately keep working for many minutes after
+ *  running `node yield` mid-turn, and a working pi must never be killed), and
+ *  the state has persisted past YIELD_STALL_GRACE_MS. */
+export function yieldStallVerdict(
+  piPidAlive: boolean | null,
+  intent: NodeRow['intent'],
+  busy: boolean,
+  stalledFor: number | null,
+): 'leave' | 'pending' | 'kill' {
+  if (piPidAlive !== true) return 'leave';
+  if (intent !== 'refresh') return 'leave';
+  if (busy) return 'leave';
+  if (stalledFor === null || stalledFor < YIELD_STALL_GRACE_MS) return 'pending';
+  return 'kill';
+}
+
+/** Enact a yield-stall (Bug 1): clock the stalled state, then SIGTERM the hung
+ *  pi (escalating to SIGKILL if it survives KILL_ESCALATE_MS — a pi hung at
+ *  context overflow may never run its handlers). Once the pi is dead the
+ *  ORDINARY machinery finishes the job: the pane-alive/pi-dead grace path
+ *  revives with resume=false (intent is still 'refresh'), i.e. the fresh
+ *  roadmap-revive the yield asked for. Safe against a graceful SIGTERM
+ *  shutdown racing us: markCleanExitDone no-ops while intent is pending, so a
+ *  dying pi can't mis-finalize the node. */
+function handleYieldStall(row: NodeRow, pid: number, now: number): void {
+  const id = row.node_id;
+  if (row.intent !== 'refresh' || isBusy(id)) {
+    yieldStallSince.delete(id);
+    yieldTermAt.delete(id);
+    return;
+  }
+  const since = yieldStallSince.get(id);
+  if (since === undefined) {
+    yieldStallSince.set(id, now);
+    return;
+  }
+  if (yieldStallVerdict(true, row.intent, false, now - since) !== 'kill') return;
+  const termed = yieldTermAt.get(id);
+  if (termed === undefined) {
+    process.stderr.write(
+      `[crtrd] kill ${id} (yield-stall: pi ${pid} still alive ${Math.round((now - since) / 1000)}s after its refresh-yield turn ended — SIGTERM)\n`,
+    );
+    try {
+      process.kill(pid, 'SIGTERM');
+    } catch {
+      /* already gone */
+    }
+    yieldTermAt.set(id, now);
+  } else if (now - termed >= KILL_ESCALATE_MS) {
+    process.stderr.write(`[crtrd] kill ${id} (yield-stall: pi ${pid} survived SIGTERM — SIGKILL)\n`);
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      /* already gone */
+    }
+  }
+}
 
 export type LivenessVerdict = 'leave' | 'pending' | 'revive';
 
@@ -172,6 +306,8 @@ function handleLiveWindow(row: NodeRow, now: number, revivedThisTick: Set<string
   // a done-node's manager handoff.)
   if (row.intent === 'idle-release') {
     unhealthySince.delete(id);
+    yieldStallSince.delete(id);
+    yieldTermAt.delete(id);
     return;
   }
   const pid = row.pi_pid;
@@ -179,8 +315,21 @@ function handleLiveWindow(row: NodeRow, now: number, revivedThisTick: Set<string
 
   if (piPidAlive !== false) {
     unhealthySince.delete(id); // alive, or no pid to judge — nothing pending
+    if (piPidAlive === null) {
+      // No pid recorded: a legacy row, a relaunch in flight — or a spawn whose
+      // pi NEVER came up while its window lingers (Bug 4). Judge the last case.
+      handleNeverLaunched(row, now, revivedThisTick);
+    } else {
+      // pi ALIVE: judge a hung refresh-yield (Bug 1) — alive is not healthy
+      // when the node yielded, its turn ended, and the pi never exited.
+      handleYieldStall(row, pid as number, now);
+    }
     return;
   }
+  // pi is DEAD — any pending yield-stall clock is moot (the normal dead-pi
+  // grace path below owns recovery now).
+  yieldStallSince.delete(id);
+  yieldTermAt.delete(id);
 
   const since = unhealthySince.get(id);
   const verdict = livenessVerdict(piPidAlive, since === undefined ? null : now - since);
@@ -227,6 +376,100 @@ function failLoudWake(w: Wakeup, label: string, body: string): void {
     process.stderr.write(
       `[crtrd] wake ${w.wakeup_id} failed (owner ${w.owner_id} gone): ${body}\n`,
     );
+  }
+}
+
+// How long a dead node's on-disk record must have been QUIET (no meta/telemetry
+// write) before its leftover placement is reaped. A fresh crash keeps its pane
+// around this long so a human can read the corpse; a long-dead node's orphaned
+// pane is torn down on sight.
+export const DEAD_REAP_GRACE_MS = 10 * 60_000;
+
+/** ms since the node's durable record was last written (meta.json / job/
+ *  telemetry.json mtimes — the files every live cycle touches). Infinity when
+ *  neither exists: no disk evidence reads as ancient, not fresh. Deliberately
+ *  NOT inbox.jsonl — children keep appending to a dead manager's inbox, which
+ *  must not hold its corpse un-reapable forever. */
+function msSinceDiskActivity(nodeId: string, now: number): number {
+  let latest = 0;
+  for (const p of [join(nodeDir(nodeId), 'meta.json'), join(jobDir(nodeId), 'telemetry.json')]) {
+    try {
+      const m = statSync(p).mtimeMs;
+      if (m > latest) latest = m;
+    } catch {
+      /* absent — contributes nothing */
+    }
+  }
+  return latest === 0 ? Number.POSITIVE_INFINITY : now - latest;
+}
+
+/** Reap the leftover PLACEMENT of long-dead nodes (audit 2026-06-09, Bug 3 —
+ *  node mq3l84it-40f6e8ac, a dead resident whose orphaned pane + focus row sat
+ *  untouched for ~36h). The daemon supervises only active|idle rows, so a node
+ *  that lands `dead` while still holding a pane is invisible to every pass and
+ *  its residue leaks forever.
+ *
+ *  Deliberate REAP-not-REVIVE decision: a dead node is NOT auto-revived. `dead`
+ *  means crashed — auto-resurrecting a crashed RESIDENT (a human conversation)
+ *  would pop dead chats back open unbidden, and the daemon's contract is to
+ *  supervise live nodes, not to undo terminal states. A dead resident's wake
+ *  sources remain the human ones (`node msg --tier critical`, focus, `canvas
+ *  revive`), all of which still work after this reap. What we DO reclaim is the
+ *  physical residue: kill the orphaned pane, drop the focus row, null the
+ *  LOCATION (tearDownNode). The node row, its edges, and all on-disk state stay
+ *  intact, so a later manual revive keeps its full graph — the leak was the
+ *  pane/focus/presence, not the row. Grace: only after DEAD_REAP_GRACE_MS of
+ *  disk quiet, so a just-crashed pane survives long enough to be inspected. */
+function reapDeadResidue(now: number): void {
+  let rows: NodeRow[];
+  try {
+    rows = listNodes({ status: ['dead'] });
+  } catch (err) {
+    process.stderr.write(`[crtrd] reapDeadResidue list error: ${(err as Error).message}\n`);
+    return;
+  }
+  for (const row of rows) {
+    try {
+      if (row.pane == null && row.window == null && row.tmux_session == null) continue;
+      if (msSinceDiskActivity(row.node_id, now) < DEAD_REAP_GRACE_MS) continue;
+      process.stderr.write(
+        `[crtrd] reap ${row.node_id} (dead, placement leaked: pane=${String(row.pane)} window=${String(row.window)})\n`,
+      );
+      tearDownNode(row.node_id);
+    } catch (err) {
+      process.stderr.write(
+        `[crtrd] error reaping ${row.node_id}: ${(err as Error).message}\n`,
+      );
+    }
+  }
+}
+
+/** GC stale focus rows (audit 2026-06-09, Bug 5): nothing else deletes a focuses
+ *  row when its pane dies outside the sanctioned teardown paths (a user
+ *  kill-pane, a tmux server restart, a crashed swap), so dead-pane rows
+ *  accumulate forever — the audit found 15 of 21 rows pointing at gone panes,
+ *  and a stale row both lies to graphSurfaceTarget and blocks its node from
+ *  being adopted into a fresh viewport (UNIQUE node_id). Sweep them here: one
+ *  batched `list-panes -a` probe (never a per-row display-message), deleting
+ *  rows whose recorded pane no longer exists. A pane-less row (a bridge/unplaced
+ *  viewport) has nothing to verify and is left alone. On a FAILED probe (tmux
+ *  unreachable — daemon racing a server restart) we skip the sweep entirely:
+ *  "can't tell" must never mass-delete every viewport. */
+function gcStaleFocuses(): void {
+  try {
+    const rows = listFocuses();
+    if (rows.length === 0) return;
+    const live = listLivePanes();
+    if (live === null) return; // probe failed — never GC on "can't tell"
+    for (const f of rows) {
+      if (f.pane === null || live.has(f.pane)) continue;
+      process.stderr.write(
+        `[crtrd] gc focus ${f.focus_id} (pane ${f.pane} gone, occupant ${f.node_id})\n`,
+      );
+      closeFocusRow(f.focus_id);
+    }
+  } catch (err) {
+    process.stderr.write(`[crtrd] gcStaleFocuses error: ${(err as Error).message}\n`);
   }
 }
 
@@ -322,6 +565,31 @@ export async function superviseTick(now: number = Date.now()): Promise<void> {
 
       // The pane is gone. Branch on why.
       unhealthySince.delete(row.node_id); // pane-gone path owns it now
+      yieldStallSince.delete(row.node_id);
+      yieldTermAt.delete(row.node_id);
+
+      // Zombie vehicle (audit 2026-06-09, Bug 2 — node mq4ms6n4-fbc455cd): the
+      // pane died but its pi SURVIVED (pi can outlive the pane's SIGHUP). Every
+      // branch below assumes "pane gone ⇒ pi gone"; with a live orphan that
+      // assumption corrupts — the headless pi keeps re-arming its inbox watcher
+      // with no pane a human can reach, the second pass's pi-liveness gate skips
+      // a released node forever, and a refresh-revive would run a second pi
+      // beside it. There is no legitimate pane-gone+pi-alive state (in-place
+      // respawns keep the pane id; teardown paths null presence before reaping),
+      // so kill the orphan first, then route normally. SIGKILL, not SIGTERM: an
+      // orphaned pi's shutdown hooks mutating canvas state mid-routing is
+      // exactly what we're fencing out.
+      if (row.pi_pid != null && isPidAlive(row.pi_pid)) {
+        process.stderr.write(
+          `[crtrd] kill ${row.node_id} (zombie pi ${row.pi_pid}: pane gone, pi alive)\n`,
+        );
+        try {
+          process.kill(row.pi_pid, 'SIGKILL');
+        } catch {
+          /* raced its own death — fine */
+        }
+      }
+
       if (row.intent === 'refresh') {
         // The node set intent=refresh before stopping — a clean yield. Respawn
         // fresh so it re-reads its roadmap/context dir.
@@ -602,6 +870,14 @@ export async function superviseTick(now: number = Date.now()): Promise<void> {
       );
     }
   }
+
+  // Fourth pass: reap the leftover placement of long-dead nodes (Bug 3), then
+  // sweep focus rows whose pane died outside the sanctioned teardown paths
+  // (Bug 5). Reap first so the GC also catches any focus row a reaped pane
+  // strands; last overall so neither races a focus a same-tick revive just
+  // re-anchored.
+  reapDeadResidue(now);
+  gcStaleFocuses();
 }
 
 // ---------------------------------------------------------------------------

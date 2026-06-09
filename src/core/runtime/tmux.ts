@@ -230,6 +230,18 @@ export function paneExists(pane: string): boolean {
   return r.ok && r.stdout === pane;
 }
 
+/** Every live pane id on the server (`list-panes -a`), as a Set for membership
+ *  probes. Returns null when tmux is unreachable (no server / transient failure)
+ *  so callers can tell "no panes" apart from "can't tell" — a GC pass must skip,
+ *  never mass-delete, on a failed probe. One subprocess call total, so batch
+ *  liveness sweeps (e.g. the daemon's stale-focus GC) don't pay a per-pane
+ *  display-message each. */
+export function listLivePanes(): Set<string> | null {
+  const r = tmux(['list-panes', '-a', '-F', '#{pane_id}']);
+  if (!r.ok) return null;
+  return new Set(r.stdout.split('\n').filter((p) => p !== ''));
+}
+
 /** The working directory of a pane (`display-message -p -t <pane>
  *  '#{pane_current_path}'`). Used to preserve a view monitor's cwd across a
  *  view-cycle respawn so project-scoped views still resolve. Null if tmux fails. */
