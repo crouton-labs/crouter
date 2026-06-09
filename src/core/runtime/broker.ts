@@ -26,6 +26,7 @@ import {
   type CreateAgentSessionResult,
   type CreateAgentSessionRuntimeFactory,
   type ExtensionUIContext,
+  type PromptOptions,
 } from '@earendil-works/pi-coding-agent';
 import { nodeDir } from '../canvas/paths.js';
 import { FRONT_DOOR_ENV } from './front-door.js';
@@ -449,14 +450,30 @@ export async function runBroker(nodeId: string): Promise<void> {
     const relayError = (err: unknown): void =>
       sendFrame(client, { type: 'error', code: 'engine_error', message: String(err) });
     switch (frame.type) {
-      case 'prompt':
-        void session.prompt(frame.text).catch(relayError);
+      case 'prompt': {
+        // C1: forward any pasted/attached images (frame.images) to the engine —
+        // they ride as a field on PromptOptions (pi: `prompt(text, { images })`).
+        // m-B (streaming-safe): the controller routes prompt-vs-steer off a
+        // possibly-STALE `isStreaming` snapshot, so a `prompt` frame can arrive
+        // mid-stream; PromptOptions.streamingBehavior is "Required if streaming"
+        // (prompt() throws without it). Make the broker authoritative — when the
+        // LIVE session is streaming, supply it so the client's routing is a HINT,
+        // not a correctness requirement. "steer" mirrors pi interactive-mode's
+        // own Enter-while-streaming submit (interactive-mode.js:
+        // `prompt(text, { streamingBehavior: "steer" })`).
+        const options: PromptOptions = {};
+        if (frame.images !== undefined) options.images = frame.images;
+        if (session.isStreaming) options.streamingBehavior = 'steer';
+        void session.prompt(frame.text, options).catch(relayError);
         break;
+      }
       case 'steer':
-        void session.steer(frame.text).catch(relayError);
+        // C1: pi's steer() takes images as a POSITIONAL 2nd arg (`steer(text, images?)`).
+        void session.steer(frame.text, frame.images).catch(relayError);
         break;
       case 'follow_up':
-        void session.followUp(frame.text).catch(relayError);
+        // C1: pi's followUp() takes images as a POSITIONAL 2nd arg (`followUp(text, images?)`).
+        void session.followUp(frame.text, frame.images).catch(relayError);
         break;
       case 'abort':
         void session.abort().catch(relayError);
