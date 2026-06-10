@@ -32,49 +32,26 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      # uv must precede `npm ci`: humanloop's postinstall provisions its OWN
-      # termrender venv via uv and resolves the binary by absolute path inside it
-      # (never $PATH — a bare `pip install termrender` does nothing for it; CI
-      # finding 2026-06-10). The review-render-pane regression test needs that
-      # venv to boot the live render pane.
+      # uv must precede `npm ci`: humanloop's postinstall provisions its termrender
+      # into a uv-managed venv under node_modules/@crouton-kit/humanloop/.venv
+      # (a bare `pip install termrender` does nothing for it). The
+      # review-render-pane regression test needs that venv to boot the render pane.
       - uses: astral-sh/setup-uv@v5
       - run: npm ci
+      # Put the managed termrender on PATH for the tmux panes the full-tier review
+      # test spawns. humanloop calls `termrender pane open` by the venv's absolute
+      # path, but pane open bakes a BARE `termrender doc watch ...` command into
+      # the split pane it opens — that sub-pane resolves `termrender` via $PATH.
+      # A pristine runner has no `termrender` on PATH (the venv bin isn't on it),
+      # so the watch pane dies instantly and the review surface shows nothing.
+      # Exporting the venv bin here makes the tmux server (started inside
+      # test:full) — and every pane it forks — resolve the bare command. A dev box
+      # already has termrender on PATH, which is why this only bites CI.
+      - name: Put managed termrender on PATH
+        run: echo "$PWD/node_modules/@crouton-kit/humanloop/.venv/bin" >> "$GITHUB_PATH"
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y tmux
       - run: npm run build
-      - name: DIAG renderer provisioning
-        continue-on-error: true
-        run: |
-          set +e
-          echo "=== uv / tmux ==="
-          which uv && uv --version || echo "NO UV"
-          which tmux && tmux -V || echo "NO TMUX"
-          echo "=== venv ==="
-          ls -la node_modules/@crouton-kit/humanloop/.venv/bin/ || echo "NO VENV DIR"
-          node_modules/@crouton-kit/humanloop/.venv/bin/termrender -h >/dev/null 2>&1 && echo "BINARY OK" || echo "BINARY FAIL"
-          node_modules/@crouton-kit/humanloop/.venv/bin/python -c 'import importlib.metadata as m; print("VER", m.version("termrender"))' 2>&1 || echo "VER FAIL"
-          echo "=== one-shot render (should work) ==="
-          printf '# Render check\n\n:::callout{type="info"}\nRENDER-MARKER body\n:::\n' > /tmp/diag-doc.md
-          node_modules/@crouton-kit/humanloop/.venv/bin/termrender doc render --color on < /tmp/diag-doc.md 2>&1 | head -8
-          VBIN="$PWD/node_modules/@crouton-kit/humanloop/.venv/bin"
-          echo "which termrender (bare, normal PATH):"; which termrender || echo "  NOT ON PATH"
-          tmux set-option -g remain-on-exit on
-          # F) Replicate pane open EXACTLY: split-window running BARE 'termrender'
-          #    (what _build_pane_cmd bakes). Expect command-not-found -> dead.
-          tmux new-session -d -s diagF -x 200 -y 50 "sleep 60"
-          tmux split-window -h -t diagF:0 -P -F '#{pane_id}' "termrender doc watch --color on -- /tmp/diag-doc.md" >/tmp/fpane 2>&1 || true
-          sleep 3
-          echo "--- F panes (bare termrender in split) ---"; tmux list-panes -s -t diagF -F '#{pane_id} dead=#{pane_dead} status=#{pane_dead_status} cmd=#{pane_current_command}'
-          echo "--- F split pane content ---"; tmux capture-pane -ep -t "$(cat /tmp/fpane)" 2>&1 | cat -v | head -10
-          tmux kill-session -t diagF || true
-          # G) THE FIX: same split, but venv bin on PATH so bare termrender resolves.
-          tmux new-session -d -s diagG -x 200 -y 50 "sleep 60"
-          tmux set-environment -t diagG PATH "$VBIN:$PATH"
-          tmux split-window -h -t diagG:0 -P -F '#{pane_id}' "termrender doc watch --color on -- /tmp/diag-doc.md" >/tmp/gpane 2>&1 || true
-          sleep 3
-          echo "--- G panes (PATH includes venv bin) ---"; tmux list-panes -s -t diagG -F '#{pane_id} dead=#{pane_dead} status=#{pane_dead_status} cmd=#{pane_current_command}'
-          echo "--- G split pane content ---"; tmux capture-pane -ep -t "$(cat /tmp/gpane)" 2>&1 | cat -v | head -10
-          tmux set-option -g remain-on-exit off; tmux kill-session -t diagG || true
       - run: npm run test:full
 
 # Runner caveats (cannot be exercised from this dev box — verify on first CI run):
