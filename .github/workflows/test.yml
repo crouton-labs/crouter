@@ -56,17 +56,33 @@ jobs:
           echo "=== one-shot render (should work) ==="
           printf '# Render check\n\n:::callout{type="info"}\nRENDER-MARKER body\n:::\n' > /tmp/diag-doc.md
           node_modules/@crouton-kit/humanloop/.venv/bin/termrender doc render --color on < /tmp/diag-doc.md 2>&1 | head -8
-          echo "=== watch as pane cmd: stdout=pty, stderr->file to catch traceback ==="
           TR="$PWD/node_modules/@crouton-kit/humanloop/.venv/bin/termrender"
-          rm -f /tmp/watch.err
-          tmux new-session -d -s diagw -x 200 -y 50 "'$TR' doc watch --color on -- /tmp/diag-doc.md 2>/tmp/watch.err; echo EXIT=\$? >>/tmp/watch.err; sleep 30"
-          sleep 5
-          echo "--- pane state @5s ---"; tmux list-panes -s -t diagw -F '#{pane_id} cmd=#{pane_current_command} dead=#{pane_dead}'
-          echo "--- watch.err (stderr + exit code) ---"; cat -v /tmp/watch.err | head -60
-          echo "--- TERM/locale in a fresh detached pane ---"
-          tmux new-session -d -s diagenv -x 200 -y 50 "env | grep -iE 'TERM|LANG|LC_' > /tmp/env.txt; sleep 10"
-          sleep 2; cat /tmp/env.txt
-          tmux kill-session -t diagw || true; tmux kill-session -t diagenv || true
+          # Variant A: stdin = pty (real scenario). Capture isatty + exit code/signal.
+          cat > /tmp/watchA.sh <<SH
+          #!/bin/bash
+          python3 -c 'import sys;print("A isatty(stdin)="+str(sys.stdin.isatty()))' > /tmp/watchA.diag
+          $TR doc watch --color on -- /tmp/diag-doc.md >/tmp/watchA.out 2>/tmp/watchA.err
+          echo "A EXIT=\$?" >> /tmp/watchA.diag
+          sleep 30
+          SH
+          chmod +x /tmp/watchA.sh
+          tmux new-session -d -s diagA -x 200 -y 50 "/tmp/watchA.sh"
+          # Variant B: stdin from /dev/null (non-interactive branch -> should loop forever).
+          cat > /tmp/watchB.sh <<SH
+          #!/bin/bash
+          $TR doc watch --color on -- /tmp/diag-doc.md </dev/null >/tmp/watchB.out 2>/tmp/watchB.err
+          echo "B EXIT=\$?" >> /tmp/watchB.diag
+          sleep 30
+          SH
+          chmod +x /tmp/watchB.sh
+          rm -f /tmp/watchB.diag
+          tmux new-session -d -s diagB -x 200 -y 50 "/tmp/watchB.sh"
+          sleep 6
+          echo "--- A pane state ---"; tmux list-panes -s -t diagA -F '#{pane_id} cmd=#{pane_current_command} dead=#{pane_dead}'
+          echo "--- A diag (isatty + exit) ---"; cat -v /tmp/watchA.diag 2>&1; echo "A stderr:"; cat -v /tmp/watchA.err 2>&1 | head -20
+          echo "--- B pane state (alive=non-interactive loops forever) ---"; tmux list-panes -s -t diagB -F '#{pane_id} cmd=#{pane_current_command} dead=#{pane_dead}'
+          echo "--- B diag ---"; cat -v /tmp/watchB.diag 2>&1; echo "B stderr:"; cat -v /tmp/watchB.err 2>&1 | head -20
+          tmux kill-session -t diagA || true; tmux kill-session -t diagB || true
       - run: npm run test:full
 
 # Runner caveats (cannot be exercised from this dev box — verify on first CI run):
