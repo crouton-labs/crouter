@@ -3,14 +3,11 @@ import { usage } from '../../core/errors.js';
 import { listAllMemoryDocs } from '../../core/memory-resolver.js';
 import { parseSubstrateDoc } from '../../core/substrate/index.js';
 import type { SubstrateDoc } from '../../core/substrate/index.js';
-import { listAllSkills } from '../../core/resolver.js';
-import type { Skill, Scope } from '../../types.js';
-import { parseFrontmatter } from '../../core/frontmatter.js';
-import { readText } from '../../core/fs-utils.js';
+import type { Scope } from '../../types.js';
 import { MEMORY_KINDS } from './shared.js';
 
-// A unit in the unioned search space: a substrate memory document OR a skill,
-// normalized to the fields find ranks/returns.
+// A unit in the search space: a substrate memory document, normalized to the
+// fields find ranks/returns.
 interface Unit {
   name: string;
   kind: string;
@@ -36,35 +33,14 @@ function substrateUnit(d: SubstrateDoc): Unit {
   };
 }
 
-function skillUnit(s: Skill): Unit {
-  const desc = s.frontmatter.description ?? '';
-  const keywords = s.frontmatter.keywords ? s.frontmatter.keywords.join(' ') : '';
-  return {
-    name: s.name,
-    kind: 'skill',
-    scope: s.scope,
-    path: s.path,
-    // A skill's description plays the read-routing role; keywords ride along so
-    // the ranker weighs them too. short_form surfaces the description as the hook.
-    routing: [desc, keywords].filter((x) => x).join(' '),
-    shortForm: desc,
-    loadBody: () => parseFrontmatter(readText(s.path)).body,
-  };
-}
-
-/** The unioned candidate set: every substrate memory document + every skill,
- *  optionally narrowed to one kind. find searches EVERYTHING — it never applies
- *  gate or visibility-rung filtering (design §11#3). The skill half is wrapped
- *  defensively: the skill corpus is parsed by the resolver, which currently
- *  hard-throws on at least one shipped skill's frontmatter (a pre-existing
- *  regression in the yaml-parser swap, owned by the frontmatter/skill track). A
- *  broken skill corpus must degrade the union to substrate-docs-only, never
- *  crash `memory find`.
+/** The candidate set: every substrate memory document (native + plugin, supplied
+ *  by listAllMemoryDocs), optionally narrowed to one kind. find searches
+ *  EVERYTHING — it never applies gate or visibility-rung filtering (design
+ *  §11#3).
  *
- *  Dedup by (scope, name): the substrate and skill-plugin corpora can collide on
- *  identity (a skill name can appear in multiple installed plugins at the same
- *  scope). The FIRST unit encountered for a given identity wins — substrate docs
- *  before skill-plugin docs, which mirrors the memory resolver's own precedence. */
+ *  Dedup by (scope, name): native and plugin docs of the same scope can collide
+ *  on identity. The FIRST unit encountered for a given identity wins — native
+ *  before plugin, which mirrors the memory resolver's own precedence. */
 function candidates(kindFilter: string | undefined): Unit[] {
   const seen = new Set<string>(); // "scope/name" → first wins
   const add = (u: Unit): void => {
@@ -80,13 +56,6 @@ function candidates(kindFilter: string | undefined): Unit[] {
     if (sub === null) continue;
     if (kindFilter !== undefined && sub.kind !== kindFilter) continue;
     add(substrateUnit(sub));
-  }
-  if (kindFilter === undefined || kindFilter === 'skill') {
-    try {
-      for (const skill of listAllSkills()) add(skillUnit(skill));
-    } catch {
-      /* skill corpus unavailable — search substrate documents alone */
-    }
   }
   return units;
 }

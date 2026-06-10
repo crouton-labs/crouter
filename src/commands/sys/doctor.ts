@@ -2,38 +2,31 @@ import { join } from 'node:path';
 import { defineLeaf } from '../../core/command.js';
 import { readConfig, updateConfig } from '../../core/config.js';
 import { scopeRoot, listScopes, marketplacesDir, pluginsDir } from '../../core/scope.js';
-import { listInstalledPlugins, listSkillsInPlugin } from '../../core/resolver.js';
 import { readMarketplaceManifest, readPluginManifest } from '../../core/manifest.js';
-import { parseFrontmatter } from '../../core/frontmatter.js';
-import { pathExists, listDirs, removePath, readText, writeText } from '../../core/fs-utils.js';
+import { pathExists, listDirs, removePath } from '../../core/fs-utils.js';
 import { lsRemote } from '../../core/git.js';
-import { SKILL_TYPES, isSkillType } from '../../types.js';
 import type { Scope } from '../../types.js';
 
 // ---------------------------------------------------------------------------
 // Doctor helpers (ported from commands/doctor.ts)
 // ---------------------------------------------------------------------------
 
-type CheckStatus = 'pass' | 'fail' | 'warn';
+type CheckStatus = 'pass' | 'fail';
 
 /**
- * Structured fix action for a failing or warning check. Surfaced on each
+ * Structured fix action for a failing check. Surfaced on each
  * non-pass result so an agent reading doctor output can apply it directly
  * when `--fix` is not used (or when --fix did not auto-apply). Every
  * remediation includes absolute paths / exact keys — no inference required.
  */
 interface Remediation {
-  kind: 'remove_config_key' | 'rm_path' | 'edit_frontmatter';
+  kind: 'remove_config_key' | 'rm_path';
   description: string;
   // remove_config_key
   scope?: Scope;
   configKey?: string;       // dotted path, e.g. "plugins.llm-app-authoring"
   // rm_path
   path?: string;            // absolute path to remove
-  // edit_frontmatter
-  filePath?: string;        // absolute path to the SKILL.md
-  field?: string;           // frontmatter field to edit (currently only 'name')
-  value?: string;           // new value for that field
 }
 
 interface CheckResult {
@@ -51,39 +44,6 @@ function pass(scope: Scope, name: string, message: string): CheckResult {
 
 function failCheck(scope: Scope, name: string, message: string, remediation?: Remediation): CheckResult {
   return { scope, name, status: 'fail', message, ...(remediation ? { remediation } : {}) };
-}
-
-function warnCheck(scope: Scope, name: string, message: string, remediation?: Remediation): CheckResult {
-  return { scope, name, status: 'warn', message, ...(remediation ? { remediation } : {}) };
-}
-
-/**
- * Surgically replace a single frontmatter scalar field's value in a SKILL.md
- * file. Preserves the rest of the file (key order, comments, extra fields,
- * body) exactly. Returns true on success, false if no frontmatter or no such
- * field was found.
- */
-function editFrontmatterField(filePath: string, field: string, newValue: string): boolean {
-  let src: string;
-  try {
-    src = readText(filePath);
-  } catch {
-    return false;
-  }
-  const fmMatch = src.match(/^(---\s*\r?\n)([\s\S]*?)(\r?\n---\s*\r?\n?)/);
-  if (!fmMatch) return false;
-  const [, head, body, tail] = fmMatch;
-  const fieldRe = new RegExp(`^(\\s*${field}\\s*:\\s*)(.*)$`, 'm');
-  if (!fieldRe.test(body)) return false;
-  const quoted = /[:#\-\[\]{},&*?|<>=!%@`]/.test(newValue) || /^\s/.test(newValue) || /\s$/.test(newValue);
-  const formatted = quoted ? `"${newValue.replace(/"/g, '\\"')}"` : newValue;
-  const newBody = body.replace(fieldRe, `$1${formatted}`);
-  try {
-    writeText(filePath, head + newBody + tail + src.slice(fmMatch[0].length));
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 /**
@@ -113,29 +73,12 @@ function applyRemediation(rem: Remediation): boolean {
         removePath(rem.path);
         return true;
       }
-      case 'edit_frontmatter': {
-        if (!rem.filePath || !rem.field || rem.value === undefined) return false;
-        return editFrontmatterField(rem.filePath, rem.field, rem.value);
-      }
       default:
         return false;
     }
   } catch {
     return false;
   }
-}
-
-function readRawTypeField(skillPath: string): string | undefined {
-  const content = readText(skillPath);
-  const { raw } = parseFrontmatter(content);
-  if (!raw) return undefined;
-  const m = raw.match(/^type:\s*(.+?)\s*$/m);
-  if (!m) return undefined;
-  let v = m[1].trim();
-  if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
-    v = v.slice(1, -1);
-  }
-  return v;
 }
 
 function runChecksForScope(scope: Scope, opts: { fix: boolean; remote: boolean }): CheckResult[] {
@@ -258,58 +201,6 @@ function runChecksForScope(scope: Scope, opts: { fix: boolean; remote: boolean }
         seenPluginNames.set(name, dir);
       }
 
-      // Check: skills frontmatter name. Convention: frontmatter `name:` holds
-      // the leaf segment only (e.g. "cli-design"); the full discovered name
-      // ("interface/cli-design") is derived from the path automatically.
-      const plugin = listInstalledPlugins(scope).find((p) => p.name === name);
-      if (plugin) {
-        const skills = listSkillsInPlugin(plugin);
-        for (const skill of skills) {
-          const checkName = `plugin:${name}:skill:${skill.name}:frontmatter`;
-          const segments = skill.name.split('/');
-          const baseName = segments[segments.length - 1];
-          if (skill.frontmatter.name === baseName) {
-            results.push(pass(scope, checkName, `frontmatter valid`));
-          } else if (skill.frontmatter.name === '') {
-            const remediation: Remediation = {
-              kind: 'edit_frontmatter',
-              description: `Set frontmatter "name: ${baseName}" (discovered name "${skill.name}" is auto-derived from the directory path; frontmatter holds the base segment only)`,
-              filePath: skill.path,
-              field: 'name',
-              value: baseName,
-            };
-            if (opts.fix && applyRemediation(remediation)) {
-              results.push({ scope, name: checkName, status: 'fail', message: `frontmatter name was missing — set to "${baseName}"`, fixed: true, remediation });
-            } else {
-              results.push(failCheck(scope, checkName, `frontmatter missing or name field empty`, remediation));
-            }
-          } else {
-            const remediation: Remediation = {
-              kind: 'edit_frontmatter',
-              description: `Replace frontmatter "name: ${skill.frontmatter.name}" with "name: ${baseName}" (discovered name "${skill.name}" is auto-derived from the directory path; frontmatter holds the base segment only)`,
-              filePath: skill.path,
-              field: 'name',
-              value: baseName,
-            };
-            if (opts.fix && applyRemediation(remediation)) {
-              results.push({ scope, name: checkName, status: 'warn', message: `frontmatter name updated from "${skill.frontmatter.name}" to "${baseName}"`, fixed: true, remediation });
-            } else {
-              results.push(warnCheck(scope, checkName, `name mismatch: frontmatter says "${skill.frontmatter.name}", expected base name "${baseName}" (discovered as "${skill.name}")`, remediation));
-            }
-          }
-
-          const typeCheckName = `plugin:${name}:skill:${skill.name}:type`;
-          const rawType = readRawTypeField(skill.path);
-          if (rawType === undefined) {
-            results.push(warnCheck(scope, typeCheckName, `missing type field — add one of: ${SKILL_TYPES.join(' | ')}`));
-          } else if (!isSkillType(rawType)) {
-            results.push(failCheck(scope, typeCheckName, `invalid type "${rawType}" — valid: ${SKILL_TYPES.join(' | ')}`));
-          } else {
-            results.push(pass(scope, typeCheckName, `type: ${rawType}`));
-          }
-        }
-      }
-
       // Git remote check (slow, opt-in)
       if (opts.remote && manifest.source) {
         const res = lsRemote(manifest.source);
@@ -328,23 +219,23 @@ function runChecksForScope(scope: Scope, opts: { fix: boolean; remote: boolean }
 export const sysDoctorLeaf = defineLeaf({
   name: 'doctor',
   description: 'diagnose installation health',
-  whenToUse: 'something in your crtr install looks off and you want it diagnosed — a plugin or marketplace manifest is missing, a config entry points at a directory that no longer exists, or skill frontmatter has drifted from its filename. Reports each problem with a structured remediation, and can apply the repairs for you.',
+  whenToUse: 'something in your crtr install looks off and you want it diagnosed — a plugin or marketplace manifest is missing, or a config entry points at a directory that no longer exists. Reports each problem with a structured remediation, and can apply the repairs for you.',
   help: {
     name: 'sys doctor',
-    summary: 'diagnose missing manifests, broken config entries, and skill frontmatter drift',
+    summary: 'diagnose missing manifests and broken config entries',
     params: [
       { kind: 'flag', name: 'scope', type: 'enum', choices: ['user', 'project'], required: false, constraint: 'Scope to check. Default: all scopes.' },
       { kind: 'flag', name: 'fix', type: 'bool', required: false, constraint: 'Apply each non-pass check\'s remediation and report what was fixed.' },
       { kind: 'flag', name: 'remote', type: 'bool', required: false, constraint: 'Check git remotes with ls-remote (slow — makes network calls).' },
     ],
     output: [
-      { name: 'checks', type: 'object[]', required: true, constraint: 'Each: {scope, name, status, message, fixed?, remediation?}. status: pass | fail | warn. remediation (when present) is {kind, description, ...payload} where kind is remove_config_key | rm_path | edit_frontmatter. Sorted by scope then name.' },
+      { name: 'checks', type: 'object[]', required: true, constraint: 'Each: {scope, name, status, message, fixed?, remediation?}. status: pass | fail. remediation (when present) is {kind, description, ...payload} where kind is remove_config_key | rm_path. Sorted by scope then name.' },
       { name: 'ok', type: 'boolean', required: true, constraint: 'True when no unresolved fail checks remain.' },
     ],
     outputKind: 'object',
     effects: [
       'Read-only unless --fix is passed.',
-      'With --fix: applies each non-pass check\'s `remediation` — removes stale config entries, deletes dangling plugin/marketplace directories, edits frontmatter name fields to the base-name convention.',
+      'With --fix: applies each non-pass check\'s `remediation` — removes stale config entries and deletes dangling plugin/marketplace directories.',
       'Each non-pass result carries a structured `remediation` describing the fix action (absolute paths, exact config keys) so callers can apply it directly without --fix.',
     ],
   },

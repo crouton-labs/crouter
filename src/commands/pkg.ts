@@ -6,6 +6,7 @@ import { defineBranch } from '../core/command.js';
 import type { BranchDef } from '../core/command.js';
 import { pluginBranch } from './pkg/plugin.js';
 import { marketBranch } from './pkg/market.js';
+import { bridgeBranch } from './pkg/bridge.js';
 
 export function registerPkg(): BranchDef {
   return defineBranch({
@@ -19,6 +20,6 @@ export function registerPkg(): BranchDef {
       name: 'pkg',
       summary: 'manage plugins and plugin marketplaces',
     },
-    children: [pluginBranch, marketBranch],
+    children: [pluginBranch, marketBranch, bridgeBranch],
   });
 }

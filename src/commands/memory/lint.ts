@@ -1,21 +1,18 @@
 // `crtr memory lint` — the permanent valid-YAML gate over the bounded corpus
 // (the CTO green-checkpoint: zero frontmatter parse errors at authoring time,
 // so an invalid doc fails HERE instead of being silently isolated at runtime).
-// Bounded corpus = the substrate memory dirs (project/user/builtin) +
-// every installed plugin's skills tree + ~/.claude/skills. Never a
+// Bounded corpus = the substrate memory dirs (project/user/builtin). Never a
 // filesystem-wide scan.
 
-import { homedir } from 'node:os';
-import { basename, join, relative, sep } from 'node:path';
+import { basename, relative, sep } from 'node:path';
 import { defineLeaf } from '../../core/command.js';
 import { general } from '../../core/errors.js';
 import { warn } from '../../core/output.js';
 import { pathExists, readText, walkFiles } from '../../core/fs-utils.js';
 import { parseFrontmatterGeneric } from '../../core/frontmatter.js';
-import { listAllPlugins } from '../../core/resolver.js';
-import { scopeMemoryDir } from '../../core/scope.js';
+import { listInstalledPlugins } from '../../core/resolver.js';
+import { pluginMemoryDir, scopeMemoryDir } from '../../core/scope.js';
 import { isDocKind, RUNGS } from '../../core/substrate/index.js';
-import { SKILL_ENTRY_FILE, SKILLS_DIR } from '../../types.js';
 import type { Scope } from '../../types.js';
 
 interface LintFinding {
@@ -88,14 +85,14 @@ export const lintLeaf = defineLeaf({
   name: 'lint',
   description: 'validate frontmatter across the whole bounded document corpus',
   whenToUse:
-    'you authored or migrated documents and want the authoring-time gate: strict-parse every doc in the bounded corpus (memory stores, plugin skills, ~/.claude/skills) and fail loudly on any invalid YAML or substrate schema violation. Run it before shipping doc changes; CI-friendly (non-zero exit on any finding).',
+    'you authored or migrated documents and want the authoring-time gate: strict-parse every doc in the bounded corpus (the substrate memory stores) and fail loudly on any invalid YAML or substrate schema violation. Run it before shipping doc changes; CI-friendly (non-zero exit on any finding).',
   help: {
     name: 'memory lint',
     summary: 'strict-parse frontmatter across the bounded corpus; non-zero exit on any finding',
     params: [],
     output: [
       { name: 'checked', type: 'number', required: true, constraint: 'Files linted across all corpora.' },
-      { name: 'corpora', type: 'object', required: true, constraint: 'Per-corpus file counts: {memory_stores, plugin_skills, claude_skills}.' },
+      { name: 'corpora', type: 'object', required: true, constraint: 'Per-corpus file counts: {memory_stores}.' },
       { name: 'findings', type: 'object[]', required: true, constraint: 'One row per failure: {path, error}. Empty when green.' },
     ],
     outputKind: 'object',
@@ -104,41 +101,27 @@ export const lintLeaf = defineLeaf({
   run: async () => {
     const findings: LintFinding[] = [];
     let memoryCount = 0;
-    let pluginCount = 0;
-    let claudeCount = 0;
 
-    // 1. Substrate memory stores (project/user/builtin), schema-aware.
+    // Substrate memory stores (project/user/builtin), schema-aware. A scope's
+    // corpus is its NATIVE memory dir plus each enabled plugin's memory dir —
+    // plugin docs are substrate docs and lint through the same schema gate.
     //    MEMORY.md index files are not substrate docs — YAML-parse only.
-    for (const scope of ['project', 'user', 'builtin'] as Scope[]) {
-      const dir = scopeMemoryDir(scope);
-      if (!dir || !pathExists(dir)) continue;
+    const lintDir = (dir: string | null): void => {
+      if (!dir || !pathExists(dir)) return;
       for (const file of walkFiles(dir, (n) => n.endsWith('.md'))) {
         if (!relative(dir, file).split(sep).join('/')) continue;
         memoryCount += 1;
         lintFile(file, basename(file) !== 'MEMORY.md', findings);
       }
-    }
-
-    // 2. Every installed plugin's skills tree (builtin + plugin + marketplace).
-    for (const plugin of listAllPlugins()) {
-      const skillsRoot = join(plugin.root, SKILLS_DIR);
-      if (!pathExists(skillsRoot)) continue;
-      for (const file of walkFiles(skillsRoot, (n) => n === SKILL_ENTRY_FILE)) {
-        pluginCount += 1;
-        lintFile(file, false, findings);
+    };
+    for (const scope of ['project', 'user', 'builtin'] as Scope[]) {
+      lintDir(scopeMemoryDir(scope));
+      for (const plugin of listInstalledPlugins(scope)) {
+        if (plugin.enabled) lintDir(pluginMemoryDir(plugin));
       }
     }
 
-    // 3. ~/.claude/skills — read by the runtime, so it lints too.
-    const claudeSkills = join(homedir(), '.claude', SKILLS_DIR);
-    if (pathExists(claudeSkills)) {
-      for (const file of walkFiles(claudeSkills, (n) => n === SKILL_ENTRY_FILE)) {
-        claudeCount += 1;
-        lintFile(file, false, findings);
-      }
-    }
-
-    const checked = memoryCount + pluginCount + claudeCount;
+    const checked = memoryCount;
     if (findings.length > 0) {
       // Human/agent path renders only the message — surface every offender as
       // a scoped stderr notice (the --json path carries them in details too).
@@ -151,7 +134,7 @@ export const lintLeaf = defineLeaf({
     }
     return {
       checked,
-      corpora: { memory_stores: memoryCount, plugin_skills: pluginCount, claude_skills: claudeCount },
+      corpora: { memory_stores: memoryCount },
       findings: [],
       follow_up: 'Corpus green — zero invalid frontmatter docs.',
     };

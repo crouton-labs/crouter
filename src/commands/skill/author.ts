@@ -1,14 +1,8 @@
-import { join } from 'node:path';
+import { dirname } from 'node:path';
 import { writeFileSync } from 'node:fs';
 import { defineLeaf, defineBranch } from '../../core/command.js';
 import { usage, general, notFound } from '../../core/errors.js';
-import {
-  SCOPE_SKILL_PLUGIN,
-  SKILL_ENTRY_FILE,
-  SKILLS_DIR,
-  SKILL_TYPES,
-  isSkillType,
-} from '../../types.js';
+import { SKILL_TYPES, isSkillType } from '../../types.js';
 import type { Scope } from '../../types.js';
 import {
   parseSkillQualifier,
@@ -17,12 +11,13 @@ import {
 import {
   resolveScopeArg,
   requireScopeRoot,
-  scopeSkillsDir,
+  scopeMemoryDir,
+  pluginMemoryDir,
 } from '../../core/scope.js';
-import { serializeFrontmatter } from '../../core/frontmatter.js';
 import { ensureScopeInitialized } from '../../core/config.js';
 import { ensureDir, pathExists } from '../../core/fs-utils.js';
 import { skillCreatePrompt, skillTemplatePrompt } from '../../prompts/skill.js';
+import { memoryFilePath, serializeMemoryDoc } from '../memory/shared.js';
 import { VALID_TYPES, resolveWriteScope } from './shared.js';
 
 export const authorGuide = defineLeaf({
@@ -59,25 +54,25 @@ export const authorGuide = defineLeaf({
 
 export const authorScaffold = defineLeaf({
   name: 'scaffold',
-  description: 'create an empty SKILL.md stub',
-  whenToUse: 'creating the empty SKILL.md stub at a `<plugin>/<skill>` qualifier before you fill in content — it writes the frontmatter and file, then points you at the authoring guide.',
+  description: 'create an empty skill substrate doc stub',
+  whenToUse: 'creating the empty `kind: skill` substrate doc at a `<plugin>/<skill>` qualifier (or a bare `<skill>` name for a scope-owned doc) before you fill in content — it writes the frontmatter and file, then points you at the authoring guide.',
   help: {
     name: 'skill author scaffold',
-    summary: 'create an empty SKILL.md stub at the given qualifier',
+    summary: 'create an empty kind:skill substrate doc stub at the given qualifier',
     params: [
-      { kind: 'positional', name: 'qualifier', required: true, constraint: 'Skill identifier in <plugin>/<skill> form.' },
-      { kind: 'flag', name: 'type', type: 'enum', choices: [...VALID_TYPES], required: false, constraint: 'One of: playbook, primer, reference, runbook, freeform.' },
-      { kind: 'flag', name: 'description', type: 'string', required: false, constraint: 'Short description written to frontmatter.' },
+      { kind: 'positional', name: 'qualifier', required: true, constraint: 'Skill identifier: <plugin>/<skill> to scaffold into a plugin\'s memory/, or a bare <skill> for the scope-owned memory/.' },
+      { kind: 'flag', name: 'type', type: 'enum', choices: [...VALID_TYPES], required: false, constraint: 'One of: playbook, primer, reference, runbook, freeform. Drives the follow-up authoring guide only — not stored on the substrate doc.' },
+      { kind: 'flag', name: 'description', type: 'string', required: false, constraint: 'Read-routing line written to the doc\'s when-and-why-to-read frontmatter.' },
       { kind: 'flag', name: 'scope', type: 'enum', choices: ['user', 'project'], required: false, constraint: 'Default: project if available, else user.' },
     ],
     output: [
-      { name: 'path', type: 'string', required: true, constraint: 'Absolute path to the scaffolded SKILL.md.' },
+      { name: 'path', type: 'string', required: true, constraint: 'Absolute path to the scaffolded substrate doc.' },
       { name: 'follow_up', type: 'string', required: true, constraint: 'Recommended next call to load the authoring guide.' },
     ],
     outputKind: 'object',
     effects: [
-      'Creates the skill directory and SKILL.md stub at the resolved location.',
-      'Writes frontmatter with name, description (if provided), and type (if provided).',
+      'Creates a `kind: skill` substrate doc stub under the resolved memory/ dir (scope-owned, or the named plugin\'s).',
+      'Writes substrate frontmatter: kind:skill, when-and-why-to-read (from --description if given), system-prompt-visibility:name, file-read-visibility:none.',
     ],
   },
   run: async (input) => {
@@ -102,32 +97,19 @@ export const authorScaffold = defineLeaf({
     }
     const skillType = typeStr !== undefined && isSkillType(typeStr) ? typeStr : undefined;
 
-    let skillFile: string;
-
-    // Scope-direct: no plugin qualifier, or explicit `_/` sentinel (internal only)
-    if (pluginName === undefined || pluginName === SCOPE_SKILL_PLUGIN) {
+    // Resolve the memory/ dir to scaffold into: the named plugin's, or the
+    // scope-owned one. One substrate, one author path.
+    let memoryDir: string;
+    if (pluginName === undefined) {
       const scope = resolveWriteScope(scopeStr);
       const scopeRootPath = requireScopeRoot(scope);
       ensureScopeInitialized(scope, scopeRootPath);
-
-      const skillsRoot = scopeSkillsDir(scope);
-      if (!skillsRoot) {
-        throw general(`no skills dir for scope ${scope}`);
+      const dir = scopeMemoryDir(scope);
+      if (!dir) {
+        throw general(`no memory dir for scope ${scope}`);
       }
-      const skillDir = join(skillsRoot, ...skillName.split('/'));
-      skillFile = join(skillDir, SKILL_ENTRY_FILE);
-      if (pathExists(skillFile)) {
-        throw general(`skill already exists: ${skillFile}`);
-      }
-      ensureDir(skillDir);
-      const fm = serializeFrontmatter({
-        name: skillName,
-        description,
-        type: skillType,
-      });
-      writeFileSync(skillFile, fm, 'utf8');
+      memoryDir = dir;
     } else {
-      // Plugin-scoped scaffold
       const scopeForLookup = scopeStr !== undefined
         ? (() => {
             const r = resolveScopeArg(scopeStr);
@@ -142,22 +124,22 @@ export const authorScaffold = defineLeaf({
       if (!plugin) {
         throw notFound(`plugin not found: ${pluginName}`);
       }
-
-      const skillDir = join(plugin.root, SKILLS_DIR, ...skillName.split('/'));
-      skillFile = join(skillDir, SKILL_ENTRY_FILE);
-
-      if (pathExists(skillFile)) {
-        throw general(`skill already exists: ${skillFile}`);
-      }
-
-      ensureDir(skillDir);
-      const fm = serializeFrontmatter({
-        name: skillName,
-        description,
-        type: skillType,
-      });
-      writeFileSync(skillFile, fm, 'utf8');
+      memoryDir = pluginMemoryDir(plugin);
     }
+
+    const skillFile = memoryFilePath(memoryDir, skillName);
+    if (pathExists(skillFile)) {
+      throw general(`skill already exists: ${skillFile}`);
+    }
+    ensureDir(dirname(skillFile));
+
+    // Catalog-default substrate frontmatter (design §1.5): a name-rung,
+    // file-read-none skill doc. --description becomes the read-routing line.
+    const frontmatter: Record<string, unknown> = { kind: 'skill' };
+    if (description !== undefined) frontmatter['when-and-why-to-read'] = description;
+    frontmatter['system-prompt-visibility'] = 'name';
+    frontmatter['file-read-visibility'] = 'none';
+    writeFileSync(skillFile, serializeMemoryDoc(frontmatter, ''), 'utf8');
 
     const typeHint = skillType !== undefined ? `--type ${skillType} ` : '';
     const follow_up = `crtr skill author guide ${typeHint}--topic "${skillName}"`;

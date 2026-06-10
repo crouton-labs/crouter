@@ -22,9 +22,7 @@
 
 import { getNode, updateNode, type Mode, type Lifecycle } from '../canvas/index.js';
 import { loadKernel, loadPersona, loadLifecycleFragment } from '../personas/index.js';
-import { resolveSkill } from '../resolver.js';
-import { readText } from '../fs-utils.js';
-import { parseFrontmatter } from '../frontmatter.js';
+import { resolveMemoryDoc } from '../memory-resolver.js';
 import { readRoadmap, roadmapPath } from './roadmap.js';
 
 import { orchestratorContextNote } from './bearings.js';
@@ -58,12 +56,12 @@ function scalarToString(v: unknown): string | null {
   return null;
 }
 
-/** Load a skill's body text by name, or null if it can't be resolved. Used to
- *  inline a kind's roadmap-shaping skill into the orchestration guidance. */
+/** Load a substrate doc's body text by name, or null if it can't be resolved.
+ *  Used to inline a kind's roadmap-shaping skill into the orchestration
+ *  guidance — the skill now lives as a substrate memory doc. */
 function loadSkillBody(name: string): string | null {
   try {
-    const skill = resolveSkill(name, {});
-    return parseFrontmatter(readText(skill.path)).body.trim();
+    return resolveMemoryDoc(name).body.trim();
   } catch {
     return null;
   }

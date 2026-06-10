@@ -3,9 +3,6 @@ import { CrtrError, notFound } from '../../core/errors.js';
 import { resolveMemoryDoc } from '../../core/memory-resolver.js';
 import type { MemoryDoc } from '../../core/memory-resolver.js';
 import { parseSubstrateDoc } from '../../core/substrate/index.js';
-import { resolveSkill } from '../../core/resolver.js';
-import type { Skill } from '../../types.js';
-import { parseFrontmatter } from '../../core/frontmatter.js';
 import { readText } from '../../core/fs-utils.js';
 import { MEMORY_KINDS } from './shared.js';
 
@@ -38,9 +35,9 @@ export const readLeaf = defineLeaf({
     const kindFilter = input['kind'] as string | undefined;
     const includeFrontmatter = input['frontmatter'] as boolean;
 
-    // 1) Primary: resolve a substrate/memory document (memory/ dirs across
-    //    project>user>builtin). A not_found here is not fatal — it falls through
-    //    to the skill resolver below (the D4 union).
+    // Resolve a substrate/memory document across scopes (project>user>builtin,
+    // with leaf-name fallback). The substrate corpus now includes plugin docs
+    // (mounted under <pluginName>/), so this resolves every name.
     let doc: MemoryDoc | undefined;
     try {
       doc = resolveMemoryDoc(nameRaw);
@@ -56,8 +53,7 @@ export const readLeaf = defineLeaf({
           : typeof doc.frontmatter?.['kind'] === 'string'
             ? (doc.frontmatter['kind'] as string)
             : 'reference';
-      // --kind asserts the resolved kind; a mismatch falls through to skills
-      // (which only satisfy --kind=skill).
+      // --kind asserts the resolved kind; a mismatch falls through to not-found.
       if (kindFilter === undefined || kind === kindFilter) {
         const content = includeFrontmatter ? readText(doc.path) : doc.body;
         return {
@@ -65,35 +61,6 @@ export const readLeaf = defineLeaf({
           kind,
           scope: doc.scope,
           path: doc.path,
-          content,
-          follow_up: 'Add --frontmatter to include the YAML header. Browse the inventory with `crtr memory list`.',
-        };
-      }
-    }
-
-    // 2) D4 union fallthrough: the name is not a memory document (or its kind
-    //    did not match --kind) — resolve it as a plugin/marketplace/scope skill
-    //    so skills are readable through `crtr memory read` too. Skills are kind
-    //    "skill", so honor --kind by skipping this path for other kinds.
-    if (kindFilter === undefined || kindFilter === 'skill') {
-      let skill: Skill | undefined;
-      try {
-        skill = resolveSkill(nameRaw);
-      } catch (e) {
-        // not_found → fall through to the memory-not-found below. A genuine
-        // CrtrError (e.g. ambiguous) propagates. Any other throw means the skill
-        // corpus is currently unparseable (the yaml-parser regression owned by
-        // the frontmatter/skill track) — degrade to not-found rather than 500.
-        if (e instanceof CrtrError && e.code !== 'not_found') throw e;
-      }
-      if (skill !== undefined) {
-        const raw = readText(skill.path);
-        const content = includeFrontmatter ? raw : parseFrontmatter(raw).body;
-        return {
-          name: skill.name,
-          kind: 'skill',
-          scope: skill.scope,
-          path: skill.path,
           content,
           follow_up: 'Add --frontmatter to include the YAML header. Browse the inventory with `crtr memory list`.',
         };

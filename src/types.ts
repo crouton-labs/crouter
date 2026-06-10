@@ -24,6 +24,7 @@ export interface PluginManifest {
   source?: string;
   owner?: OwnerRef;
   kinds?: string[];
+  generator?: 'claude-bridge';
 }
 
 export interface MarketplacePluginEntry {
@@ -51,10 +52,6 @@ export interface ConfigPluginEntry {
   enabled: boolean;
   source_marketplace?: string;
   version?: string;
-}
-
-export interface ConfigSkillEntry {
-  enabled: boolean;
 }
 
 export type AutoUpdateMode = 'notify' | 'apply' | false;
@@ -93,7 +90,6 @@ export interface ScopeConfig {
   schema_version: number;
   marketplaces: Record<string, ConfigMarketplaceEntry>;
   plugins: Record<string, ConfigPluginEntry>;
-  skills: Record<string, ConfigSkillEntry>;
   auto_update: AutoUpdateConfig;
   max_panes_per_window: number;
   canvasNav: CanvasNavConfig;
@@ -124,17 +120,6 @@ export interface SkillFrontmatter {
   type?: SkillType;
 }
 
-export interface Skill {
-  name: string;
-  plugin: string;
-  scope: Scope;
-  path: string;
-  pluginRoot: string;
-  frontmatter: SkillFrontmatter;
-  enabled: boolean;
-  disabledIn?: Scope;
-}
-
 export interface SubagentFrontmatter {
   name: string;
   description?: string;
@@ -146,8 +131,8 @@ export interface SubagentFrontmatter {
 
 export interface Subagent {
   name: string;
-  /** Plugin the subagent belongs to, or SCOPE_SKILL_PLUGIN ('_') for a
-   *  scope-root agent stored at `<scope-root>/agents/<name>.md`. */
+  /** Plugin the subagent belongs to, or the sentinel '_' for a scope-root
+   *  agent stored at `<scope-root>/agents/<name>.md`. */
   plugin: string;
   scope: Scope;
   /** Absolute path to the agent's .md file. */
@@ -189,11 +174,6 @@ export const SKILLS_DIR = 'skills';
 // Subagent definitions live as flat `<name>.md` files under `<root>/agents/`,
 // for both scope roots and plugins. Mirrors SKILLS_DIR.
 export const AGENTS_DIR = 'agents';
-// Sentinel plugin name for skills that live at a scope root (no plugin wrapper).
-// Stored as `<scope-root>/skills/<name>/SKILL.md`. Shown in listings without the
-// `_/` prefix.
-export const SCOPE_SKILL_PLUGIN = '_';
-
 export const DEFAULT_MAX_PANES_PER_WINDOW = 3;
 
 export function defaultScopeConfig(): ScopeConfig {
@@ -201,7 +181,6 @@ export function defaultScopeConfig(): ScopeConfig {
     schema_version: SCHEMA_VERSION,
     marketplaces: {},
     plugins: {},
-    skills: {},
     auto_update: { crtr: 'notify', content: 'notify', interval_hours: 24 },
     max_panes_per_window: DEFAULT_MAX_PANES_PER_WINDOW,
     canvasNav: defaultCanvasNavConfig(),
@@ -223,10 +202,6 @@ export function defaultCanvasNavConfig(): CanvasNavConfig {
     },
     graphBinds: {},
   };
-}
-
-export function skillConfigKey(plugin: string, name: string): string {
-  return `${plugin}/${name}`;
 }
 
 export function defaultScopeState(): ScopeState {

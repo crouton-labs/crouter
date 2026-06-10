@@ -2,7 +2,6 @@ import { defineLeaf } from '../../core/command.js';
 import type { Scope } from '../../types.js';
 import { listAllMemoryDocs } from '../../core/memory-resolver.js';
 import { parseSubstrateDoc, isIndexName, indexDirOf } from '../../core/substrate/index.js';
-import { listAllSkills } from '../../core/resolver.js';
 import { MEMORY_KINDS, MEMORY_SCOPES, scopeRank } from './shared.js';
 
 export const listLeaf = defineLeaf({
@@ -28,10 +27,9 @@ export const listLeaf = defineLeaf({
     const kindFilter = input['kind'] as string | undefined;
     const scopeFilter = input['scope'] as Scope | undefined;
 
-    // Build the same corpus as `find`: substrate memory docs UNIONED with the
-    // skill-plugin corpus, deduped by (scope, name) — substrate docs win over
-    // skill-plugin docs for the same identity (mirrors resolver precedence).
-    // This makes list consistent with find/read (M4 fix).
+    // The corpus is every substrate memory doc (native + plugin, supplied by
+    // listAllMemoryDocs in project>user>builtin precedence), deduped by
+    // (scope, name) so the first doc for an identity wins.
 
     interface ListItem {
       name: string;
@@ -61,20 +59,6 @@ export const listLeaf = defineLeaf({
       const isDir = isIndexName(sub.name);
       const name = isDir ? indexDirOf(sub.name) + '/' : sub.name;
       addItem({ name, kind: sub.kind, scope: sub.scope, shortForm: sub.shortForm, isDir });
-    }
-
-    // Skill-plugin corpus (scope-root skills + plugin/marketplace skills).
-    // Only include when the kindFilter is absent or explicitly 'skill'.
-    if (kindFilter === undefined || kindFilter === 'skill') {
-      try {
-        for (const skill of listAllSkills(scopeFilter)) {
-          const raw = skill.frontmatter.description;
-          const desc = typeof raw === 'string' ? raw : '';
-          addItem({ name: skill.name, kind: 'skill', scope: skill.scope, shortForm: desc, isDir: false });
-        }
-      } catch {
-        /* skill corpus unavailable — list substrate documents alone */
-      }
     }
 
     items.sort((a, b) => {

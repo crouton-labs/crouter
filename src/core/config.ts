@@ -1,9 +1,8 @@
 import { join } from 'node:path';
-import { CONFIG_FILE, STATE_FILE, SCHEMA_VERSION, defaultScopeConfig, defaultScopeState, defaultCanvasNavConfig } from '../types.js';
+import { CONFIG_FILE, STATE_FILE, defaultScopeConfig, defaultScopeState, defaultCanvasNavConfig } from '../types.js';
 import type { Scope, ScopeConfig, ScopeState, CanvasNavConfig, CanvasBind } from '../types.js';
 import { readJsonIfExists, writeJson, ensureDir } from './fs-utils.js';
 import { scopeRoot, requireScopeRoot } from './scope.js';
-import { diag } from './io.js';
 
 function configPathFor(root: string): string {
   return join(root, CONFIG_FILE);
@@ -28,25 +27,7 @@ export function readConfig(scope: Scope): ScopeConfig {
   if (!root) return defaultScopeConfig();
   const existing = readJsonIfExists<Partial<ScopeConfig>>(configPathFor(root));
   if (!existing) return defaultScopeConfig();
-  const cfg = mergeConfig(existing);
-  if ((existing.schema_version ?? 0) < SCHEMA_VERSION) {
-    migrateSkillConfigKeys(cfg, scope, root);
-  }
-  return cfg;
-}
-
-function migrateSkillConfigKeys(cfg: ScopeConfig, scope: Scope, root: string): void {
-  const colonKeys = Object.keys(cfg.skills).filter((k) => k.includes(':'));
-  if (colonKeys.length > 0) {
-    for (const key of colonKeys) {
-      const newKey = key.replace(/:/g, '/');
-      cfg.skills[newKey] = cfg.skills[key];
-      delete cfg.skills[key];
-    }
-    diag(`crtr: migrated ${colonKeys.length} skill config keys to slash form in ${scope}`);
-  }
-  cfg.schema_version = SCHEMA_VERSION;
-  writeJson(configPathFor(root), cfg);
+  return mergeConfig(existing);
 }
 
 export function readState(scope: Scope): ScopeState {
@@ -133,7 +114,6 @@ function mergeConfig(partial: Partial<ScopeConfig>): ScopeConfig {
     partial.schema_version === undefined ? defaults.schema_version : partial.schema_version;
   const marketplaces = partial.marketplaces === undefined ? {} : partial.marketplaces;
   const plugins = partial.plugins === undefined ? {} : partial.plugins;
-  const skills = partial.skills === undefined ? {} : partial.skills;
   const au = partial.auto_update as Partial<Record<keyof ScopeConfig['auto_update'], unknown>> | undefined;
   const rawInterval = au && typeof au.interval_hours === 'number' ? au.interval_hours : undefined;
   const interval_hours =
@@ -154,7 +134,7 @@ function mergeConfig(partial: Partial<ScopeConfig>): ScopeConfig {
   // The merge drops unknown keys, so `headless` must be carried explicitly or it
   // is lost on every read-modify-write of config.json.
   const headless = typeof partial.headless === 'boolean' ? partial.headless : defaults.headless;
-  return { schema_version, marketplaces, plugins, skills, auto_update, max_panes_per_window, canvasNav, headless };
+  return { schema_version, marketplaces, plugins, auto_update, max_panes_per_window, canvasNav, headless };
 }
 
 export function updateConfig(scope: Scope, mutate: (cfg: ScopeConfig) => void): ScopeConfig {

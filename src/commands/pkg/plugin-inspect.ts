@@ -4,8 +4,8 @@ import { paginate } from '../../core/pagination.js';
 import {
   listInstalledPlugins,
   findPluginByName,
-  listSkillsInPlugin,
 } from '../../core/resolver.js';
+import { listAllMemoryDocs } from '../../core/memory-resolver.js';
 import { resolveScopeArg, projectScopeRoot } from '../../core/scope.js';
 import type { Scope } from '../../types.js';
 
@@ -92,8 +92,8 @@ const pluginList = defineLeaf({
 
 const pluginShow = defineLeaf({
   name: 'show',
-  description: 'read plugin manifest and skill inventory',
-  whenToUse: 'reading one installed plugin in detail to decide before you enable, disable, or remove it — returns the full manifest, the skills it provides, its scope, and whether it is currently enabled. Use `pkg plugin inspect list` instead to enumerate plugins rather than drill into one',
+  description: 'read plugin manifest and substrate inventory',
+  whenToUse: 'reading one installed plugin in detail to decide before you enable, disable, or remove it — returns the full manifest, the substrate docs it provides (its `<pluginName>/` memory subtree), its scope, and whether it is currently enabled. Use `pkg plugin inspect list` instead to enumerate plugins rather than drill into one',
   help: {
     name: 'pkg plugin inspect show',
     summary: 'read plugin manifest and metadata by name',
@@ -107,7 +107,7 @@ const pluginShow = defineLeaf({
       { name: 'path', type: 'string', required: true, constraint: 'Absolute path to the plugin directory.' },
       { name: 'enabled', type: 'boolean', required: true, constraint: 'Whether the plugin is active.' },
       { name: 'manifest', type: 'object', required: true, constraint: 'Full plugin.json contents.' },
-      { name: 'skills', type: 'object[]', required: true, constraint: 'Each: {name, path, enabled}. Skills provided by the plugin.' },
+      { name: 'skills', type: 'object[]', required: true, constraint: 'Each: {name, path}. Substrate docs provided by the plugin (its `<pluginName>/` memory subtree).' },
     ],
     outputKind: 'object',
     effects: ['None. Read-only.'],
@@ -132,7 +132,8 @@ const pluginShow = defineLeaf({
       throw notFound(`plugin not found: ${name}`);
     }
 
-    const skills = listSkillsInPlugin(found);
+    const prefix = `${found.name}/`;
+    const skills = listAllMemoryDocs().filter((d) => d.name.startsWith(prefix));
 
     return {
       name: found.name,
@@ -143,7 +144,6 @@ const pluginShow = defineLeaf({
       skills: skills.map((s) => ({
         name: s.name,
         path: s.path,
-        enabled: s.enabled,
       })),
     };
   },

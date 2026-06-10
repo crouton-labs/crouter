@@ -3,7 +3,7 @@ import { existsSync, statSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CRTR_DIR_NAME } from '../types.js';
-import type { Scope } from '../types.js';
+import type { InstalledPlugin, Scope } from '../types.js';
 import { usage } from './errors.js';
 
 let cachedProjectRoot: string | null | undefined;
@@ -111,6 +111,12 @@ export function scopeMemoryDir(scope: Scope): string | null {
   if (scope === 'builtin') return builtinMemoryRoot();
   const root = scope === 'user' ? userScopeRoot() : projectScopeRoot();
   return root ? join(root, 'memory') : null;
+}
+
+/** Where a plugin's substrate memory documents live: `<plugin.root>/memory`.
+ *  The resolver mounts these under the virtual `<pluginName>/` namespace. */
+export function pluginMemoryDir(plugin: InstalledPlugin): string {
+  return join(plugin.root, 'memory');
 }
 
 /** Where view definition dirs live per scope. Builtin views sit directly under

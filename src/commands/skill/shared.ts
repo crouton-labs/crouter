@@ -1,63 +1,9 @@
 import { usage } from '../../core/errors.js';
-import { SCOPE_SKILL_PLUGIN } from '../../types.js';
-import type { Skill, Scope } from '../../types.js';
-import {
-  listSkillSiblings,
-  listSkillChildren,
-} from '../../core/resolver.js';
+import type { Scope } from '../../types.js';
 import { resolveScopeArg, projectScopeRoot } from '../../core/scope.js';
 
 // ---------------------------------------------------------------------------
-// Neighbors section (ported from old impl)
-// ---------------------------------------------------------------------------
-
-export function formatNeighborQualifier(s: Skill): string {
-  return s.plugin === SCOPE_SKILL_PLUGIN
-    ? `${s.scope}/${s.name}`
-    : `${s.plugin}/${s.name}`;
-}
-
-export function formatNeighborKeywords(s: Skill): string {
-  const kw = s.frontmatter.keywords;
-  if (!kw || kw.length === 0) return '';
-  return ` — [${kw.join(', ')}]`;
-}
-
-export function buildNeighborsSection(skill: Skill): string | null {
-  const siblings = listSkillSiblings(skill);
-  const children = listSkillChildren(skill);
-  if (siblings.length === 0 && children.length === 0) return null;
-
-  const lines: string[] = [
-    '## Neighbors',
-    '*Auto-discovered from filesystem. Run `crtr memory read <name>` for full description + body.*',
-    '',
-  ];
-  if (siblings.length > 0) {
-    lines.push('**Siblings:**');
-    for (const s of siblings) {
-      lines.push(`- \`${formatNeighborQualifier(s)}\`${formatNeighborKeywords(s)}`);
-    }
-    if (children.length > 0) lines.push('');
-  }
-  if (children.length > 0) {
-    lines.push('**Nested:**');
-    for (const s of children) {
-      lines.push(`- \`${formatNeighborQualifier(s)}\`${formatNeighborKeywords(s)}`);
-    }
-  }
-  return lines.join('\n');
-}
-
-export function appendNeighbors(skill: Skill, body: string): string {
-  const section = buildNeighborsSection(skill);
-  if (section === null) return body;
-  const sep = body.endsWith('\n') ? '\n' : '\n\n';
-  return body + sep + `<neighbors>\n${section}\n</neighbors>\n`;
-}
-
-// ---------------------------------------------------------------------------
-// Resolve scope for enable/disable/scaffold
+// Resolve scope for scaffold
 // ---------------------------------------------------------------------------
 
 export function resolveWriteScope(scopeStr: string | undefined): Scope {
@@ -96,18 +42,7 @@ export function renderCatalogSection(
   out.push('');
   out.push(`${label} (${count})`);
 
-  const sentinel = sources.filter((s) => s.plugin === SCOPE_SKILL_PLUGIN);
-  const named = sources
-    .filter((s) => s.plugin !== SCOPE_SKILL_PLUGIN)
-    .sort((a, b) => a.plugin.localeCompare(b.plugin));
-
-  for (const s of sentinel) {
-    if (s.roots.length > CATALOG_T) {
-      out.push(`  (scope skills)  ${s.roots.length} skills`);
-    } else {
-      for (const n of s.roots) out.push(`  ${n}`);
-    }
-  }
+  const named = [...sources].sort((a, b) => a.plugin.localeCompare(b.plugin));
   if (named.length === 0) return;
 
   type Classified = {
@@ -150,6 +85,12 @@ export function renderCatalogSection(
     .reduce((m, p) => Math.max(m, p.plugin.length + 1), 0);
 
   for (const p of classified) {
+    // Bare native/builtin skills (no plugin namespace) carry sourceKey ''.
+    // Render them as flat lines, never under a stray '/' header.
+    if (p.plugin === '') {
+      for (const r of [...p.roots].sort()) out.push(`  ${r}`);
+      continue;
+    }
     const direct = p.subcats.size + p.bare.length;
     if (direct > CATALOG_T) {
       out.push(`  ${(p.plugin + '/').padEnd(inlineW)}  ${p.roots.length} skills${descSuffix(p.plugin)}`);

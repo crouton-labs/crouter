@@ -1,11 +1,11 @@
 import { join, relative, sep } from 'node:path';
-import type { Scope } from '../types.js';
+import type { InstalledPlugin, Scope } from '../types.js';
 import { pathExists, readText, walkFiles } from './fs-utils.js';
 import { parseFrontmatterGeneric } from './frontmatter.js';
-import { parseSkillQualifier } from './resolver.js';
+import { listInstalledPlugins, parseSkillQualifier } from './resolver.js';
 import { ambiguous, notFound, usage } from './errors.js';
 import { warn } from './output.js';
-import { projectScopeRoot, scopeMemoryDir } from './scope.js';
+import { pluginMemoryDir, projectScopeRoot, scopeMemoryDir } from './scope.js';
 
 /**
  * Thin memory-document resolver for the document substrate. Mirrors the SHAPE
@@ -80,10 +80,39 @@ export function listMemoryDocs(scope: Scope): MemoryDoc[] {
   return docs.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+/** All of one plugin's substrate docs, mounted under the virtual `<pluginName>/`
+ *  namespace. Walks `pluginMemoryDir(plugin)` recursively for *.md, deriving each
+ *  doc's name exactly as `listMemoryDocs` does (path-relative, no extension,
+ *  slash-separated) then prefixing the plugin name. Builtin has no plugins. */
+export function listPluginMemoryDocs(plugin: InstalledPlugin, scope: Scope): MemoryDoc[] {
+  const dir = pluginMemoryDir(plugin);
+  if (!pathExists(dir)) return [];
+  const docs: MemoryDoc[] = [];
+  for (const file of walkFiles(dir, (n) => n.endsWith('.md'))) {
+    const derived = relative(dir, file).replace(/\.md$/i, '').split(sep).join('/');
+    if (!derived) continue;
+    const name = `${plugin.name}/${derived}`;
+    try {
+      docs.push(loadMemoryDoc(name, scope, file));
+    } catch (e) {
+      const msg = (e instanceof Error ? e.message : String(e)).split('\n')[0];
+      warn(`invalid frontmatter in ${file}: ${msg}`);
+    }
+  }
+  return docs.sort((a, b) => a.name.localeCompare(b.name));
+}
+
 /** All memory docs across the resolved scopes, in precedence order
- *  (project, then user, then builtin), each scope's docs name-sorted within. */
+ *  (project, then user, then builtin). Within each scope, native docs are
+ *  emitted FIRST, then that scope's enabled-plugin docs — so native wins on the
+ *  caller's first-wins (scope,name) dedup. Each group is name-sorted within. */
 export function listAllMemoryDocs(scope?: Scope): MemoryDoc[] {
-  return scopesInPrecedence(scope).flatMap(listMemoryDocs);
+  return scopesInPrecedence(scope).flatMap((s) => [
+    ...listMemoryDocs(s),
+    ...listInstalledPlugins(s)
+      .filter((p) => p.enabled)
+      .flatMap((p) => listPluginMemoryDocs(p, s)),
+  ]);
 }
 
 /** Direct full-path lookup of memory/<name>.md across scopes, precedence-first.

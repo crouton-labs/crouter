@@ -19,8 +19,8 @@
 // wrapped so one bad file is skipped, not fatal.
 
 import { relative, sep } from 'node:path';
-import { SCOPE_SKILL_PLUGIN, type Scope, type Skill } from '../../types.js';
-import { listAllPlugins, listAllSkills } from '../resolver.js';
+import { type Scope } from '../../types.js';
+import { listAllPlugins } from '../resolver.js';
 import { renderCatalogSection } from '../../commands/skill/shared.js';
 import { listAllMemoryDocs } from '../memory-resolver.js';
 import { parseFrontmatterGeneric } from '../frontmatter.js';
@@ -30,6 +30,7 @@ import {
   applyCeilings,
   assembleNodeSubject,
   gatePasses,
+  isIndexName,
   parseSubstrateDoc,
   parseSubstrateFrontmatter,
   previewLine,
@@ -144,50 +145,48 @@ function renderSubSection(d: SubstrateDoc): string {
 // 1. Skills section — `## Skills` (system prompt).
 // ---------------------------------------------------------------------------
 
-/** The compact, group-collapsed `name`-rung catalog: the UNION of name-rung
- *  substrate `skill` docs (the migrated scope-local + builtin skills, rendered
- *  as scope-local `_` entries) WITH plugin/marketplace skills (which stay
- *  resolver-provided, NOT migrated — named-plugin skills at user/project scope;
- *  the SCOPE_SKILL_PLUGIN sentinel and builtin scope are EXCLUDED because they
- *  become substrate docs). Reuses skill/shared.ts's renderCatalogSection
- *  group-collapse for a compact, source-grouped catalog. Returns '' when nothing
- *  is in the catalog. */
-function renderSkillCatalog(nameRungSkillDocs: SubstrateDoc[]): string {
-  let pluginSkills: Skill[];
-  try {
-    pluginSkills = listAllSkills().filter(
-      (s) => s.enabled && s.plugin !== SCOPE_SKILL_PLUGIN && s.scope !== 'builtin',
-    );
-  } catch {
-    pluginSkills = [];
+/** The compact, group-collapsed `name`-rung catalog of substrate `skill` docs.
+ *  Every leaf is a migrated/generated substrate doc (native, builtin, or a
+ *  plugin's `<pluginName>/` subtree) — there is no second, resolver-provided
+ *  skill corpus. Each doc self-groups by its top-dir segment: a name with a
+ *  slash sources to its top segment (the plugin name); a bare name sources to
+ *  '' (a scope-local native/builtin skill). A plugin whose INDEX is elevated to
+ *  preview/content renders as its own `### <plugin>` subsection, so its catalog
+ *  group is dropped here (via `elevatedSources`) to avoid a double render.
+ *  Reuses skill/shared.ts's renderCatalogSection group-collapse. Returns ''
+ *  when nothing is in the catalog. */
+function renderSkillCatalog(
+  nameRungSkillDocs: SubstrateDoc[],
+  elevatedSources: ReadonlySet<string>,
+): string {
+  type Source = { scope: Scope; plugin: string; roots: string[] };
+  const bySource = new Map<string, Source>();
+  for (const d of nameRungSkillDocs) {
+    // INDEX docs are structural ceilings (already renamed to their dir entry by
+    // applyCeilings), never catalog leaves — drop defensively.
+    if (isIndexName(d.name)) continue;
+    const slash = d.name.indexOf('/');
+    const plugin = slash === -1 ? '' : d.name.slice(0, slash);
+    const leaf = slash === -1 ? d.name : d.name.slice(slash + 1);
+    // A plugin represented by its own elevated ### subsection is dropped from the
+    // catalog so it is not rendered twice.
+    if (plugin !== '' && elevatedSources.has(plugin)) continue;
+    const key = `${d.scope}\t${plugin}`;
+    const src = bySource.get(key);
+    if (src) src.roots.push(leaf);
+    else bySource.set(key, { scope: d.scope, plugin, roots: [leaf] });
   }
+  if (bySource.size === 0) return '';
 
-  type Entry = { scope: Scope; plugin: string; name: string };
-  const entries: Entry[] = [
-    ...pluginSkills.map((s) => ({ scope: s.scope, plugin: s.plugin, name: s.name })),
-    ...nameRungSkillDocs.map((d) => ({ scope: d.scope, plugin: SCOPE_SKILL_PLUGIN, name: d.name })),
-  ];
-  if (entries.length === 0) return '';
-
-  // Group by scope+plugin → forest-root names (drop nested children) so each
-  // source contributes only its top-level skills.
-  const bySource = new Map<string, Entry[]>();
-  for (const e of entries) {
-    const key = `${e.scope}\t${e.plugin}`;
-    const arr = bySource.get(key);
-    if (arr) arr.push(e);
-    else bySource.set(key, [e]);
-  }
   const projectSources: { plugin: string; roots: string[] }[] = [];
   const userSources: { plugin: string; roots: string[] }[] = [];
-  for (const [key, group] of bySource) {
-    const [scope, plugin] = key.split('\t');
-    const names = group.map((g) => g.name);
-    const roots = names
-      .filter((n) => !names.some((m) => m !== n && n.startsWith(m + '/')))
+  for (const { scope, plugin, roots } of bySource.values()) {
+    // Drop nested children so each source contributes only its top-level skills.
+    const top = roots
+      .filter((n) => !roots.some((m) => m !== n && n.startsWith(m + '/')))
       .sort();
-    if (roots.length === 0) continue;
-    (scope === 'project' ? projectSources : userSources).push({ plugin, roots });
+    if (top.length === 0) continue;
+    (scope === 'project' ? projectSources : userSources).push({ plugin, roots: top });
   }
 
   const descriptions = new Map<string, string>();
@@ -210,20 +209,25 @@ function renderSkillCatalog(nameRungSkillDocs: SubstrateDoc[]): string {
 
 /** The `## Skills` system-prompt section: every eligible `kind: skill` doc,
  *  rendered at its `system-prompt-visibility`. `name`-rung skills collapse into
- *  one compact catalog (group-collapsed, unioned with plugin/marketplace
- *  skills); `preview`/`content`-rung skills each get a `###` sub-section.
- *  Returns '' when nothing is eligible. */
+ *  one compact, plugin-grouped catalog; `preview`/`content`-rung skills each get
+ *  a `###` sub-section. Returns '' when nothing is eligible. */
 export function renderSkillsSection(nodeId: string): string {
   const subject = cachedNodeSubject(nodeId, assembleNodeSubject);
   if (subject === null) return '';
   const skills = resolverDocs(subject, 'skill');
 
-  const catalog = renderSkillCatalog(skills.filter((d) => d.systemPromptVisibility === 'name'));
-  const elevated = skills
-    .filter((d) => d.systemPromptVisibility !== 'name')
-    .map(renderSubSection);
+  const elevated = skills.filter((d) => d.systemPromptVisibility !== 'name');
+  // A plugin whose INDEX is elevated surfaces as its own `### <plugin>`
+  // subsection (its display name is the plugin/dir name after ceiling rename);
+  // the catalog drops that plugin's group so it is not rendered twice.
+  const elevatedSources = new Set(elevated.map((d) => d.name));
+  const catalog = renderSkillCatalog(
+    skills.filter((d) => d.systemPromptVisibility === 'name'),
+    elevatedSources,
+  );
+  const elevatedBlocks = elevated.map(renderSubSection);
 
-  const blocks = [catalog, ...elevated].filter((s) => s !== '');
+  const blocks = [catalog, ...elevatedBlocks].filter((s) => s !== '');
   if (blocks.length === 0) return '';
   return `## Skills\n\n${blocks.join('\n\n')}`;
 }
