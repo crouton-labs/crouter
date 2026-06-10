@@ -3,14 +3,32 @@
 // A small set of tmux primitives used by the `human` command tree to put the
 // humanloop TUI in a detached pane: spawnAndDetach (open a pane running a given
 // command), countPanesInCurrentWindow (placement decision), plus shellQuote and
-// isInTmux. The canvas runtime has its own one-window-per-node machinery in
-// core/runtime/tmux.ts; this module is only the pane-split path the human TUI
-// needs.
+// tmuxServerReachable. The canvas runtime has its own one-window-per-node
+// machinery in core/runtime/tmux.ts; this module is only the pane-split path the
+// human TUI needs.
 
 import { spawnSync } from 'node:child_process';
 
+/** Does THIS process sit inside a tmux client (its own $TMUX is set)? NOT the
+ *  gate for the human surface — see tmuxServerReachable. A headless-broker child
+ *  strips TMUX/TMUX_PANE (broker.ts, anti-stophook-hijack) yet can still drive
+ *  the canvas tmux server, so gating the surface on this wrongly starves broker
+ *  nodes of human-in-the-loop. */
 export function isInTmux(): boolean {
   return Boolean(process.env.TMUX);
+}
+
+/** Is the canvas tmux SERVER reachable? The canvas runs on the DEFAULT tmux
+ *  socket (no -L/-S in core/runtime/tmux.ts), so any `crtr` child — including a
+ *  headless-broker child that has deleted its own $TMUX — can split panes into
+ *  it. The human surface gates on THIS (can I reach the server to open a pane
+ *  the user is watching?), not on the caller's $TMUX. `list-clients` exits 0
+ *  whenever a server is up (even with zero attached clients) and non-zero when
+ *  no server is running — the true "no tmux to surface into" case that should
+ *  degrade to the inbox-drain follow-up. */
+export function tmuxServerReachable(): boolean {
+  const r = spawnSync('tmux', ['list-clients', '-F', '#{client_name}'], { encoding: 'utf8' });
+  return r.status === 0;
 }
 
 export function shellQuote(s: string): string {
@@ -40,7 +58,7 @@ export function countPanesInCurrentWindow(): number {
  *  output on an unresolvable pane, so test for non-empty stdout, not just `.ok`.
  *  False outside tmux / on error. */
 export function paneAlive(pane: string): boolean {
-  if (!isInTmux() || !/^%\d+$/.test(pane)) return false;
+  if (!/^%\d+$/.test(pane)) return false;
   const r = spawnSync('tmux', ['display-message', '-p', '-t', pane, '#{pane_id}'], {
     encoding: 'utf8',
   });
@@ -52,7 +70,7 @@ export function paneAlive(pane: string): boolean {
  *  specify pane here"); only split-window -t takes a pane. null outside tmux /
  *  on a bad pane id / on error / empty. */
 export function paneWindowTarget(pane: string): string | null {
-  if (!isInTmux() || !/^%\d+$/.test(pane)) return null;
+  if (!/^%\d+$/.test(pane)) return null;
   const r = spawnSync(
     'tmux',
     ['display-message', '-p', '-t', pane, '#{session_name}:#{window_index}'],
@@ -68,7 +86,6 @@ export function paneWindowTarget(pane: string): string | null {
  *  to surface a human prompt in the user's view when nothing in the asking
  *  node's graph is focused. null outside tmux / no client / on error. */
 export function attachedClientPane(): string | null {
-  if (!isInTmux()) return null;
   const clients = spawnSync('tmux', ['list-clients', '-F', '#{client_name}'], {
     encoding: 'utf8',
   });
@@ -137,10 +154,15 @@ export interface DetachResult {
  * as soon as the new pane is up; does NOT wait for the command to finish.
  */
 export function spawnAndDetach(opts: DetachOptions): DetachResult {
-  if (!isInTmux()) {
+  // Gate on the CANVAS tmux server's reachability, NOT the caller's $TMUX. A
+  // headless-broker child strips its own $TMUX (broker.ts) but the canvas server
+  // is on the default socket, so `split-window -t <pane>` against a resolved
+  // target pane (resolveHumanTarget) works fine from it. Only a genuine
+  // no-server case degrades to the inbox-drain follow-up.
+  if (!tmuxServerReachable()) {
     return {
       status: 'not-in-tmux',
-      message: 'handoff requires tmux (TMUX env var not set)',
+      message: 'handoff requires a reachable tmux server',
     };
   }
 

@@ -6,7 +6,7 @@ import { paginate } from '../../core/pagination.js';
 import { getNode, subscribersOf } from '../../core/canvas/index.js';
 import { transition } from '../../core/runtime/lifecycle.js';
 import { appendInbox } from '../../core/feed/inbox.js';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import {
@@ -22,8 +22,112 @@ import {
   readJson,
   display,
 } from '@crouton-kit/humanloop';
-import type { InboxItem, Deck, ResolutionEnvelope, FeedbackResult } from '@crouton-kit/humanloop';
+import type {
+  InboxItem,
+  Deck,
+  ResolutionEnvelope,
+  FeedbackResult,
+  InteractionResponse,
+} from '@crouton-kit/humanloop';
 import { killPane, type RunRecord } from './shared.js';
+
+// ---------------------------------------------------------------------------
+// stranded-answer healing
+// ---------------------------------------------------------------------------
+
+/** A deterministic one-line-per-interaction summary, mirroring humanloop's
+ *  `<id>: <option>[ — <freetext>]` shape. Used when reconstructing a
+ *  ResolutionEnvelope from a bare on-disk response.json (which stores only
+ *  `{responses, completedAt}`), so a healed deliver-back reads like the live one. */
+function summarizeResponses(responses: InteractionResponse[]): string {
+  return responses
+    .map((r) => {
+      const opt = r.selectedOptionId ?? '';
+      const ft = typeof r.freetext === 'string' && r.freetext.trim() !== '' ? ` — ${r.freetext.trim()}` : '';
+      return `${r.id}: ${opt}${ft}`;
+    })
+    .join('\n');
+}
+
+/** Deliver-back + reap an interaction whose answer is on disk but was never
+ *  delivered. The detached `_run` worker's `pushFinal` is normally the SOLE
+ *  deliver-back + reap step; when it never ran (e.g. a broker asker pre-fix, or
+ *  a human draining via `crtr human inbox`, which writes response.json directly
+ *  and never calls pushFinal), the answer strands and the bridge node leaks.
+ *
+ *  Idempotent and self-gating: a no-op unless the bridge node is still LIVE
+ *  (active|idle) AND its interaction is resolved on disk — so it never
+ *  double-delivers an interaction the `_run` worker already finalized (pushFinal
+ *  flips status=done). Reconstructs the same pushFinal body `_run` would have
+ *  emitted, per mode; a canceled-on-disk response reaps the node without
+ *  delivering a result (mirrors `human cancel`). Returns true iff it acted. */
+export async function finalizeResolvedInteraction(jobId: string): Promise<boolean> {
+  const node = getNode(jobId);
+  if (node === null) return false;
+  if (node.status !== 'active' && node.status !== 'idle') return false;
+  const idir = interactionDir(jobId, node.cwd);
+  if (!isResolved(idir)) return false;
+  const rc = readJson<RunRecord>(join(idir, 'run.json'));
+  if (rc === null) return false;
+  const resp = readJson<Record<string, unknown>>(responsePath(idir));
+  if (resp === null) return false;
+
+  // Canceled out-of-band (a raw canceled response.json, not via `human cancel`):
+  // there is no answer to deliver — just reap the node and tell waiting
+  // subscribers no answer is coming, the same quiet deferred note `human cancel`
+  // emits. (`finalize` is legal from active|idle; the status guard above holds.)
+  if (resp['canceled'] === true) {
+    transition(jobId, 'finalize');
+    const note = typeof resp['reason'] === 'string' && resp['reason'] !== '' ? ` — ${resp['reason']}` : '';
+    for (const sub of subscribersOf(jobId)) {
+      appendInbox(sub.node_id, {
+        from: jobId,
+        tier: 'deferred',
+        kind: 'message',
+        label: `human interaction ${jobId} canceled — no answer is coming${note}`,
+        data: { body: `The human interaction ${jobId} was canceled${note}. No response will arrive.` },
+      });
+    }
+    return true;
+  }
+
+  const responses = (resp['responses'] as InteractionResponse[] | undefined) ?? [];
+  const completedAt = (resp['completedAt'] as string | undefined) ?? new Date().toISOString();
+  const summary = summarizeResponses(responses);
+
+  if (rc.mode === 'approve') {
+    const sel = responses.find((r) => r.id === rc.approve_iid)?.selectedOptionId;
+    await pushFinal(
+      jobId,
+      JSON.stringify({ approved: sel === 'yes', summary, responses, responsePath: responsePath(idir), completedAt }),
+    );
+  } else {
+    // ask (and any other answered deck): the full ResolutionEnvelope shape.
+    const env: ResolutionEnvelope = {
+      summary,
+      responsePath: responsePath(idir),
+      schema: 'humanloop.response/v2',
+      responses,
+      completedAt,
+    };
+    await pushFinal(jobId, JSON.stringify(env));
+  }
+  return true;
+}
+
+/** Sweep every interaction under the cwd's interactions root and deliver-back +
+ *  reap any that are answered-but-undelivered (see finalizeResolvedInteraction).
+ *  Interaction dir names ARE the bridge node ids. Returns how many it healed. */
+export async function healStrandedInteractions(cwd: string): Promise<number> {
+  const root = interactionsRoot(cwd);
+  if (!existsSync(root)) return 0;
+  let healed = 0;
+  for (const ent of readdirSync(root, { withFileTypes: true })) {
+    if (!ent.isDirectory()) continue;
+    if (await finalizeResolvedInteraction(ent.name)) healed++;
+  }
+  return healed;
+}
 
 // ---------------------------------------------------------------------------
 // inbox (human-invoked, blocking)
@@ -38,13 +142,23 @@ export const humanInbox = defineLeaf({
     summary: 'interactively drain pending interactions at your own terminal',
     params: [],
     inputNote: 'No input. Run this at a human terminal — it blocks until the backlog is drained or you quit.',
-    output: [{ name: 'drained', type: 'boolean', required: true, constraint: 'True once the loop returns.' }],
+    output: [
+      { name: 'drained', type: 'boolean', required: true, constraint: 'True once the loop returns.' },
+      { name: 'delivered', type: 'integer', required: true, constraint: 'How many answered-but-undelivered interactions were delivered back to their askers and reaped.' },
+    ],
     outputKind: 'object',
-    effects: ['Resolves pending interactions in the per-project interactions root via the TUI.'],
+    effects: [
+      'Resolves pending interactions in the per-project interactions root via the TUI.',
+      'Delivers any answered-but-undelivered interaction back to its asking node and reaps the bridge node (the deliver-back the detached _run worker would have done).',
+    ],
   },
   run: async () => {
     await inbox([interactionsRoot(process.cwd())]);
-    return { drained: true };
+    // humanloop's inbox() writes response.json but never calls pushFinal — so a
+    // deck drained here would strand (no answer-back, leaked bridge node). Heal
+    // every resolved-but-live interaction: deliver its answer to the asker + reap.
+    const delivered = await healStrandedInteractions(process.cwd());
+    return { drained: true, delivered };
   },
 });
 

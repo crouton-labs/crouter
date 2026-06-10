@@ -2,7 +2,7 @@ import { defineLeaf } from '../../core/command.js';
 import { InputError } from '../../core/io.js';
 import { spawnNode } from '../../core/runtime/nodes.js';
 import { interactionDir } from '../../core/artifact.js';
-import { isInTmux } from '../../core/spawn.js';
+import { tmuxServerReachable } from '../../core/spawn.js';
 import { mkdirSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -249,7 +249,7 @@ export const humanNotify = defineLeaf({
     atomicWriteJson(join(idir, 'run.json'), rc);
 
     let shown = false;
-    if (isInTmux()) {
+    if (tmuxServerReachable()) {
       shown = detachHumanTui(idir, cwd).status === 'spawned';
     }
 
@@ -299,7 +299,7 @@ export const humanShow = defineLeaf({
     if (paneId !== undefined) {
       return { pane_id: paneId, reason: null };
     }
-    const reason = isInTmux()
+    const reason = tmuxServerReachable()
       ? 'renderer unavailable (termrender/uv missing)'
       : 'not in tmux';
     return { pane_id: null, reason };
