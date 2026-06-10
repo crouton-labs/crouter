@@ -4,6 +4,7 @@ export * from './types.js';
 export * from './labels.js';
 export * from './paths.js';
 export * from './canvas.js';
+export * from './history.js';
 export * from './focuses.js';
 export * from './wakeups.js';
 export * from './telemetry.js';

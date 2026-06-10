@@ -17,6 +17,7 @@ import { daemonBranch } from './daemon.js';
 import { tmuxSpreadLeaf } from './tmux-spread.js';
 import { chordLeaf } from './chord.js';
 import { canvasPruneLeaf } from './canvas-prune.js';
+import { historyBranch } from './canvas-history.js';
 
 export function registerCanvas(): BranchDef {
   return defineBranch({
@@ -30,8 +31,8 @@ export function registerCanvas(): BranchDef {
       name: 'canvas',
       summary: 'observe and supervise the whole agent graph',
       model:
-        'Canvas-wide operations, distinct from per-node work (`node`) and a node\'s own spine I/O (`push`/`feed`). `dashboard` renders the subscription forest as a tree; `browse` opens an interactive full-screen navigator (tabs/tree/search) over the whole canvas and resumes the chosen node; `attention` aggregates pending human asks across the graph; `revive` reopens a window for a done/idle/dead/canceled node; `daemon` manages the thin crtrd supervisor that auto-revives nodes on window exit; `prune` bounds growth by deleting terminal nodes past a TTL.',
+        'Canvas-wide operations, distinct from per-node work (`node`) and a node\'s own spine I/O (`push`/`feed`). `dashboard` renders the subscription forest as a tree; `browse` opens an interactive full-screen navigator (tabs/tree/search) over the whole canvas and resumes the chosen node; `attention` aggregates pending human asks across the graph; `revive` reopens a window for a done/idle/dead/canceled node; `history` searches and recalls the content record (reports + context docs) of past work in a cwd; `daemon` manages the thin crtrd supervisor that auto-revives nodes on window exit; `prune` bounds growth by deleting terminal nodes past a TTL.',
     },
-    children: [dashboardLeaf, browseLeaf, attentionBranch, reviveLeaf, tmuxSpreadLeaf, daemonBranch, chordLeaf, canvasPruneLeaf],
+    children: [dashboardLeaf, browseLeaf, attentionBranch, reviveLeaf, historyBranch, tmuxSpreadLeaf, daemonBranch, chordLeaf, canvasPruneLeaf],
   });
 }
