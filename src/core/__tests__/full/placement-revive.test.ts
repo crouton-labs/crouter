@@ -28,13 +28,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-import { createNode, getNode } from '../canvas/canvas.js';
-import { openFocusRow, getFocusByNode, getFocusById } from '../canvas/focuses.js';
-import { closeDb } from '../canvas/db.js';
-import { reviveTarget, reviveIntoPlacement, reconcileFocus } from '../runtime/placement.js';
-import { reviveInPlace } from '../runtime/revive.js';
-import type { RespawnPaneOpts } from '../runtime/placement.js';
-import type { FocusRow, NodeMeta } from '../canvas/types.js';
+import { createNode, getNode } from '../../canvas/canvas.js';
+import { openFocusRow, getFocusByNode, getFocusById } from '../../canvas/focuses.js';
+import { closeDb } from '../../canvas/db.js';
+import { reviveTarget, reviveIntoPlacement, reconcileFocus } from '../../runtime/placement.js';
+import { reviveInPlace } from '../../runtime/revive.js';
+import type { RespawnPaneOpts } from '../../runtime/placement.js';
+import type { FocusRow, NodeMeta } from '../../canvas/types.js';
 
 let home: string;
 

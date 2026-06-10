@@ -34,11 +34,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 
-import { createHarness, hasTmux, type Harness } from './helpers/harness.js';
-import { setPresence, getNode } from '../canvas/canvas.js';
-import { openFocusRow, getFocusByNode, getFocusByPane, listFocuses } from '../canvas/focuses.js';
-import { closeDb } from '../canvas/db.js';
-import { markBusy } from '../runtime/busy.js';
+import { createHarness, hasTmux, type Harness } from '../helpers/harness.js';
+import { setPresence, getNode } from '../../canvas/canvas.js';
+import { openFocusRow, getFocusByNode, getFocusByPane, listFocuses } from '../../canvas/focuses.js';
+import { closeDb } from '../../canvas/db.js';
+import { markBusy } from '../../runtime/busy.js';
 
 const SKIP = !hasTmux() ? 'tmux unavailable' : false;
 

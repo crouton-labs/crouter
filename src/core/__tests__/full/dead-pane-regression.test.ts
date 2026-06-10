@@ -29,8 +29,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 
-import { hasTmux } from './helpers/harness.js';
-import { spawnAndDetach } from '../spawn.js';
+import { hasTmux } from '../helpers/harness.js';
+import { spawnAndDetach } from '../../spawn.js';
 
 const SKIP = !hasTmux();
 

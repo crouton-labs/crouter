@@ -33,9 +33,9 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 
-import { hasTmux } from './helpers/harness.js';
+import { hasTmux } from '../helpers/harness.js';
 
-const CROUTER = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+const CROUTER = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
 const CLI_SRC = join(CROUTER, 'src', 'cli.ts');
 const TSX_ESM = createRequire(import.meta.url).resolve('tsx/esm');
 

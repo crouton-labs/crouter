@@ -48,7 +48,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 
-import { createHarness, hasTmux, type Harness } from './helpers/harness.js';
+import { createHarness, hasTmux, type Harness } from '../helpers/harness.js';
 
 function sessionExists(session: string): boolean {
   return spawnSync('tmux', ['has-session', '-t', session], { stdio: 'ignore' }).status === 0;

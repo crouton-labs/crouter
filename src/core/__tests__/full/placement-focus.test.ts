@@ -19,14 +19,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-import { createNode, getNode, setPresence } from '../canvas/canvas.js';
+import { createNode, getNode, setPresence } from '../../canvas/canvas.js';
 import {
   openFocusRow,
   getFocusByNode,
   getFocusById,
   listFocuses,
-} from '../canvas/focuses.js';
-import { closeDb } from '../canvas/db.js';
+} from '../../canvas/focuses.js';
+import { closeDb } from '../../canvas/db.js';
 import {
   outgoingDisposition,
   retargetFocus,
@@ -36,9 +36,9 @@ import {
   focusByPane,
   detachToBackground,
   type Reviver,
-} from '../runtime/placement.js';
-import { markBusy, isBusy } from '../runtime/busy.js';
-import type { NodeMeta } from '../canvas/types.js';
+} from '../../runtime/placement.js';
+import { markBusy, isBusy } from '../../runtime/busy.js';
+import type { NodeMeta } from '../../canvas/types.js';
 
 let home: string;
 let savedTmux: string | undefined;

@@ -18,16 +18,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
-import { createNode, getNode, getRow } from '../canvas/canvas.js';
-import { closeDb } from '../canvas/db.js';
+import { createNode, getNode, getRow } from '../../canvas/canvas.js';
+import { closeDb } from '../../canvas/db.js';
 import {
   reconcileDecision,
   reconcile,
   isNodePaneAlive,
   type CachedLocation,
   type LiveProbe,
-} from '../runtime/placement.js';
-import type { NodeMeta } from '../canvas/types.js';
+} from '../../runtime/placement.js';
+import type { NodeMeta } from '../../canvas/types.js';
 
 let home: string;
 
