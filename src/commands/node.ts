@@ -7,7 +7,6 @@
 
 import { defineLeaf, defineBranch, type BranchDef } from '../core/command.js';
 import { InputError } from '../core/io.js';
-import { readConfig } from '../core/config.js';
 import { spawnChild, type SpawnChildOpts } from '../core/runtime/spawn.js';
 import { promote, requestYield } from '../core/runtime/promote.js';
 import { writeYieldMessage, readGoal } from '../core/runtime/kickoff.js';
@@ -144,13 +143,12 @@ const nodeNew = defineLeaf({
       { kind: 'flag', name: 'parent', type: 'string', required: false, constraint: 'Parent node id. Defaults to the calling node (CRTR_NODE_ID).' },
       { kind: 'flag', name: 'root', type: 'bool', required: false, constraint: 'Spawn an INDEPENDENT root instead of a managed child: no parent (top-level on the canvas), NO subscription back to you (you are NOT woken by it), resident lifecycle. It records spawned_by=you for provenance and is brought forefront so it can be driven directly. Use for a node you hand off and do not manage (e.g. a sub-orchestrator a human will discuss with).' },
       { kind: 'flag', name: 'fork-from', type: 'string', required: false, constraint: 'FORK the new node from an existing pi conversation instead of starting it fresh: pass a node id (forks from that node\'s session), an absolute session `.jsonl` path, or a partial pi session uuid. pi copies that whole history into a NEW session for the child (the source is untouched), then the prompt is delivered as the next message — i.e. the child wakes up as a continuation of that conversation. Use to branch exploratory work off a node that already built up the context you need, instead of re-deriving it. One-shot at birth: the fork resumes its own session thereafter.' },
-      { kind: 'flag', name: 'headless', type: 'bool', required: false, constraint: 'Spawn the node on the HEADLESS broker host (no tmux pane) instead of a tmux window. Overrides the `headless` config default for this spawn; omit to use that default (which itself defaults to a tmux pane).' },
       { kind: 'flag', name: 'model', type: 'enum', choices: ['ultra', 'strong', 'medium', 'light'], required: false, constraint: 'Override the model the node runs on, by capability TIER: ultra (frontier), strong (opus), medium (sonnet), light (haiku). Omit to use the kind\'s persona default (explore=light, every other kind=strong). The override is durable — it survives revives and polymorphs (promote/demote).' },
     ],
     output: [
       { name: 'node_id', type: 'string', required: true, constraint: 'The new node id.' },
       { name: 'name', type: 'string', required: true, constraint: 'Display name.' },
-      { name: 'window', type: 'string', required: false, constraint: 'tmux window id of the background window.' },
+      { name: 'window', type: 'string', required: false, constraint: 'tmux window id of the background viewer window (a `crtr attach` view onto the node\'s broker).' },
       { name: 'session', type: 'string', required: true, constraint: 'The tmux session the node was placed in — the shared crtr session for a child; your current session for an in-tmux --root.' },
       { name: 'status', type: 'string', required: true, constraint: 'Always "active" on spawn.' },
       { name: 'follow_up', type: 'string', required: true, constraint: 'Decision road sign for the caller: the child runs independently and its finish wakes you on its own, so never wait or poll on it — either pick up other work now or end your turn. If you are an orchestrator already deep in context (>100k), it instead steers you to `crtr node yield` now so your fresh revive absorbs the child\'s result. Read it, then act.' },
@@ -160,7 +158,7 @@ const nodeNew = defineLeaf({
     effects: [
       'Creates a node under ~/.crouter/canvas/nodes/<id>/ and indexes it in canvas.db.',
       'Default (managed child): parent auto-subscribes (active) and is woken on the child\'s pushes. With --root: no subscription — records a spawned_by edge for provenance only.',
-      'Opens a tmux window running pi: a background (non-focus-stealing) window in the shared crtr session for a child; with --root, a new window in your current session (in-tmux) or the shared session (outside tmux), with the client switched to it.',
+      'Launches the node\'s engine as a detached broker (the only host) and opens a tmux window running `crtr attach` as a viewer onto its socket: a background (non-focus-stealing) window in the shared crtr session for a child; with --root, a new viewer window in your current session (in-tmux) or the shared session (outside tmux), with the client switched to it.',
     ],
   },
   run: async (input) => {
@@ -176,11 +174,8 @@ const nodeNew = defineLeaf({
     const root = input['root'] === true;
     const forkFrom = input['forkFrom'] as string | undefined;
     const model = input['model'] as string | undefined;
-    // Host precedence: explicit --headless flag > config `headless` default > tmux.
-    const hostKind: 'tmux' | 'broker' =
-      input['headless'] === true ? 'broker' : readConfig('user').headless === true ? 'broker' : 'tmux';
 
-    const res = spawnChild({ kind, mode, cwd, name, prompt, parent, root, forkFrom, hostKind, model });
+    const res = spawnChild({ kind, mode, cwd, name, prompt, parent, root, forkFrom, model });
     return {
       node_id: res.node.node_id,
       name: res.node.name,
@@ -277,29 +272,29 @@ const nodeInspect = defineBranch({
 });
 
 // ---------------------------------------------------------------------------
-// node focus — bring a node's window forefront (across roots if needed)
+// node focus — bring a node's viewer forefront (across roots if needed)
 // ---------------------------------------------------------------------------
 
 const nodeFocus = defineLeaf({
   name: 'focus',
-  description: 'bring a node window forefront',
-  whenToUse: 'you want to bring a specific node into view — swapped into your current pane — to watch or steer it directly, reviving it first if dormant. Use `node cycle` instead to walk neighbors one window at a time rather than jump to a named node, and `node msg` to steer a node without leaving where you are',
+  description: 'bring a node\'s viewer forefront',
+  whenToUse: 'you want to bring a specific node into view — open or move its viewer beside your current pane — to watch or steer it directly, reviving its broker first if dormant. Use `node cycle` instead to walk neighbors one viewer at a time rather than jump to a named node, and `node msg` to steer a node without leaving where you are',
   help: {
     name: 'node focus',
-    summary: 'bring a node into your CURRENT pane in place (swap-pane) — the agent appears where you are instead of navigating you to its window',
+    summary: 'bring a node\'s viewer forefront — open a `crtr attach` view onto the node\'s broker beside your current pane, or navigate to its existing viewer. The engine runs on the broker (the only host); the pane is just a window onto it.',
     params: [
       { kind: 'positional', name: 'node', required: true, constraint: 'Node id to focus.' },
-      { kind: 'flag', name: 'new-pane', type: 'bool', required: false, constraint: 'Open the node in a NEW viewport SIDE-BY-SIDE with your current pane (a second focus) instead of swapping it into your pane. Two agents on screen at once (F4).' },
-      { kind: 'flag', name: 'pane', type: 'string', required: false, constraint: 'tmux pane id to focus INTO (default: caller TMUX_PANE). Used by the canvas browser popup to focus back into the originating pane.' },
+      { kind: 'flag', name: 'new-pane', type: 'bool', required: false, constraint: 'Always open a NEW viewer SIDE-BY-SIDE with your current pane instead of moving/reusing the node\'s existing viewer. Two agents on screen at once (F4).' },
+      { kind: 'flag', name: 'pane', type: 'string', required: false, constraint: 'tmux pane id to focus beside (default: caller TMUX_PANE). Used by the canvas browser popup to focus back into the originating pane.' },
     ],
     output: [
-      { name: 'focused', type: 'boolean', required: true, constraint: 'True when the node was brought into view.' },
-      { name: 'session', type: 'string', required: false, constraint: 'The tmux session the node lives in.' },
-      { name: 'revived', type: 'boolean', required: true, constraint: 'True when a dormant node was revived to be focused.' },
-      { name: 'in_place', type: 'boolean', required: true, constraint: 'True when the node was swapped into the caller pane; false when it fell back to window focus (no caller pane).' },
+      { name: 'focused', type: 'boolean', required: true, constraint: 'True when the node\'s viewer was brought into view.' },
+      { name: 'session', type: 'string', required: false, constraint: 'The tmux session the viewer lives in.' },
+      { name: 'revived', type: 'boolean', required: true, constraint: 'True when a dormant node\'s broker was relaunched to be focused.' },
+      { name: 'in_place', type: 'boolean', required: true, constraint: 'True when an existing viewer was navigated to (no new pane); false when a fresh viewer pane was opened or moved beside you.' },
     ],
     outputKind: 'object',
-    effects: ['Swaps the node\'s pane into the caller\'s current pane (tmux swap-pane -d) and retargets the caller\'s focus to it (focus pointer updated).', 'With --new-pane: splits a new viewport beside the caller (a second live focus) instead of swapping in place.', 'Revives a dormant node (resume) into the backstage if it has no live pane, then swaps it into the focus.'],
+    effects: ['Ensures the node\'s broker engine is alive (revives it if dormant) and opens/moves its one viewer pane (a `crtr attach` view) beside the caller, or navigates to it if a live viewer already sits in the caller\'s session.', 'With --new-pane: always splits a fresh viewer beside the caller (two agents on screen) instead of reusing the existing viewer.'],
   },
   run: async (input) => {
     const id = input['node'] as string;
@@ -316,14 +311,13 @@ const nodeFocus = defineLeaf({
         next: `The pending question is already on the human's screen; see it with \`crtr human list\` / \`crtr human inbox\`, or retract it with \`crtr human cancel ${id}\`.`,
       });
     }
-    // Placement owns the whole act (§2.3): resolve the caller's focus (or open a
-    // new viewport with --new-pane), revive the target into the backstage if it
-    // is dormant, then hot-swap it onto the focus. The reviver is injected so
-    // placement need not import revive.ts.
+    // Placement owns the whole act: ensure the target's broker engine is alive
+    // (revive it if dormant), then open/move its one viewer pane beside the
+    // caller (or split a fresh viewer with --new-pane). The reviver is injected
+    // so placement need not import revive.ts.
     const res = placementFocus(id, {
       pane: input['pane'] as string | undefined,
       newPane: input['newPane'] === true,
-      callerNode: process.env['CRTR_NODE_ID'],
       revive: (nid) => { reviveNode(nid, { resume: true }); },
     });
     return { focused: res.focused, session: res.session, revived: res.revived, in_place: res.inPlace };
@@ -350,7 +344,7 @@ function nodeByWindow(win: string): string | undefined {
 /** The live node "in front of you" in a tmux pane, HOST-AGNOSTIC. Defaults to
  *  $TMUX_PANE / the caller's current pane when `pane` is omitted — shared by
  *  `node recycle` / `node demote` / `node lifecycle` / `node close` / `node
- *  cycle`, and the `canvas chord` / `canvas tmux-spread` leaves.
+ *  cycle`, and the `canvas chord` leaf.
  *
  *  Two resolutions, tried in order:
  *    1. VIEWER pane (broker host): a `crtr attach` viewer self-tags its pane with
@@ -515,12 +509,12 @@ function liveDfsOrder(): string[] {
 
 const nodeCycle = defineLeaf({
   name: 'cycle',
-  description: 'DFS-walk to the next/prev live node in place',
-  whenToUse: 'sweeping the canvas one window at a time, descending into children before siblings (bound to Alt+] forward / Alt+[ back). Use `node focus` instead to jump straight to a named node',
+  description: 'DFS-walk to the next/prev live node\'s viewer',
+  whenToUse: 'sweeping the canvas one viewer at a time, descending into children before siblings (bound to Alt+] forward / Alt+[ back). Use `node focus` instead to jump straight to a named node',
   help: {
     name: 'node cycle',
     summary:
-      'focus the next/previous live node in DFS pre-order — the canvas walked one window at a time, descending into a node\'s children before its siblings (bound to Alt+] forward / Alt+[ back)',
+      'focus the next/previous live node\'s viewer in DFS pre-order — the canvas walked one viewer at a time, descending into a node\'s children before its siblings (bound to Alt+] forward / Alt+[ back)',
     params: [
       { kind: 'flag', name: 'dir', type: 'enum', choices: ['next', 'prev'], required: false, default: 'next', constraint: 'Direction along the pre-order: next (Alt+], rightward/deeper into children) or prev (Alt+[, back). Wraps at the ends.' },
       { kind: 'flag', name: 'pane', type: 'string', required: false, constraint: 'tmux pane to cycle FROM. Defaults to $TMUX_PANE / your current pane. The Alt+] / Alt+[ bindings pass this for you.' },
@@ -532,7 +526,7 @@ const nodeCycle = defineLeaf({
       { name: 'from', type: 'string', required: false, constraint: 'The node you cycled away from.' },
     ],
     outputKind: 'object',
-    effects: ['Swaps the neighbor\'s pane into the caller pane (like `node focus`); the node you were viewing drops to the background.', 'Revives the neighbor first if its window was released.'],
+    effects: ['Brings the neighbor\'s viewer forefront beside the caller (like `node focus`); the viewer you were watching drops to the background.', 'Relaunches the neighbor\'s broker first if it was dormant.'],
   },
   run: async (input) => {
     const pane = (input['pane'] as string | undefined) ?? process.env['TMUX_PANE'] ?? currentTmux()?.pane ?? undefined;
@@ -550,12 +544,10 @@ const nodeCycle = defineLeaf({
     const target = getNode(targetId);
     if (target === null) return { focused: false, from: fromId };
 
-    // Placement retargets the caller pane's focus to the neighbor (§2.3),
-    // reviving it into the backstage first if its pane was released. callerNode
-    // is the node we cycled AWAY from — the current occupant of the caller pane.
+    // Placement brings the neighbor's viewer forefront beside the caller,
+    // relaunching its broker engine first if it was dormant.
     const res = placementFocus(targetId, {
       pane,
-      callerNode: fromId,
       revive: (nid) => { reviveNode(nid, { resume: true }); },
     });
     return { focused: res.focused, node_id: targetId, name: target.name, from: fromId };
@@ -747,8 +739,8 @@ function resolveLifecycleNode(input: Record<string, unknown>, pane: string | und
   return id;
 }
 
-/** Set a node's lifecycle axis and, with `detach`, relocate its still-running
- *  pane to the background crtr session. Rebuilds the launch spec so a future
+/** Set a node's lifecycle axis and, with `detach`, close its foreground viewer
+ *  pane (the broker engine keeps running). Rebuilds the launch spec so a future
  *  revive comes back with the new lifecycle's prompt baked in (the live session
  *  is steered by the persona injector; this fixes the static prompt the daemon
  *  replays). Spine is fixed by parent-ness, so it carries through unchanged.
@@ -762,9 +754,9 @@ function setLifecycle(id: string, value: Lifecycle, opts: { pane?: string | unde
     model: target.model_override ?? undefined,
   });
   const meta = updateNode(id, { lifecycle: value, launch });
-  // --detach: shove the still-running agent into the background crtr session,
-  // freeing the foreground pane. The pi is untouched (it keeps generating); now
-  // terminal, it pushes a final up the spine when it finishes.
+  // --detach: stop foregrounding the agent by closing its viewer pane (the
+  // broker engine keeps generating off-screen); now terminal, it pushes a final
+  // up the spine when it finishes, and a later `focus` reattaches a viewer.
   let detached = false;
   if (opts.detach === true) detached = detachToBackground(id, opts.pane);
   return { node_id: meta.node_id, lifecycle: meta.lifecycle, detached };
@@ -780,23 +772,23 @@ function setLifecycle(id: string, value: Lifecycle, opts: { pane?: string | unde
 
 const nodeDemote = defineLeaf({
   name: 'demote',
-  description: 'demote a node to terminal in place; it stays focused and running but now owes a final; --detach also sends it to the backstage crtr session',
-  whenToUse: 'you are watching a resident/interactive node and want to put it on a finishing track WITHOUT disturbing it: flip it terminal IN PLACE — it keeps its pane and your focus, keeps running, but now owes a final report up the spine and reaps when done. The friendly counterpart to `node promote`. You can also let go entirely and send the still-running agent off-screen to finish in the background. Use `node recycle` instead to FINISH it now and reboot a fresh root in its pane, and `node lifecycle` for the orthogonal low-level flip (incl. terminal→resident)',
+  description: 'demote a node to terminal in place; it stays focused and running but now owes a final; --detach also closes its viewer (broker keeps running off-screen)',
+  whenToUse: 'you are watching a resident/interactive node and want to put it on a finishing track WITHOUT disturbing it: flip it terminal IN PLACE — it keeps its viewer and your focus, keeps running, but now owes a final report up the spine and reaps when done. The friendly counterpart to `node promote`. You can also let go entirely and close its viewer so the agent finishes off-screen on its broker. Use `node recycle` instead to FINISH it now and reboot a fresh root in its pane, and `node lifecycle` for the orthogonal low-level flip (incl. terminal→resident)',
   help: {
     name: 'node demote',
-    summary: 'demote a node to terminal IN PLACE — it stays focused and running but now owes a final up the spine and reaps when done. Pairs with `node promote` (mode↑); `--detach` also relocates the still-running agent to the background crtr session',
+    summary: 'demote a node to terminal IN PLACE — it stays focused and running but now owes a final up the spine and reaps when done. Pairs with `node promote` (mode↑); `--detach` also closes its viewer (the broker engine keeps running off-screen)',
     params: [
       { kind: 'flag', name: 'node', type: 'string', required: false, constraint: 'Node to demote. Defaults to the node in --pane, else the caller (CRTR_NODE_ID).' },
       { kind: 'flag', name: 'pane', type: 'string', required: false, constraint: 'tmux pane id whose node to demote, when --node is omitted. Defaults to $TMUX_PANE. The Alt+C menu passes this for you.' },
-      { kind: 'flag', name: 'detach', type: 'bool', required: false, constraint: 'After flipping terminal, send the still-running agent to the background crtr session (break its pane out of the foreground). The pi keeps generating and — now terminal — pushes a final up the spine when done. The Alt+C → D move.' },
+      { kind: 'flag', name: 'detach', type: 'bool', required: false, constraint: 'After flipping terminal, stop foregrounding the agent by closing its viewer pane. The broker engine keeps generating off-screen and — now terminal — pushes a final up the spine when done; a later `focus` reattaches a viewer. The Alt+C → D move.' },
     ],
     output: [
       { name: 'node_id', type: 'string', required: true, constraint: 'The demoted node.' },
       { name: 'lifecycle', type: 'string', required: true, constraint: 'Always "terminal" after a demote.' },
-      { name: 'detached', type: 'boolean', required: false, constraint: 'True when --detach relocated the agent to the background crtr session.' },
+      { name: 'detached', type: 'boolean', required: false, constraint: 'True when --detach closed the agent\'s viewer pane (broker keeps running).' },
     ],
     outputKind: 'object',
-    effects: ['Flips the node\'s lifecycle→terminal and rebuilds its launch spec so a future revive boots terminal — it stays focused and running, now owing a final up the spine.', 'The persona injector delivers the transition guidance at the next turn boundary (or on the node\'s next revive if it is dormant).', 'With --detach: relocates the agent\'s live pane to the background crtr session (break-pane) WITHOUT killing the pi — it keeps generating off-screen.'],
+    effects: ['Flips the node\'s lifecycle→terminal and rebuilds its launch spec so a future revive boots terminal — it stays focused and running, now owing a final up the spine.', 'The persona injector delivers the transition guidance at the next turn boundary (or on the node\'s next revive if it is dormant).', 'With --detach: closes the agent\'s viewer pane WITHOUT touching the broker engine — it keeps generating off-screen, reconnectable by a later `focus`.'],
   },
   run: async (input) => {
     const pane = (input['pane'] as string | undefined) ?? process.env['TMUX_PANE'];
@@ -804,7 +796,7 @@ const nodeDemote = defineLeaf({
     const res = setLifecycle(id, 'terminal', { pane, detach: input['detach'] === true });
     return { node_id: res.node_id, lifecycle: res.lifecycle, detached: res.detached };
   },
-  render: (r) => `Demoted ${r['node_id']} — lifecycle now ${r['lifecycle']} (in place)${r['detached'] === true ? ', relocated to the background crtr session' : ''}.`,
+  render: (r) => `Demoted ${r['node_id']} — lifecycle now ${r['lifecycle']} (in place)${r['detached'] === true ? ', viewer closed (broker still running off-screen)' : ''}.`,
 });
 
 // ---------------------------------------------------------------------------
@@ -818,20 +810,20 @@ const nodeLifecycle = defineLeaf({
   whenToUse: 'you want to flip a node\'s LIFECYCLE independent of its mode: make a node RESIDENT so it becomes interactable — it stays dormant, wakes on inbox/human, and is never forced to submit a final; or make a node TERMINAL so it owes a final result up the spine and reaps when done. Orthogonal to `node promote`, which changes MODE (base↔orchestrator), not lifecycle. You can also let go of a still-running agent and send it off-screen to finish in the background. For the human-driver flip-to-terminal pair reach for `node demote` (the friendly terminal-only skin over this)',
   help: {
     name: 'node lifecycle',
-    summary: 'set a node\'s lifecycle axis — terminal (owes a final up the spine, reaps when done) or resident (interactable, stays dormant, woken by inbox/human, never forced to submit). Orthogonal to mode; promotion does not touch it. `--detach` also relocates a live agent to the background crtr session',
+    summary: 'set a node\'s lifecycle axis — terminal (owes a final up the spine, reaps when done) or resident (interactable, stays dormant, woken by inbox/human, never forced to submit). Orthogonal to mode; promotion does not touch it. `--detach` also closes a live agent\'s viewer (broker keeps running off-screen)',
     params: [
       { kind: 'positional', name: 'lifecycle', required: true, constraint: 'terminal | resident.' },
       { kind: 'flag', name: 'node', type: 'string', required: false, constraint: 'Node to change. Defaults to the node in --pane, else the caller (CRTR_NODE_ID).' },
       { kind: 'flag', name: 'pane', type: 'string', required: false, constraint: 'tmux pane id whose node to change, when --node is omitted. Defaults to $TMUX_PANE. The Alt+C menu passes this for you.' },
-      { kind: 'flag', name: 'detach', type: 'bool', required: false, constraint: 'After flipping lifecycle, send the still-running agent to the background crtr session (break its pane out of the foreground). The pi keeps generating and — now terminal — pushes a final up the spine when done. The human-driver "I am done foregrounding this" move (Alt+C → D).' },
+      { kind: 'flag', name: 'detach', type: 'bool', required: false, constraint: 'After flipping lifecycle, stop foregrounding the agent by closing its viewer pane. The broker engine keeps generating off-screen and — now terminal — pushes a final up the spine when done; a later `focus` reattaches a viewer. The human-driver "I am done foregrounding this" move (Alt+C → D).' },
     ],
     output: [
       { name: 'node_id', type: 'string', required: true, constraint: 'The node.' },
       { name: 'lifecycle', type: 'string', required: true, constraint: 'Its new lifecycle (terminal | resident).' },
-      { name: 'detached', type: 'boolean', required: false, constraint: 'True when --detach relocated the agent to the background crtr session.' },
+      { name: 'detached', type: 'boolean', required: false, constraint: 'True when --detach closed the agent\'s viewer pane (broker keeps running).' },
     ],
     outputKind: 'object',
-    effects: ['Sets lifecycle on the node meta and rebuilds its launch spec so a future revive boots with the new lifecycle\'s prompt baked in.', 'The persona injector delivers the transition guidance at the next turn boundary (or on the node\'s next revive if it is dormant).', 'With --detach: relocates the agent\'s live pane to the background crtr session (break-pane) WITHOUT killing the pi — it keeps generating in the background.'],
+    effects: ['Sets lifecycle on the node meta and rebuilds its launch spec so a future revive boots with the new lifecycle\'s prompt baked in.', 'The persona injector delivers the transition guidance at the next turn boundary (or on the node\'s next revive if it is dormant).', 'With --detach: closes the agent\'s viewer pane WITHOUT touching the broker engine — it keeps generating off-screen, reconnectable by a later `focus`.'],
   },
   run: async (input) => {
     const value = (input['lifecycle'] as string | undefined)?.trim().toLowerCase();
@@ -843,7 +835,7 @@ const nodeLifecycle = defineLeaf({
     const res = setLifecycle(id, value as Lifecycle, { pane, detach: input['detach'] === true });
     return { node_id: res.node_id, lifecycle: res.lifecycle, detached: res.detached };
   },
-  render: (r) => `Set ${r['node_id']} lifecycle → ${r['lifecycle']}${r['detached'] === true ? ', relocated to the background crtr session' : ''}.`,
+  render: (r) => `Set ${r['node_id']} lifecycle → ${r['lifecycle']}${r['detached'] === true ? ', viewer closed (broker still running off-screen)' : ''}.`,
 });
 
 // ---------------------------------------------------------------------------

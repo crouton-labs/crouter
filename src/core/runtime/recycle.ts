@@ -5,8 +5,8 @@
 //
 //   1. Finalize — push the agent's last surfaced message as a `final` report so
 //      every subscriber/manager waiting on it is unblocked, and mark it done.
-//   2. Close    — kill the agent's pi (respawn-pane -k tears it down in place).
-//   3. Recycle  — boot a fresh resident root in that same pane (a new `crtr`).
+//   2. Close    — tear the agent's broker engine down (the pane is only a viewer).
+//   3. Recycle  — boot a fresh resident broker root the pane re-attaches to.
 //
 // NOT to be confused with `node demote` (flip-to-terminal IN PLACE, which keeps
 // the agent focused and running): recycle ENDS this agent and boots a brand-new
@@ -24,9 +24,8 @@ import { reportsDir } from '../canvas/paths.js';
 import { pushFinal } from '../feed/feed.js';
 import { spawnNode, nodeSession, rootOfSpine } from './nodes.js';
 import { buildLaunchSpec, buildPiArgv } from './launch.js';
-import { FRONT_DOOR_ENV } from './front-door.js';
-import { focusOf, recycleFocusPane, piCommand, paneLocation, respawnPaneSync, setPaneOption, waitForBrokerViewSocket, viewerSplitEnv } from './placement.js';
-import { hostFor } from './host.js';
+import { focusOf, paneLocation, respawnPaneSync, setPaneOption, waitForBrokerViewSocket, viewerSplitEnv } from './placement.js';
+import { headlessBrokerHost } from './host.js';
 import { ensureDaemon } from '../../daemon/manage.js';
 
 export interface RecycleResult {
@@ -85,16 +84,12 @@ export async function recycleNode(nodeId: string, callerPane?: string): Promise<
     finalized = true;
   } catch { /* recycle the pane even if the report failed */ }
 
-  // A broker node's pane is a VIEWER (`crtr attach`), not its engine: the engine
-  // is the detached broker process, so respawn-pane -k below would only kill the
-  // viewer, never the engine. Route teardown through the Host seam so the broker
-  // PROCESS exits and releases the sole .jsonl writer (mirrors the T12
-  // close.ts/reset.ts fix; review reuse MINOR-3). Status is already flipped done
-  // by pushFinal above (crash-safe order: the daemon won't revive a done node).
-  const isBroker = meta.host_kind === 'broker';
-  if (isBroker) {
-    try { hostFor(meta).teardown(nodeId); } catch { /* best-effort */ }
-  }
+  // The node's pane is a VIEWER (`crtr attach`), not its engine: the engine is
+  // the detached broker process, so respawn-pane -k below would only kill the
+  // viewer, never the engine. Tear the broker PROCESS down so it exits and
+  // releases the sole .jsonl writer. Status is already flipped done by pushFinal
+  // above (crash-safe order: the daemon won't revive a done node).
+  try { headlessBrokerHost.teardown(nodeId); } catch { /* best-effort */ }
 
   // Capture M's focus viewport (if any) BEFORE nulling — the fresh root inherits
   // it (the SAME focus row + pane). The demoted node no longer holds a pane: it is
@@ -102,12 +97,9 @@ export async function recycleNode(nodeId: string, callerPane?: string): Promise<
   const f = focusOf(nodeId);
   try { setPresence(nodeId, { pane: null, window: null, tmux_session: null }); } catch { /* best-effort */ }
 
-  // 2 + 3. Recycle — boot a fresh resident root for the SAME pane, PRESERVING
-  // the recycled node's host model: a tmux node recycles into a tmux root in the
-  // pane; a broker node recycles into a fresh BROKER root the pane re-attaches to
-  // (broker-is-the-host — the viewer pane stays a viewer, never becomes an engine
-  // pane). Without preserving host_kind, recycling a broker node from its viewer
-  // would silently respawn the viewer into a tmux pi root.
+  // 2 + 3. Recycle — boot a fresh resident BROKER root for the SAME pane: the
+  // viewer pane re-attaches to the fresh broker (broker-is-the-host — the viewer
+  // pane stays a viewer, never becomes an engine pane).
   try { ensureDaemon(); } catch { /* daemon is best-effort */ }
   const loc = paneLocation(pane);
   const { launch } = buildLaunchSpec('general', 'base', { lifecycle: 'resident', hasManager: false });
@@ -119,7 +111,6 @@ export async function recycleNode(nodeId: string, callerPane?: string): Promise<
     name: 'general',
     parent: null,
     launch,
-    hostKind: isBroker ? 'broker' : 'tmux',
   });
   // REVIVE-HOME: a recycled root's durable revive target is the session
   // of the pane it was recycled into (the one place home_session is rewritten
@@ -131,35 +122,13 @@ export async function recycleNode(nodeId: string, callerPane?: string): Promise<
   const fresh = getNode(root.node_id) as NodeMeta;
   const inv = buildPiArgv(fresh);
   // CRTR_ROOT_SESSION/CRTR_SUBTREE route the fresh root's children to the
-  // backstage (both consumers below read this one authoritative env). FRONT_DOOR
-  // is added per-consumer: the tmux command const adds it; the broker host sets
-  // it itself, so the broker branch omits it.
+  // backstage. FRONT_DOOR is set by the broker host itself, so it is not added
+  // here.
   inv.env = { ...inv.env, CRTR_ROOT_SESSION: nodeSession(), CRTR_SUBTREE: rootOfSpine(root.node_id) };
 
-  const ok = isBroker
-    ? recycleBrokerViewer(fresh, pane, inv)
-    : recycleTmuxRoot(root.node_id, pane, {
-        command: piCommand(inv.argv),
-        env: { ...inv.env, [FRONT_DOOR_ENV]: '1' },
-        cwd: meta.cwd,
-        name: fullName(fresh),
-      });
+  const ok = recycleBrokerViewer(fresh, pane, inv);
 
   return { recycled: ok, finalized, newRoot: root.node_id, delivered };
-}
-
-/** Recycle a TMUX root into `pane`: respawn-pane -k boots the fresh pi engine in
- *  place. Clears any stale `@crtr_node` viewer tag first — a prior `crtr attach`
- *  in this pane may have left one (tmux pane options survive respawn-pane), and
- *  since nodeInPane checks the tag BEFORE the window, a stale tag would shadow
- *  the real window→node lookup for the fresh tmux engine now in the pane. */
-function recycleTmuxRoot(
-  nodeId: string,
-  pane: string,
-  launch: { command: string; env: Record<string, string>; cwd: string; name: string },
-): boolean {
-  try { setPaneOption(pane, '@crtr_node', ''); } catch { /* best-effort */ }
-  return recycleFocusPane(nodeId, pane, { ...launch, resuming: false });
 }
 
 /** Recycle a BROKER root into `pane`: the fresh root is broker-hosted, so its
@@ -171,12 +140,11 @@ function recycleTmuxRoot(
  *  pane was not respawned) when the broker never serves — the fresh root row
  *  still exists, broker-hosted, for the daemon to revive. */
 function recycleBrokerViewer(fresh: NodeMeta, pane: string, inv: ReturnType<typeof buildPiArgv>): boolean {
-  hostFor(fresh).launch(fresh.node_id, inv, { cwd: fresh.cwd, name: fullName(fresh), resuming: false });
+  headlessBrokerHost.launch(fresh.node_id, inv, { cwd: fresh.cwd, name: fullName(fresh), resuming: false });
   if (!waitForBrokerViewSocket(fresh.node_id)) return false;
-  // Clear the finalized node's stale `@crtr_node` tag before respawn (symmetry
-  // with recycleTmuxRoot) so the tag never names a done node during the gap
-  // before the new `crtr attach` re-tags on connect. Node ids are shell-safe
-  // identifiers; no quoting needed.
+  // Clear the finalized node's stale `@crtr_node` tag before respawn so the tag
+  // never names a done node during the gap before the new `crtr attach` re-tags
+  // on connect. Node ids are shell-safe identifiers; no quoting needed.
   try { setPaneOption(pane, '@crtr_node', ''); } catch { /* best-effort */ }
   // SYNC respawn: the recycle command runs as a SEPARATE CLI process (the viewer
   // runs `crtr attach`, a TUI — it never execs recycle), so we are NOT respawning

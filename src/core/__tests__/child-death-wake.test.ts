@@ -1,46 +1,26 @@
 // Run with: node --import tsx/esm --test src/core/__tests__/child-death-wake.test.ts
 //
-// HEADLESS RETARGET (foundation-spec §C.7 + §E). D-1 BUG REGRESSION — "the
-// runtime wakes a dormant parent on EVERY terminal child outcome, and ONLY on a
-// genuine one." Drives the REAL daemon decision pass (superviseTick) + the REAL
-// closeNode against canvas rows fabricated DIRECTLY in an isolated home — NO real
-// tmux session, NO remain-on-exit pane, NO broker boot.
+// DOCTRINE WAKE — "a parent that delegated and went dormant is still woken when
+// its child reaches a genuine terminal outcome, and is NEVER spuriously woken on
+// healthy dormancy." Drives the REAL daemon decision pass (superviseTick) + the
+// REAL closeNode against canvas rows fabricated DIRECTLY in an isolated home — NO
+// real tmux session, NO broker boot.
 //
-// (1) BUG LOCKED — the D-1 finding (context/d1-finding.md): a parent that
-//     delegated and then JUST STOPPED (inbox-wait retained, no self-wake armed)
-//     was woken ONLY when a child `push final`d or never booted. A child that
-//     CRASHED after booting, was daemon-FINALIZED on a quiet turn, or was `node
-//     close`d marked the child dead/done/canceled with NO push to the parent — so
-//     a purely-inbox-waiting parent hung dormant forever. The fix fans a system
-//     inbox entry to subscribersOf(child) on those three previously-silent
-//     terminal outcomes (surfaceChildDeath crash/finalize + close.ts), mirroring
-//     surfaceBootFailure. THE CRUX: it must fire ONLY on genuine death — NEVER on
-//     healthy dormancy (a child that ended its turn still awaiting a LIVE
-//     grandchild, or holding a pending self-wake, is alive-and-dormant; waking its
-//     parent then re-creates the spurious-wake storm the doctrine exists to kill).
-//
-// (2) WHY MODEL-LEVEL, NOT TMUX CHROME — the wake travels through ONE pure
-//     data-layer channel the d1-finding identified: a system entry appended to
-//     the parent's inbox.jsonl (push() → appendInbox, no tmux). The death-vs-
-//     dormancy boundary is pure daemon logic — finishedTurn (isBusy) +
-//     hasActiveLiveSubscription || hasPendingSelfWake, the SAME boundary the
-//     stop-guard draws (crtrd.ts). The daemon reaches the pane-gone routing for
-//     ANY node whose pane is not alive; a row carrying a bogus pane id reads
-//     "gone" (paneExists echoes empty for an unknown/absent pane — and with no
-//     tmux server at all, the probe simply fails to false) with NO live session
-//     to stand up. So the exact "booted child, pane gone, branch on what it was
-//     doing" state reproduces with no real pane, and the parent stays an inline
-//     node (no placement → the supervise loop's inline-root carve-out skips it),
-//     so nothing in the test opens or needs a window.
-//
-// (3) HOW THE FABRICATED DRIVE STILL FAILS IF THE BUG REGRESSES — each direction
-//     asserts the inbox channel: a genuine terminal outcome (crash/finalize/close)
-//     MUST land a system entry from the child in the parent's inbox; healthy
-//     dormancy MUST leave it empty. Drop the crash-branch surfaceChildDeath call
-//     and the CRASH assertion goes RED (no entry); drop the stillWaiting guard and
-//     a healthy-dormant child finalizes → the CRUX asserts go RED (a spurious
-//     entry appears). Verified by reverting the crash-branch surfaceChildDeath
-//     call (see bug-injection report).
+// BROKER CUT (this worktree): the daemon's OLD parent-wake mechanism is GONE.
+// U7 deleted surfaceChildDeath and the entire pane-gone reaping block (the
+// crash/finalize/release routing that used to mark a pane-gone child dead/done/
+// idle and fan a system inbox entry to its subscribers). Liveness is now PID-ONLY
+// — a viewer pane/window closing is NOT a node death — so a booted child whose
+// engine pid is dead is REVIVED on its saved session, not surfaced as dead. The
+// doctrine wake therefore RELOCATED off the daemon:
+//   • child finishes → `crtr push final` wakes subscribers via the PUSH itself;
+//   • child crashes → daemon grace-REVIVES it (it comes back and pushes later);
+//   • child never boots → surfaceBootFailure still pushes urgent (daemon-boot.test);
+//   • child `node close`d → close.ts fans the child-closed wake (tested below).
+// So the daemon now fans NO liveness wake at all, which makes the old CRUX
+// (healthy dormancy must not wake the parent) hold by construction. This file
+// locks in (a) the new pid-only non-reaping + no-daemon-wake contract, and (b)
+// the one genuine-terminal wake that still lives in core: close.ts.
 
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -50,10 +30,8 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 import { createNode, getNode, subscribe } from '../canvas/canvas.js';
-import { armWake } from '../canvas/wakeups.js';
 import { closeDb } from '../canvas/db.js';
 import { readInboxSince } from '../feed/inbox.js';
-import { markBusy, clearBusy } from '../runtime/busy.js';
 import { closeNode } from '../runtime/close.js';
 import { superviseTick } from '../../daemon/crtrd.js';
 import type { NodeMeta } from '../canvas/types.js';
@@ -80,17 +58,15 @@ function deadPid(): number {
   return r.pid ?? 0x7ffffffe;
 }
 
-// A pane id no tmux server knows: paneExists echoes empty for it → isNodePaneAlive
-// is false → the supervise loop routes the row down its pane-gone branch with NO
-// live session required (and with no server at all the probe fails to false too).
+// A pane id no tmux server knows. In the broker cut the daemon IGNORES pane state
+// entirely (liveness is pid-only) — this just stands in for "the node once had a
+// viewer pane that is now gone," which must NOT count as a death.
 const GONE_PANE = '%999999';
 
-/** A booted child whose pane is GONE — the daemon's pane-gone routing input.
- *  `intent:null` so it takes the user-close branch (neither refresh nor
- *  idle-release); pi dead so the zombie-kill is skipped; pi_session_id set so it
- *  is "booted" (not the never-booted boot-failure leg). The caller layers on the
- *  busy marker / subscriptions that decide crash vs finalize vs release. */
-function paneGoneChild(id: string, over: Partial<NodeMeta> = {}): void {
+/** A booted child whose engine pid is DEAD and whose viewer pane is gone — the
+ *  shape a crashed/finished child leaves behind. `pi_session_id` set so it is
+ *  "booted"; `intent:null` so it takes the crash (grace-revive RESUME) branch. */
+function deadEngineChild(id: string, over: Partial<NodeMeta> = {}): void {
   createNode(node(id, {
     pane: GONE_PANE,
     tmux_session: 'crtr-cdw',
@@ -103,9 +79,8 @@ function paneGoneChild(id: string, over: Partial<NodeMeta> = {}): void {
   }));
 }
 
-/** A dormant inbox-waiting PARENT — an INLINE node (no tmux placement), so the
- *  supervise loop's inline-root carve-out skips it entirely: it is only the wake
- *  TARGET, asserted via its inbox. */
+/** A dormant inbox-waiting PARENT — only ever the wake TARGET, asserted via its
+ *  inbox. */
 function inboxWaitingParent(id: string): void {
   createNode(node(id, { status: 'active' }));
 }
@@ -130,38 +105,30 @@ after(() => {
 });
 
 // ===========================================================================
-// POSITIVE — a genuine terminal child outcome WAKES the inbox-waiting parent.
+// BROKER CUT — pid-only liveness REPLACES daemon pane-gone reaping. A booted
+// child whose engine pid is dead (and whose viewer pane is gone) is REVIVABLE,
+// not reaped, and the daemon fans NO wake to the dormant parent. This single
+// case subsumes the four deleted scenarios (crash / quiet-finalize / awaiting a
+// live grandchild / pending self-wake): with pane state ignored and
+// surfaceChildDeath gone, the daemon treats them all identically — grace-revive,
+// no liveness wake — so the old CRUX (no spurious wake on healthy dormancy)
+// holds by construction.
 // ===========================================================================
 
-test('CRASH after boot (mid-generation, pane gone) wakes the inbox-waiting parent', async () => {
+test('pid-only liveness: a dead-engine booted child is revivable, NOT reaped, and the daemon fans NO wake to its dormant parent', async () => {
   inboxWaitingParent('PARENT');
-  paneGoneChild('CHILD');
+  deadEngineChild('CHILD');
   subscribe('PARENT', 'CHILD', true); // the spawn-time spine edge
-  markBusy('CHILD'); // pane died INSIDE a turn → genuine mid-run crash
 
   await superviseTick();
 
-  assert.equal(getNode('CHILD')!.status, 'dead', 'CHILD crashed → dead');
-  // THE WAKE CHANNEL: a system entry from CHILD lands in PARENT's inbox.
-  const wake = wakeFromChild('PARENT', 'CHILD');
-  assert.ok(wake, 'crash fanned a system inbox entry to the dormant parent (mirrors surfaceBootFailure)');
-  assert.match(wake!.label, /died/i, 'the entry tells the parent WHICH child died and how');
-  clearBusy('CHILD');
-});
-
-test('quiet-turn FINALIZE (pane gone, nothing live to wait for) wakes the inbox-waiting parent', async () => {
-  inboxWaitingParent('PARENT');
-  // Booted, turn finished (NO busy marker), no live subscription, no pending
-  // self-wake → the daemon finalizes it (done): a dismissal of a finished node.
-  paneGoneChild('CHILD');
-  subscribe('PARENT', 'CHILD', true);
-
-  await superviseTick();
-
-  assert.equal(getNode('CHILD')!.status, 'done', 'CHILD finalized → done');
-  const wake = wakeFromChild('PARENT', 'CHILD');
-  assert.ok(wake, 'finalize fanned a system inbox entry to the dormant parent');
-  assert.match(wake!.label, /without a final report/i, 'the entry tells the parent the child ended with no final');
+  // A dead engine pid is REVIVABLE (grace-revive RESUME on the saved session),
+  // not reaped to dead/done/idle — a viewer pane closing is not a node death.
+  assert.equal(getNode('CHILD')!.status, 'active', 'CHILD stays revivable, NOT reaped');
+  // surfaceChildDeath is deleted: the daemon raises no liveness wake. The
+  // doctrine wake now rides the child's own `push final` (or close.ts), so a
+  // purely-inbox-waiting parent is never spuriously woken on dormancy/crash.
+  assert.equal(readInboxSince('PARENT').length, 0, 'PARENT inbox EMPTY — no daemon liveness wake');
 });
 
 test('node close of a child wakes its SURVIVING manager (the parent outside the closing set)', async () => {
@@ -181,44 +148,13 @@ test('node close of a child wakes its SURVIVING manager (the parent outside the 
   assert.match(wake!.label, /closed/i, 'the entry names the closed child');
 });
 
-// ===========================================================================
-// NEGATIVE — HEALTHY DORMANCY must NOT wake the parent (the correctness crux).
-// ===========================================================================
-
-test('CRUX: a child dormant while awaiting its OWN live grandchild does NOT wake the parent', async () => {
-  inboxWaitingParent('PARENT');
-  // CHILD finished its turn (no busy) and its pane is gone, BUT it actively
-  // subscribes to a LIVE grandchild — exactly the developer-spawned-reviewer
-  // case. This is HEALTHY dormancy, not death.
-  paneGoneChild('CHILD');
-  createNode(node('GRANDCHILD', { status: 'active', pi_session_id: 'booted' })); // live, inline
-  subscribe('PARENT', 'CHILD', true);
-  subscribe('CHILD', 'GRANDCHILD', true); // CHILD awaits a LIVE grandchild
-
-  await superviseTick();
-
-  // CHILD is RELEASED (revivable), NOT finalized — the daemon must not orphan
-  // its in-flight grandchild and must not wake the parent.
-  assert.equal(getNode('CHILD')!.status, 'idle', 'CHILD released (revivable), NOT finalized');
-  assert.equal(getNode('CHILD')!.intent, 'idle-release', 'CHILD routed to idle-release');
-  assert.equal(readInboxSince('PARENT').length, 0, 'PARENT inbox EMPTY — healthy dormancy raises no wake');
-});
-
-test('CRUX: a child dormant on a pending self-wake (no live sub) does NOT wake the parent', async () => {
-  inboxWaitingParent('PARENT');
-  paneGoneChild('CHILD');
-  subscribe('PARENT', 'CHILD', true);
-  // CHILD has NO live subscription, but holds a pending self-wake (far-future so
-  // the wakeups pass never fires it this tick). hasPendingSelfWake(CHILD) ⇒ the
-  // daemon treats it as STILL WAITING (the stop-guard's boundary), so it RELEASES
-  // instead of finalizing. NON-VACUOUS: drop the hasPendingSelfWake guard and
-  // CHILD finalizes → PARENT is spuriously woken.
-  const future = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
-  armWake({ wakeup_id: 'wk-cdw-child', node_id: 'CHILD', owner_id: 'CHILD', fire_at: future, kind: 'bare' });
-
-  await superviseTick();
-
-  assert.equal(getNode('CHILD')!.status, 'idle', 'CHILD with a pending self-wake is RELEASED, not finalized');
-  assert.equal(getNode('CHILD')!.intent, 'idle-release', 'CHILD routed to idle-release (its clock will wake it)');
-  assert.equal(readInboxSince('PARENT').length, 0, 'PARENT inbox EMPTY — a pending clock is healthy dormancy');
-});
+// NOTE (broker cut): the two NEGATIVE "CRUX" tests that used to live here — a
+// child dormant while awaiting a live grandchild, and a child dormant on a
+// pending self-wake — asserted the daemon's pane-gone routing chose idle-release
+// (status 'idle', intent 'idle-release') over finalize, so it would not spuriously
+// wake the parent. U7 DELETED that routing entirely: pane state is ignored, the
+// daemon never finalizes/releases on liveness, and surfaceChildDeath is gone, so
+// the daemon raises no liveness wake at all. The no-spurious-wake invariant they
+// protected now holds by construction and is covered by the pid-only test above
+// (PARENT inbox stays empty). Removed rather than adapted because the
+// idle-release-vs-finalize distinction they asserted no longer exists.

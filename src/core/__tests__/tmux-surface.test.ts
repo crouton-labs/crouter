@@ -3,8 +3,10 @@
 // STEP 2 of the placement/focus migration: guards on the tmux Surface (driver).
 //
 //   1. The §2.2 HARD DRIVER INVARIANT (GREEN now): every create/placement verb
-//      in the driver — new-window / split-window / swap-pane / break-pane /
-//      join-pane / move-pane / respawn-pane — MUST pass an explicit `-t` target.
+//      in the driver — after the broker-host cut gutted the engine-in-pane
+//      relocate verbs (U9 deleted swap-pane/break-pane/join-pane/move-pane),
+//      the survivors are new-window / split-window / respawn-pane — MUST pass an
+//      explicit `-t` target.
 //      Omitting `-t` lets tmux resolve against its GLOBAL current session, which
 //      can leak a pane into a user session — the exact unbidden-window bug this
 //      redesign kills. This guards the bug's blast radius and should pass today.
@@ -23,7 +25,10 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const SRC_ROOT = join(__dirname, '..', '..'); // .../src
 const TMUX_TS = join(SRC_ROOT, 'core', 'runtime', 'tmux.ts');
 
-/** The placement verbs the §2.2 invariant governs. */
+/** The placement verbs the §2.2 invariant governs. (swap-pane/break-pane/
+ *  join-pane/move-pane were deleted with the engine-in-pane host in the broker
+ *  cut; kept in the match set so a regression that re-introduces an untargeted
+ *  one is still caught.) */
 const PLACEMENT_VERBS = [
   'new-window',
   'split-window',
@@ -71,8 +76,9 @@ test('§2.2 driver invariant: every placement verb in tmux.ts passes an explicit
     );
   }
   // Sanity: the driver really does contain placement verbs (so a refactor that
-  // renames them can't make this assertion vacuously pass).
-  assert.ok(found >= 4, `expected to scan ≥4 placement verbs, saw ${found}`);
+  // renames them can't make this assertion vacuously pass). The broker cut left
+  // three (new-window / split-window / respawn-pane).
+  assert.ok(found >= 3, `expected to scan ≥3 placement verbs, saw ${found}`);
 });
 
 // ---------------------------------------------------------------------------
@@ -98,8 +104,8 @@ const ALLOWED_IMPORTERS = new Set(['tmux.ts', 'placement.ts', 'tmux-chrome.ts'])
 
 function importsDriver(file: string): boolean {
   const src = readFileSync(file, 'utf8');
-  // A specifier whose basename is exactly `tmux.js` (so `tmux-chrome.js` and
-  // `tmux-spread.js` are NOT matched). Covers `from '...'` and `import('...')`.
+  // A specifier whose basename is exactly `tmux.js` (so `tmux-chrome.js` is NOT
+  // matched). Covers `from '...'` and `import('...')`.
   return [...src.matchAll(/(?:from|import\s*\()\s*'([^']+)'/g)].some(
     (m) => basename(m[1]!) === 'tmux.js',
   );

@@ -131,10 +131,7 @@ function mergeConfig(partial: Partial<ScopeConfig>): ScopeConfig {
       ? Math.floor(rawMaxPanes)
       : defaults.max_panes_per_window;
   const canvasNav = mergeCanvasNav(partial.canvasNav);
-  // The merge drops unknown keys, so `headless` must be carried explicitly or it
-  // is lost on every read-modify-write of config.json.
-  const headless = typeof partial.headless === 'boolean' ? partial.headless : defaults.headless;
-  return { schema_version, marketplaces, plugins, auto_update, max_panes_per_window, canvasNav, headless };
+  return { schema_version, marketplaces, plugins, auto_update, max_panes_per_window, canvasNav };
 }
 
 export function updateConfig(scope: Scope, mutate: (cfg: ScopeConfig) => void): ScopeConfig {
