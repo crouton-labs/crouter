@@ -56,23 +56,25 @@ jobs:
           echo "=== one-shot render (should work) ==="
           printf '# Render check\n\n:::callout{type="info"}\nRENDER-MARKER body\n:::\n' > /tmp/diag-doc.md
           node_modules/@crouton-kit/humanloop/.venv/bin/termrender doc render --color on < /tmp/diag-doc.md 2>&1 | head -8
-          TR="$PWD/node_modules/@crouton-kit/humanloop/.venv/bin/termrender"
-          # EXACT real path: watch as direct pane command, stdin+stdout = pty.
-          # remain-on-exit keeps the dead pane so we can read its exit status
-          # (#{pane_dead_status}: 0=clean break, 130=SIGINT, 137=SIGKILL...).
+          VBIN="$PWD/node_modules/@crouton-kit/humanloop/.venv/bin"
+          echo "which termrender (bare, normal PATH):"; which termrender || echo "  NOT ON PATH"
           tmux set-option -g remain-on-exit on
-          tmux new-session -d -s diagD -x 200 -y 50 "$TR doc watch --color on -- /tmp/diag-doc.md"
-          sleep 5
-          echo "--- D pane state ---"; tmux list-panes -s -t diagD -F '#{pane_id} dead=#{pane_dead} status=#{pane_dead_status} cmd=#{pane_current_command}'
-          echo "--- D alternate-screen capture (cat -v) ---"; tmux capture-pane -ep -t diagD 2>&1 | cat -v | head -40
-          tmux set-option -g remain-on-exit off; tmux kill-session -t diagD || true
-          # Control: same command but with NL3 stdin reads disabled via stdbuf? No --
-          # instead confirm stdin EOF theory: feed /dev/null as stdin, stdout=pty.
-          tmux set-option -g remain-on-exit on
-          tmux new-session -d -s diagE -x 200 -y 50 "$TR doc watch --color on -- /tmp/diag-doc.md </dev/null"
-          sleep 5
-          echo "--- E (stdin=/dev/null, stdout=pty) ---"; tmux list-panes -s -t diagE -F '#{pane_id} dead=#{pane_dead} status=#{pane_dead_status} cmd=#{pane_current_command}'
-          tmux set-option -g remain-on-exit off; tmux kill-session -t diagE || true
+          # F) Replicate pane open EXACTLY: split-window running BARE 'termrender'
+          #    (what _build_pane_cmd bakes). Expect command-not-found -> dead.
+          tmux new-session -d -s diagF -x 200 -y 50 "sleep 60"
+          tmux split-window -h -t diagF:0 -P -F '#{pane_id}' "termrender doc watch --color on -- /tmp/diag-doc.md" >/tmp/fpane 2>&1 || true
+          sleep 3
+          echo "--- F panes (bare termrender in split) ---"; tmux list-panes -s -t diagF -F '#{pane_id} dead=#{pane_dead} status=#{pane_dead_status} cmd=#{pane_current_command}'
+          echo "--- F split pane content ---"; tmux capture-pane -ep -t "$(cat /tmp/fpane)" 2>&1 | cat -v | head -10
+          tmux kill-session -t diagF || true
+          # G) THE FIX: same split, but venv bin on PATH so bare termrender resolves.
+          tmux new-session -d -s diagG -x 200 -y 50 "sleep 60"
+          tmux set-environment -t diagG PATH "$VBIN:$PATH"
+          tmux split-window -h -t diagG:0 -P -F '#{pane_id}' "termrender doc watch --color on -- /tmp/diag-doc.md" >/tmp/gpane 2>&1 || true
+          sleep 3
+          echo "--- G panes (PATH includes venv bin) ---"; tmux list-panes -s -t diagG -F '#{pane_id} dead=#{pane_dead} status=#{pane_dead_status} cmd=#{pane_current_command}'
+          echo "--- G split pane content ---"; tmux capture-pane -ep -t "$(cat /tmp/gpane)" 2>&1 | cat -v | head -10
+          tmux set-option -g remain-on-exit off; tmux kill-session -t diagG || true
       - run: npm run test:full
 
 # Runner caveats (cannot be exercised from this dev box — verify on first CI run):
