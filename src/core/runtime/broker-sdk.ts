@@ -12,6 +12,8 @@
 // lifecycle suite stays green until the broker is wired up.
 
 import { execFileSync } from 'node:child_process';
+import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { delimiter, join } from 'node:path';
 import {
   createAgentSessionServices,
   createAgentSessionFromServices,
@@ -19,6 +21,7 @@ import {
   SessionManager,
   VERSION,
 } from '@earendil-works/pi-coding-agent';
+import { crtrHome } from '../canvas/paths.js';
 
 // Static re-exports — the real SDK surface the broker drives in production.
 export {
@@ -100,17 +103,95 @@ export async function loadBrokerEngine(): Promise<BrokerEngine> {
  *   imported `VERSION`; pass `engine.VERSION` from `loadBrokerEngine` to assert the
  *   version the broker is really driving).
  */
-export function assertEngineVersion(engineVersion: string = VERSION): void {
-  let binaryVersion: string;
-  try {
-    binaryVersion = execFileSync('pi', ['--version'], { encoding: 'utf8' }).trim();
-  } catch (err) {
-    process.stderr.write(
-      `[broker] WARNING: could not run 'pi --version' to verify engine parity ` +
-        `(SDK ${engineVersion}): ${(err as Error).message}\n`,
-    );
-    return;
+/** Resolve the `pi` executable on PATH without spawning anything — a plain walk
+ *  of `$PATH` entries (`statSync` follows symlinks, so an npm/brew bin shim
+ *  resolves to the real target). Returns the first match, or undefined. */
+function resolvePiBinary(): string | undefined {
+  const path = process.env['PATH'];
+  if (path === undefined || path === '') return undefined;
+  for (const dir of path.split(delimiter)) {
+    if (dir === '') continue;
+    const candidate = join(dir, 'pi');
+    try {
+      if (existsSync(candidate)) return candidate;
+    } catch {
+      /* unreadable PATH entry — skip */
+    }
   }
+  return undefined;
+}
+
+interface PiVersionCache {
+  /** Resolved binary path the cached version was probed from. */
+  path: string;
+  /** mtime + size of that path — a `pi` upgrade changes both, re-probing. */
+  mtimeMs: number;
+  size: number;
+  /** The `pi --version` output captured for that binary. */
+  version: string;
+}
+
+const PI_VERSION_CACHE = (): string => join(crtrHome(), 'pi-version.json');
+
+/** Cached `pi --version`, keyed on the binary's path+mtime+size so a pi upgrade
+ *  re-probes but the steady state never spawns. Returns undefined when the
+ *  binary can't be resolved/stat'd or the cache misses — the caller then spawns
+ *  once and back-fills via {@link writePiVersionCache}. */
+function readPiVersionCache(binPath: string, mtimeMs: number, size: number): string | undefined {
+  try {
+    const c = JSON.parse(readFileSync(PI_VERSION_CACHE(), 'utf8')) as Partial<PiVersionCache>;
+    if (c.path === binPath && c.mtimeMs === mtimeMs && c.size === size && typeof c.version === 'string') {
+      return c.version;
+    }
+  } catch {
+    /* missing/corrupt cache — treat as a miss */
+  }
+  return undefined;
+}
+
+function writePiVersionCache(entry: PiVersionCache): void {
+  try {
+    writeFileSync(PI_VERSION_CACHE(), JSON.stringify(entry), 'utf8');
+  } catch {
+    /* best-effort: a missing cache just means the next boot re-probes */
+  }
+}
+
+export function assertEngineVersion(engineVersion: string = VERSION): void {
+  // Resolve + stat the binary (no spawn). When its path+mtime+size matches the
+  // cache, reuse the stored version and skip the ~0.4s `pi --version` boot — the
+  // common path on every broker start. A pi upgrade changes the stat and re-probes.
+  const binPath = resolvePiBinary();
+  let stat: { mtimeMs: number; size: number } | undefined;
+  if (binPath !== undefined) {
+    try {
+      const s = statSync(binPath);
+      stat = { mtimeMs: s.mtimeMs, size: s.size };
+    } catch {
+      stat = undefined;
+    }
+  }
+
+  let binaryVersion: string | undefined;
+  if (binPath !== undefined && stat !== undefined) {
+    binaryVersion = readPiVersionCache(binPath, stat.mtimeMs, stat.size);
+  }
+
+  if (binaryVersion === undefined) {
+    try {
+      binaryVersion = execFileSync('pi', ['--version'], { encoding: 'utf8' }).trim();
+    } catch (err) {
+      process.stderr.write(
+        `[broker] WARNING: could not run 'pi --version' to verify engine parity ` +
+          `(SDK ${engineVersion}): ${(err as Error).message}\n`,
+      );
+      return;
+    }
+    if (binPath !== undefined && stat !== undefined) {
+      writePiVersionCache({ path: binPath, mtimeMs: stat.mtimeMs, size: stat.size, version: binaryVersion });
+    }
+  }
+
   if (binaryVersion !== engineVersion) {
     process.stderr.write(
       `[broker] WARNING: pi SDK version mismatch — imported SDK is ${engineVersion} but ` +
