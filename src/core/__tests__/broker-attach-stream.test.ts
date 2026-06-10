@@ -2,32 +2,59 @@
 //
 // T8 — the `crtr attach` acceptance gate, gates G1/G1b/G2/G3 (controller drive,
 // relay/coalescing, detach survival, catch-up snapshot). Split out of
-// broker-lifecycle.test.ts (see its header for the full file map); the tests are
-// the original acceptance gate, unchanged, on their own isolated harness. Each
-// test drives the REAL detached broker process + REAL view.sock with the enriched
-// fake engine, using the PRODUCTION ViewSocketClient (helpers/broker-clients.ts)
-// as the controller/observer. The engine is hosted IN-PROCESS by the broker, so
-// engine pid == broker pid == node.pi_pid == boot.pid; "engine pid unchanged" ==
-// broker pid unchanged + no new boot. Each test's lead comment names its gate #
-// and the failure mode it guards.
+// broker-lifecycle.test.ts; the gates are the original acceptance gate, unchanged.
+//
+// 3-PART HEADER (headless-retarget):
+//  (1) BUG IT LOCKS — the broker's client fan-out: a controller `prompt` must run
+//      the engine and the streamed AgentSessionEvents must relay VERBATIM and IN
+//      ORDER to every viewer (G1); message_update coalescing must flush BEFORE any
+//      other event so a stale update can never land after message_end, and the
+//      last coalesced update must not be dropped (G1b, the F2 typing-lag fix);
+//      detach (bye+close) must drop ONE listener, never the engine (G2); and
+//      messages produced with no viewer attached must be in welcome.snapshot on
+//      reattach (G3). Regression = a viewer that sees nothing / sees stale text /
+//      kills the engine on detach / reattaches blind to history.
+//  (2) WHY BROKER/SOCKET-LEVEL, NOT PANE/WINDOW — the relay is a pure unix-socket
+//      path: ViewSocketClient ⇄ broker view.sock ⇄ in-process fake engine's
+//      subscribe channel. No tmux pane, window, or pi session read is involved, so
+//      the lock holds headlessly (createHeadlessHarness, no tmux). It needs a REAL
+//      broker PROCESS (not just model state) because it proves the cross-process
+//      frame codec + fan-out + coalescer, which is why this file keeps ONE real
+//      boot — shared across all four gates to stay off the fast-tier long pole.
+//  (3) HOW THE HEADLESS DRIVE STILL FAILS ON REGRESSION — each gate attaches the
+//      PRODUCTION ViewSocketClient over the real socket and asserts on the frames
+//      the real broker relays (order, types, snapshot, pid stability). A broken
+//      relay/coalescer/detach path fails the frame assertions exactly as it would
+//      under tmux; nothing here depended on a pane.
+//
+// The engine is hosted IN-PROCESS by the broker, so engine pid == broker pid ==
+// node.pi_pid == boot.pid; "engine pid unchanged" == broker pid unchanged + no new
+// boot. ONE shared broker is booted in before() and reused across all four gates
+// (each just attaches fresh clients) — 1 real boot total, not 4. A gate whose
+// first attach must hold control uses attachUntil(controller) so the prior gate's
+// controller-detach handoff settles deterministically before it drives.
 
 import { test, before, after, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createHarness, hasTmux, type Harness } from './helpers/harness.js';
+import { createHeadlessHarness, type Harness } from './helpers/harness.js';
 import { isPidAlive } from '../canvas/pid.js';
 import { createAttachKit, delay, tok, frameHas } from './helpers/broker-clients.js';
 
 let h: Harness;
-let root: string;
+let id: string; // ONE shared broker, reused across G1/G1b/G2/G3 (1 real boot, not 4)
 
 const kit = createAttachKit(() => h);
 const { attach, attachUntil } = kit;
 
+// Admit a controller, waiting out any prior gate's controller-detach handoff.
+const ctrl = (cid: string) =>
+  attachUntil(id, 'controller', cid, (a) => a.welcome.role === 'controller', `${cid} admitted controller`);
+
 before(async () => {
-  if (!hasTmux()) return;
-  h = await createHarness({ sessionPrefix: 'crtr-brkstrm' });
-  root = h.spawnRoot('broker-attach-stream suite root');
+  h = await createHeadlessHarness({ sessionPrefix: 'crtr-brkstrm' });
+  const root = h.spawnRoot('broker-attach-stream suite root');
+  id = await h.spawnHeadlessChild(root, 'headless worker — attach-stream gates');
 });
 
 after(async () => {
@@ -38,16 +65,15 @@ afterEach(() => {
   kit.closeAll();
 });
 
-const brokerPid = (id: string): number => h.node(id)!.pi_pid!;
+const brokerPid = (): number => h.node(id)!.pi_pid!;
 
 // ---------------------------------------------------------------------------
 // G1 — controller drive + live relay. Guards: a controller's `prompt` runs the
 // engine AND the streaming AgentSessionEvents are fanned out to the client
 // VERBATIM. Failure mode: a broken relay/fan-out (viewer sees nothing).
 // ---------------------------------------------------------------------------
-test('G1 — controller prompt runs the engine and the streamed AgentSessionEvents relay to the client', { skip: !hasTmux() }, async () => {
-  const id = await h.spawnHeadlessChild(root, 'headless worker — G1');
-  const c = await attach(id, 'controller', 'g1-ctrl');
+test('G1 — controller prompt runs the engine and the streamed AgentSessionEvents relay to the client', async () => {
+  const c = await ctrl('g1-ctrl');
   assert.equal(c.welcome.role, 'controller', 'first controller is admitted as controller');
 
   const token = tok('G1-PROMPT');
@@ -72,9 +98,8 @@ test('G1 — controller prompt runs the engine and the streamed AgentSessionEven
 // be silently dropped at end-of-turn. Failure modes: a flush ordered after the
 // non-update event, or a pending update discarded when message_end wins the race.
 // ---------------------------------------------------------------------------
-test('G1b — coalesced message_update never arrives after message_end; updates still relayed', { skip: !hasTmux() }, async () => {
-  const id = await h.spawnHeadlessChild(root, 'headless worker — G1b');
-  const c = await attach(id, 'controller', 'g1b-ctrl');
+test('G1b — coalesced message_update never arrives after message_end; updates still relayed', async () => {
+  const c = await ctrl('g1b-ctrl');
 
   const token = tok('G1B');
   // 12 updates at the fake engine's setImmediate pace — far faster than the 75ms
@@ -102,12 +127,11 @@ test('G1b — coalesced message_update never arrives after message_end; updates 
 // G2 — detach leaves the engine running. Guards: `bye`/close drops ONE listener,
 // never the engine. Failure mode: a detach that disposes the broker/engine.
 // ---------------------------------------------------------------------------
-test('G2 — detach (bye+close) leaves the broker alive + the engine still emitting; engine pid unchanged', { skip: !hasTmux() }, async () => {
-  const id = await h.spawnHeadlessChild(root, 'headless worker — G2');
-  const pid = brokerPid(id);
+test('G2 — detach (bye+close) leaves the broker alive + the engine still emitting; engine pid unchanged', async () => {
+  const pid = brokerPid();
   const boots = h.bootCount(id);
 
-  const c = await attach(id, 'controller', 'g2-ctrl');
+  const c = await ctrl('g2-ctrl');
   const p = tok('G2-PROMPT');
   c.send({ type: 'prompt', text: p });
   await c.waitFrame((f) => f.type === 'agent_end' && frameHas(f, p), 'G2 turn relayed before detach');
@@ -116,7 +140,7 @@ test('G2 — detach (bye+close) leaves the broker alive + the engine still emitt
   c.close();
   await delay(300); // let the broker process the 'close'
   assert.equal(isPidAlive(pid), true, 'G2: broker still alive after detach');
-  assert.equal(brokerPid(id), pid, 'G2: engine (== broker) pid UNCHANGED across detach');
+  assert.equal(brokerPid(), pid, 'G2: engine (== broker) pid UNCHANGED across detach');
   assert.equal(h.bootCount(id), boots, 'G2: no reboot — no second engine spawned');
 
   // Still emitting: drive a turn with no client, then a fresh observer's snapshot
@@ -133,8 +157,7 @@ test('G2 — detach (bye+close) leaves the broker alive + the engine still emitt
 // in welcome.snapshot on reattach, and live events resume. Failure mode: a viewer
 // that reattaches blind to history / gets no further events.
 // ---------------------------------------------------------------------------
-test('G3 — messages produced while detached appear in welcome.snapshot on reattach; live events resume', { skip: !hasTmux() }, async () => {
-  const id = await h.spawnHeadlessChild(root, 'headless worker — G3');
+test('G3 — messages produced while detached appear in welcome.snapshot on reattach; live events resume', async () => {
   const past = tok('G3-DETACHED');
   h.fakeCmd(id, { cmd: 'stream', text: past }); // produced with zero viewers attached
 

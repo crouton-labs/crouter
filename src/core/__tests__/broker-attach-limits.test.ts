@@ -2,20 +2,47 @@
 //
 // T8 — the `crtr attach` acceptance gate, gates G4/G7/G8/G9 (controller
 // arbitration, decoder overflow caps, backpressure shedding, and the load-bearing
-// ONE-WRITER proof). Split out of broker-lifecycle.test.ts (see its header for
-// the full file map); the tests are the original acceptance gate, unchanged, on
-// their own isolated harness. Each test drives the REAL detached broker process +
-// REAL view.sock with the enriched fake engine, using the PRODUCTION
-// ViewSocketClient (helpers/broker-clients.ts) as the controller/observer — raw
-// node:net only where the client lifecycle is awkward (G7 oversized line, G8
-// stalled viewer). The engine is hosted IN-PROCESS by the broker, so engine pid
-// == broker pid == node.pi_pid == boot.pid.
+// ONE-WRITER proof). Split out of broker-lifecycle.test.ts; the gates are the
+// original acceptance gate, unchanged.
+//
+// 3-PART HEADER (headless-retarget):
+//  (1) BUG IT LOCKS — the broker's client arbitration + resource caps + one-writer
+//      invariant: a 2nd client is an admitted read-only observer and an observer
+//      prompt is rejected not_controller while BOTH clients still receive the relay
+//      (G4); an oversized client line is cap-and-dropped (frame_overflow) without
+//      OOMing the broker (G7); a stalled non-reading viewer is shed at the 32 MiB
+//      backpressure HWM while the broker + fast viewers are unaffected (G8); and
+//      across attach→detach→reattach the broker/engine pid is STABLE with no second
+//      engine ever spawned and the viewer holding ONLY the socket, never the
+//      session .jsonl (G9). Regression = two controllers / an observer driving the
+//      engine / an unbounded decoder or per-viewer queue (broker OOM) / a viewer
+//      that forks a second writer onto the same .jsonl — the corruption headless
+//      one-writer exists to prevent.
+//  (2) WHY BROKER/SOCKET-LEVEL, NOT PANE/WINDOW — arbitration, the bounded decoder,
+//      the backpressure HWM, and one-writer all live in the broker PROCESS and its
+//      view.sock codec. They are exercised over a pure unix socket (the production
+//      ViewSocketClient + raw node:net peers), with the engine hosted IN-PROCESS by
+//      the broker, so engine pid == broker pid == node.pi_pid == boot.pid. No tmux
+//      pane/window is involved, so the lock holds headlessly (createHeadlessHarness,
+//      no tmux). It needs a REAL broker process (not model state), so this file
+//      keeps ONE real boot, shared across all four gates.
+//  (3) HOW THE HEADLESS DRIVE STILL FAILS ON REGRESSION — each gate drives the real
+//      broker over the real socket and asserts on its observable response: the
+//      welcome role + relay frames (G4), the broker's frame-overflow drop + pid
+//      survival (G7), the broker's HWM-shed log line + pid survival (G8), and pid /
+//      bootCount stability + the .jsonl holder set (G9). A regressed guard fails
+//      these exactly as it would under tmux; nothing here depended on a pane.
+//
+// ONE shared broker is booted in before() and reused across all four gates — 1 real
+// boot total, not 4. Gates whose first attach must hold control use
+// attachUntil(controller) so a prior gate's controller-detach handoff settles
+// deterministically before they drive.
 
 import { test, before, after, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 
-import { createHarness, hasTmux, type Harness } from './helpers/harness.js';
+import { createHeadlessHarness, type Harness } from './helpers/harness.js';
 import { isPidAlive } from '../canvas/pid.js';
 import {
   createAttachKit,
@@ -27,15 +54,19 @@ import {
 } from './helpers/broker-clients.js';
 
 let h: Harness;
-let root: string;
+let id: string; // ONE shared broker, reused across G4/G7/G8/G9 (1 real boot, not 4)
 
 const kit = createAttachKit(() => h);
 const { attach, attachUntil, connectRaw } = kit;
 
+// Admit a controller, waiting out any prior gate's controller-detach handoff.
+const ctrl = (cid: string) =>
+  attachUntil(id, 'controller', cid, (a) => a.welcome.role === 'controller', `${cid} admitted controller`);
+
 before(async () => {
-  if (!hasTmux()) return;
-  h = await createHarness({ sessionPrefix: 'crtr-brklim' });
-  root = h.spawnRoot('broker-attach-limits suite root');
+  h = await createHeadlessHarness({ sessionPrefix: 'crtr-brklim' });
+  const root = h.spawnRoot('broker-attach-limits suite root');
+  id = await h.spawnHeadlessChild(root, 'headless worker — attach-limits gates');
 });
 
 after(async () => {
@@ -46,7 +77,7 @@ afterEach(() => {
   kit.closeAll();
 });
 
-const brokerPid = (id: string): number => h.node(id)!.pi_pid!;
+const brokerPid = (): number => h.node(id)!.pi_pid!;
 
 // ---------------------------------------------------------------------------
 // G4 — arbitration + observer read. Guards: 2nd client is admitted observer, an
@@ -54,9 +85,8 @@ const brokerPid = (id: string): number => h.node(id)!.pi_pid!;
 // Failure mode: two controllers, or an observer driving the engine, or fan-out
 // that misses a viewer.
 // ---------------------------------------------------------------------------
-test('G4 — second client is observer; observer prompt → error{not_controller}; both receive the stream', { skip: !hasTmux() }, async () => {
-  const id = await h.spawnHeadlessChild(root, 'headless worker — G4');
-  const c1 = await attach(id, 'controller', 'g4-ctrl');
+test('G4 — second client is observer; observer prompt → error{not_controller}; both receive the stream', async () => {
+  const c1 = await ctrl('g4-ctrl');
   assert.equal(c1.welcome.role, 'controller', 'first client holds control');
   const c2 = await attach(id, 'controller', 'g4-second'); // requests control; held → observer
   assert.equal(c2.welcome.role, 'observer', 'second client is admitted read-only observer (first-attach-wins)');
@@ -76,9 +106,8 @@ test('G4 — second client is observer; observer prompt → error{not_controller
 // cap-and-dropped; the broker survives and other clients are unaffected. Failure
 // mode: an unbounded decoder buffer growing the broker to OOM.
 // ---------------------------------------------------------------------------
-test('G7 — an oversized client line is dropped (frame_overflow), the broker survives, other clients unaffected', { skip: !hasTmux() }, async () => {
-  const id = await h.spawnHeadlessChild(root, 'headless worker — G7');
-  const pid = brokerPid(id);
+test('G7 — an oversized client line is dropped (frame_overflow), the broker survives, other clients unaffected', async () => {
+  const pid = brokerPid();
   const boots = h.bootCount(id);
   const survivor = await attach(id, 'observer', 'g7-survivor');
 
@@ -94,7 +123,7 @@ test('G7 — an oversized client line is dropped (frame_overflow), the broker su
   h.fakeCmd(id, { cmd: 'stream', text: token });
   await survivor.waitFrame((f) => f.type === 'agent_end' && frameHas(f, token), 'G7 survivor still receives live frames');
   assert.equal(isPidAlive(pid), true, 'G7: the broker survived the overflow');
-  assert.equal(brokerPid(id), pid, 'G7: broker pid unchanged');
+  assert.equal(brokerPid(), pid, 'G7: broker pid unchanged');
   assert.equal(h.bootCount(id), boots, 'G7: no reboot');
 });
 
@@ -104,9 +133,8 @@ test('G7 — an oversized client line is dropped (frame_overflow), the broker su
 // Failure mode: an indefinitely-growing per-viewer queue (broker OOM) or a slow
 // viewer back-pressuring the shared engine.
 // ---------------------------------------------------------------------------
-test('G8 — a stalled viewer is dropped at the backpressure HWM; the broker + fast viewers are unaffected', { skip: !hasTmux() }, async () => {
-  const id = await h.spawnHeadlessChild(root, 'headless worker — G8');
-  const pid = brokerPid(id);
+test('G8 — a stalled viewer is dropped at the backpressure HWM; the broker + fast viewers are unaffected', async () => {
+  const pid = brokerPid();
   const fast = await attach(id, 'observer', 'g8-fast'); // reads normally
 
   // A helloed viewer that NEVER reads (paused socket). It must be in the broadcast
@@ -131,7 +159,7 @@ test('G8 — a stalled viewer is dropped at the backpressure HWM; the broker + f
   // proving only the stalled viewer was shed, while the fast one was unaffected.
   await fast.waitFrame((f) => f.type === 'agent_end' && frameHas(f, token), 'G8 fast viewer received the whole stream', 30_000);
   assert.equal(isPidAlive(pid), true, 'G8: the broker survived the slow-viewer flood');
-  assert.equal(brokerPid(id), pid, 'G8: broker pid unchanged (the engine was not back-pressured into a restart)');
+  assert.equal(brokerPid(), pid, 'G8: broker pid unchanged (the engine was not back-pressured into a restart)');
 });
 
 // ---------------------------------------------------------------------------
@@ -141,19 +169,18 @@ test('G8 — a stalled viewer is dropped at the backpressure HWM; the broker + f
 // Failure mode: a viewer that spawns/forks a second engine or opens the session
 // .jsonl — the corruption the headless design exists to prevent.
 // ---------------------------------------------------------------------------
-test('G9 — one-writer: broker/engine pid stable across attach→detach→reattach; no second engine; viewer holds only the socket', { skip: !hasTmux() }, async () => {
-  const id = await h.spawnHeadlessChild(root, 'headless worker — G9');
-  const pid0 = brokerPid(id);
+test('G9 — one-writer: broker/engine pid stable across attach→detach→reattach; no second engine; viewer holds only the socket', async () => {
+  const pid0 = brokerPid();
   const boots0 = h.bootCount(id);
 
-  const c1 = await attach(id, 'controller', 'g9-a');
+  const c1 = await ctrl('g9-a');
   const a = tok('G9-A');
   c1.send({ type: 'prompt', text: a });
   await c1.waitFrame((f) => f.type === 'agent_end' && frameHas(f, a), 'G9 first turn relayed');
   c1.send({ type: 'bye' });
   c1.close();
   await delay(300);
-  assert.equal(brokerPid(id), pid0, 'G9: broker/engine pid unchanged after detach');
+  assert.equal(brokerPid(), pid0, 'G9: broker/engine pid unchanged after detach');
   assert.equal(isPidAlive(pid0), true, 'G9: the one engine is still alive after detach');
   assert.equal(h.bootCount(id), boots0, 'G9: no second engine spawned across detach');
 
@@ -165,7 +192,7 @@ test('G9 — one-writer: broker/engine pid stable across attach→detach→reatt
   const b = tok('G9-B');
   c2.send({ type: 'prompt', text: b });
   await c2.waitFrame((f) => f.type === 'agent_end' && frameHas(f, b), 'G9 reattached controller drives the SAME engine');
-  assert.equal(brokerPid(id), pid0, 'G9: STILL the same broker/engine pid after reattach (one writer, never two)');
+  assert.equal(brokerPid(), pid0, 'G9: STILL the same broker/engine pid after reattach (one writer, never two)');
   assert.equal(isPidAlive(pid0), true, 'G9: the single engine is alive across the full cycle');
   assert.equal(h.bootCount(id), boots0, 'G9: exactly one engine boot across attach→detach→reattach');
 
