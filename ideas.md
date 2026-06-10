@@ -1,8 +1,13 @@
+## CLI Builder & Self-Improvement
+
 CLI builder skills — needs to build its own harness for projects (like figuring out alaria-codex cli):
 - Brainstorm use cases
 - Auto-improves on failure
 - Changes the pi harness as it goes?
 
+Something around the agent improving itself as it goes/fixing itself/taking feedback well.
+
+## UI, Dashboards, Views & Tickets
 
 UI library for crouter—make it able to access a UI library so it can build dashboards for itself. I want it to build my own crouter dashboard using crouter's ui tooling. Or actually, it should be a git UI for handling PRs?? Or using ink for TUI version of git handling, TUI for visualizing nodes, TUI for visualizing map, progress of nodes, etc. 
 
@@ -13,15 +18,18 @@ When I start crouter, I want to be able to switch between agent mode, tickets, a
 
 - when terminal agents use ask, that has to bubble up to top.
 
-  - Memories are literally just that—memories the agent has of who the user is/preferences/etc
+## Memory & Knowledge
 
+- Memories are literally just that—memories the agent has of who the user is/preferences/etc
 
-Telemetry
+Some way of going through conversation history and extracting philosophy/good ideas/idea-savings
+
+## Telemetry
+
 - Diff or snapshot at time of user propmt—that way if there are thigns that go wrong, I can see exact state at time of complaint
 - 
 
-Something around the agent improving itself as it goes/fixing itself/taking feedback well.
-
+## Infrastructure & Integration
 
 - nodes can be created in new worktrees, build in grove style secret cloning script, make sure the agent is able to verify
 - Needs to integrate with slack. 
@@ -29,7 +37,8 @@ Something around the agent improving itself as it goes/fixing itself/taking feed
 - Make it run in the cloud (but this can't conflict with this be a replicable system)
 - Stop tool needs to be used for real.
 
-Some way of going through conversation history and extracting philosophy/good ideas/idea-savings
+## Spec Display & UX
+
 - Make it more pleasant to understand your spec
 Progressive disclosure: Diagram -> slightly more in depth -> biggest risks -> context around design. Non TUI spec display, use shared components
 
@@ -117,42 +126,7 @@ Before big tasks, search docs/memory/skills/etc. This is something  that scales 
 
 Flatten it out, but have tags instead for organization
 
-
-An agent's node memory should be absorbed by its children too!
-
-It really does seem like there are jus these three kinds of types: episodic, preferential, and semantic.
-
-I think weave just those three types. I'd want to refactor how our skills and rules and everything else works: 
-- Episodic memory. This will be managed largely by the system itself (it's got conversation storage, it may get automatic summarization; let's not worry about this)
-- Semantic Memory. This breaks down into procedural (skills, sales playbook), referrential (org chart, docs for code, factual matters explaining how something works), and preferrential (behavioral directives). 
-
-I think everything boils down to those.
-Like our fancy pi-rules and regular claude rules, I want these md documents to sorta all load with same controllability (if a file matching a pattern in a subdir is read it gets autoinjected, if a md file with a certain yaml property is read, etc).
-Frontmatter would have:
-
-```
-kind: skill|preference|reference
-whenText: string // a short string describing when this document should be read
-whyText: string // a short string describing why this document is important to read
-short-form: string // a very abbreviated version/of the content within
-file-read-visibility: always|preview|name|none
-system-prompt-visibility: content|preview|name|none // what content from this auto-loads in the system prompt/relevant cli-docs when pi is run.
-```
-
-When the preview of the document is shown, the "preview" form of it will be "{{when}}, read this {{kind}}. {{why}}."
-
-When "content" form of the document is shown, the actual body of the file would be shown.
-
-The document's kind would determine various match pattern logic for when this document or preview should be auto-injected. It'd be configuration for what scenarios led to what information (path-name vs preview vs content) being injected). For example, CLAUDE.md becomes irrelevant—it's just a project reference document with visibility of "always". if it was "preview" then only it's preview pointer would show up auto-loaded. And if it was name, then only its name would show up. ANd if "none" then it only appears if searched for. 
-
-The idea here is that hte agent can write skills, referenecs, and peferences much more often and freely without worrying about bloating context—it can just intelligently determine when to it should become visible and how much should become visible so it can keep its context clean.
-
-With "system-prompt-visibility" this one would determine where it showed up in cli help and system prompting. If it was "content", then the preferences would show up in a dedicated "user-preferences" section, if it was references it'd show up in some dedicated "knowledge" section, and if it was "skills" it'd show up in a larger skill section. In each case, each instance would be its own section in a larger section, with skills, then preferences loading in that order, and references loading in an autoloaded message like the crtr context section for example.
-If the visibility was preview, instead the preview text would show up in those dedicated sections in the system prompt, and so on. 
-
-tbh, I think this indicates we should use a flat map of memory/<topic>.md files. 
-
-Also, we want the user memory dir out of the canvas dir. We can have per-node memory in the canvas, but that's it—the rest belongs in the project dir and the .crouter/memory/ dir.
+lso, we want the user memory dir out of the canvas dir. We can have per-node memory in the canvas, but that's it—the rest belongs in the project dir and the .crouter/memory/ dir.
 
 
 ### Resident/Terminal & Root & Push Updates
@@ -161,7 +135,3 @@ Every task is indefinite? The user just sets tasks. The agent doesn't really "kn
 
 
 Need to be able to make sibling agents (alerts the parent what was made/why, subscribes them). That way you can work in subagent and do more.
-
-
-
-
