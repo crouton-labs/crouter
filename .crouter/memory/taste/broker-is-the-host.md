@@ -4,6 +4,8 @@ when-and-why-to-read: When you are designing or building any surface that shows
   or drives a crouter node's live session — tmux, web, or otherwise — this
   reference should be read because the CTO has ruled that the headless broker is
   the one host and every UI is merely an attached view.
+system-prompt-visibility: none
+file-read-visibility: preview
 ---
 
 # Broker is the host; every UI is a view

@@ -26,10 +26,11 @@ const RUNG_FIELDS = ['system-prompt-visibility', 'file-read-visibility'] as cons
 
 /** Schema checks for a doc living in a substrate memory dir: a memory store
  *  holds ONLY substrate docs, so a missing/invalid `kind` is an authoring
- *  error here (elsewhere it just means "not a substrate doc"). Rung and gate
- *  values are checked RAW — the runtime parser silently falls back to kind
- *  defaults / inert gates, which is exactly the silent tolerance this lint
- *  exists to catch at authoring time. */
+ *  error here (elsewhere it just means "not a substrate doc"). Both rungs are
+ *  REQUIRED — there is no kind default to lean on, so a missing rung is an
+ *  authoring error. Rung and gate values are checked RAW — the runtime parser
+ *  silently falls back to the neutral floor / inert gates, which is exactly the
+ *  silent tolerance this lint exists to catch at authoring time. */
 export function lintSubstrateSchema(fm: Record<string, unknown> | null): string | null {
   if (fm === null) return 'missing frontmatter: a memory store doc requires `kind: skill|reference|preference`';
   if (!isDocKind(fm.kind)) {
@@ -46,7 +47,10 @@ export function lintSubstrateSchema(fm: Record<string, unknown> | null): string 
   }
   for (const field of RUNG_FIELDS) {
     const v = fm[field];
-    if (v !== undefined && (typeof v !== 'string' || !VALID_RUNGS.includes(v))) {
+    if (v === undefined) {
+      return `missing ${field}: choose a rung explicitly (${RUNGS.join('|')}) — there is no kind default`;
+    }
+    if (typeof v !== 'string' || !VALID_RUNGS.includes(v)) {
       return `invalid ${field}: ${JSON.stringify(v)} (expected ${RUNGS.join('|')})`;
     }
   }

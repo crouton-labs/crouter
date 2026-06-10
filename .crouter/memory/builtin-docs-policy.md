@@ -6,6 +6,8 @@ when-and-why-to-read: When you are adding an agent-facing crtr surface, or
 short-form: "CTO doc policy: authoring guidance goes in -h (forced read);
   builtin memory is for dev-mode/multi-topic docs; docs ship with surface-adding
   changes; everyone can become a contributor."
+system-prompt-visibility: preview
+file-read-visibility: none
 ---
 
 # Builtin docs policy — docs are a product surface

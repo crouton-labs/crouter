@@ -24,7 +24,7 @@ export const writeLeaf = defineLeaf({
     guide:
       'The body is the easy part; the craft is ROUTING — every frontmatter flag decides who sees this doc, when, and at what context cost. Each rung up is paid by every future agent at every boot or read, forever, so default each rung DOWN.\n\n' +
       'Pick the kind. skill = how to DO something (a repeatable procedure/playbook); reference = what is TRUE or how something WORKS (a fact about the user, a system\u2019s behavior, code docs); preference = how to BEHAVE (a directive, a standing correction). The test that splits the close pair: does it DIRECT behavior ("always lint after authoring" \u2192 preference) or INFORM the world-model ("Silas likes chicken", "the daemon never reloads dist/" \u2192 reference)? A correction yields a preference, a learned fact a reference, a repeatable procedure a skill.\n\n' +
-      'Set the rungs (none < name < preview < content). Kind sets sensible defaults, so the common case needs no visibility flags at all: skill \u2192 name at boot; preference \u2192 preview at boot; reference \u2192 preview on-read, nothing at boot. Reserve `content` (full body injected) for guidance that is BOTH always-relevant AND ~one bullet long \u2014 fail either test and it is `preview`. Situational guidance is `preview` no matter how short; long guidance is `preview` no matter how universal it feels.\n\n' +
+      'Set the rungs \u2014 BOTH --system-prompt-visibility (boot) and --file-read-visibility (on-read) are REQUIRED on create. There is no default: the right rung is a case-by-case call, never a function of kind. The ladder, lowest to highest: `none` for niche docs almost nothing should pull into context; `name` for the common case \u2014 references and skills that are relatively uncommon but an agent (or the user, by name) may reach for; `preview` for docs important enough that their routing line is worth its token cost every session (preferences usually land here); `content` (full body injected) for a doc that would be `preview` except its body is already so short you may as well inline it whole. `content` is rare \u2014 when a `content` doc grows past a bullet or two, downgrade it to `preview`. Each axis is independent: usually one carries a real rung and the other is `none` (see the hook paragraph next).\n\n' +
       'Choose the hook \u2014 boot vs file-read. There are exactly two moments a doc can surface. Behavior and procedure (preferences, skills) are relevant whatever file is open \u2192 surface at boot. Knowledge about code (references) belongs NEXT TO the code: put the file in that directory\u2019s .crouter/memory/ and it fires positionally when files there are read, costing nothing at boot. The exception that matters: a reference about a PERSON or PROCESS has no code directory to anchor to, so on-read triggering is meaningless \u2014 set --system-prompt-visibility preview so its routing line surfaces at boot instead.\n\n' +
       'Write the routing line (--when-and-why-to-read) FIRST, before storing anything: "When <circumstance the agent is in>, this <kind> should be read because <what the read buys>." The test: can a stranger mid-task decide from that one line alone whether to spend the read? If you cannot name the concrete situation that triggers it, you do not yet understand the memory \u2014 ask the user ONE sharp question instead of improvising. ("Remember I like chicken" routes cleanly \u2192 food/meal decisions; "be careful with the API" does not \u2192 which API, careful how, against what failure?) And NEVER paraphrase the advice in the routing line \u2014 a preview that gives away the gist makes every future agent skip the real read. BAD: "\u2026because it carries the placement policy \u2014 -h first, memory only for dev-mode material." GOOD: "\u2026because it carries the standing placement policy."\n\n' +
       'Find before write. `crtr memory find <topic>` first; grow ONE doc per recurring circumstance rather than minting near-duplicates \u2014 extend `food-preferences`, do not create `likes-chicken`. Group related docs with path names (area/topic). Do not store what is already recorded (code structure, git history, CLAUDE.md) or what only matters to this conversation.\n\n' +
@@ -35,8 +35,8 @@ export const writeLeaf = defineLeaf({
       { kind: 'flag', name: 'kind', type: 'enum', choices: [...MEMORY_KINDS], required: true, constraint: 'Document kind.' },
       { kind: 'flag', name: 'when-and-why-to-read', type: 'string', required: false, constraint: 'The read-routing line, authored as ONE sentence: "When <circumstance>, this <kind> should be read <because <payoff>>." It states WHEN to read this doc and WHY the read is worth it — read-routing, NEVER a justification of why the content should be obeyed. Rendered verbatim as the preview. Required when creating.' },
       { kind: 'flag', name: 'short-form', type: 'string', required: false, constraint: 'Frontmatter short-form — a very abbreviated version of the content, the hook shown in `crtr memory list`.' },
-      { kind: 'flag', name: 'system-prompt-visibility', type: 'enum', choices: [...VISIBILITY_RUNGS], required: false, constraint: 'Rung controlling how much of this document auto-loads into the system prompt / CLI help.' },
-      { kind: 'flag', name: 'file-read-visibility', type: 'enum', choices: [...VISIBILITY_RUNGS], required: false, constraint: 'Rung controlling how much of this document surfaces when it is read off disk.' },
+      { kind: 'flag', name: 'system-prompt-visibility', type: 'enum', choices: [...VISIBILITY_RUNGS], required: false, constraint: 'Rung controlling how much of this document auto-loads into the system prompt / CLI help. Required when creating — there is no kind default; pick a rung explicitly.' },
+      { kind: 'flag', name: 'file-read-visibility', type: 'enum', choices: [...VISIBILITY_RUNGS], required: false, constraint: 'Rung controlling how much of this document surfaces when it is read off disk. Required when creating — there is no kind default; pick a rung explicitly.' },
       { kind: 'flag', name: 'gate', type: 'string', required: false, constraint: 'Frontmatter gate — expression/condition that determines when this document applies.' },
       { kind: 'flag', name: 'applies-to', type: 'string', required: false, constraint: 'Frontmatter applies-to — glob/path scope the document applies to.' },
       { kind: 'flag', name: 'scope', type: 'enum', choices: [...MEMORY_SCOPES], required: false, constraint: 'Target scope. Default: project when inside a project, else user.' },
@@ -70,6 +70,20 @@ export const writeLeaf = defineLeaf({
     if (created && input['whenAndWhyToRead'] === undefined) {
       throw usage(
         `creating ${name} requires --when-and-why-to-read: one read-routing sentence "When <circumstance>, this ${kind} should be read <because <payoff>>." (rendered verbatim as the preview).`,
+      );
+    }
+
+    // CREATE requires BOTH visibility rungs as an explicit, case-by-case call —
+    // there is no kind default to lean on. UPDATE inherits whatever the existing
+    // doc already carries.
+    if (created && input['systemPromptVisibility'] === undefined) {
+      throw usage(
+        `creating ${name} requires --system-prompt-visibility: pick a rung explicitly (none|name|preview|content) — there is no kind default. See \`crtr memory write -h\` for what each rung means.`,
+      );
+    }
+    if (created && input['fileReadVisibility'] === undefined) {
+      throw usage(
+        `creating ${name} requires --file-read-visibility: pick a rung explicitly (none|name|preview|content) — there is no kind default. See \`crtr memory write -h\` for what each rung means.`,
       );
     }
 

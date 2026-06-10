@@ -1,8 +1,8 @@
 // substrate/ — the unified document-substrate keystone: the frontmatter schema,
-// the 4-rung visibility ladder, the kind→default-rungs table, the node-config
-// subject assembly, and gate evaluation. Pure + well-typed; the shared base the
-// CLI verbs, boot render, on-read render, and migrator all build on. See
-// design-substrate.md §4/§9 + plan-substrate.md §2.
+// the 4-rung visibility ladder, the node-config subject assembly, and gate
+// evaluation. Pure + well-typed; the shared base the CLI verbs, boot render,
+// on-read render, and migrator all build on. See design-substrate.md §4 +
+// plan-substrate.md §2.
 
 export {
   // kinds
@@ -12,8 +12,8 @@ export {
   RUNGS,
   rungRank,
   rungAtLeast,
-  // defaults
-  KIND_DEFAULT_RUNGS,
+  // fallback floor
+  FALLBACK_RUNG,
   // parse + render-shared helpers
   parseSubstrateFrontmatter,
   parseSubstrateDoc,

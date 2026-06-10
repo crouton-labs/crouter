@@ -1,9 +1,16 @@
 // schema.ts — the typed shape of a substrate document's frontmatter, the
-// visibility ladder, the kind→default-rungs table, and the parse/validate
-// function that turns a resolved MemoryDoc into a fully-typed SubstrateDoc with
-// defaults applied. This is the keystone every downstream track (CLI verbs,
-// boot render, on-read render, migrator) builds against — pure and side-effect
-// free. See design-substrate.md §4 (schema) + §9 (defaults).
+// visibility ladder, and the parse/validate function that turns a resolved
+// MemoryDoc into a fully-typed SubstrateDoc. This is the keystone every
+// downstream track (CLI verbs, boot render, on-read render, migrator) builds
+// against — pure and side-effect free. See design-substrate.md §4 (schema).
+//
+// There is NO kind-based default for visibility: the right rung is a
+// case-by-case authoring call, so both rungs are required at authoring time
+// (enforced by `crtr memory write` on create and by `crtr memory lint`). The
+// runtime parser is tolerant by contract (it maps over many docs and must
+// never throw), so a doc missing/with an invalid rung falls back to the neutral
+// floor `none` — a malformed doc renders invisible rather than crashing, and
+// lint flags it. Valid docs never hit the fallback.
 
 import type { Scope } from '../../types.js';
 import type { MemoryDoc } from '../memory-resolver.js';
@@ -41,22 +48,13 @@ export function rungAtLeast(r: Rung, min: Rung): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// The kind→default-rungs table (design §9). When an author omits a visibility
-// field, its default is a function of `kind` — chosen so the common case is
-// correct with no thought and the migration is behavior-preserving for skills
-// and preferences. One data row per kind, NOT a code fork.
-//
-//   kind         system-prompt-visibility   file-read-visibility
-//   skill        name                       none
-//   preference   preview                    none
-//   reference    none                       preview
+// The neutral fallback rung used only when a doc omits a visibility field or
+// carries an invalid one. NOT a default an author may lean on — authoring-time
+// enforcement requires explicit rungs; this is purely the runtime parser's
+// never-throw floor (a malformed doc renders invisible, and lint flags it).
 // ---------------------------------------------------------------------------
 
-export const KIND_DEFAULT_RUNGS: Record<DocKind, { systemPrompt: Rung; fileRead: Rung }> = {
-  skill: { systemPrompt: 'name', fileRead: 'none' },
-  preference: { systemPrompt: 'preview', fileRead: 'none' },
-  reference: { systemPrompt: 'none', fileRead: 'preview' },
-};
+export const FALLBACK_RUNG: Rung = 'none';
 
 // ---------------------------------------------------------------------------
 // The schema object.
@@ -117,23 +115,23 @@ export interface SubstrateDoc extends SubstrateSchema {
 /** Parse a raw frontmatter record (from `parseFrontmatterGeneric`, via the
  *  resolver) into a typed schema with defaults applied. Returns `null` when the
  *  record is absent or carries no valid `kind` — i.e. it is not a substrate
- *  document and cannot be classified or defaulted. Tolerant of every other
- *  imperfection (a missing `when-and-why-to-read` defaults to '', a bad rung
- *  falls back to the kind default), so a renderer mapping over many docs never
- *  throws. Authoring-time enforcement of the field lives in `crtr memory lint`. */
+ *  document and cannot be classified. Tolerant of every other imperfection (a
+ *  missing `when-and-why-to-read` defaults to '', a missing/bad rung falls back
+ *  to the neutral floor `none`), so a renderer mapping over many docs never
+ *  throws. Authoring-time enforcement of these fields lives in `crtr memory
+ *  write` (on create) and `crtr memory lint`. */
 export function parseSubstrateFrontmatter(
   fm: Record<string, unknown> | null,
 ): SubstrateSchema | null {
   if (fm === null) return null;
   if (!isDocKind(fm.kind)) return null;
   const kind = fm.kind;
-  const defaults = KIND_DEFAULT_RUNGS[kind];
   return {
     kind,
     whenAndWhyToRead: strField(fm['when-and-why-to-read']),
     shortForm: strField(fm['short-form']),
-    systemPromptVisibility: parseRung(fm['system-prompt-visibility'], defaults.systemPrompt),
-    fileReadVisibility: parseRung(fm['file-read-visibility'], defaults.fileRead),
+    systemPromptVisibility: parseRung(fm['system-prompt-visibility'], FALLBACK_RUNG),
+    fileReadVisibility: parseRung(fm['file-read-visibility'], FALLBACK_RUNG),
     gate: parseGate(fm.gate),
     appliesTo: parseAppliesTo(fm['applies-to']),
   };
@@ -167,8 +165,8 @@ function strField(v: unknown): string {
   return typeof v === 'string' ? v : '';
 }
 
-/** Resolve a visibility field to a ladder rung, falling back to the kind
- *  default when absent/invalid. */
+/** Resolve a visibility field to a ladder rung, falling back to the neutral
+ *  floor when absent/invalid. */
 function parseRung(v: unknown, fallback: Rung): Rung {
   return typeof v === 'string' && (RUNGS as readonly string[]).includes(v)
     ? (v as Rung)

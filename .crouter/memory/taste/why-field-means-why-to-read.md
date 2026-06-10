@@ -1,13 +1,14 @@
 ---
 kind: reference
 when-and-why-to-read: When authoring or reviewing substrate frontmatter, help
-  text, or prompting guidance for memory documents, this reference should be read
-  because the CTO ruled the routing line's purpose is read-routing, not
+  text, or prompting guidance for memory documents, this reference should be
+  read because the CTO ruled the routing line's purpose is read-routing, not
   justification — misreading it produces useless previews.
 short-form: "why = 'why READ this doc', never 'why obey it'. Fields merged into
   one routing sentence: 'When <circumstance>, this <kind> should be read
   <optional because>'."
 system-prompt-visibility: name
+file-read-visibility: preview
 ---
 
 CTO ruling (2026-06-10), during the substrate work:
