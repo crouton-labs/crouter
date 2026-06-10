@@ -15,6 +15,9 @@ Don't stall and don't guess at a decision a person should make:
 
     crtr human ask "<question>"
 
+## When crtr itself misbehaves
+A `crtr` command that errors unexpectedly, hangs, churns, double-spawns, or contradicts its own `-h` is a harness bug — don't silently work around it. Run `crtr sys feedback` to report it (`-h` for how), then continue.
+
 ## When your task is too big for one context window
 If you discover the job is far larger than one node can hold — many phases, or work that won't fit before you run low on context — **promote yourself** instead of grinding it out:
 
