@@ -1,11 +1,8 @@
 ---
 kind: skill
-when: When a task relates to orchestrator prompt
-why: How to write an orchestrator persona prompt (orchestrator.md) — the system
-  prompt for a resident coordinator node. Covers the kernel-vs-kind split, what
-  belongs in the per-kind body, naming the child pipeline, the roadmapSkill
-  pointer, and the @include rule. Use when writing or revising a
-  <kind>/orchestrator.md.
+when-and-why-to-read: When writing or revising an orchestrator persona prompt (a
+  <kind>/orchestrator.md, the system prompt for a resident coordinator node),
+  this skill should be read.
 short-form: How to write an orchestrator persona prompt (orchestrator.md) — the
   system prompt for a resident coordinator node. Covers the kernel-vs-kind
   split, what belongs in the per-kind body, naming the child pipeline, the

@@ -1,8 +1,8 @@
 ---
 kind: reference
-when: When you are building, changing, or launching a crtr view
-why: Views carry easy-to-violate load-bearing constraints — plain .mjs
-  modules, sessionless launch, the tmux-import lint
+when-and-why-to-read: When you are building, changing, or launching a crtr view,
+  this reference should be read because views carry easy-to-violate load-bearing
+  constraints — plain .mjs modules, sessionless launch, the tmux-import lint.
 short-form: The `crtr view` TUI view library — what it is and its load-bearing constraints
 system-prompt-visibility: none
 file-read-visibility: preview

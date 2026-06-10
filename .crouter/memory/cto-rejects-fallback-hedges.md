@@ -1,9 +1,9 @@
 ---
 kind: preference
-when: When a strict parser, validator, or schema rejects real inputs and you
-  are tempted to add a lenient fallback path
-why: It gives the pattern the CTO will accept instead — fix the data,
-  isolate the bad case, enforce with a lint
+when-and-why-to-read: When a strict parser, validator, or schema rejects real
+  inputs and you are tempted to add a lenient fallback path, this preference
+  should be read because it gives the pattern the CTO will accept instead — fix
+  the data, isolate the bad case, enforce with a lint.
 short-form: CTO rejects fallback/compat-hedge code paths — fix the source data +
   isolate the bad case + enforce with a lint, never a runtime second-path hedge
 system-prompt-visibility: preview

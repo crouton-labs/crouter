@@ -54,7 +54,7 @@ test('worker bearings: base framing + ## References block, NO across-cycles fram
   mkdirSync(dir, { recursive: true });
   writeFileSync(
     join(dir, 'test-ref.md'),
-    '---\nkind: reference\nwhen: when testing\nwhy: regression fixture\nsystem-prompt-visibility: preview\n---\nTest body.\n',
+    '---\nkind: reference\nwhen-and-why-to-read: When testing, this reference should be read because it is a regression fixture\nsystem-prompt-visibility: preview\n---\nTest body.\n',
   );
   const block = buildContextIntro(meta.node_id);
   assert.match(block, new RegExp(`<crtr-context dir="${contextDir(meta.node_id)}">`));
@@ -89,7 +89,7 @@ test('orchestrator bearings: across-cycles framing + node-local substrate docs r
   // A node-local substrate doc DOES ride into ## References at its rung.
   writeFileSync(
     join(dir, 'flaky-build.md'),
-    '---\nkind: reference\nwhen: when the build flakes\nwhy: first run fails\nsystem-prompt-visibility: preview\n---\nFirst run always fails; rerun once.\n',
+    '---\nkind: reference\nwhen-and-why-to-read: When the build flakes, this reference should be read because the first run fails\nsystem-prompt-visibility: preview\n---\nFirst run always fails; rerun once.\n',
   );
 
   const block = buildContextIntro(meta.node_id);
@@ -100,7 +100,7 @@ test('orchestrator bearings: across-cycles framing + node-local substrate docs r
   assert.match(block, /### flaky-build\n/, 'node-local doc gets its ### sub-section');
   assert.match(
     block,
-    /when the build flakes, read this reference\. first run fails\./,
+    /When the build flakes, this reference should be read because the first run fails\./,
     'preview rung renders the routing line',
   );
   // The non-substrate file never renders: no header line, no pointer line, no path.

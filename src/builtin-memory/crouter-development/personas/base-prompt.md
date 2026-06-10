@@ -1,10 +1,8 @@
 ---
 kind: skill
-when: When a task relates to base prompt
-why: How to write a base persona prompt (the mode=base PERSONA.md) — the system
-  prompt for a single-window worker node. Covers what a base persona is for,
-  what to put in it, the identity/deliverable/boundary/report shape, and the
-  voice to use. Use when writing or revising a <kind>/PERSONA.md.
+when-and-why-to-read: When writing or revising a base persona prompt (a
+  <kind>/PERSONA.md, the system prompt for a single-window worker node), this
+  skill should be read.
 short-form: How to write a base persona prompt (the mode=base PERSONA.md) — the
   system prompt for a single-window worker node. Covers what a base persona is
   for, what to put in it, the identity/deliverable/boundary/report shape, and

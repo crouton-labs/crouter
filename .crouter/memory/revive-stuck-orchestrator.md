@@ -1,9 +1,9 @@
 ---
 kind: reference
-when: When an orchestrator sits idle with a dead pi and intent=idle-release,
-  or got falsely auto-finalized
-why: The one safe recovery is a critical node msg — canvas revive
-  --fresh makes it worse
+when-and-why-to-read: When an orchestrator sits idle with a dead pi and
+  intent=idle-release, or got falsely auto-finalized, this reference should be
+  read because the one safe recovery is a critical node msg — canvas revive
+  --fresh makes it worse.
 short-form: How to recover a stuck/false-finished orchestrator node — use
   critical node msg, never canvas revive --fresh
 system-prompt-visibility: none

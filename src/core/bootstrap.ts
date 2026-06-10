@@ -54,9 +54,9 @@ is the surface — author, discover, and load them.
   \`crtr memory write <name> --kind <skill|reference|preference>\` with the
   body piped on stdin — e.g.
   \`crtr memory write $ARGUMENTS --kind skill <<'EOF' … EOF\`. Run
-  \`crtr memory write -h\` for the full frontmatter schema (--when, --why,
-  --short-form, --scope, visibility rungs), then \`crtr memory lint\` to
-  validate what you wrote.
+  \`crtr memory write -h\` for the full frontmatter schema
+  (--when-and-why-to-read, --short-form, --scope, visibility rungs), then
+  \`crtr memory lint\` to validate what you wrote.
 - **Find** ("what do we have on X"): \`crtr memory find "$ARGUMENTS"\` →
   \`crtr memory read <name>\` on the best hit (add --body/--grep to search
   bodies).

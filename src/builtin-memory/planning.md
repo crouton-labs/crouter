@@ -1,9 +1,8 @@
 ---
 kind: skill
-when: When shaping a planning roadmap, deciding plan structure, or fanning out
-  plan-review specialists before declaring a plan ready
-why: Use when shaping a planning roadmap, deciding plan structure, or fanning
-  out plan-review specialists before declaring a plan ready.
+when-and-why-to-read: When shaping a planning roadmap, deciding plan structure,
+  or fanning out plan-review specialists before declaring a plan ready, this
+  skill should be read.
 short-form: Use when shaping a planning roadmap, deciding plan structure, or
   fanning out plan-review specialists before declaring a plan ready.
 system-prompt-visibility: name

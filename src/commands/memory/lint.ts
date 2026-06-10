@@ -33,10 +33,19 @@ const RUNG_FIELDS = ['system-prompt-visibility', 'file-read-visibility'] as cons
  *  values are checked RAW — the runtime parser silently falls back to kind
  *  defaults / inert gates, which is exactly the silent tolerance this lint
  *  exists to catch at authoring time. */
-function lintSubstrateSchema(fm: Record<string, unknown> | null): string | null {
+export function lintSubstrateSchema(fm: Record<string, unknown> | null): string | null {
   if (fm === null) return 'missing frontmatter: a memory store doc requires `kind: skill|reference|preference`';
   if (!isDocKind(fm.kind)) {
     return `invalid kind: ${JSON.stringify(fm.kind)} (expected skill|reference|preference)`;
+  }
+  // The retired `when`/`why` pair was merged into one read-routing field. The
+  // hard cut is enforced HERE: an old-shape doc must fail, never be silently
+  // read at runtime.
+  if ('when' in fm || 'why' in fm) {
+    return 'retired `when`/`why` keys: merge them into one `when-and-why-to-read` line — "When <circumstance>, this <kind> should be read <because <payoff>>."';
+  }
+  if (typeof fm['when-and-why-to-read'] !== 'string' || fm['when-and-why-to-read'].trim() === '') {
+    return 'missing `when-and-why-to-read`: one read-routing line — "When <circumstance>, this <kind> should be read <because <payoff>>."';
   }
   for (const field of RUNG_FIELDS) {
     const v = fm[field];

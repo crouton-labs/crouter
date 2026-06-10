@@ -1,9 +1,7 @@
 ---
 kind: skill
-when: When a task relates to plugins
-why: How to author a crtr plugin — plugin.json manifest, directory layout,
-  scopes, install mechanics, versioning. Use when creating a new plugin,
-  packaging skills for distribution, or debugging install/resolution.
+when-and-why-to-read: When creating a crtr plugin, packaging skills for
+  distribution, or debugging install/resolution, this skill should be read.
 short-form: How to author a crtr plugin — plugin.json manifest, directory
   layout, scopes, install mechanics, versioning. Use when creating a new plugin,
   packaging skills for distribution, or debugging install/resolution.

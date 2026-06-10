@@ -108,8 +108,7 @@ export function coerceAppliesTo(raw: string): unknown {
 // first in this order; any preserved-on-update extras append after.
 const FRONTMATTER_ORDER = [
   'kind',
-  'when',
-  'why',
+  'when-and-why-to-read',
   'short-form',
   'system-prompt-visibility',
   'file-read-visibility',

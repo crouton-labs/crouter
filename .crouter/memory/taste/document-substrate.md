@@ -1,7 +1,6 @@
 ---
 kind: reference
-when: When designing how agents load context — what belongs in a system prompt vs on-demand, how knowledge is stored, scoped, or auto-injected, or when adding any new kind of agent-facing document.
-why: It records the decision and the reasoning behind crouter's unified document-substrate — the taste that should govern any change to how agents store and load knowledge.
+when-and-why-to-read: When designing how agents load context — what belongs in a system prompt vs on-demand, how knowledge is stored, scoped, or auto-injected, or when adding any new kind of agent-facing document — this reference should be read because it records the decision and reasoning behind crouter's unified document-substrate, the taste that should govern any change to how agents store and load knowledge.
 short-form: Agent guidance — skills, preferences, references — is one substrate of markdown files whose frontmatter dictates when, where, and how much loads. Three semantic-memory kinds, two injection hooks, a four-rung disclosure ladder, per-directory scope.
 system-prompt-visibility: preview
 file-read-visibility: none

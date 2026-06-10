@@ -69,15 +69,17 @@ export const KIND_DEFAULT_RUNGS: Record<DocKind, { systemPrompt: Rung; fileRead:
 export type GatePredicate = Record<string, unknown>;
 
 /** The frontmatter-derived schema of a substrate document, with kind-aware
- *  defaults applied. Required fields (`kind`/`when`/`why`) and optionals all
- *  resolved to concrete typed values. */
+ *  defaults applied. Required fields (`kind`/`when-and-why-to-read`) and
+ *  optionals all resolved to concrete typed values. */
 export interface SubstrateSchema {
   /** Which of the three semantic kinds. */
   kind: DocKind;
-  /** Routing condition — "When you are in a situation like X…" (design §4). */
-  when: string;
-  /** Payoff — "…because Z." Half of the generated preview line. */
-  why: string;
+  /** The read-routing line — a single sentence answering WHEN to read this doc
+   *  and WHY it is worth the read: "When <circumstance>, this <kind> should be
+   *  read <because <payoff>>." (design §4). This is read-routing — why an agent
+   *  should spend the read — NEVER justification of why the content should be
+   *  obeyed. It IS the preview verbatim. Frontmatter key `when-and-why-to-read`. */
+  whenAndWhyToRead: string;
   /** Human-facing abbreviation for `crtr memory list`. NEVER loaded into an
    *  agent's context (design §3). Empty string when absent. */
   shortForm: string;
@@ -116,8 +118,9 @@ export interface SubstrateDoc extends SubstrateSchema {
  *  resolver) into a typed schema with defaults applied. Returns `null` when the
  *  record is absent or carries no valid `kind` — i.e. it is not a substrate
  *  document and cannot be classified or defaulted. Tolerant of every other
- *  imperfection (missing `when`/`why` default to '', a bad rung falls back to
- *  the kind default), so a renderer mapping over many docs never throws. */
+ *  imperfection (a missing `when-and-why-to-read` defaults to '', a bad rung
+ *  falls back to the kind default), so a renderer mapping over many docs never
+ *  throws. Authoring-time enforcement of the field lives in `crtr memory lint`. */
 export function parseSubstrateFrontmatter(
   fm: Record<string, unknown> | null,
 ): SubstrateSchema | null {
@@ -127,8 +130,7 @@ export function parseSubstrateFrontmatter(
   const defaults = KIND_DEFAULT_RUNGS[kind];
   return {
     kind,
-    when: strField(fm.when),
-    why: strField(fm.why),
+    whenAndWhyToRead: strField(fm['when-and-why-to-read']),
     shortForm: strField(fm['short-form']),
     systemPromptVisibility: parseRung(fm['system-prompt-visibility'], defaults.systemPrompt),
     fileReadVisibility: parseRung(fm['file-read-visibility'], defaults.fileRead),
@@ -146,14 +148,15 @@ export function parseSubstrateDoc(doc: MemoryDoc): SubstrateDoc | null {
   return { ...schema, name: doc.name, scope: doc.scope, path: doc.path, body: doc.body };
 }
 
-/** The generated `preview`-rung routing line (design §4), composed from the two
- *  required prose fields and the kind: `"{when}, read this {kind}. {why}."`.
- *  Both boot and on-read render render this identical line, so it lives once
- *  here to prevent drift. Light cleanup avoids doubled punctuation. */
-export function previewLine(doc: Pick<SubstrateSchema, 'kind' | 'when' | 'why'>): string {
-  const when = doc.when.trim().replace(/[.,]+$/, '');
-  const why = doc.why.trim().replace(/\.+$/, '');
-  return `${when}, read this ${doc.kind}. ${why}.`;
+/** The `preview`-rung routing line (design §4): the `when-and-why-to-read`
+ *  field rendered essentially verbatim — it is already authored as the complete
+ *  routing sentence ("When …, this <kind> should be read …"), so there is no
+ *  template to compose. Both boot and on-read render this identical line, so it
+ *  lives once here to prevent drift. Light cleanup normalizes the trailing
+ *  period. */
+export function previewLine(doc: Pick<SubstrateSchema, 'whenAndWhyToRead'>): string {
+  const line = doc.whenAndWhyToRead.trim().replace(/\.+$/, '');
+  return line === '' ? '' : `${line}.`;
 }
 
 // ---------------------------------------------------------------------------

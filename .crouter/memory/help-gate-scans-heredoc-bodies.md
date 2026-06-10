@@ -1,9 +1,9 @@
 ---
 kind: reference
-when: When the crtr help-gate blocks a command whose inline heredoc body merely
-  mentions other crtr commands
-why: The gate scans the whole literal command string — pipe the body
-  from a file instead
+when-and-why-to-read: When the crtr help-gate blocks a command whose inline
+  heredoc body merely mentions other crtr commands, this reference should be read
+  because the gate scans the whole literal command string — pipe the body from a
+  file instead.
 short-form: crtr help-gate scans the literal command string (incl. inline
   heredoc bodies) for crtr command mentions and blocks — pipe report bodies from
   a file instead

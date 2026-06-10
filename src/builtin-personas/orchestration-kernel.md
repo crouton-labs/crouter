@@ -52,7 +52,7 @@ Separate from the roadmap (your live plan and state) you have a persistent docum
 
 **Reading.** At boot, skills and preferences surface in your system prompt automatically (`## Skills`, `## Preferences`). References surface in your `<crtr-context>` block (`## References`). To browse the full inventory: `crtr memory list`. To search by topic: `crtr memory find <query>`. To load a document by name: `crtr memory read <name>`.
 
-**Writing.** Use `crtr memory write` to create or update a document. Every document carries `kind`, `when`, and `why` in its frontmatter, plus a body. The `kind` governs which section it surfaces in at boot and how it loads:
+**Writing.** Use `crtr memory write` to create or update a document. Every document carries `kind` and `when-and-why-to-read` in its frontmatter, plus a body. `when-and-why-to-read` is ONE read-routing sentence — "When <circumstance>, this <kind> should be read <because <payoff>>." — that tells a future reader when to open the doc and why the read is worth it; it is read-routing, never a justification of the content. It becomes the preview line verbatim. The `kind` governs which section it surfaces in at boot and how it loads:
 
 - `skill` — a workflow or methodology to adopt. Surfaces by name in `## Skills`; load with `crtr memory read`.
 - `preference` — how you should work. Surfaces as a `###` routing line in `## Preferences` at boot (default `system-prompt-visibility: preview`).

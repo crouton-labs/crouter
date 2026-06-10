@@ -1,8 +1,8 @@
 ---
 kind: preference
-when: When you are writing or editing anything under crouter's vision/ directory
-why: Vision docs must describe the desired end-state, and it tells you
-  what never belongs in one
+when-and-why-to-read: When you are writing or editing anything under crouter's
+  vision/ directory, this preference should be read because vision docs must
+  describe the desired end-state and it tells you what never belongs in one.
 short-form: In crouter's vision/ dir, vision docs describe the desired end-state
   (how it should work + why), never current problems/gaps or implementation.
 system-prompt-visibility: preview

@@ -1,8 +1,8 @@
 ---
 kind: skill
-when: When shaping or reshaping a build roadmap
-why: choosing a development style, selecting a phase skeleton, or setting exit
-  criteria for a software goal.
+when-and-why-to-read: When shaping or reshaping a build roadmap — choosing a
+  development style, selecting a phase skeleton, or setting exit criteria for a
+  software goal — this skill should be read.
 short-form: Use when shaping or reshaping a build roadmap — choosing a
   development style, selecting a phase skeleton, or setting exit criteria for a
   software goal.

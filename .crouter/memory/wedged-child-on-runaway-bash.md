@@ -1,9 +1,9 @@
 ---
 kind: reference
-when: When a child node has been "active" implausibly long with no report and
-  its wave is not advancing
-why: The child may be wedged mid-turn on a runaway bash command — it
-  shows how to detect that and recover by killing the subprocess, not the node
+when-and-why-to-read: When a child node has been "active" implausibly long with
+  no report and its wave is not advancing, this reference should be read because
+  the child may be wedged mid-turn on a runaway bash command — it shows how to
+  detect that and recover by killing the subprocess, not the node.
 short-form: a child stuck mid-turn on a runaway bash command sends NO wake and
   looks "active" forever — detect by pane/process inspection, fix by killing the
   subprocess

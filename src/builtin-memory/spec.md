@@ -1,15 +1,8 @@
 ---
 kind: skill
-when: When running a specification effort, shaping a spec roadmap, or deciding
-  how to stage design and requirements work. Covers the three-stage
-  shape→design→requirements methodology, when to delegate design to a child
-  node, the isolation principle behind the design/requirements split, and what a
-  finished spec contains
-why: Use when running a specification effort, shaping a spec roadmap, or
-  deciding how to stage design and requirements work. Covers the three-stage
-  shape→design→requirements methodology, when to delegate design to a child
-  node, the isolation principle behind the design/requirements split, and what a
-  finished spec contains.
+when-and-why-to-read: When running a specification effort, shaping a spec
+  roadmap, or deciding how to stage design and requirements work, this skill
+  should be read.
 short-form: Use when running a specification effort, shaping a spec roadmap, or
   deciding how to stage design and requirements work. Covers the three-stage
   shape→design→requirements methodology, when to delegate design to a child

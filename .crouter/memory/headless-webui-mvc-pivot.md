@@ -1,9 +1,9 @@
 ---
 kind: reference
-when: When you are changing crouter's rendering, node lifecycle, or anything
-  that touches tmux
-why: An active initiative is splitting host from surface, and your
-  change should align with the headless/web-UI end-state
+when-and-why-to-read: When you are changing crouter's rendering, node lifecycle,
+  or anything that touches tmux, this reference should be read because an active
+  initiative is splitting host from surface and your change should align with the
+  headless/web-UI end-state.
 short-form: Active initiative — decouple crouter's tmux rendering from its model
   (MVC) toward headless nodes + a web UI
 system-prompt-visibility: none

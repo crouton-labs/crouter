@@ -1,9 +1,9 @@
 ---
 kind: reference
-when: When you are about to run an install in crouter, or crtr suddenly breaks
-  everywhere with a missing-approveDeck / module-not-found error
-why: Installs clobber the humanloop yalc link, and it gives the exact
-  restore procedure
+when-and-why-to-read: When you are about to run an install in crouter, or crtr
+  suddenly breaks everywhere with a missing-approveDeck / module-not-found error,
+  this reference should be read because installs clobber the humanloop yalc link
+  and it gives the exact restore procedure.
 short-form: "`npm install` clobbers the humanloop yalc link mid-wave"
 system-prompt-visibility: none
 file-read-visibility: preview

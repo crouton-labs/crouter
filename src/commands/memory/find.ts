@@ -16,10 +16,8 @@ interface Unit {
   kind: string;
   scope: Scope;
   path: string;
-  /** Routing condition (substrate `when`; skill description). */
-  when: string;
-  /** Payoff (substrate `why`; '' for skills, folded into `when`). */
-  why: string;
+  /** Read-routing line (substrate `when-and-why-to-read`; skill description). */
+  routing: string;
   /** Hook shown in results (substrate short-form; skill description). */
   shortForm: string;
   /** Frontmatter-stripped body, loaded lazily for --body / --grep. */
@@ -32,8 +30,7 @@ function substrateUnit(d: SubstrateDoc): Unit {
     kind: d.kind,
     scope: d.scope,
     path: d.path,
-    when: d.when,
-    why: d.why,
+    routing: d.whenAndWhyToRead,
     shortForm: d.shortForm,
     loadBody: () => d.body,
   };
@@ -47,10 +44,9 @@ function skillUnit(s: Skill): Unit {
     kind: 'skill',
     scope: s.scope,
     path: s.path,
-    // A skill's description plays the when+why role; keywords ride along so the
-    // ranker weighs them too. short_form surfaces the description as the hook.
-    when: [desc, keywords].filter((x) => x).join(' '),
-    why: '',
+    // A skill's description plays the read-routing role; keywords ride along so
+    // the ranker weighs them too. short_form surfaces the description as the hook.
+    routing: [desc, keywords].filter((x) => x).join(' '),
     shortForm: desc,
     loadBody: () => parseFrontmatter(readText(s.path)).body,
   };
@@ -100,12 +96,12 @@ export const findLeaf = defineLeaf({
   name: 'find',
   description: 'relevance search across memory documents',
   whenToUse:
-    'you do not yet know which document applies and need to discover what is stored — ranks documents by relevance, weighted over name, when, why, and short-form (add --body to also weigh body text). Searches the full scope set regardless of any visibility gate. Use --grep instead when you need an exact regex or literal-string match across document bodies rather than a ranked topic match.',
+    'you do not yet know which document applies and need to discover what is stored — ranks documents by relevance, weighted over name, the read-routing line, and short-form (add --body to also weigh body text). Searches the full scope set regardless of any visibility gate. Use --grep instead when you need an exact regex or literal-string match across document bodies rather than a ranked topic match.',
   help: {
     name: 'memory find',
-    summary: 'relevance search across memory documents, weighted over name/when/why/short-form (and body with --body)',
+    summary: 'relevance search across memory documents, weighted over name/routing-line/short-form (and body with --body)',
     params: [
-      { kind: 'positional', name: 'query', required: true, constraint: 'With ranked search (default): whitespace-separated terms, matched case-insensitively and weighted over name, when, why, and short-form (plus body with --body); documents matching more/stronger fields rank higher. With --grep: an ECMAScript regex applied to each document body line.' },
+      { kind: 'positional', name: 'query', required: true, constraint: 'With ranked search (default): whitespace-separated terms, matched case-insensitively and weighted over name, the read-routing line, and short-form (plus body with --body); documents matching more/stronger fields rank higher. With --grep: an ECMAScript regex applied to each document body line.' },
       { kind: 'flag', name: 'kind', type: 'enum', choices: [...MEMORY_KINDS], required: false, constraint: 'Filter to a single kind. Default: all kinds.' },
       { kind: 'flag', name: 'grep', type: 'bool', required: false, constraint: 'Treat the query as an ECMAScript regex and match it against document bodies, instead of weighted relevance ranking. Mutually exclusive with --body.' },
       { kind: 'flag', name: 'body', type: 'bool', required: false, constraint: 'Also weigh document body text in the relevance ranking (in addition to name/when/why/short-form). Ignored under --grep, which always scans bodies.' },
@@ -156,7 +152,7 @@ export const findLeaf = defineLeaf({
       };
     }
 
-    // --- ranked mode: weighted relevance over name/when/why/short-form(+body) ---
+    // --- ranked mode: weighted relevance over name/routing-line/short-form(+body) ---
     const terms = query
       .toLowerCase()
       .split(/\s+/)
@@ -170,15 +166,13 @@ export const findLeaf = defineLeaf({
     const hits: Hit[] = [];
     for (const u of units) {
       const nameLc = u.name.toLowerCase();
-      const whenLc = u.when.toLowerCase();
-      const whyLc = u.why.toLowerCase();
+      const routingLc = u.routing.toLowerCase();
       const shortLc = u.shortForm.toLowerCase();
       const bodyLc = weighBody ? u.loadBody().toLowerCase() : null;
       let score = 0;
       for (const term of terms) {
         if (nameLc.includes(term)) score += 10;
-        if (whenLc.includes(term)) score += 5;
-        if (whyLc.includes(term)) score += 4;
+        if (routingLc.includes(term)) score += 5;
         if (shortLc.includes(term)) score += 3;
         if (bodyLc !== null && bodyLc.includes(term)) score += 1;
       }

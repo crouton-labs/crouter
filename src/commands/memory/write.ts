@@ -24,8 +24,7 @@ export const writeLeaf = defineLeaf({
     params: [
       { kind: 'positional', name: 'name', required: true, constraint: 'Path-derived identity (e.g. `topic` or `area/topic`) → memory/<name>.md at the resolved scope. Updated in place if it already exists, otherwise created.' },
       { kind: 'flag', name: 'kind', type: 'enum', choices: [...MEMORY_KINDS], required: true, constraint: 'Document kind.' },
-      { kind: 'flag', name: 'when', type: 'string', required: false, constraint: 'Frontmatter whenText — a short string describing when this document should be read.' },
-      { kind: 'flag', name: 'why', type: 'string', required: false, constraint: 'Frontmatter whyText — a short string describing why this document matters.' },
+      { kind: 'flag', name: 'when-and-why-to-read', type: 'string', required: false, constraint: 'The read-routing line, authored as ONE sentence: "When <circumstance>, this <kind> should be read <because <payoff>>." It states WHEN to read this doc and WHY the read is worth it — read-routing, NEVER a justification of why the content should be obeyed. Rendered verbatim as the preview. Required when creating.' },
       { kind: 'flag', name: 'short-form', type: 'string', required: false, constraint: 'Frontmatter short-form — a very abbreviated version of the content, the hook shown in `crtr memory list`.' },
       { kind: 'flag', name: 'system-prompt-visibility', type: 'enum', choices: [...VISIBILITY_RUNGS], required: false, constraint: 'Rung controlling how much of this document auto-loads into the system prompt / CLI help.' },
       { kind: 'flag', name: 'file-read-visibility', type: 'enum', choices: [...VISIBILITY_RUNGS], required: false, constraint: 'Rung controlling how much of this document surfaces when it is read off disk.' },
@@ -57,12 +56,11 @@ export const writeLeaf = defineLeaf({
     const path = memoryFilePath(memoryDir, name);
     const created = !pathExists(path);
 
-    // CREATE requires the two prose fields that compose the generated preview
-    // routing line — without them every preview renders the degenerate
-    // '", read this <kind>. ."'. UPDATE inherits them from the existing doc.
-    if (created && (input['when'] === undefined || input['why'] === undefined)) {
+    // CREATE requires the read-routing line that becomes the preview — without
+    // it every preview renders empty. UPDATE inherits it from the existing doc.
+    if (created && input['whenAndWhyToRead'] === undefined) {
       throw usage(
-        `creating ${name} requires --when and --why (they compose the preview routing line "{when}, read this ${kind}. {why}.")`,
+        `creating ${name} requires --when-and-why-to-read: one read-routing sentence "When <circumstance>, this ${kind} should be read <because <payoff>>." (rendered verbatim as the preview).`,
       );
     }
 
@@ -78,8 +76,7 @@ export const writeLeaf = defineLeaf({
     const setIf = (key: string, value: unknown): void => {
       if (value !== undefined) frontmatter[key] = value;
     };
-    setIf('when', input['when']);
-    setIf('why', input['why']);
+    setIf('when-and-why-to-read', input['whenAndWhyToRead']);
     setIf('short-form', input['shortForm']);
     setIf('system-prompt-visibility', input['systemPromptVisibility']);
     setIf('file-read-visibility', input['fileReadVisibility']);

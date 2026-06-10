@@ -1,11 +1,7 @@
 ---
 kind: skill
-when: When a task relates to personas
-why: How to define a custom node kind (persona) for crtr — the
-  PERSONA.md/orchestrator files, the frontmatter contract (incl. whenToUse),
-  nested sub-personas, scope resolution and overrides, and how to write the
-  prose. Use when adding a new `--kind`, overriding a builtin agent, or
-  debugging persona resolution.
+when-and-why-to-read: When adding a new `--kind`, overriding a builtin agent, or
+  debugging persona resolution, this skill should be read.
 short-form: How to define a custom node kind (persona) for crtr — the
   PERSONA.md/orchestrator files, the frontmatter contract (incl. whenToUse),
   nested sub-personas, scope resolution and overrides, and how to write the
