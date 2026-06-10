@@ -81,19 +81,3 @@ export function effectiveRung(
   }
   return rung;
 }
-
-/** Apply ceilings to a doc list for a surface: each doc gets its effective rung
- *  on `surface` written back into that field, and INDEX docs are renamed to
- *  their dir entry. Returns NEW objects only where something changed (cheap,
- *  preserves identity for untouched docs). Does NOT drop `none`-rung docs — the
- *  caller filters per surface (boot drops them; node-local intentionally keeps
- *  them). */
-export function applyCeilings(docs: SubstrateDoc[], surface: Surface): SubstrateDoc[] {
-  const ceil = buildCeilingIndex(docs);
-  return docs.map((d) => {
-    const rung = effectiveRung(d, ceil, surface);
-    const name = displayName(d.name);
-    if (rung === d[surface] && name === d.name) return d;
-    return { ...d, [surface]: rung, name };
-  });
-}

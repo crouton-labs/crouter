@@ -9,8 +9,9 @@
 // It owns the substrate's two new pi hooks:
 //
 //   1. before_agent_start — the BOOT system-prompt half. Splices the rendered
-//      `## Skills` + `## Preferences` sections into `event.systemPrompt`, right
-//      after pi's native "Available tools" list (before the `\n\nGuidelines:`
+//      `<skills>` + `<preferences>` + `<memory-guidance>` blocks into
+//      `event.systemPrompt`, right after pi's native "Available tools" list
+//      (before the `\n\nGuidelines:`
 //      anchor), so the substrate's skills/preferences sit in the tool-selection
 //      frame the agent reads while choosing a capability — mirroring the
 //      personal crouter-help.ts anchor logic. Falls back to appending when the
@@ -35,6 +36,7 @@
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
+  renderMemoryGuidance,
   renderOnReadDocs,
   renderPreferencesSection,
   renderSkillsSection,
@@ -127,12 +129,17 @@ export function registerCanvasDocSubstrate(pi: PiLike): void {
     clearSessionCache();
   });
 
-  // 1. BOOT system-prompt half — splice `## Skills` + `## Preferences`.
+  // 1. BOOT system-prompt half — splice `<skills>` + `<preferences>` +
+  //    `<memory-guidance>`. The guidance block is always present for a canvas
+  //    node (the memory system always exists), so the splice is never empty even
+  //    when both trees are.
   pi.on('before_agent_start', (event) => {
     try {
-      const sections = [renderSkillsSection(nodeId), renderPreferencesSection(nodeId)].filter(
-        (s) => s !== '',
-      );
+      const sections = [
+        renderSkillsSection(nodeId),
+        renderPreferencesSection(nodeId),
+        renderMemoryGuidance(),
+      ].filter((s) => s !== '');
       if (sections.length === 0) return; // nothing eligible — leave the prompt untouched
       const block = sections.join('\n\n');
       const idx = event.systemPrompt.indexOf(TOOLS_ANCHOR);

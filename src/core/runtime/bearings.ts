@@ -19,7 +19,7 @@
 // one place other nodes on the canvas can read from, so it is for documents
 // worth a shared reference, NOT a task tracker, and NOT a "future memory-wiped
 // you" stash (a terminal worker has no future cycle — that framing only makes
-// sense once a node is a resident orchestrator). The `## References` block
+// sense once a node is a resident orchestrator). The `<references>` block
 // (substrate reference docs + node-local docs) rides into the context message.
 //
 // Orchestrator addendum (gated on orchestrator MODE): the dir ALSO survives
@@ -181,7 +181,7 @@ export function buildWakeBearings(origin: WakeOrigin): string {
  *  any copied-in persona) followed by the `<crtr-context>` bearings block. Base
  *  framing rides for EVERY node; the across-cycles context-dir note is added
  *  ONLY for an orchestrator (by mode) — the one node whose dir a future cycle
- *  resumes from. The `## References` block carries the substrate reference docs
+ *  resumes from. The `<references>` block carries the substrate reference docs
  *  + node-local docs. */
 export function buildContextBearings(nodeId: string): string {
   const identity = buildIdentityAssertion(nodeId);

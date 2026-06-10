@@ -48,8 +48,8 @@ export const CANVAS_VIEW_PATH = resolveExtension('canvas-view');
  *  passive-context (drain passive backlog as pre-text on the next message),
  *  context-intro (inject the <crtr-context> bearings block as its own session
  *  message, once per brand-new chat), doc-substrate (the unified document
- *  substrate's two hooks: ## Skills + ## Preferences at boot, on-read context
- *  injection), commands (the /promote slash-command), resume (the /resume-node
+ *  substrate's two hooks: <skills> + <preferences> + <memory-guidance> at boot,
+ *  on-read context injection), commands (the /promote slash-command), resume (the /resume-node
  *  whole-canvas picker → `crtr node focus`), view (the /view popup → `crtr
  *  view pick` / `crtr view run <name>`).
  *  All self-gate on CRTR_NODE_ID. goal-capture precedes passive-context so it

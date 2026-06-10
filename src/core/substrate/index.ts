@@ -33,9 +33,13 @@ export {
   displayName,
   buildCeilingIndex,
   effectiveRung,
-  applyCeilings,
 } from './ceiling.js';
 export type { Surface } from './ceiling.js';
 
-export { renderSkillsSection, renderPreferencesSection, renderReferencesBlock } from './render.js';
+export {
+  renderSkillsSection,
+  renderPreferencesSection,
+  renderReferencesBlock,
+  renderMemoryGuidance,
+} from './render.js';
 export { renderOnReadDocs } from './on-read.js';

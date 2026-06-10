@@ -1,6 +1,6 @@
 // Tests for the <crtr-context> bearings preamble:
-//   1. Worker and orchestrator bearings carry the `## References` block
-//      (substrate reference docs + node-local docs as `###` sub-sections).
+//   1. Worker and orchestrator bearings carry the `<references>` block
+//      (substrate reference docs + node-local docs as a file tree).
 //      Orchestrators add the across-cycles framing; promotion delivers that
 //      same orchestrator context-dir framing to a node that spawned base.
 //   2. canvas-context-intro injects the block as its own session message at
@@ -44,10 +44,10 @@ after(() => {
   delete process.env['CRTR_NODE_ID'];
 });
 
-test('worker bearings: base framing + ## References block, NO across-cycles framing', () => {
+test('worker bearings: base framing + <references> block, NO across-cycles framing', () => {
   // Bug-regression: review finding M1 — buildContextBearings renders the
-  // ## References block (renderReferencesBlock): ## References + ### <name>
-  // sub-sections. This test locks in that contract.
+  // <references> block (renderReferencesBlock): a kind-wrapped file tree of
+  // reference docs. This test locks in that contract.
   const meta = spawnNode({ kind: 'general', cwd: '/tmp/work', parent: null });
   // Seed a node-local substrate doc so the ## References block is non-empty.
   const dir = memoryDir(meta.node_id);
@@ -59,22 +59,30 @@ test('worker bearings: base framing + ## References block, NO across-cycles fram
   const block = buildContextIntro(meta.node_id);
   assert.match(block, new RegExp(`<crtr-context dir="${contextDir(meta.node_id)}">`));
   assert.match(block, /shared document store, not a task tracker/, 'base = shared docs, not tasks');
-  // Reference content renders ONLY as ## References + ### sub-sections.
+  // Reference content renders ONLY as the <references> file-tree block.
   assert.doesNotMatch(block, /<memory>/, 'no <memory> block');
   // Per-store stanza headers (label · dir) never appear.
   assert.doesNotMatch(block, /user-global · /, 'no user-global label·dir stanza');
   assert.doesNotMatch(block, /node-local · /, 'no node-local label·dir stanza');
   // No (empty) placeholder marker.
   assert.doesNotMatch(block, /\(empty\)/, 'no (empty) placeholder');
-  assert.match(block, /## References\n\n###/, '## References followed by ### sub-sections');
+  assert.match(block, /<references>/, '<references> block present');
+  assert.match(block, /\nreferences\n/, 'tree headed by the `references` root label');
+  // The node-local preview-rung doc renders as a tree entry with a `# read when:`
+  // routing line (verbatim previewLine output).
+  assert.match(
+    block,
+    /test-ref {2}# read when: When testing, this reference should be read because it is a regression fixture\./,
+    'node-local preview doc renders its routing line',
+  );
   // A terminal worker must NOT carry the orchestrator across-cycles framing.
   assert.doesNotMatch(block, /refresh cycles/, 'no across-cycles framing for a terminal worker');
   assert.match(block, /<\/crtr-context>/);
 });
 
-test('orchestrator bearings: across-cycles framing + node-local substrate docs ride into ## References; a non-substrate .md file is never inlined', () => {
-  // Bug-regression: review finding M1 — buildContextBearings renders ## References.
-  // Node-local substrate docs render as ### sub-sections at their rung; a
+test('orchestrator bearings: across-cycles framing + node-local substrate docs ride into <references>; a non-substrate .md file is never inlined', () => {
+  // Bug-regression: review finding M1 — buildContextBearings renders <references>.
+  // Node-local substrate docs render as tree entries at their rung; a
   // non-substrate .md file (no frontmatter `kind`) never surfaces.
   const meta = spawnNode({ kind: 'general', cwd: '/tmp/work', parent: null });
   promote(meta.node_id); // flip to orchestrator mode — the across-cycles gate
@@ -96,12 +104,11 @@ test('orchestrator bearings: across-cycles framing + node-local substrate docs r
   assert.match(block, /shared document store, not a task tracker/, 'still carries the base framing');
   assert.match(block, /refresh cycles/, 'orchestrator gets the across-cycles framing');
   assert.doesNotMatch(block, /<memory>/, 'no <memory> block');
-  assert.match(block, /## References\n/, 'references block present');
-  assert.match(block, /### flaky-build\n/, 'node-local doc gets its ### sub-section');
+  assert.match(block, /<references>/, 'references block present');
   assert.match(
     block,
-    /When the build flakes, this reference should be read because the first run fails\./,
-    'preview rung renders the routing line',
+    /flaky-build {2}# read when: When the build flakes, this reference should be read because the first run fails\./,
+    'node-local doc renders as a tree entry with its routing line',
   );
   // The non-substrate file never renders: no header line, no pointer line, no path.
   assert.ok(!block.includes('# memory index'), 'the index header comment is NOT inlined');
@@ -111,12 +118,12 @@ test('orchestrator bearings: across-cycles framing + node-local substrate docs r
   assert.match(block, /<\/crtr-context>/);
 });
 
-test('orchestrator bearings: no per-store stanzas or (empty) markers; a rung-none node-local doc still surfaces as a ### title stub', () => {
-  // Bug-regression: review findings M1 + M6 — the ## References block carries no
+test('orchestrator bearings: no per-store stanzas or (empty) markers; a rung-none node-local doc still surfaces as a bare-name tree entry', () => {
+  // Bug-regression: review findings M1 + M6 — the <references> block carries no
   // per-store `label · dir` stanzas or (empty) markers, and node-local docs are
   // NOT filtered on rung: a migrated node-local reference defaults
-  // system-prompt-visibility: none and must still ride into ## References as
-  // its bare title (never its body).
+  // system-prompt-visibility: none and must still ride into <references> as
+  // its bare name (floored to the `name` rung; never its body).
   const meta = spawnNode({ kind: 'general', cwd: '/tmp/work', parent: null });
   promote(meta.node_id); // flip to orchestrator mode
   const dir = memoryDir(meta.node_id);
@@ -133,9 +140,9 @@ test('orchestrator bearings: no per-store stanzas or (empty) markers; a rung-non
   assert.ok(!block.includes('project · '), 'no project stanza header');
   assert.doesNotMatch(block, /\(empty\)/, 'no (empty) markers');
   assert.ok(!block.includes('MEMORY.md'), 'no MEMORY.md path in the block');
-  // M6: rung-none node-local doc surfaces as its title stub only.
-  assert.match(block, /### rung-none-fact\s*\n/, 'rung-none node-local doc surfaces as its title stub');
-  assert.ok(!block.includes('body that must not render'), 'none rung renders the title only, not the body');
+  // M6: rung-none node-local doc surfaces as a bare-name tree entry only.
+  assert.match(block, /─ rung-none-fact\n/, 'rung-none node-local doc surfaces as a bare-name tree entry');
+  assert.ok(!block.includes('body that must not render'), 'none rung renders the name only, not the body');
 });
 
 test('promotion guidance delivers the orchestrator context-dir framing', () => {

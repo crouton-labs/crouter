@@ -50,13 +50,13 @@ Larger artifacts — specs, plans, exploration findings, test recipes — live a
 
 Separate from the roadmap (your live plan and state) you have a persistent document substrate that outlasts any single roadmap: skills you adopt, preferences about how you work, references to external resources, and facts about the human and the project. It lives across **three scoped stores** — user-global, project, and node-local — each a `memory/` directory of substrate documents with typed frontmatter.
 
-**Reading.** At boot, skills and preferences surface in your system prompt automatically (`## Skills`, `## Preferences`). References surface in your `<crtr-context>` block (`## References`). To browse the full inventory: `crtr memory list`. To search by topic: `crtr memory find <query>`. To load a document by name: `crtr memory read <name>`.
+**Reading.** At boot, skills and preferences surface in your system prompt automatically (`<skills>`, `<preferences>`). References surface in your `<crtr-context>` block (`<references>`). Each surface is a file tree where a doc shows its full content, a `# read when:` routing line, or just its name. To browse the full inventory: `crtr memory list`. To search by topic: `crtr memory find <query>`. To load a document by name: `crtr memory read <name>`.
 
 **Writing.** Use `crtr memory write` to create or update a document. Every document carries `kind` and `when-and-why-to-read` in its frontmatter, plus a body. `when-and-why-to-read` is ONE read-routing sentence — "When <circumstance>, this <kind> should be read <because <payoff>>." — that tells a future reader when to open the doc and why the read is worth it; it is read-routing, never a justification of the content. It becomes the preview line verbatim. The `kind` governs which section it surfaces in at boot and how it loads:
 
-- `skill` — a workflow or methodology to adopt. Surfaces by name in `## Skills`; load with `crtr memory read`.
-- `preference` — how you should work. Surfaces as a `###` routing line in `## Preferences` at boot (default `system-prompt-visibility: preview`).
-- `reference` — a fact, pointer, or constraint. Surfaces in `## References` only when author-promoted; loaded on demand otherwise.
+- `skill` — a workflow or methodology to adopt. Surfaces by name in `<skills>`; load with `crtr memory read`.
+- `preference` — how you should work. Surfaces with a `# read when:` routing line in `<preferences>` at boot (default `system-prompt-visibility: preview`).
+- `reference` — a fact, pointer, or constraint. Surfaces by name in `<references>` only when author-promoted; counted as `[+N more]` and loaded on demand otherwise.
 
 The scope decides which nodes see the document. `user` scope loads into every orchestrator everywhere. `project` scope loads into orchestrators working in this repo. `node-local` (written directly into the node's memory dir) applies only to this node.
 

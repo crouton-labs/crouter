@@ -23,9 +23,6 @@
 //   • substrateDocs    — allMemoryDocs mapped through parseSubstrateDoc and
 //                        null-filtered.  Used by render.ts's resolverDocs and
 //                        on-read.ts's appliesToCandidates.
-//   • allPlugins       — listAllPlugins() result.  renderSkillCatalog was calling
-//                        listAllPlugins() twice per turn (once via listAllSkills,
-//                        once directly for descriptions).
 //   • nodeSubjects     — assembleNodeSubject() result keyed by nodeId.  The three
 //                        boot-render functions each call it; caching avoids the
 //                        meta.json read + sqlite spine-walk happening 2-3x per turn.
@@ -40,20 +37,17 @@ import type { SubstrateDoc } from './schema.js';
 
 type ListAllMemoryDocsFn = () => MemoryDoc[];
 type ParseSubstrateDocFn = (doc: MemoryDoc) => SubstrateDoc | null;
-type ListAllPluginsFn = () => { name: string; manifest: { description?: string } }[];
 type AssembleNodeSubjectFn = (id: string) => import('./subject.js').NodeConfigSubject | null;
 
 interface SessionCache {
   allMemoryDocs: MemoryDoc[] | null;
   substrateDocs: SubstrateDoc[] | null;
-  allPlugins: { name: string; manifest: { description?: string } }[] | null;
   nodeSubjects: Map<string, import('./subject.js').NodeConfigSubject | null>;
 }
 
 const _cache: SessionCache = {
   allMemoryDocs: null,
   substrateDocs: null,
-  allPlugins: null,
   nodeSubjects: new Map(),
 };
 
@@ -62,7 +56,6 @@ const _cache: SessionCache = {
 export function clearSessionCache(): void {
   _cache.allMemoryDocs = null;
   _cache.substrateDocs = null;
-  _cache.allPlugins = null;
   _cache.nodeSubjects.clear();
 }
 
@@ -87,16 +80,6 @@ export function cachedSubstrateDocs(
       .filter((d): d is SubstrateDoc => d !== null);
   }
   return _cache.substrateDocs;
-}
-
-/** listAllPlugins() result, cached per session. */
-export function cachedAllPlugins(
-  listFn: ListAllPluginsFn,
-): { name: string; manifest: { description?: string } }[] {
-  if (_cache.allPlugins === null) {
-    _cache.allPlugins = listFn();
-  }
-  return _cache.allPlugins;
 }
 
 /** assembleNodeSubject(nodeId), cached per (session × nodeId). */

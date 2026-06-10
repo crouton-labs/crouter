@@ -1,18 +1,19 @@
 ---
 kind: reference
-when-and-why-to-read: When the crtr help-gate blocks a command whose inline
-  heredoc body merely mentions other crtr commands, this reference should be read
-  because the gate scans the whole literal command string — pipe the body from a
-  file instead.
-short-form: crtr help-gate scans the literal command string (incl. inline
-  heredoc bodies) for crtr command mentions and blocks — pipe report bodies from
-  a file instead
+when-and-why-to-read: When you wonder whether the crtr help-gate will block a
+  command because its heredoc body or quoted prompt mentions other crtr
+  commands, this reference should be read because the gate strips heredoc bodies
+  before scanning — body mentions are safe, so deliver prompts and report bodies
+  the way crtr's own -h tells you to.
+short-form: crtr help-gate strips heredoc bodies (and never splits quoted args)
+  before scanning, so `crtr <cmd>` names inside a heredoc/prompt body do NOT
+  trip it — use heredocs freely, as crtr's own help instructs
 system-prompt-visibility: none
 file-read-visibility: preview
 ---
 
-`crtr push <tier> <<'EOF' … EOF` is blocked by the help-gate when the heredoc BODY contains a literal `crtr <subcommand>` string you haven't `-h`'d this session (e.g. a report mentioning `crtr canvas daemon stop`). The gate scans the whole literal command text, not just argv, so it sees the heredoc content.
+The help-gate scans a bash command for `crtr <leaf>` invocations and blocks any whose `-h` you haven't read this session. It is **heredoc-aware**: before scanning it strips heredoc bodies (`<<'EOF' … EOF`, `<<-EOF`, command-subst prompts like `"$(cat <<EOF … EOF)"`), and it keeps a quoted argument as a single token. So a `crtr memory list` / `crtr push update` mention *inside* a prompt or report body is data, not an invocation, and does not trip the gate — only the real opening-line command (`push final`, `node new`) is gated.
 
-**Why:** the help-gate matches `crtr <cmd>` substrings in the raw bash command string; an inline heredoc embeds the body in that string, so any crtr command name you quote in your prose trips it.
+**Why:** heredoc bodies and quoted args are stdin/argument *data*, never executed as shell commands, so the gate drops them before matching. This is exactly how crtr's own `-h` tells you to pass bodies (`crtr push <tier> <<'EOF' … EOF`, `crtr node new … <<'EOF'`) — the gate and the contract now agree.
 
-**How to apply:** write the report body to a file and pipe it — `crtr push <tier> < /path/to/body.md`. The file content is not in the command string, so the gate only sees `crtr push <tier>`. Same pattern already used for `crtr node new` prompts (see [[spawn-prompt-via-stdin-not-arg]]).
+**How to apply:** deliver large report bodies and spawn prompts via heredoc or a file (`crtr push final <<'EOF' … EOF`, `crtr node new <kind> < prompt.md`) without worrying about crtr names in the body. The gate (`pi-personal-extensions/extensions/crtr-help-gate.ts`, `stripHeredocs`) handles it. Related: [[spawn-prompt-via-stdin-not-arg]].
