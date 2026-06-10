@@ -24,17 +24,26 @@ function isDir(p: string): boolean {
   }
 }
 
-/** Parse `[dir] [prompt]` positionals + `--name`/`--kind` flags out of the
- *  leftover tokens after the bare `crtr`. */
+/** The `--`flags the front door OWNS (everything else after a bare `crtr` is a
+ *  positional dir/prompt). A leading token in this set still boots a root —
+ *  without it, `crtr --headless` / `crtr --name X` would fall through to the
+ *  dispatcher and error as an unknown subcommand. */
+const FRONT_DOOR_FLAGS = new Set(['--name', '--kind', '--headless', '--no-headless']);
+
+/** Parse `[dir] [prompt]` positionals + the front-door flags out of the leftover
+ *  tokens after the bare `crtr`. `headless` is tri-state: `true`/`false` from an
+ *  explicit `--headless`/`--no-headless`, `undefined` to defer to the config. */
 function parseRootArgs(tokens: string[]): {
   cwd: string;
   prompt?: string;
   name?: string;
   kind?: string;
+  headless?: boolean;
 } {
   let cwd = process.cwd();
   let name: string | undefined;
   let kind: string | undefined;
+  let headless: boolean | undefined;
   const positionals: string[] = [];
 
   for (let i = 0; i < tokens.length; i++) {
@@ -43,6 +52,10 @@ function parseRootArgs(tokens: string[]): {
       name = tokens[++i];
     } else if (t === '--kind') {
       kind = tokens[++i];
+    } else if (t === '--headless') {
+      headless = true;
+    } else if (t === '--no-headless') {
+      headless = false;
     } else if (t.startsWith('--')) {
       // ignore unknown flags for the front door
     } else {
@@ -55,7 +68,7 @@ function parseRootArgs(tokens: string[]): {
     cwd = resolvePath(positionals.shift() as string);
   }
   const prompt = positionals.length > 0 ? positionals.join(' ') : undefined;
-  return { cwd, prompt, name, kind };
+  return { cwd, prompt, name, kind, headless };
 }
 
 /** Env marker set on every pi the front door boots. Its presence means we are
@@ -89,14 +102,16 @@ export function maybeBootRoot(root: RootDef, argv: string[]): boolean {
   //   • bare `crtr`                  (no tokens)
   //   • `crtr <dir> [prompt]`        (first positional is an existing dir)
   //   • `crtr "multi word prompt"`   (first token contains whitespace)
-  // Anything else — a bare word like `job`, or a leading flag — is treated as a
-  // mistyped/removed subcommand and handed to the dispatcher, which errors with
-  // "unknown subcommand: <token>". Booting pi for such tokens is what let the
-  // renamed `agent`/`job` subcommands fork-bomb the front door.
+  //   • `crtr --headless` / `crtr --name X`  (a leading front-door flag)
+  // Anything else — a bare word like `job`, or an UNKNOWN leading flag — is
+  // treated as a mistyped/removed subcommand and handed to the dispatcher, which
+  // errors with "unknown subcommand: <token>". Booting pi for such tokens is what
+  // let the renamed `agent`/`job` subcommands fork-bomb the front door.
   if (first !== undefined) {
     const looksLikePrompt = /\s/.test(first);
     const looksLikeDir = !first.startsWith('-') && isDir(resolvePath(first));
-    if (!looksLikePrompt && !looksLikeDir) return false;
+    const looksLikeFrontDoorFlag = FRONT_DOOR_FLAGS.has(first);
+    if (!looksLikePrompt && !looksLikeDir && !looksLikeFrontDoorFlag) return false;
   }
 
   // Unambiguous front-door launch → boot a resident root inline (exec pi in

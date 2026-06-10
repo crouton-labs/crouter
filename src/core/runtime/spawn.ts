@@ -10,7 +10,10 @@
 //                provenance via spawned_by) brought forefront for direct driving.
 
 import { spawnSync } from 'node:child_process';
+import { join } from 'node:path';
 import { FRONT_DOOR_ENV } from './front-door.js';
+import { readConfig } from '../config.js';
+import { jobDir } from '../canvas/paths.js';
 import { spawnNode, currentNodeContext, nodeEnv, resolveBirthSession, nodeSession, rootOfSpine } from './nodes.js';
 import { buildLaunchSpec, buildPiArgv } from './launch.js';
 import { writeGoal } from './kickoff.js';
@@ -26,6 +29,7 @@ import {
   currentTmux,
   inTmux,
   focusWindow,
+  waitForBrokerViewSocket,
 } from './placement.js';
 import { transition } from './lifecycle.js';
 import { headlessBrokerHost } from './host.js';
@@ -43,6 +47,11 @@ export interface BootRootOpts {
   name?: string;
   /** Optional starter prompt (bare `crtr` requires none). */
   prompt?: string;
+  /** Tri-state host selection: `true`/`false` from an explicit
+   *  `--headless`/`--no-headless`, `undefined` to defer to the `headless`
+   *  config default. When it resolves to broker, the front door boots a
+   *  DETACHED broker root and auto-attaches a viewer inline in this pane. */
+  headless?: boolean;
 }
 
 /** Create a root node and bring up its pi. Returns the node; for 'inline' this
@@ -52,6 +61,10 @@ export function bootRoot(opts: BootRootOpts): NodeMeta {
   // or crash can be reaped/revived. Idempotent.
   try { ensureDaemon(); } catch { /* daemon is best-effort */ }
   const kind = opts.kind ?? 'general';
+  // Host precedence: explicit --headless/--no-headless flag > config `headless`
+  // default > tmux. Mirrors `crtr node new`'s resolution (commands/node.ts).
+  const headless = opts.headless ?? readConfig('user').headless === true;
+  const hostKind: 'tmux' | 'broker' = headless ? 'broker' : 'tmux';
   // A born-resident root starts in base mode; it earns the orchestrator persona
   // the first time it delegates (or on promotion). Resident lifecycle either way.
   const { launch } = buildLaunchSpec(kind, 'base', { lifecycle: 'resident', hasManager: false });
@@ -66,6 +79,7 @@ export function bootRoot(opts: BootRootOpts): NodeMeta {
     cwd: opts.cwd,
     name: opts.name ?? kind,
     parent: null,
+    hostKind,
     launch,
   });
 
@@ -83,6 +97,15 @@ export function bootRoot(opts: BootRootOpts): NodeMeta {
     try { installNavBindings(); } catch { /* best-effort */ }
     try { installViewNavBindings(); } catch { /* best-effort */ }
   }
+
+  // HEADLESS front door: a broker root has NO engine pane — headlessBrokerHost
+  // launches a DETACHED broker that hosts the single engine + binds view.sock,
+  // opening no tmux window. So instead of exec'ing pi inline we boot the broker,
+  // wait for its socket, and auto-attach a VIEWER into THIS pane (the same
+  // `crtr attach` viewer focusBroker splits beside a caller). Presence stays
+  // null and NO focus row is registered — the viewer pane self-tags @crtr_node
+  // on connect, the handle node cycle/close/lifecycle resolve a broker by.
+  if (meta.host_kind === 'broker') return bootRootBroker(meta, session, opts);
 
   // inline: the root's pi takes over THIS terminal, so its own window stays
   // where the user is (its tmux_session tracks that real pane so supervision
@@ -107,6 +130,55 @@ export function bootRoot(opts: BootRootOpts): NodeMeta {
   const inv = buildPiArgv(withSession, { prompt: opts.prompt });
   const env = { ...process.env, ...inv.env, CRTR_ROOT_SESSION: session, CRTR_SUBTREE: rootOfSpine(meta.node_id), [FRONT_DOOR_ENV]: '1' } as NodeJS.ProcessEnv;
   const r = spawnSync('pi', inv.argv, { stdio: 'inherit', env });
+  process.exit(r.status ?? 0);
+}
+
+/** The headless front door (host_kind==='broker'): launch a detached broker for
+ *  this root, wait for its view.sock, then auto-attach a viewer INLINE in this
+ *  pane. Mirrors placement.focusBroker (ensure-broker → wait-socket → viewer)
+ *  but the viewer runs in the CURRENT pane (the front door owns it) rather than
+ *  a split beside a caller. Never returns — it exits with the viewer's status. */
+function bootRootBroker(meta: NodeMeta, session: string, opts: BootRootOpts): never {
+  // The shared backstage this subtree's descendants flow into (CRTR_ROOT_SESSION
+  // below). Mirrors the inline path; for a broker it is also the (moot) revive
+  // home — broker revive launches a detached process, ignoring the session.
+  updateNode(meta.node_id, { home_session: session });
+  const withSession = getNode(meta.node_id) as NodeMeta;
+  const inv = buildPiArgv(withSession, { prompt: opts.prompt });
+  // Authoritative backstage routing on the ENGINE's env (the broker host merges
+  // inv.env into the detached broker process), mirroring the inline pi env.
+  inv.env = { ...inv.env, CRTR_ROOT_SESSION: session, CRTR_SUBTREE: rootOfSpine(meta.node_id) };
+  // Launch the detached broker (it records its own pid as pi_pid via the
+  // stophook and binds view.sock). Returns placement all-null — no tmux window.
+  headlessBrokerHost.launch(meta.node_id, inv, { cwd: meta.cwd, name: fullName(meta), resuming: false });
+
+  // Close the cold-start race: the broker records its pid during extension bind,
+  // then opens view.sock LATER; attach connects once and exits "no broker" if we
+  // run it before listen(). Probe for an ACCEPTING socket before attaching. A
+  // timeout here does NOT mean the broker died — the engine is a resident root
+  // that keeps booting; we just can't attach yet, so point the user at re-focus.
+  if (!waitForBrokerViewSocket(meta.node_id)) {
+    process.stderr.write(
+      `crtr: ${meta.node_id} is still starting its broker — it is running, but its viewer socket did not come up in time. ` +
+        `Re-focus the node to attach (\`crtr node focus ${meta.node_id}\`); see ${join(jobDir(meta.node_id), 'broker.log')} if it never appears.\n`,
+    );
+    process.exit(1);
+  }
+
+  // Auto-attach the VIEWER inline: re-invoke OUR OWN cli (process.execPath +
+  // its own execArgv + argv[1]) as `attach to <id>` so it needs no PATH `crtr`
+  // AND survives a loader-based launch (dev `tsx`/`--import` flags ride
+  // execArgv); stdio:'inherit' hands this pane to the viewer's raw-mode TUI.
+  // runAttach self-tags the pane @crtr_node on connect; ctrl+c/ctrl+d detaches
+  // and the broker engine runs on.
+  const entry = process.argv[1];
+  if (entry === undefined) {
+    process.stderr.write(`crtr: cannot resolve the crtr entrypoint to auto-attach; run \`crtr node focus ${meta.node_id}\`.\n`);
+    process.exit(1);
+  }
+  const r = spawnSync(process.execPath, [...process.execArgv, entry, 'attach', 'to', meta.node_id], {
+    stdio: 'inherit',
+  });
   process.exit(r.status ?? 0);
 }
 
