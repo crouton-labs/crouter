@@ -9,17 +9,20 @@
 // what keeps a broker alive, not attach). It also never uses pi's `RpcClient`
 // (which would spawn its own engine).
 //
-// No reconnect: a dropped broker means the engine's turn-cycle settled and the
-// broker disposed+exited; a fresh focus re-runs attach. On EOF/close → emit
-// `close` (the caller renders "broker gone" + exits). On a connect-time
-// ECONNREFUSED/ENOENT → a `BrokerUnavailableError` so the command exits non-zero
-// with a clear message. Decode is bounded by `CLIENT_READ_CAPS`; a broker that
-// somehow sends an oversized frame surfaces as a clean error+exit, not a crash.
+// Reconnect: a dropped broker emits `close`; the caller's reconnect supervisor
+// decides whether to re-dial (a yield/revive keeps the SAME `view.sock` path —
+// `redial()` re-establishes the socket on it) or give up ("broker gone"). On a
+// connect-time ECONNREFUSED/ENOENT → a `BrokerUnavailableError` so the FIRST
+// connect exits non-zero with a clear message; the same codes during a redial
+// reject the redial promise as retryable. Decode is bounded by
+// `CLIENT_READ_CAPS`; a broker that somehow sends an oversized frame surfaces as
+// a clean error+exit, not a crash.
 
 import { EventEmitter } from 'node:events';
 import { createConnection, type Socket } from 'node:net';
 import { join } from 'node:path';
 import { nodeDir } from '../../core/canvas/paths.js';
+import type { NodeRow } from '../../core/canvas/types.js';
 import {
   CLIENT_READ_CAPS,
   encodeFrame,
@@ -32,6 +35,19 @@ import {
 /** Surfaced when the node has no reachable broker at connect time (no socket
  *  file, or a stale socket with nothing listening). The command catches this to
  *  exit non-zero with a focus/revive hint. */
+/** The reconnect supervisor's give-up predicate (extracted pure so it is
+ *  testable without a socket or TUI). After a broker close the viewer KEEPS
+ *  re-dialing the same `view.sock` while the node is still alive — a yield
+ *  leaves `status='active'` (intent='refresh') and the daemon revives a fresh
+ *  broker on the same path. It gives up only when the node is genuinely gone:
+ *  a terminal status (done/dead/canceled) or a reaped row (null). `idle` is NOT
+ *  terminal — an idle-release node revives on its next inbox wake, so keep
+ *  trying (the supervisor's own ~30s bound caps an indefinite wait). */
+export function reconnectShouldGiveUp(row: NodeRow | null): boolean {
+  if (row === null) return true;
+  return row.status === 'done' || row.status === 'dead' || row.status === 'canceled';
+}
+
 export class BrokerUnavailableError extends Error {
   constructor(readonly nodeId: string) {
     super(`node ${nodeId} has no running broker — focus or revive it first`);
@@ -56,7 +72,7 @@ export interface ViewSocketClient {
 
 export class ViewSocketClient extends EventEmitter {
   private socket: Socket | undefined;
-  private readonly decoder = new FrameDecoder(CLIENT_READ_CAPS);
+  private decoder = new FrameDecoder(CLIENT_READ_CAPS);
   private closeEmitted = false;
 
   constructor(private readonly nodeId: string) {
@@ -78,6 +94,45 @@ export class ViewSocketClient extends EventEmitter {
     socket.on('data', (chunk: Buffer) => this.onData(chunk));
     socket.on('error', (err: NodeJS.ErrnoException) => this.onError(err));
     socket.on('close', () => this.onClose());
+  }
+
+  /** Re-establish the socket after a broker exit (a yield→revive cycle), on the
+   *  SAME stable `view.sock` path. Installs a FRESH FrameDecoder (a half-frame
+   *  from the dead stream must not corrupt the new one) and resets the close
+   *  guard, then re-dials. Resolves on `connect` (caller re-sends `hello`);
+   *  rejects on the dial's `error` (ECONNREFUSED while the new broker is
+   *  mid-boot, or ENOENT before it re-binds the socket) — both retryable. A
+   *  post-connect error flows through the normal `onError`→`close` path. */
+  redial(): Promise<void> {
+    this.destroy();
+    this.decoder = new FrameDecoder(CLIENT_READ_CAPS);
+    this.closeEmitted = false;
+    return new Promise<void>((resolve, reject) => {
+      const socket = createConnection(this.socketPath);
+      this.socket = socket;
+      let settled = false;
+      socket.on('connect', () => {
+        if (settled) return;
+        settled = true;
+        this.emit('connect');
+        resolve();
+      });
+      socket.on('data', (chunk: Buffer) => this.onData(chunk));
+      socket.on('error', (err: NodeJS.ErrnoException) => {
+        if (settled) {
+          this.onError(err);
+          return;
+        }
+        settled = true;
+        try {
+          socket.destroy();
+        } catch {
+          /* ignore */
+        }
+        reject(err);
+      });
+      socket.on('close', () => this.onClose());
+    });
   }
 
   /** Encode + write one client→broker frame. No-op on a dead/absent socket

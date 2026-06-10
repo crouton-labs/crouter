@@ -32,7 +32,7 @@ import {
 import { defineBranch, defineLeaf } from '../../core/command.js';
 import type { BranchDef, LeafDef } from '../../core/command.js';
 import { InputError } from '../../core/io.js';
-import { getNode } from '../../core/canvas/index.js';
+import { getNode, getRow } from '../../core/canvas/index.js';
 // tmux driver verbs only through placement (the §5.1 model-over-driver seam) —
 // never `core/runtime/tmux.js` directly.
 import { setPaneOption, currentTmux } from '../../core/runtime/placement.js';
@@ -44,7 +44,7 @@ import type {
 import { ChatView } from './chat-view.js';
 import { InputController } from './input-controller.js';
 import { applyTheme, createKeybindingsManager } from './config-load.js';
-import { BrokerUnavailableError, ViewSocketClient } from './view-socket.js';
+import { BrokerUnavailableError, ViewSocketClient, reconnectShouldGiveUp } from './view-socket.js';
 
 /** `CustomEditor`'s ctor wants pi's app-subclass KeybindingsManager; our
  *  `createKeybindingsManager()` returns pi-tui's base manager. CustomEditor only
@@ -281,6 +281,53 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
     resolveDone();
   };
 
+  // The handshake the viewer sends on connect AND on every successful redial.
+  const sendHello = (): void => {
+    socket.send({
+      type: 'hello',
+      role: observer ? 'observer' : 'controller',
+      client_id: clientId,
+      term: { cols: process.stdout.columns ?? 80, rows: process.stdout.rows ?? 24 },
+    });
+  };
+
+  // Reconnect supervisor. A resident broker node that yields EXITS its broker
+  // (socket close) and is revived FRESH by the daemon on the SAME `view.sock`
+  // path within a few seconds. So on close we HOLD the pane and re-dial while
+  // the canvas-db row says the node is still alive (status active/idle), giving
+  // up only when it is genuinely terminal (done/dead/canceled or row gone) or a
+  // bounded ~30s of failed redials elapses (stale-row safety). A successful
+  // redial re-sends `hello`; the new broker's `welcome` runs applySnapshot,
+  // which resetChat()s the pane and rebuilds from the persisted .jsonl — a clean
+  // "clear + continuation" for free.
+  const RECONNECT_GIVEUP_MS = 30_000;
+  const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+  let reconnecting = false;
+  const attemptReconnect = async (): Promise<void> => {
+    reconnecting = true;
+    setNotice('↻ node refreshing — reconnecting…');
+    const deadline = Date.now() + RECONNECT_GIVEUP_MS;
+    let delay = 200;
+    while (!tornDown && Date.now() < deadline) {
+      if (reconnectShouldGiveUp(getRow(nodeId))) {
+        break; // genuinely gone → fall through to broker-gone
+      }
+      try {
+        await socket.redial();
+        reconnecting = false;
+        sendHello();
+        setNotice('');
+        return; // reconnected; the welcome snapshot clears + continues the pane
+      } catch {
+        // ENOENT (socket not recreated yet) / ECONNREFUSED (listen not ready) → retry.
+        await sleep(Math.min(delay, 1000));
+        delay *= 2;
+      }
+    }
+    reconnecting = false;
+    if (!tornDown) teardown('broker-gone');
+  };
+
   // Permanent socket wiring (the connect-race listeners are gone).
   socket.on('frame', handleBrokerFrame);
   socket.on('error', (err) => {
@@ -288,7 +335,11 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
     // broker-gone message prefers this over the generic text.
     lastSocketError = err.message;
   });
-  socket.on('close', () => teardown('broker-gone'));
+  socket.on('close', () => {
+    if (tornDown) return; // a real detach/signal already won
+    if (reconnecting) return; // the dead socket's own close during the redial loop
+    void attemptReconnect();
+  });
 
   // ctrl+c / ctrl+d → detach (T6 left these unwired; lifecycle is ours). A
   // global TUI input listener fires BEFORE the focused component (and before any
@@ -317,12 +368,7 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
   renderFooter();
   tui.start();
 
-  socket.send({
-    type: 'hello',
-    role: observer ? 'observer' : 'controller',
-    client_id: clientId,
-    term: { cols: process.stdout.columns ?? 80, rows: process.stdout.rows ?? 24 },
-  });
+  sendHello();
 
   await done;
 }
