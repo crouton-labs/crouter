@@ -42,6 +42,27 @@ jobs:
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y tmux
       - run: npm run build
+      - name: DIAG renderer provisioning
+        continue-on-error: true
+        run: |
+          set +e
+          echo "=== uv / tmux ==="
+          which uv && uv --version || echo "NO UV"
+          which tmux && tmux -V || echo "NO TMUX"
+          echo "=== venv ==="
+          ls -la node_modules/@crouton-kit/humanloop/.venv/bin/ || echo "NO VENV DIR"
+          node_modules/@crouton-kit/humanloop/.venv/bin/termrender -h >/dev/null 2>&1 && echo "BINARY OK" || echo "BINARY FAIL"
+          node_modules/@crouton-kit/humanloop/.venv/bin/python -c 'import importlib.metadata as m; print("VER", m.version("termrender"))' 2>&1 || echo "VER FAIL"
+          echo "=== live pane open via display() in tmux ==="
+          printf '# Render check\n\n:::callout{type="info"}\nRENDER-MARKER body\n:::\n' > /tmp/diag-doc.md
+          DISP="$PWD/node_modules/@crouton-kit/humanloop/dist/surfaces/display.js"
+          printf "import { display } from '%s';\nconst r = display('/tmp/diag-doc.md', { window: 'split' });\nconsole.log('PANEID=' + (r.paneId ?? 'NONE'));\n" "$DISP" > /tmp/diag-display.mjs
+          tmux new-session -d -s diagci -x 200 -y 50 "node /tmp/diag-display.mjs > /tmp/disp.out 2>/tmp/disp.err; sleep 30"
+          sleep 10
+          echo "--- panes ---"; tmux list-panes -s -t diagci -F '#{pane_id} cmd=#{pane_current_command} start=#{pane_start_command}'
+          echo "--- disp.out ---"; cat /tmp/disp.out
+          echo "--- disp.err ---"; cat /tmp/disp.err
+          tmux kill-session -t diagci || true
       - run: npm run test:full
 
 # Runner caveats (cannot be exercised from this dev box — verify on first CI run):
