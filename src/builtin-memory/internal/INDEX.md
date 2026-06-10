@@ -16,6 +16,6 @@ Open this dir whenever a task turns on understanding the runtime itself. Content
 - **storage-tiers** — where every kind of state lives: the three tiers (scope root, per-cwd crouter root, canvas home) and their durability/ownership contracts.
 - **examples/** — worked compositions of the primitives into complete systems (the analogue of pi's `examples/` dir), e.g. the iMessage assistant node.
 
-Adjacent, outside this dir: authoring memory documents (frontmatter, rungs, gates, the asked-to-remember workflow) is owned by the builtin **memory-authoring** skill; making a persona (a custom `--kind`) is owned by the builtin **crouter-development/personas** skills.
+Adjacent, outside this dir: authoring memory documents (kind, rungs, gates, routing line, the asked-to-remember workflow) is owned by `crtr memory write -h` — the authoring guide lives on the help-gate so it surfaces exactly when you write; making a persona (a custom `--kind`) is owned by the builtin **crouter-development/personas** skills.
 
 The individual files surface at `name` (their titles route; open the one the situation calls for); this index surfaces at `preview` so the dir announces when to come looking.
