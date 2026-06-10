@@ -127,6 +127,20 @@ export const tmuxSpreadLeaf: LeafDef = defineLeaf({
       focused: spread.focused,
     };
   },
-  render: (r) =>
-    `<spread node window="${r['window'] ?? ''}" joined="${(r['children_joined'] as string[]).length}" overflow="${(r['overflow'] as string[]).length}" focused="${r['focused']}"/>`,
+  render: (r) => {
+    const joined = (r['children_joined'] as string[] | undefined) ?? [];
+    const overflow = (r['overflow'] as string[] | undefined) ?? [];
+    const where = r['window'] !== undefined && r['window'] !== ''
+      ? ` into window ${r['window']}${r['session'] !== undefined ? ` (session ${r['session']})` : ''}`
+      : '';
+    const lead = `Spread node${where} — ${joined.length} child pane(s) joined, ${overflow.length} overflow, ${r['focused'] === true ? 'window focused' : 'window not focused'}.`;
+    const blocks: string[] = [lead];
+    if (joined.length > 0) {
+      blocks.push(['Children joined:', ...joined.map((c) => `- ${c}`)].join('\n'));
+    }
+    if (overflow.length > 0) {
+      blocks.push(['Overflow (max_panes_per_window reached):', ...overflow.map((c) => `- ${c}`)].join('\n'));
+    }
+    return blocks.join('\n\n');
+  },
 });

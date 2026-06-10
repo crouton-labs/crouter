@@ -122,7 +122,7 @@ test(
       //     breaks the pane back into h.session.
       const res = h.cli(B, ['node', 'demote', '--node', B, '--pane', bPane!, '--detach']);
       assert.equal(res.code, 0, `node demote --detach exit 0\n${res.stderr}`);
-      assert.match(res.stdout, /detached="true"/, `the agent was detached\n${res.stdout}`);
+      assert.match(res.stdout, /relocated to the background/, `the agent was detached\n${res.stdout}`);
 
       closeDb();
       const b = getNode(B)!;
@@ -207,7 +207,7 @@ test(
       // --- Drive the REAL verb on the non-generating focused node.
       const res = h.cli(B, ['node', 'demote', '--node', B, '--pane', bPane!, '--detach']);
       assert.equal(res.code, 0, `node demote --detach exit 0\n${res.stderr}`);
-      assert.match(res.stdout, /detached="true"/, `the agent was detached\n${res.stdout}`);
+      assert.match(res.stdout, /relocated to the background/, `the agent was detached\n${res.stdout}`);
 
       closeDb();
       const b = getNode(B)!;

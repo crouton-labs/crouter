@@ -192,11 +192,12 @@ export const viewRunLeaf: LeafDef = defineLeaf({
   render: (result) => {
     const hosted = result['hosted'];
     if (hosted === 'window') {
-      return `<view-opened mode="window" view="${result['view']}" window="${result['window']}" pane="${result['pane']}"/>`;
+      return `Opened view "${result['view']}" as a window monitor — window ${result['window']}, pane ${result['pane']}.`;
     }
     if (hosted === 'split') {
-      return `<view-opened mode="split" view="${result['view']}" pane="${result['pane']}"/>`;
+      return `Opened view "${result['view']}" as a split monitor — pane ${result['pane']}.`;
     }
+    // In-pane host: the terminal was held until quit; nothing to report.
     return '';
   },
 });

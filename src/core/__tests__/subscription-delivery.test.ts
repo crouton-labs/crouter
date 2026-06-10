@@ -95,10 +95,10 @@ test(
       {
         const passiveRes = h.cli(P, ['node', 'subscribe', T, '--passive']);
         assert.equal(passiveRes.code, 0, `P→T passive subscribe exit 0\n${passiveRes.stderr}`);
-        assert.match(passiveRes.stdout, /mode="passive"/, 'P→T wired PASSIVE');
+        assert.match(passiveRes.stdout, /\(passive\)/, 'P→T wired PASSIVE');
         const activeRes = h.cli(P, ['node', 'subscribe', K]);
         assert.equal(activeRes.code, 0, `P→K active subscribe exit 0\n${activeRes.stderr}`);
-        assert.match(activeRes.stdout, /mode="active"/, 'P→K wired ACTIVE');
+        assert.match(activeRes.stdout, /\(active\)/, 'P→K wired ACTIVE');
       }
 
       // T now has BOTH an active (B) and a passive (P) subscriber — the crux.
@@ -129,7 +129,7 @@ test(
       {
         const res = h.cli(X, ['node', 'subscribe', K, '--passive']);
         assert.equal(res.code, 0, `X→K passive subscribe exit 0\n${res.stderr}`);
-        assert.match(res.stdout, /mode="passive"/, 'X→K wired PASSIVE-only (its ONLY subscription)');
+        assert.match(res.stdout, /\(passive\)/, 'X→K wired PASSIVE-only (its ONLY subscription)');
       }
       assert.deepEqual(
         edgeSet(h.subscriptions(X)),

@@ -207,8 +207,8 @@ export const humanCancel = defineLeaf({
   },
   render: (r) =>
     r['canceled'] === true
-      ? `<canceled job_id="${r['job_id']}"/>`
-      : `<cancel-noop job_id="${r['job_id']}">${r['reason'] ?? 'nothing to cancel'}</cancel-noop>`,
+      ? `Canceled human interaction ${r['job_id']} — its TUI pane is closed and subscribers were notified no answer is coming.`
+      : `Nothing to cancel for ${r['job_id']} — ${r['reason'] ?? 'nothing to cancel'}.`,
 });
 
 // ---------------------------------------------------------------------------

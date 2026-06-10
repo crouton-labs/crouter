@@ -76,7 +76,7 @@ test(
       //     untouched, NOT finalized.
       const dem = h.cli(B, ['node', 'demote', '--node', B]);
       assert.equal(dem.code, 0, `node demote exit 0\n${dem.stderr}`);
-      assert.match(dem.stdout, /<demoted /, `demote rendered\n${dem.stdout}`);
+      assert.match(dem.stdout, /^Demoted /, `demote rendered\n${dem.stdout}`);
       {
         const b = h.node(B)!;
         assert.equal(b.lifecycle, 'terminal', 'demote flips lifecycle→terminal IN PLACE');
@@ -94,10 +94,10 @@ test(
       // RECYCLE via the real verb (TMUX_PANE is scrubbed from child env → pass --pane).
       const res = h.cli(B, ['node', 'recycle', '--node', B, '--pane', pane!]);
       assert.equal(res.code, 0, `recycle exit 0\n${res.stderr}`);
-      // The leaf renders `<recycled ... finalized=".." new_root=".."/>` (not JSON).
-      assert.match(res.stdout, /<recycled /, `recycle recycled the pane\n${res.stdout}`);
-      const newRoot = /new_root="([^"]+)"/.exec(res.stdout)?.[1];
-      const finalized = /finalized="true"/.test(res.stdout);
+      // The leaf renders plain markdown: a lead sentence + `- finalized:` / `- new root:` bullets.
+      assert.match(res.stdout, /^Recycled the pane /, `recycle recycled the pane\n${res.stdout}`);
+      const newRoot = /- new root: (\S+)/.exec(res.stdout)?.[1];
+      const finalized = /- finalized: true/.test(res.stdout);
 
       // The recycled node is FINISHED, not mode-flipped.
       {

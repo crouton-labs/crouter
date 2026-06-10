@@ -135,7 +135,7 @@ function makeTierLeaf(tier: Tier): LeafDef {
           : tier === 'urgent'
             ? `Urgent report fanned to ${n} subscriber(s) — they are force-woken.`
             : `Progress report fanned to ${n} subscriber(s).`;
-      return `<pushed tier="${tier}" status="${r['status']}" delivered="${n}">\n${line}\nreport: ${r['report_path']}\n</pushed>`;
+      return `${line}\n\n- report: ${r['report_path']}`;
     },
   });
 }
@@ -187,16 +187,16 @@ const feedReadLeaf = defineLeaf({
     const n = Array.isArray(r['entries']) ? (r['entries'] as unknown[]).length : 0;
     const rawDigest = typeof r['digest'] === 'string' ? (r['digest'] as string) : '';
     if (n > 0 && rawDigest.trim() !== '') {
-      return `<feed node="${r['node_id']}" unread="${n}">\n${rawDigest}\n</feed>`;
+      return `${n} unread pointer${n === 1 ? '' : 's'} drained from ${r['node_id']}'s inbox.\n\n${rawDigest.trim()}`;
     }
     // Empty drain has two distinct causes — say which, honestly. An inbox that
     // already holds entries was drained when the watcher woke you (the wake
     // message WAS that digest); a never-used inbox simply has nothing yet.
     const total = typeof r['inbox_total'] === 'number' ? (r['inbox_total'] as number) : 0;
-    const digest = total > 0
-      ? 'Nothing unread — but your inbox is not empty. The watcher drains your inbox to wake you, so the entries you already saw in your wake message are the same ones you would read here; that is why this is empty. Re-read the whole history (full message bodies included) with `crtr feed read --all`, or dereference the refs from the wake digest you already have.'
-      : 'Inbox empty — nothing has arrived from your subscriptions yet. Expected while workers run: a worker that has not pushed yet leaves no pointer, and it will wake you the moment it does. The wake is automatic — just continue your own work or end your turn. (Reach for `crtr feed peek` only if you suspect a worker died, not to confirm a live one.)';
-    return `<feed node="${r['node_id']}" unread="${n}">\n${digest}\n</feed>`;
+    const explanation = total > 0
+      ? 'Your inbox is not empty, though. The watcher drains your inbox to wake you, so the entries you already saw in your wake message are the same ones you would read here; that is why this is empty. Re-read the whole history (full message bodies included) with `crtr feed read --all`, or dereference the refs from the wake digest you already have.'
+      : 'Your inbox is empty — nothing has arrived from your subscriptions yet. Expected while workers run: a worker that has not pushed yet leaves no pointer, and it will wake you the moment it does. The wake is automatic — just continue your own work or end your turn. (Reach for `crtr feed peek` only if you suspect a worker died, not to confirm a live one.)';
+    return `No unread pointers for ${r['node_id']} (unread=0).\n\n${explanation}`;
   },
 });
 
@@ -288,7 +288,7 @@ const feedPeekLeaf = defineLeaf({
       const tail = unread > 0
         ? `${unread} unread report${unread === 1 ? '' : 's'} sit in your inbox — run \`crtr feed read\` to absorb ${unread === 1 ? 'it' : 'them'}.`
         : 'If you spawned workers, they have finished and detached, or you never subscribed. Nothing will wake you.';
-      return `<peek node="${id}" subscriptions="0" unread="${unread}" verdict="empty">\nNo nodes below you. ${tail}\n</peek>`;
+      return `No nodes below you (0 subscriptions, ${unread} unread). ${tail}`;
     }
 
     const working = kids.filter((k) => k.status === 'active' || k.status === 'idle');
@@ -296,19 +296,14 @@ const feedPeekLeaf = defineLeaf({
     const done = kids.filter((k) => k.status === 'done' || k.status === 'canceled');
     const dead = kids.filter((k) => k.status === 'dead');
 
-    let verdict: string;
     let line: string;
     if (dead.length > 0) {
-      verdict = 'attention';
       line = `\u26a0 ${dead.length} below you ${dead.length === 1 ? 'is' : 'are'} dead and will NOT wake you. Inspect with \`crtr node inspect show <id>\`, then re-delegate or proceed without ${dead.length === 1 ? 'it' : 'them'}.`;
     } else if (liveWaking.length > 0) {
-      verdict = 'working';
       line = `Safe to yield \u2014 ${liveWaking.length} worker${liveWaking.length === 1 ? '' : 's'} running async will wake you on the next push. Nothing to do now; end your turn and chill.`;
     } else if (unread > 0) {
-      verdict = 'ready';
       line = `Nothing still running, but ${unread} unread report${unread === 1 ? '' : 's'} \u2014 run \`crtr feed read\` to absorb ${unread === 1 ? 'it' : 'them'}, then continue or finish.`;
     } else {
-      verdict = 'idle';
       line = 'Everything below you has finished and been drained \u2014 nothing is running. Continue your own work, or `crtr push final` to finish.';
     }
 
@@ -318,11 +313,11 @@ const feedPeekLeaf = defineLeaf({
         ? `pushed ${fmtAge(k.last_push.ts)} [${k.last_push.kind}]${k.last_push.ref !== null ? ` ref:${k.last_push.ref}` : ''}`
         : 'no push yet';
       const glyph = STATUS_GLYPH[k.status] ?? '?';
-      return `  ${glyph} ${k.node_id}  ${k.kind}  ${k.name}${sub}  \u00b7 ${k.status} \u00b7 spawned ${fmtAge(k.spawned)} \u00b7 cyc ${k.cycles} \u00b7 ${push}`;
+      return `- ${glyph} ${k.name}${sub} (${k.node_id}) \u00b7 ${k.kind} \u00b7 ${k.status} \u00b7 spawned ${fmtAge(k.spawned)} \u00b7 cyc ${k.cycles} \u00b7 ${push}`;
     }).join('\n');
 
-    const attrs = `node="${id}" subscriptions="${kids.length}" working="${working.length}" done="${done.length}" dead="${dead.length}" unread="${unread}" verdict="${verdict}"`;
-    return `<peek ${attrs}>\n${line}\n\n${rows}\n</peek>`;
+    const summary = `${kids.length} node${kids.length === 1 ? '' : 's'} below you — ${working.length} working, ${done.length} done, ${dead.length} dead, ${unread} unread:`;
+    return `${line}\n\n${summary}\n${rows}`;
   },
 });
 

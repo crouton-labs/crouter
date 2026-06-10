@@ -192,8 +192,13 @@ const nodeNew = defineLeaf({
         : childFollowUp(parent ?? process.env['CRTR_NODE_ID']),
     };
   },
-  render: (r) =>
-    `<spawned name="${r['name']}" id="${r['node_id']}" status="${r['status']}">\n${r['follow_up']}\n</spawned>`,
+  render: (r) => {
+    const win = r['window'] ? ` in window ${r['window']}` : '';
+    const lines = [`Spawned "${r['name']}" (${r['node_id']}) — ${r['status']}${win}.`];
+    if (r['session']) lines.push(`- session: ${r['session']}`);
+    lines.push('', String(r['follow_up']));
+    return lines.join('\n');
+  },
 });
 
 // ---------------------------------------------------------------------------
@@ -391,10 +396,13 @@ const nodeRecycle = defineLeaf({
     const res = await recycleNode(id, pane);
     return { recycled: res.recycled, node_id: id, finalized: res.finalized, delivered: res.delivered.length, new_root: res.newRoot ?? undefined };
   },
-  render: (r) =>
-    r['recycled'] === true
-      ? `<recycled id="${r['node_id']}" finalized="${r['finalized']}" delivered="${r['delivered']}" new_root="${r['new_root'] ?? ''}"/>`
-      : `<recycle-failed id="${r['node_id'] ?? ''}">not in tmux, or no agent in this pane</recycle-failed>`,
+  render: (r) => {
+    if (r['recycled'] !== true) return `Recycle failed for ${r['node_id'] ?? '?'} — not in tmux, or no agent in this pane.`;
+    const lines = [`Recycled the pane — finished ${r['node_id']}.`, `- finalized: ${r['finalized']}`];
+    if (r['finalized'] === true) lines.push(`- delivered: ${r['delivered']}`);
+    if (r['new_root']) lines.push(`- new root: ${r['new_root']}`);
+    return lines.join('\n');
+  },
 });
 
 // ---------------------------------------------------------------------------
@@ -440,10 +448,11 @@ const nodeClose = defineLeaf({
     const res = closeNode(id);
     return { closed: true, node_id: res.root, count: res.closed.length, closed_ids: res.closed, spared: res.spared };
   },
-  render: (r) =>
-    r['closed'] === true
-      ? `<closed id="${r['node_id']}" count="${r['count']}" spared="${(r['spared'] as string[] | undefined)?.length ?? 0}"/>`
-      : `<close-failed/>`,
+  render: (r) => {
+    if (r['closed'] !== true) return 'Close failed — no node found in this pane to close.';
+    const spared = (r['spared'] as string[] | undefined)?.length ?? 0;
+    return `Closed ${r['node_id']} and its exclusive subtree — ${r['count']} node(s) closed${spared > 0 ? `, ${spared} spared (still managed from outside the subtree)` : ''}.`;
+  },
 });
 
 // ---------------------------------------------------------------------------
@@ -530,8 +539,8 @@ const nodeCycle = defineLeaf({
   },
   render: (r) =>
     r['focused'] === true
-      ? `<cycled to="${r['node_id']}" name="${r['name'] ?? ''}" from="${r['from'] ?? ''}"/>`
-      : `<cycle-noop>no other live node to focus</cycle-noop>`,
+      ? `Cycled to "${r['name'] ?? ''}" (${r['node_id']}) — from ${r['from'] ?? '?'}.`
+      : 'No other live node to focus.',
 });
 
 // ---------------------------------------------------------------------------
@@ -625,8 +634,7 @@ const nodeSubscribe = defineLeaf({
     subscribe(subscriber, publisher, !passive);
     return { subscribed: true, subscriber, publisher, mode: passive ? 'passive' : 'active' };
   },
-  render: (r) =>
-    `<subscribed subscriber="${r['subscriber']}" publisher="${r['publisher']}" mode="${r['mode']}"/>`,
+  render: (r) => `Subscribed ${r['subscriber']} → ${r['publisher']} (${r['mode']}).`,
 });
 
 const nodeUnsubscribe = defineLeaf({
@@ -654,7 +662,7 @@ const nodeUnsubscribe = defineLeaf({
     unsubscribe(subscriber, publisher);
     return { unsubscribed: true, subscriber, publisher };
   },
-  render: (r) => `<unsubscribed subscriber="${r['subscriber']}" publisher="${r['publisher']}"/>`,
+  render: (r) => `Unsubscribed ${r['subscriber']} from ${r['publisher']}.`,
 });
 
 // ---------------------------------------------------------------------------
@@ -773,7 +781,7 @@ const nodeDemote = defineLeaf({
     const res = setLifecycle(id, 'terminal', { pane, detach: input['detach'] === true });
     return { node_id: res.node_id, lifecycle: res.lifecycle, detached: res.detached };
   },
-  render: (r) => `<demoted node="${r['node_id']}" lifecycle="${r['lifecycle']}"${r['detached'] === true ? ' detached="true"' : ''}/>`,
+  render: (r) => `Demoted ${r['node_id']} — lifecycle now ${r['lifecycle']} (in place)${r['detached'] === true ? ', relocated to the background crtr session' : ''}.`,
 });
 
 // ---------------------------------------------------------------------------
@@ -812,7 +820,7 @@ const nodeLifecycle = defineLeaf({
     const res = setLifecycle(id, value as Lifecycle, { pane, detach: input['detach'] === true });
     return { node_id: res.node_id, lifecycle: res.lifecycle, detached: res.detached };
   },
-  render: (r) => `<lifecycle node="${r['node_id']}" set="${r['lifecycle']}"${r['detached'] === true ? ' detached="true"' : ''}/>`,
+  render: (r) => `Set ${r['node_id']} lifecycle → ${r['lifecycle']}${r['detached'] === true ? ', relocated to the background crtr session' : ''}.`,
 });
 
 // ---------------------------------------------------------------------------
@@ -962,11 +970,6 @@ function etaHint(fireAt: string, now: Date): string {
   return ` (~${Math.round(ms / 86_400_000)}d)`;
 }
 
-/** Escape a value for a rendered XML attribute (list rows carry free-text notes). */
-function xmlAttr(s: string): string {
-  return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
 // node wake at ---------------------------------------------------------------
 
 const nodeWakeAt = defineLeaf({
@@ -1073,8 +1076,10 @@ const nodeWakeAt = defineLeaf({
 
     return { id, kind, fires_at: fireAt, recur: cadenceDisplay(recur), target, guidance };
   },
-  render: (r) =>
-    `<wake-armed id="${r['id']}" kind="${r['kind']}" fires-at="${r['fires_at']}" recur="${r['recur']}" target="${r['target']}">\n${r['guidance']}\n</wake-armed>`,
+  render: (r) => {
+    const recur = r['recur'] !== 'none' ? `, recurs ${r['recur']}` : '';
+    return `Armed ${r['kind']} wake ${r['id']} — fires ${r['fires_at']}${recur}, target ${r['target']}.\n\n${r['guidance']}`;
+  },
 });
 
 // node wake until ------------------------------------------------------------
@@ -1133,7 +1138,7 @@ const nodeWakeUntil = defineLeaf({
     return { id, fires_at: w.fireAt, target: 'self', guidance };
   },
   render: (r) =>
-    `<deadline-armed id="${r['id']}" fires-at="${r['fires_at']}" target="${r['target']}">\n${r['guidance']}\n</deadline-armed>`,
+    `Armed deadline ${r['id']} — fires ${r['fires_at']}, target ${r['target']}.\n\n${r['guidance']}`,
 });
 
 // node wake spawn -----------------------------------------------------------
@@ -1237,8 +1242,10 @@ const nodeWakeSpawn = defineLeaf({
         : `Deferred spawn armed: a fresh ${kind} node is born at ${fireAt}${eta}. No node exists yet — inspect/cancel via \`crtr node wake list\` / \`crtr node wake cancel ${id}\`. Pick up other work or end your turn.`;
     return { id, kind, fires_at: fireAt, recur: cadenceDisplay(recur), guidance };
   },
-  render: (r) =>
-    `<spawn-deferred id="${r['id']}" kind="${r['kind']}" fires-at="${r['fires_at']}" recur="${r['recur']}">\n${r['guidance']}\n</spawn-deferred>`,
+  render: (r) => {
+    const recur = r['recur'] !== 'none' ? `, recurs ${r['recur']}` : '';
+    return `Armed deferred spawn ${r['id']} — a ${r['kind']} node, fires ${r['fires_at']}${recur}.\n\n${r['guidance']}`;
+  },
 });
 
 // node wake list -------------------------------------------------------------
@@ -1318,15 +1325,17 @@ const nodeWakeList = defineLeaf({
   },
   render: (r) => {
     const wakes = r['wakes'] as Array<Record<string, unknown>>;
+    const follow =
+      'Cancel one with `crtr node wake cancel <id>`. Fired one-shots are gone; a recurrence shows its NEXT fire, not past slots.';
+    if (wakes.length === 0) return `No pending wakes in scope ${r['scope']}.\n\n${follow}`;
+    const cell = (v: unknown): string => String(v).replace(/\|/g, '\\|').replace(/\n/g, ' ');
+    const head =
+      '| id | kind | next | recur | target | owner | note |\n| --- | --- | --- | --- | --- | --- | --- |';
     const rows = wakes.map(
       (w) =>
-        `  <wake id="${w['id']}" kind="${w['kind']}" next="${w['next']}" recur="${xmlAttr(String(w['recur']))}" target="${xmlAttr(String(w['target']))}" owner="${xmlAttr(String(w['owner']))}" note="${xmlAttr(String(w['note']))}"/>`,
+        `| ${cell(w['id'])} | ${cell(w['kind'])} | ${cell(w['next'])} | ${cell(w['recur'])} | ${cell(w['target'])} | ${cell(w['owner'])} | ${cell(w['note'])} |`,
     );
-    const body = rows.length > 0 ? '\n' + rows.join('\n') + '\n' : '\n';
-    return (
-      `<wakes scope="${xmlAttr(String(r['scope']))}" count="${wakes.length}">${body}</wakes>\n` +
-      '<follow_up>Cancel one with `crtr node wake cancel <id>`. Fired one-shots are gone; a recurrence shows its NEXT fire, not past slots.</follow_up>'
-    );
+    return `${wakes.length} pending wake(s) in scope ${r['scope']}.\n\n${head}\n${rows.join('\n')}\n\n${follow}`;
   },
 });
 
@@ -1357,7 +1366,7 @@ const nodeWakeCancel = defineLeaf({
     cancelWake(id);
     return { id, was_pending: wasPending };
   },
-  render: (r) => `<wake-canceled id="${r['id']}" was-pending="${r['was_pending']}"/>`,
+  render: (r) => `Canceled wake ${r['id']}${r['was_pending'] === true ? '' : ' (already gone — no-op)'}.`,
 });
 
 // node wake (branch) ---------------------------------------------------------

@@ -117,10 +117,13 @@ export const viewCycleLeaf: LeafDef = defineLeaf({
     } catch { /* best-effort */ }
     return { cycled: true, view: targetId, from: current };
   },
-  render: (r) =>
-    r['cycled'] === true
-      ? `<view-cycled to="${r['view']}" from="${r['from'] ?? ''}"/>`
-      : r['from'] !== undefined
-        ? `<view-cycle-noop>no other view to switch to</view-cycle-noop>`
-        : `<view-cycle-noop>this pane is not hosting a view</view-cycle-noop>`,
+  render: (r) => {
+    if (r['cycled'] === true) {
+      return `Cycled the monitor to view "${r['view']}" (from "${r['from']}").`;
+    }
+    if (r['from'] !== undefined) {
+      return `No other view to switch to — the pane is still on "${r['from']}".`;
+    }
+    return 'Nothing to cycle — this pane is not hosting a view.';
+  },
 });

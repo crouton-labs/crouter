@@ -117,10 +117,11 @@ test(
       // ===================================================================
       const closeRes = h.cli(A, ['node', 'close', '--node', B]);
       assert.equal(closeRes.code, 0, `node close exit 0\n${closeRes.stderr}`);
-      // The CLI's own rendered report: cascade root B, exactly 4 closed, 0 spared.
+      // The CLI's own rendered report (plain markdown): cascade root B, exactly
+      // 4 closed, 0 spared (no spared clause is emitted when none were spared).
       assert.match(
         closeRes.stdout,
-        new RegExp(`<closed id="${B}" count="4" spared="0"\\s*/>`),
+        new RegExp(`^Closed ${B} and its exclusive subtree — 4 node\\(s\\) closed\\.`),
         `close report names B as root, count=4, spared=0\n${closeRes.stdout}`,
       );
 
