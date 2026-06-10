@@ -15,7 +15,6 @@ import { spawnNode, currentNodeContext, nodeEnv, resolveBirthSession, nodeSessio
 import { buildLaunchSpec, buildPiArgv } from './launch.js';
 import { writeGoal } from './kickoff.js';
 import { hasRoadmap, seedRoadmap } from './roadmap.js';
-import { generateSessionName } from './naming.js';
 import { buildIdentityAssertion, buildWakeBearings, type WakeOrigin } from './bearings.js';
 import { installMenuBinding, installNavBindings, installViewNavBindings } from './tmux-chrome.js';
 import { setPresence, updateNode, getNode, fullName, type NodeMeta, type Mode, type Lifecycle } from '../canvas/index.js';
@@ -56,20 +55,16 @@ export function bootRoot(opts: BootRootOpts): NodeMeta {
   // A born-resident root starts in base mode; it earns the orchestrator persona
   // the first time it delegates (or on promotion). Resident lifecycle either way.
   const { launch } = buildLaunchSpec(kind, 'base', { lifecycle: 'resident', hasManager: false });
-  // A root opened WITH a prompt gets its editor name now (so the first pi
-  // session already carries it). A bare root has no prompt yet — the
-  // goal-capture extension names it from the first message (async, next cycle).
-  const description =
-    opts.prompt !== undefined && opts.prompt.trim() !== ''
-      ? generateSessionName(opts.prompt)
-      : undefined;
+  // Born WITHOUT a name. Naming is async + event-driven: the canvas-goal-capture
+  // extension names the node from its FIRST real message (the kickoff prompt or
+  // a human's first line) inside its own pi process, via a headless `pi -p`.
+  // Never block the front door on an LLM round-trip.
   const meta = spawnNode({
     kind,
     mode: 'base',
     lifecycle: 'resident',
     cwd: opts.cwd,
     name: opts.name ?? kind,
-    description,
     parent: null,
     launch,
   });
@@ -221,14 +216,15 @@ export function spawnChild(opts: SpawnChildOpts): SpawnChildResult {
   // independent root sits top-of-spine with nobody to push to. Mirrors the
   // `parent` set below (root ? null : spawner), so hasManager === parent!==null.
   const { launch } = buildLaunchSpec(opts.kind, mode, { lifecycle, hasManager: !root, model: opts.model });
-  // Name the worker from its task now, so its first editor label carries it.
+  // Born WITHOUT a name — the canvas-goal-capture extension names it async from
+  // its first message (the kickoff task) inside its own pi process, so spawn
+  // never blocks on the LLM naming round-trip (the 2-3s freeze it used to cost).
   const meta = spawnNode({
     kind: opts.kind,
     mode,
     lifecycle,
     cwd: opts.cwd,
     name: opts.name ?? opts.kind,
-    description: generateSessionName(opts.prompt),
     // A root has no spine parent (top-level, nobody subscribes); it still
     // records spawned_by=spawner when a node (not a human shell) spawned it.
     // A child's parent IS its manager.

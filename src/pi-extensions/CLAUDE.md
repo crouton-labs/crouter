@@ -19,5 +19,5 @@ runtime's behavior *inside* a live pi (the canvas/runtime layers act from outsid
 - `canvas-context-intro` — injects the `<crtr-context>` bearings on `session_start`
   (NOT before_agent_start/nextTurn — those append AFTER the first user message, so
   bearings would land second instead of first).
-- `canvas-goal-capture` — persists a bare root's first interactive message as its goal.
+- `canvas-goal-capture` — on a node's first real message: persists a bare root's mandate as its goal, and async-names any unnamed node (headless `pi -p`, no spawn-path block).
 - `canvas-commands` / `canvas-nav` — slash-commands + the graph-nav chrome.

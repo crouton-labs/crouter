@@ -6,20 +6,17 @@
 // the first prompt by asking pi headlessly (`pi -p`), persisted on the node's
 // meta so it survives revives and shows in every cycle.
 //
-// Two entry points:
-//   • generateSessionName  — synchronous (spawnSync). For the CLI spawn paths
-//     (spawnChild / bootRoot) that run outside any pi event loop, where a brief
-//     block before launching the worker is fine and lets the FIRST pi session
-//     already carry the name.
-//   • generateAndPersistName — async (execFile, non-blocking). For the bare-root
-//     case where the prompt only arrives as the first interactive message inside
-//     a live pi process; it must never block the event loop. Persists the name
-//     to meta so the label picks it up on the next cycle.
+// One entry point: generateAndPersistName — async (execFile, non-blocking).
+// Naming happens INSIDE the named node's own pi process, off the first real
+// message (the kickoff task or a human's first line), never on the spawn path:
+// blocking spawn on an LLM round-trip used to freeze the caller's terminal for
+// 2-3s on every `crtr node new`. The headless namer runs with --no-extensions,
+// so it loads no canvas hooks and can never recurse into another spawn/name.
 //
-// Both are best-effort: a failed/slow/garbled pi call falls back to a local slug
-// of the prompt, so a node always gets a sane name.
+// Best-effort: a failed/slow/garbled pi call falls back to a local slug of the
+// prompt, so a node always gets a sane name.
 
-import { spawnSync, execFile } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { getNode, updateNode } from '../canvas/index.js';
 import type { NodeMeta } from '../canvas/index.js';
 
@@ -110,27 +107,30 @@ function nameArgs(prompt: string): string[] {
   return argv;
 }
 
-/** Synchronously ask pi for a 3-8 word kebab name for `prompt`. Blocks up to
- *  NAME_TIMEOUT_MS; on any failure (non-zero exit, timeout, empty/garbled
- *  output) falls back to a local slug. Returns '' only for an empty prompt. */
-export function generateSessionName(prompt: string): string {
-  const body = (prompt ?? '').trim();
-  if (body === '') return '';
-  try {
-    const r = spawnSync('pi', nameArgs(body), {
-      encoding: 'utf8',
-      timeout: NAME_TIMEOUT_MS,
-      // Don't inherit a TUI; capture stdout only.
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
-    if (r.status === 0 && typeof r.stdout === 'string') {
-      const name = sanitizeSessionName(r.stdout);
-      if (name !== '') return name;
+/** Ask pi headlessly for a kebab-case name for `body`, async. Resolves to the
+ *  sanitized name, or '' on any failure (non-zero exit, timeout, empty/garbled
+ *  output) so the caller can fall back to a local slug. Owns the subprocess
+ *  mechanics — crucially it hands pi an immediate stdin EOF: `pi -p` reads
+ *  stdin, and execFile's default stdin is an OPEN pipe that never closes, so
+ *  without this pi blocks waiting for EOF and the call exits non-zero (the
+ *  regression that silently lost every LLM name to the slug fallback). */
+function headlessName(body: string): Promise<string> {
+  return new Promise((resolve) => {
+    try {
+      const child = execFile(
+        'pi',
+        nameArgs(body),
+        { encoding: 'utf8', timeout: NAME_TIMEOUT_MS },
+        (err, stdout) => {
+          if (err || typeof stdout !== 'string') return resolve('');
+          resolve(sanitizeSessionName(stdout));
+        },
+      );
+      child.stdin?.end(); // immediate EOF — see the doc above
+    } catch {
+      resolve('');
     }
-  } catch {
-    // fall through to slug
-  }
-  return slugFromPrompt(body);
+  });
 }
 
 /** Asynchronously generate a name for `prompt` and persist it to the node's
@@ -139,7 +139,7 @@ export function generateSessionName(prompt: string): string {
  *  loop. Best-effort; swallows all errors.
  *
  *  `onNamed` (optional) fires with the freshly-persisted meta the moment the
- *  name lands — the bare-root path passes a callback that calls
+ *  name lands — the canvas-goal-capture naming hook passes a callback that calls
  *  pi.setSessionName(editorLabel(meta)) so the LIVE editor label updates in the
  *  same session, instead of waiting for the next revive/cycle. */
 export function generateAndPersistName(
@@ -163,21 +163,7 @@ export function generateAndPersistName(
     }
   };
 
-  try {
-    execFile(
-      'pi',
-      nameArgs(body),
-      { encoding: 'utf8', timeout: NAME_TIMEOUT_MS },
-      (err, stdout) => {
-        if (err || typeof stdout !== 'string') {
-          persist(slugFromPrompt(body));
-          return;
-        }
-        const name = sanitizeSessionName(stdout);
-        persist(name !== '' ? name : slugFromPrompt(body));
-      },
-    );
-  } catch {
-    persist(slugFromPrompt(body));
-  }
+  void headlessName(body).then((name) => {
+    persist(name !== '' ? name : slugFromPrompt(body));
+  });
 }
