@@ -32,7 +32,9 @@ There are exactly two moments a document can surface into an agent, because ther
 
 `none` (invisible; found only by search) → `name` (just its title) → `preview` (the routing line) → `content` (the full body).
 
-The **preview** is generated, never hand-written: *"{when}, read this {kind}. {why}."* — composed from the `when` and `why` frontmatter. That single line is the heart of progressive disclosure: it costs almost nothing in context and tells the agent precisely whether to spend the read.
+Each document sets both rungs **explicitly** — there is no kind-based default, and authoring requires both (enforced by `crtr memory write` on create and by `crtr memory lint`). A default keyed on kind was tried and removed: the right rung is a case-by-case call, never a function of kind, and a default just trains the author to stop thinking. The four rungs read, lowest to highest: `none` for niche docs almost nothing should pull into context; `name` for the common case (uncommon references/skills an agent or the user may reach for by name); `preview` for docs important enough that their routing line earns its boot-time token cost every session (preferences usually); `content` for a doc that would be `preview` except its body is already a bullet's worth, so you may as well inline it — rare, and downgraded back to `preview` as it grows.
+
+The **preview** is the document's `when-and-why-to-read` line — one routing sentence, *"When {circumstance}, this {kind} should be read because {payoff}."* — rendered verbatim, never a content paraphrase. That single line is the heart of progressive disclosure: it costs almost nothing in context and tells the agent precisely whether to spend the read.
 
 ## Why `short-form` is not a rung — the satisficing rule
 
@@ -54,7 +56,7 @@ Scope resolves the way skills and personas already do — project over user over
 
 Situational guidance — relevant only when doing a certain kind of work — belongs at `preview` no matter how short it is, and anything with longer instructions belongs at `preview` no matter how universal it feels. The routing line is what earns its place at boot; the body is read on demand. Long catalog-style documents whose name already routes well sit at `name`.
 
-And the routing line only works if `when`/`why` are **routing statements, not content paraphrases**: `when` names the situation the agent is in ("When you are refactoring…"), `why` names the payoff of reading ("…because it informs how to perform good refactors"). A reader must be able to decide whether to open the document from that one line alone; restating the document's content there defeats the ladder.
+And the routing line only works if `when-and-why-to-read` is a **routing statement, not a content paraphrase**: it names the situation the agent is in ("When you are refactoring…") and the payoff of reading ("…because it informs how to perform good refactors"). A reader must be able to decide whether to open the document from that one line alone; restating the document's content there defeats the ladder.
 
 ## The payoff, and the stance
 
