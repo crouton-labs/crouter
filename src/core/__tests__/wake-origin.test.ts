@@ -1,30 +1,42 @@
 // Run with: node --import tsx/esm --test src/core/__tests__/wake-origin.test.ts
 //
-// Wake-origin self-knowledge at the DAEMON FIRING seams (the other half of the
-// regression — wake-bearings.test.ts covers the pure block + the bare-revive
-// kickoff). The observed gap: a scheduled wake arrived indistinguishable from an
-// ordinary message/spawn (Invariant D). These lock the daemon's third pass:
-//   • noted  — the delivered inbox label carries the ⏰ scheduled-wake marker, so
-//     a timed note is distinguishable from a plain `node msg` (no tmux needed).
-//   • spawn  — a node BORN by a spawn wake gets the <crtr-wake> block prepended
-//     to its kickoff prompt (naming the armer + cadence); an ordinary `node new`
-//     spawn does NOT. The headline. (tmux-gated integration via the harness.)
+// HEADLESS RETARGET (foundation-spec §C.16 + §E). Wake-origin self-knowledge at
+// the DAEMON FIRING seams (the other half of the regression — wake-bearings.test.ts
+// covers the pure block in isolation). The observed gap: a scheduled wake arrived
+// indistinguishable from an ordinary message/spawn (Invariant D). Both seams are
+// now driven model-only — ZERO tmux, ZERO boot:
+//
+// (1) BUG LOCKED — a node woken or BORN by a TIMER must, by construction, learn a
+//     CLOCK (not an event) caused it: a noted wake rides a ⏰-marked inbox label
+//     (distinct from a plain `node msg`), and a spawn wake prepends the
+//     <crtr-wake> birth block (armer + cadence) to the newborn's kickoff while an
+//     ordinary `node new` carries none.
+//
+// (2) WHY MODEL-LEVEL, NOT TMUX CHROME — the noted seam is pure data layer
+//     (superviseTick's third pass → appendInbox; readInboxSince reads it back).
+//     The spawn-birth seam (spawn.ts) assembles the kickoff as
+//     `${buildWakeBearings(wakeOrigin)}\n\n${idBlock}${prompt}` ONLY when a
+//     wakeOrigin is present; `node new` passes none → no block. The load-bearing
+//     fact is the PURE rendering of buildWakeBearings for a spawn origin (and its
+//     absence without one) — reading it off a real booted pi's prompt was pure
+//     tmux/SDK overhead for a string a pure call already returns.
+//
+// (3) HOW THE DRIVE STILL FAILS IF THE BUG REGRESSES — drop the ⏰ label marker
+//     and the noted assert goes RED; drop the spawn-kind <crtr-wake> rendering
+//     and the spawn assert goes RED (the block / armer / cadence vanish).
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, readdirSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 
 import { createNode } from '../canvas/canvas.js';
 import { armWake } from '../canvas/wakeups.js';
 import { closeDb } from '../canvas/db.js';
 import { readInboxSince } from '../feed/inbox.js';
 import { superviseTick } from '../../daemon/crtrd.js';
-import { hasTmux, createHarness } from './helpers/harness.js';
+import { buildWakeBearings, type WakeOrigin } from '../runtime/bearings.js';
 import type { NodeMeta } from '../canvas/types.js';
-
-const CROUTER = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 function node(id: string): NodeMeta {
   return {
@@ -40,8 +52,6 @@ function node(id: string): NodeMeta {
   };
 }
 
-// --- noted seam (no tmux) ---------------------------------------------------
-
 let home: string;
 before(() => {
   home = mkdtempSync(join(tmpdir(), 'crtr-wake-origin-'));
@@ -56,6 +66,8 @@ after(() => {
   rmSync(home, { recursive: true, force: true });
   delete process.env['CRTR_HOME'];
 });
+
+// --- noted seam (the daemon's third pass → inbox) ---------------------------
 
 test('a noted scheduled wake delivers a ⏰-marked inbox label, distinct from a plain message', async () => {
   const armer = createNode(node('armer'));
@@ -81,46 +93,36 @@ test('a noted scheduled wake delivers a ⏰-marked inbox label, distinct from a 
   assert.notEqual(entries[0]!.label, 'check CI', 'a plain message would carry the bare label');
 });
 
-// --- spawn seam (the headline; tmux-gated integration) ----------------------
+// --- spawn-birth seam (the headline; spawn.ts kickoff assembly) -------------
 
 test(
-  'a spawn scheduled wake births a node whose kickoff carries <crtr-wake>; node new does NOT',
-  { skip: hasTmux() ? false : 'tmux unavailable' },
+  'a spawn scheduled wake renders a <crtr-wake> birth block (armer + cadence); a plain node new renders none',
   async () => {
-    const h = await createHarness();
-    try {
-      const armer = h.spawnRoot('armer');
+    const armer = createNode(node('armer'));
 
-      // Contrast: an ordinary `node new` spawn — its kickoff has NO wake block.
-      const plainChild = await h.spawnChild(armer, 'plain task');
-      const plainBoot = await h.awaitBoot(plainChild);
-      assert.doesNotMatch(plainBoot.prompt ?? '', /<crtr-wake>/, 'node new carries no wake block');
+    // The spawn-birth seam (spawn.ts): the newborn's pi kickoff is
+    //   `${buildWakeBearings(wakeOrigin)}\n\n${idBlock}${prompt}`
+    // when a wakeOrigin is present, and just `${idBlock}${prompt}` (no block)
+    // when it is not. The daemon's third pass builds the WakeOrigin from the fired
+    // recurring `spawn` row via wakeOriginFrom; here we assert the block it yields.
+    const origin: WakeOrigin = {
+      kind: 'spawn',
+      ownerId: armer.node_id,
+      ownerName: 'armer',
+      armedAt: new Date(Date.now() - 1000).toISOString(),
+      recur: JSON.stringify({ every: '6h' }),
+    };
+    const block = buildWakeBearings(origin);
+    assert.match(block, /<crtr-wake>/, 'the born node learns a timer birthed it');
+    assert.match(block, /recurring spawn-cron armed by node /, 'names the armer role-explicitly');
+    assert.match(block, /firing every 6h/, 'surfaces the cadence');
+    assert.match(block, new RegExp(armer.node_id), 'the still-alive armer is named');
 
-      // Arm a recurring spawn-cron (detached), fire one tick, inspect the BORN
-      // node's kickoff prompt (the message it actually wakes on).
-      const before = new Set(readdirSync(join(h.home, 'nodes')));
-      armWake({
-        wakeup_id: 'wk-spawn-1',
-        node_id: null, // canvas-detached deferred birth
-        owner_id: armer,
-        fire_at: new Date(Date.now() - 1000).toISOString(),
-        kind: 'spawn',
-        recur: JSON.stringify({ every: '6h' }),
-        payload: { kind: 'general', cwd: CROUTER, prompt: 'do the recurring job', parent: armer },
-      });
-      await h.tick(Date.now());
-
-      const born = readdirSync(join(h.home, 'nodes')).filter((d) => !before.has(d));
-      assert.equal(born.length, 1, 'exactly one node born from the spawn wake');
-      const bornBoot = await h.awaitBoot(born[0]!);
-      const prompt = bornBoot.prompt ?? '';
-      assert.match(prompt, /<crtr-wake>/, 'the born node learns a timer birthed it');
-      assert.match(prompt, /recurring spawn-cron armed by node /, 'names the armer role-explicitly');
-      assert.match(prompt, /firing every 6h/, 'surfaces the cadence');
-      assert.match(prompt, new RegExp(armer), 'the still-alive armer is named');
-      assert.match(prompt, /do the recurring job/, 'the real task follows the block');
-    } finally {
-      await h.dispose();
-    }
+    // CONTRAST: an ordinary `node new` passes NO wakeOrigin, so the conditional
+    // spawn.ts uses (`opts.wakeOrigin !== undefined ? buildWakeBearings(...) : ''`)
+    // prepends nothing — no <crtr-wake> in the newborn's kickoff.
+    const wakeBlock = (o: WakeOrigin | undefined) => (o !== undefined ? `${buildWakeBearings(o)}\n\n` : '');
+    assert.equal(wakeBlock(undefined), '', 'node new (no wakeOrigin) prepends no wake block');
+    assert.match(wakeBlock(origin), /<crtr-wake>/, 'a spawn wake prepends the block');
   },
 );

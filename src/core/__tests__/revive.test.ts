@@ -1,22 +1,45 @@
 // Run with: node --import tsx/esm --test src/core/__tests__/revive.test.ts
 //
-// Covers the session-picker fix: a revive must resume by ABSOLUTE session-file
-// path (cwd-immune) when one was captured, falling back to the bare uuid for
-// older nodes — and the double-revive guard that keeps two pi processes off one
-// session file. The argv selection is unit-tested via the pure `resumeArgs` +
-// `buildPiArgv`; the guard is exercised against a REAL tmux window (gated on
-// tmux availability, like daemon-liveness.test.ts).
+// HEADLESS RETARGET (foundation-spec §C.13 + §E). Covers the session-picker fix
+// (resume by ABSOLUTE session-file path, cwd-immune, falling back to the bare
+// uuid for older nodes) AND the double-revive guard that keeps two pi processes
+// off one session file. The argv selection is unit-tested via the pure
+// `resumeArgs` + `buildPiArgv`; the guard + the cycle-counter bump are now driven
+// against a fabricated BROKER-hosted node — ZERO real tmux, ZERO real boot.
+//
+// (1) BUG LOCKED — the double-revive guard (revive.ts:114): a node already up
+//     (its engine container alive AND its pi pid live) must NOT be re-launched —
+//     a second pi on the same .jsonl corrupts the conversation. The complement:
+//     a revive that DOES proceed bumps the node's `cycles` BEFORE it spawns
+//     (revive.ts cycles++, then transition('revive'), then launch).
+//
+// (2) WHY MODEL-LEVEL, NOT TMUX CHROME — the guard's `isAlive` is host-keyed: a
+//     BROKER's container liveness IS `isPidAlive(pi_pid)` (host.ts headlessBrokerHost),
+//     so a fabricated broker row carrying a LIVE pid reproduces the exact "already
+//     up" state the guard short-circuits on — no pane, no window, no tmux server.
+//     The old tmux assertion ("no NEW window opened") was a tmux artifact; the
+//     real invariant is the model effect: `cycles` UNCHANGED on the guard path,
+//     and bumped to 1 when the revive proceeds (revive.ts bumps cycles
+//     synchronously before the detached launch — observable INSTANTLY, no
+//     awaitBoot). The taint-ignoring WINDOW placement decision is a genuine tmux
+//     concern and stays in full/placement-revive.test.ts.
+//
+// (3) HOW THE DRIVE STILL FAILS IF THE BUG REGRESSES — remove the guard's
+//     short-circuit and the live-pid broker revive bumps cycles (1, not 0) → the
+//     guard assert goes RED; break the cycles++ and the proceed test (expecting 1)
+//     goes RED.
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 
 import { createNode, getNode } from '../canvas/canvas.js';
 import { closeDb } from '../canvas/db.js';
 import { buildPiArgv } from '../runtime/launch.js';
 import { resumeArgs, reviveNode } from '../runtime/revive.js';
+import { createHarness, type Harness } from './helpers/harness.js';
 import type { NodeMeta } from '../canvas/types.js';
 
 let home: string;
@@ -35,8 +58,21 @@ function node(id: string, over: Partial<NodeMeta> = {}): NodeMeta {
   };
 }
 
-function hasTmux(): boolean {
-  return spawnSync('tmux', ['-V'], { stdio: 'ignore' }).status === 0;
+/** A pid that is guaranteed dead — a crashed broker the guard must NOT see as up. */
+function deadPid(): number {
+  const r = spawnSync('true', [], { stdio: 'ignore' });
+  return r.pid ?? 0x7ffffffe;
+}
+
+/** A pid ALIVE for the test but EXPENDABLE — NEVER process.pid: the harness's
+ *  dispose() SIGKILLs every recorded pi_pid, which would take the test runner
+ *  down. A detached `sleep` is the live-engine stand-in; dispose reaps it. */
+const livePids: number[] = [];
+function disposableLivePid(): number {
+  const c = spawn('sleep', ['600'], { stdio: 'ignore', detached: true });
+  c.unref();
+  livePids.push(c.pid!);
+  return c.pid!;
 }
 
 before(() => {
@@ -53,6 +89,13 @@ after(() => {
   closeDb();
   rmSync(home, { recursive: true, force: true });
   delete process.env['CRTR_HOME'];
+  for (const pid of livePids) {
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      /* already reaped by dispose() — fine */
+    }
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -154,99 +197,58 @@ test('a resumed revive replays the persisted LaunchSpec (model, tools, extension
 });
 
 // ---------------------------------------------------------------------------
-// Double-revive guard — reviveNode no-ops when the window is already alive
-// (gated on tmux, which CI may not have; the guard needs a genuinely-live window
-// to short-circuit before any tmux mutation).
+// Double-revive guard — reviveNode no-ops when the node's engine is already up
+// (container alive AND pi pid live). Fabricated as a BROKER node, whose engine-
+// container liveness IS its pi-pid liveness (host.ts), so the guard is exercised
+// with NO tmux and NO real boot. A live pid → guard short-circuits (cycles flat);
+// a dead pid → revive proceeds (cycles bumped before the detached launch).
 // ---------------------------------------------------------------------------
 
-/** Hold a real, live tmux window open for the duration of `fn`, then tear down. */
-async function withLiveWindow(
-  tag: string,
-  fn: (session: string, window: string) => Promise<void>,
-): Promise<void> {
-  const session = `crtr-revivetest-${process.pid}-${tag}`;
-  spawnSync('tmux', ['new-session', '-d', '-s', session, '-c', '/tmp', 'sleep 600']);
+test('reviveNode no-ops when the broker engine is already up (live pid) — double-revive guard', async () => {
+  const h: Harness = await createHarness({ headless: true, sessionPrefix: 'crtr-revive-guard' });
   try {
-    const r = spawnSync('tmux', ['list-windows', '-t', session, '-F', '#{window_id}'], { encoding: 'utf8' });
-    const window = (r.stdout ?? '').trim().split('\n')[0]!;
-    await fn(session, window);
-  } finally {
-    spawnSync('tmux', ['kill-session', '-t', session], { stdio: 'ignore' });
-  }
-}
-
-function windowCount(session: string): number {
-  const r = spawnSync('tmux', ['list-windows', '-t', session, '-F', '#{window_id}'], { encoding: 'utf8' });
-  return (r.stdout ?? '').trim().split('\n').filter((s) => s !== '').length;
-}
-
-test('reviveNode no-ops when the node pane is alive AND its pi is LIVE (double-revive guard)', { skip: !hasTmux() }, async () => {
-  await withLiveWindow('guard', async (session, window) => {
-    // pi_pid = this process: a genuinely LIVE pi. The guard now keys on pane-
-    // alive AND pi-alive (Step 7), so this models "another path already revived
-    // it" — a no-op (re-launching would double-spawn onto the same session file).
-    createNode(node('M', {
-      tmux_session: session,
-      window,
-      cycles: 3,
-      pi_pid: process.pid,
+    // pi_pid = this process: a genuinely LIVE engine. The guard keys on the host's
+    // isAlive (a broker's IS isPidAlive(pi_pid)) AND pi-alive, so this models
+    // "another path already revived it" — re-launching would double-spawn onto the
+    // same .jsonl. reviveNode only READS isPidAlive here (never signals), so
+    // process.pid is NOT safe (dispose SIGKILLs every recorded pi_pid), so use a
+    // disposable live sleep as the alive-engine stand-in.
+    const M = h.fabricateBrokerNode({
+      status: 'active',
+      intent: null,
+      pi_pid: disposableLivePid(),
       pi_session_id: 'uuid-1',
-      pi_session_file: '/abs/m.jsonl',
-    }));
-    const before = windowCount(session);
+    });
+    const before = h.node(M)!.cycles ?? 0;
 
-    const res = reviveNode('M', { resume: true });
+    const res = reviveNode(M, { resume: true });
 
-    assert.equal(res.window, window, 'returns the existing live window');
-    assert.equal(res.session, session, 'returns the existing session');
     assert.equal(res.resumed, false, 'guard path does not re-resume');
-    assert.equal(windowCount(session), before, 'no new window opened');
-    assert.equal(getNode('M')?.cycles, 3, 'cycle counter NOT bumped (guard returned early)');
-  });
+    assert.equal(h.node(M)!.cycles ?? 0, before, 'cycle counter NOT bumped (guard returned early)');
+  } finally {
+    await h.dispose();
+  }
 });
 
-test('reviveNode PROCEEDS when the pane is alive but the pi is DEAD (F3 frozen-pane resume)', { skip: !hasTmux() }, async () => {
-  // The Step-7 guard fix: a FROZEN focus pane (remain-on-exit) is pane-alive but
-  // pi-DEAD — the resume-into-focus case. The OLD pane-only guard would no-op
-  // here (the bug that left a frozen focused-dormant node stuck); the new guard
-  // gates on pi liveness too, so reviveNode proceeds (bumps the cycle counter).
-  await withLiveWindow('frozen', async (session, window) => {
-    createNode(node('M', {
-      tmux_session: session,
-      window,
-      cycles: 3,
-      pi_pid: 0x7ffffffe, // implausible/dead pid → a frozen pane with no live pi
+test('reviveNode PROCEEDS when the broker engine is DOWN (dead pid) — cycle counter bumps 0→1', async () => {
+  const h: Harness = await createHarness({ headless: true, sessionPrefix: 'crtr-revive-proceed' });
+  try {
+    // A crashed broker: container DOWN (dead pid) → the guard does NOT short-
+    // circuit → reviveNode proceeds. It bumps cycles BEFORE the detached (fake-
+    // engine) launch, so the bump is observable instantly; the throwaway broker is
+    // killed by dispose().
+    const M = h.fabricateBrokerNode({
+      status: 'active',
+      intent: null,
+      pi_pid: deadPid(),
       pi_session_id: 'uuid-1',
-      pi_session_file: '/abs/m.jsonl',
-    }));
-    reviveNode('M', { resume: true });
-    assert.equal(getNode('M')?.cycles, 4, 'cycle counter BUMPED — the guard did NOT short-circuit a frozen pane');
-  });
-});
+    });
+    assert.equal(h.node(M)!.cycles ?? 0, 0, 'fabricated at cycle 0 (no revive yet)');
 
-// ---------------------------------------------------------------------------
-// Step 5 (§5.3): reviveNode DELEGATES placement to reviveIntoPlacement — a
-// non-focused node targets its home_session, NEVER its (focus-tainted)
-// tmux_session. This is the reviveNode-level bug-kill proof. Gated to run when
-// tmux is ABSENT, so openNodeWindow no-ops (returns null) and no real pi is
-// launched — the placement DECISION (session + LOCATION) is set synchronously
-// regardless of whether a window actually opens, so the assertions are exact.
-// (The WITH-tmux window-placement behaviour is proven in placement-revive.test.ts.)
-// ---------------------------------------------------------------------------
+    reviveNode(M, { resume: true });
 
-test('reviveNode delegates to home_session for a non-focused node, IGNORING the tainted tmux_session (§5.3)', { skip: hasTmux() }, async () => {
-  const back = `crtr-back-${process.pid}`;
-  const tainted = `crtr-user-${process.pid}`; // the focus taint that must be ignored
-  // A non-focused child: home_session is the backstage; tmux_session was tainted
-  // to a user session by a prior focus and never corrected. No focus row exists.
-  createNode(node('M', { home_session: back, tmux_session: tainted, window: '@7', pane: null }));
-
-  const res = reviveNode('M', { resume: false });
-
-  assert.equal(res.session, back, 'revive targets home_session, not the tainted user session');
-  assert.notEqual(res.session, tainted, 'NEVER the tainted tmux_session');
-  const m = getNode('M')!;
-  assert.equal(m.tmux_session, back, 'LOCATION repointed to the backstage (taint overwritten)');
-  assert.equal(m.window, null, 'no tmux present → openNodeWindow no-op, window null (decision still recorded)');
-  assert.equal(m.cycles, 1, 'a real (non-guard) revive bumped the cycle counter');
+    assert.equal(h.node(M)!.cycles, 1, 'a real (non-guard) revive bumped the cycle counter to 1');
+  } finally {
+    await h.dispose();
+  }
 });
