@@ -23,6 +23,7 @@
 // SCOPED OUT (review m2 — no engine method): `/login`, `/logout`, `/share`,
 // `/trust` — a brief "not supported in attach" notice, never a frame.
 
+import { execFile } from 'node:child_process';
 import type { AutocompleteItem, SlashCommand } from '@earendil-works/pi-tui';
 import { BUILTIN_SLASH_COMMANDS } from '../../core/runtime/pi-vendored.js';
 import type {
@@ -43,7 +44,32 @@ export interface SlashContext {
   state?: BrokerSnapshot['state'];
   /** cwd for the default `/export` path; defaults to `process.cwd()`. */
   cwd?: string;
+  /** The canvas node this viewer is attached to — used by `/promote` (passed
+   *  as `--node`). Falls back to `CRTR_NODE_ID` when absent; if neither is set
+   *  `/promote` notifies and no-ops. (Unit Q wires this from `runAttach`.) */
+  nodeId?: string;
+  /** Toggle the in-process GRAPH overlay (the local subscription-tree view).
+   *  `/graph` is inherently an in-viewer overlay, not a tmux popup, so this unit
+   *  registers `/graph` as a stub that calls this hook. Unit C/Q owns the overlay
+   *  itself and populates this; when absent `/graph` notifies it isn't wired yet. */
+  onGraph?: () => void;
 }
+
+/** Canvas slash-commands — reimplemented NATIVE in the viewer (the canvas chrome
+ *  pi-extensions cannot load here; see findings-chrome-parity.md Feature 3). Each
+ *  ports the action of its extension: `/promote` ← canvas-commands.ts, `/resume-node`
+ *  ← canvas-resume.ts, `/view` ← canvas-view.ts, `/graph` ← canvas-nav.ts. Three of
+ *  them shell a `crtr` subcommand via `tmux display-popup` (the viewer runs inside a
+ *  tmux pane, so this works exactly as in the extensions); `/graph` is a stub for the
+ *  overlay (Unit C/Q). Exported so Unit Q can fold these into the autocomplete list. */
+export const CANVAS_SLASH_COMMANDS: ReadonlyArray<{ name: string; description: string }> = [
+  { name: 'graph', description: 'Toggle the canvas GRAPH view (your local subscription tree)' },
+  { name: 'promote', description: 'Promote this node to an orchestrator — /promote, or /promote <kind> to specialize' },
+  { name: 'resume-node', description: 'Open the canvas navigator (search/scope/sort/tree) and resume the chosen node' },
+  { name: 'view', description: 'Open a view in a popup — bare for the picker, or /view <name> to open that view directly' },
+];
+
+const CANVAS_NAMES = new Set(CANVAS_SLASH_COMMANDS.map((c) => c.name));
 
 /** Builtins with no Phase-4 engine method — scoped out (review m2). */
 const SCOPED_OUT = new Set(['login', 'logout', 'share', 'trust']);
@@ -88,6 +114,9 @@ export function dispatchSlashCommand(text: string, ctx: SlashContext): boolean {
     ctx.notify(`/${name} is not supported in attach (Phase 4)`);
     return true;
   }
+  // Canvas commands (reimplemented native in the viewer) — handled before the
+  // builtin gate since they are neither pi builtins nor engine-extension commands.
+  if (CANVAS_NAMES.has(name)) return dispatchCanvasCommand(name, arg, ctx);
   // Unknown to us AND not a builtin → let the engine's extension runner have it.
   if (!BUILTIN_NAMES.has(name)) return false;
 
@@ -169,20 +198,173 @@ export function dispatchSlashCommand(text: string, ctx: SlashContext): boolean {
   }
 }
 
+/** Append the native canvas commands to a command list, skipping any already
+ *  present (so they survive whatever list Unit Q feeds in — builtins, or the
+ *  broker's `get_commands` result). The four canvas commands are viewer-owned,
+ *  so they are always surfaced in autocomplete regardless of the source list. */
+function withCanvasCommands(
+  commands: ReadonlyArray<{ name: string; description?: string }>,
+): ReadonlyArray<{ name: string; description?: string }> {
+  const seen = new Set(commands.map((c) => c.name));
+  return [...commands, ...CANVAS_SLASH_COMMANDS.filter((c) => !seen.has(c.name))];
+}
+
 /** Build slash-command autocomplete entries from the merged command list (the
  *  broker's `get_commands` result, which T7 may inject) — defaults to the
- *  vendored builtins. Shaped for pi-tui's `CombinedAutocompleteProvider`. */
+ *  vendored builtins. The native canvas commands are always appended. Shaped for
+ *  pi-tui's `CombinedAutocompleteProvider`. */
 export function slashCommandList(
   commands: ReadonlyArray<{ name: string; description?: string }> = BUILTIN_SLASH_COMMANDS,
 ): SlashCommand[] {
-  return commands.map((c) => ({ name: c.name, description: c.description }));
+  return withCanvasCommands(commands).map((c) => ({ name: c.name, description: c.description }));
 }
 
 /** Same list as flat autocomplete items (value/label/description). */
 export function commandAutocompleteItems(
   commands: ReadonlyArray<{ name: string; description?: string }> = BUILTIN_SLASH_COMMANDS,
 ): AutocompleteItem[] {
-  return commands.map((c) => ({ value: `/${c.name}`, label: `/${c.name}`, description: c.description }));
+  return withCanvasCommands(commands).map((c) => ({ value: `/${c.name}`, label: `/${c.name}`, description: c.description }));
+}
+
+// ---------------------------------------------------------------------------
+// Canvas commands — native reimplementations of the canvas chrome extensions.
+// ---------------------------------------------------------------------------
+
+/** Dispatch one of the four native canvas commands. Always returns `true` (the
+ *  command is viewer-owned — never forwarded to the engine as a prompt). */
+function dispatchCanvasCommand(name: string, arg: string, ctx: SlashContext): true {
+  switch (name) {
+    case 'graph':
+      // `/graph` is inherently the in-process GRAPH overlay (canvas-nav.ts
+      // `toggleGraph`), NOT a tmux popup. The overlay is Unit C/Q's surface; this
+      // unit registers the command + autocomplete entry and triggers the overlay
+      // via the `onGraph` hook the integration unit wires in.
+      if (ctx.onGraph) ctx.onGraph();
+      else ctx.notify('The GRAPH overlay is not wired into the viewer yet');
+      return true;
+    case 'promote':
+      promoteNode(arg, ctx);
+      return true;
+    case 'resume-node':
+      // ← canvas-resume.ts: open the full-screen canvas navigator as a popup; on
+      // Enter it focuses the chosen node back into THIS pane via `crtr node focus`.
+      return resumeNode(ctx);
+    case 'view':
+      // ← canvas-view.ts: bare `/view` opens the picker, `/view <name>` opens that
+      // view directly — each as a self-contained popup (no node-focus, no return-pane).
+      return openView(arg, ctx);
+    default:
+      ctx.notify(`/${name} is not available in attach`);
+      return true;
+  }
+}
+
+/** Shape of `crtr node promote --json` (subset; see nodePromote in commands/node.ts). */
+interface PromoteResult {
+  kind?: string;
+  roadmap_path?: string;
+}
+
+/** `/promote [kind]` ← canvas-commands.ts. Shells `crtr node promote --json` for
+ *  this node (out-of-process), notifies the result, then triggers a turn so the
+ *  persona injector steers in the new-role guidance at the turn boundary — exactly
+ *  as the node would by running the command itself. */
+function promoteNode(arg: string, ctx: SlashContext): void {
+  const nodeId = (ctx.nodeId ?? process.env['CRTR_NODE_ID'] ?? '').trim();
+  if (nodeId === '') {
+    ctx.notify('/promote: no node to promote (viewer has no node id)');
+    return;
+  }
+  const kind = arg.trim().toLowerCase();
+  ctx.notify(kind ? `Promoting → ${kind}…` : 'Promoting…');
+
+  const argv = ['node', 'promote', '--node', nodeId, '--json'];
+  if (kind !== '') argv.push('--kind', kind);
+
+  execFile('crtr', argv, { timeout: 15_000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
+    // On a non-zero exit crtr still prints the structured error to stdout, so
+    // prefer its `message` over the raw throw.
+    let result: PromoteResult | null = null;
+    let errMsg: string | null = null;
+    try {
+      result = JSON.parse(stdout) as PromoteResult;
+    } catch {
+      result = null;
+    }
+    if (err && result === null) {
+      const out = typeof (err as { stdout?: unknown }).stdout === 'string' ? (err as { stdout: string }).stdout : '';
+      try {
+        const payload = JSON.parse(out) as { message?: string };
+        errMsg = typeof payload.message === 'string' ? payload.message : null;
+      } catch {
+        errMsg = null;
+      }
+      if (errMsg === null) errMsg = err.message;
+    }
+
+    if (result === null) {
+      ctx.notify(`promote failed: ${errMsg ?? 'unknown error'}`);
+      return;
+    }
+    const rmPath = (result.roadmap_path ?? '').trim();
+    ctx.notify(
+      `Promoted to ${result.kind ?? 'orchestrator'} orchestrator — authoring roadmap${rmPath !== '' ? ` (${rmPath})` : ''}.`,
+    );
+    // Trigger a turn so the persona injector (canvas-stophook turn_end) fires and
+    // delivers the new-role guidance — the viewer's only turn-trigger is `prompt`.
+    ctx.send({
+      type: 'prompt',
+      text:
+        'You have just been promoted to an orchestrator. Your new-role guidance is arriving — read it, author your roadmap, and start delegating.',
+    });
+  });
+}
+
+/** `/resume-node` ← canvas-resume.ts. Opens `crtr canvas browse` as a tmux popup,
+ *  scoped to this node's cwd; on Enter it focuses the chosen node back into this
+ *  pane via `crtr node focus --pane` (which `canvas browse` shells). */
+function resumeNode(ctx: SlashContext): true {
+  const origPane = process.env['TMUX_PANE'];
+  if (process.env['TMUX'] === undefined || origPane === undefined || origPane === '') {
+    ctx.notify('/resume-node needs tmux');
+    return true;
+  }
+  const cwd = shellQuote(ctx.cwd ?? process.cwd());
+  const cmd = `crtr canvas browse --return-pane ${origPane} --cwd ${cwd}`;
+  popup(cmd);
+  return true;
+}
+
+/** `/view [name]` ← canvas-view.ts. Bare opens the picker (`crtr view pick`);
+ *  `/view <name>` opens that view directly (`crtr view run <name>`). Self-contained
+ *  popup — no node-focus, no return-pane. */
+function openView(arg: string, ctx: SlashContext): true {
+  if (process.env['TMUX'] === undefined) {
+    ctx.notify('/view needs tmux');
+    return true;
+  }
+  const name = arg.trim();
+  const cmd = name === '' ? 'crtr view pick' : `crtr view run ${shellQuote(name)}`;
+  popup(cmd);
+  return true;
+}
+
+/** Open `cmd` as a fire-and-forget tmux display-popup (same geometry as the canvas
+ *  extensions). tmux runs the trailing string through `sh -c`; the popup owns its
+ *  screen and closes itself when the command exits, dropping back to this pane. */
+function popup(cmd: string): void {
+  try {
+    execFile('tmux', ['display-popup', '-E', '-w', '90%', '-h', '85%', cmd], () => {
+      /* best-effort: popup is self-contained */
+    });
+  } catch {
+    /* best-effort */
+  }
+}
+
+/** Single-quote a string for safe interpolation into a `sh -c` command line. */
+function shellQuote(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
 // ---------------------------------------------------------------------------
