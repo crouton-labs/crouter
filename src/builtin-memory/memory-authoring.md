@@ -1,6 +1,6 @@
 ---
 kind: skill
-when-and-why-to-read: When you are about to write or update a memory document — including any time the user asks you to remember something — this skill should be read because it tells you how to choose kind and scope, set the disclosure rungs and gate, size the body, and when to first ask the user a clarifying question.
+when-and-why-to-read: When you are about to write or update a memory document — including any time the user asks you to remember something — or need to debug why a document is (not) surfacing, this skill should be read because it tells you how to choose kind and scope, set the disclosure rungs and gate, size the body, and when to first ask the user a clarifying question.
 short-form: Author excellent memories — kind, scope, visibility rungs, gates, body sizing, and the asked-to-remember workflow.
 system-prompt-visibility: preview
 file-read-visibility: none
@@ -72,8 +72,14 @@ Default is no gate — always eligible; most docs want exactly that. An empty `g
 
 - **user** (`~/.crouter/memory/`): facts about the user, cross-project behavior. The chicken memory goes here.
 - **project** (`<dir>/.crouter/memory/`): anything about a codebase or workspace — and place it in the *specific directory* it describes (any directory can hold a `.crouter/`), so positional on-read fires precisely.
+- **builtin**: ships with crtr itself (contributed via `src/builtin-memory/` in the crouter repo) — docs every crtr agent should have.
 
-Resolution is project > user > builtin, so a project doc can shadow a user doc of the same name.
+Resolution is project > user > builtin with leaf-name fallback (`read <leaf>` finds `area/<leaf>` when unambiguous), so a project doc can shadow a same-named user or builtin doc.
+
+## Mechanics worth knowing
+
+- **Directory entries**: a directory may carry an `INDEX.md` with the same frontmatter schema as any doc; the dir then renders as one entry at the INDEX's rung, and that rung is a **ceiling for its subtree** (`none` hides the whole dir). When a doc mysteriously isn't surfacing, check its ancestors' INDEX rungs and its gate.
+- **CLI**: `crtr memory list` (human inventory) · `read <name>` (names are path-derived, never file paths) · `find <query>` (search ignores gates and rungs) · `write` (author) · `lint` (validate after authoring). Run `-h` on a leaf before first use.
 
 ## Body content
 
