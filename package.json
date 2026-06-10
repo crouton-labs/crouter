@@ -24,7 +24,7 @@
     "bin"
   ],
   "scripts": {
-    "build": "rm -rf dist && tsc && cp -R src/builtin-personas dist/builtin-personas && cp -R src/builtin-views dist/builtin-views && cp -R src/builtin-memory dist/builtin-memory",
+    "build": "rm -rf dist && tsc && cp -R src/builtin-personas dist/builtin-personas && cp -R src/builtin-views dist/builtin-views && cp -R src/builtin-memory dist/builtin-memory && ( mkdir -p dist/clients/web/client && cp -R src/clients/web/client/. dist/clients/web/client/ 2>/dev/null || true )",
     "dev": "tsx src/cli.ts",
     "link": "npm link",
     "prepublishOnly": "npm run build",
@@ -49,12 +49,15 @@
     "react-dom": "^19.2.7",
     "tailwindcss": "^4.3.0",
     "vite": "^8.0.16",
+    "ws": "^8.21.0",
     "yaml": "^2.9.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
+    "@types/ws": "^8.18.1",
+
     "tsx": "^4.0.0",
     "typescript": "^5.7.0"
   }

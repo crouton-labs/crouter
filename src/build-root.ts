@@ -10,6 +10,7 @@ import { registerCanvas } from './commands/canvas.js';
 import { registerView } from './commands/view.js';
 import { registerAttach } from './clients/attach/attach-cmd.js';
 import { registerWorkspace } from './commands/workspace.js';
+import { registerWeb } from './clients/web/web-cmd.js';
 
 /** Assemble the full crtr command tree. Root owns only the tagline; every
  *  subtree declares its own root representation via its rootEntry, and every
@@ -33,6 +34,7 @@ export function buildRoot(): RootDef {
       registerView(),
       registerAttach(),
       registerWorkspace(),
+      registerWeb(),
     ],
   });
 }
