@@ -10,9 +10,8 @@
 //   • The VIEWER REGISTRY — the `focuses` table, schema unchanged, now read as
 //     "node_id -> the node's one viewer %pane in `session`" (UNIQUE(node_id) =
 //     one viewer per node). focusOf/isFocused/focusByPane/focusedNodes/
-//     listFocuses read it (lazily GC'ing rows whose pane is gone);
-//     registerViewerFocus writes it; reconcileFocus follows a moved viewer pane
-//     and prunes a gone one.
+//     listFocuses read it (lazily GC'ing rows whose pane is gone or no longer
+//     carries this node's `@crtr_node` tag); registerViewerFocus writes it.
 //   • focus(nodeId) — ensure the broker engine is alive (injected reviver) +
 //     wait view.sock, then ensure the node's ONE viewer pane is forefront: reuse
 //     it (navigate) if it is in the caller's session, MOVE it (close + reopen
@@ -35,7 +34,6 @@ import {
   getFocusByNode,
   getFocusByPane,
   getFocusById,
-  setFocusPane,
   listFocuses as listFocusRows,
   view,
   type FocusRow,
@@ -50,6 +48,7 @@ import {
   currentTmux,
   switchClient,
   selectWindow,
+  getPaneOption,
 } from './tmux.js';
 import { nodeSession, newNodeId, rootOfSpine } from './nodes.js';
 import { nodeDir } from '../canvas/paths.js';
@@ -168,26 +167,6 @@ export function graphSurfaceTarget(nodeId: string): FocusRow | null {
 }
 
 // ---------------------------------------------------------------------------
-// Viewer-row reconciliation — follow a manual move of a VIEWER pane (§2.4)
-// ---------------------------------------------------------------------------
-
-/** Reconcile a viewer row's derived `session` cache against tmux reality. A
- *  viewer row is anchored on its durable `%pane_id`; `session` is a derived
- *  cache. If the user moved the viewer pane to another session, re-point the
- *  cache. If the pane is GONE, prune the row (the viewer closed). No-op when the
- *  row has no pane or the cache is already current. */
-export function reconcileFocus(focusId: string): void {
-  const f = getFocusById(focusId);
-  if (f === null || f.pane === null) return;
-  const live = paneLocation(f.pane);
-  if (live === null) {
-    closeFocusRow(f.focus_id); // viewer pane gone — prune
-    return;
-  }
-  if (live.session !== f.session) setFocusPane(f.focus_id, f.pane, live.session);
-}
-
-// ---------------------------------------------------------------------------
 // view.sock readiness — the one shared broker-cold-start primitive
 // ---------------------------------------------------------------------------
 
@@ -278,8 +257,8 @@ export function viewerSplitEnv(): Record<string, string> {
   return crtrHome !== undefined ? { CRTR_HOME: crtrHome } : {};
 }
 
-/** Register a `crtr attach` VIEWER pane as the node's one viewer focus row (the
- *  repurposed registerRootFocus). UNIQUE(node_id) ⇒ one viewer per node: returns
+/** Register a `crtr attach` VIEWER pane as the node's one viewer focus row.
+ *  UNIQUE(node_id) ⇒ one viewer per node: returns
  *  the existing row (no insert) when the pane or the node is already registered.
  *  `window` is accepted for the call contract (spawn passes it) but not stored —
  *  the focuses table keys on pane + session only. The attach client self-tags the
@@ -401,21 +380,36 @@ export function focus(
     return { focused: true, session: opened.session, inPlace: false, revived };
   }
 
-  // (c) Reuse / move the node's one live viewer.
+  // (c) Reuse / move the node's one live viewer — but ONLY a pane that still
+  //     carries THIS node's `@crtr_node` tag. `paneExists` is not enough: the
+  //     front-door root registers the user's own terminal as its viewer pane and
+  //     runs `crtr attach` inline; on a clean detach the pane returns to the
+  //     user's shell (attach clears the tag) yet the pane — and the row — survive,
+  //     and a reused pane carries some OTHER node's tag. Navigating to / closing
+  //     such a pane would strand the user on (or kill) their shell. So verify the
+  //     tag names this node; on mismatch the row is stale → prune it and fall
+  //     through to open a fresh viewer beside the caller.
   const existing = focusOf(nodeId);
   if (existing !== null && existing.pane !== null) {
-    const loc = paneLocation(existing.pane);
-    if (loc !== null && loc.session === callerSession) {
-      // Viewer is in the caller's session — just navigate to it.
-      switchClient(loc.session);
-      selectWindow(loc.session, loc.window);
-      return { focused: true, session: loc.session, inPlace: true, revived };
+    if (getPaneOption(existing.pane, '@crtr_node') === nodeId) {
+      const loc = paneLocation(existing.pane);
+      if (loc !== null && loc.session === callerSession) {
+        // Viewer is in the caller's session — just navigate to it.
+        switchClient(loc.session);
+        selectWindow(loc.session, loc.window);
+        return { focused: true, session: loc.session, inPlace: true, revived };
+      }
+      // Viewer lives elsewhere — MOVE it: close the old pane (broker runs on; the
+      // fresh viewer replays scrollback from the welcome snapshot), drop the row,
+      // then fall through to open one beside the caller.
+      closePane(existing.pane);
+      closeFocusRow(existing.focus_id);
+    } else {
+      // Pane survived but no longer hosts this node's viewer (clean detach left
+      // the user's shell, or the pane was reused) — drop the stale row only; do
+      // NOT closePane (it is the user's shell / another node's viewer).
+      closeFocusRow(existing.focus_id);
     }
-    // Viewer lives elsewhere — MOVE it: close the old pane (broker runs on; the
-    // fresh viewer replays scrollback from the welcome snapshot), drop the row,
-    // then fall through to open one beside the caller.
-    closePane(existing.pane);
-    closeFocusRow(existing.focus_id);
   }
 
   // (d) No live viewer → open one beside the caller and register the row.

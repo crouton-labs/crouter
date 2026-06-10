@@ -11,9 +11,9 @@
 // setPresence) — it never runs raw focus SQL itself.
 //
 // Each setter is a single atomic statement. UNIQUE(node_id) upholds "a node
-// occupies at most one focus" (Q5): a second focus row (or an occupant UPDATE)
-// for an already-focused node throws — that is correct, the Q5 vacate-first
-// orchestration is retargetFocus's job (Step 6), not these setters'.
+// occupies at most one viewer" (Q5): a second focus row (or an occupant UPDATE)
+// for an already-viewed node throws — that is correct, the vacate-first
+// orchestration is placement.focus()'s job, not these setters'.
 
 import { openDb } from './db.js';
 import type { FocusRow } from './types.js';
@@ -46,13 +46,13 @@ export function openFocusRow(
 
 /** Hot-swap a focus's occupant — single-statement UPDATE. Respects
  *  UNIQUE(node_id): if `node_id` already occupies ANOTHER focus this throws
- *  (correct — vacate-first is retargetFocus's job, Step 6, not this setter's). */
+ *  (correct — vacate-first is placement.focus()'s job, not this setter's). */
 export function setFocusOccupant(focus_id: string, node_id: string): void {
   openDb().prepare('UPDATE focuses SET node_id = ? WHERE focus_id = ?').run(node_id, focus_id);
 }
 
-/** Re-point a focus's durable pane + its derived session cache — for
- *  reconcileFocus / the daemon (Step 6). Single-statement UPDATE. */
+/** Re-point a viewer row's durable pane + its derived session cache after the
+ *  pane moves. Single-statement UPDATE. */
 export function setFocusPane(focus_id: string, pane: string | null, session: string | null): void {
   openDb()
     .prepare('UPDATE focuses SET pane = ?, session = ? WHERE focus_id = ?')
@@ -85,7 +85,7 @@ export function getFocusByPane(pane: string): FocusRow | null {
 }
 
 /** A focus by its stable id, or null. Used by placement to read a row back by id
- *  (handFocusToManager / retargetFocus / registerRootFocus). */
+ *  after openFocusRow registers a viewer. */
 export function getFocusById(focus_id: string): FocusRow | null {
   const r = openDb()
     .prepare('SELECT * FROM focuses WHERE focus_id = ?')

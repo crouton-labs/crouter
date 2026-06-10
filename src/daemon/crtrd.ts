@@ -92,11 +92,11 @@ async function surfaceBootFailure(meta: NodeMeta): Promise<void> {
 
 const DEFAULT_INTERVAL_MS = 2000;
 
-// How long a node's pi may be observed dead-while-its-window-lives before the
-// daemon revives it. MUST exceed worst-case pi boot time: a normal in-place
-// refresh (reviveInPlace) transiently shows a dead OLD pid for the gap between
-// the old pi dying and the fresh pi booting + re-recording its pid, and we must
-// not double-spawn into that gap.
+// How long a node's broker pid may be observed dead before the daemon revives
+// it. MUST exceed worst-case broker boot time: a refresh / crash-revive
+// transiently shows a dead OLD pid for the gap between the old broker exiting
+// and the fresh broker booting + re-recording its pid, and we must not
+// double-spawn into that gap.
 const REVIVE_GRACE_MS = 20_000;
 
 // Per-node first-observed-dead timestamps, for the grace window above. In-memory

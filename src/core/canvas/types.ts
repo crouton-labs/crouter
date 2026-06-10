@@ -13,15 +13,15 @@
 // than duplicate its shape and risk drift.
 import type { SpawnChildOpts } from '../runtime/spawn.js';
 
-/** What a node is doing right now. `active` means the engine process is live on
- *  its host — a tmux pane OR a headless broker (`host_kind`) — NOT that it holds
- *  a window or that anyone is watching it (attachment is a separate axis: the
- *  `focuses` table for tmux, the broker's viewer set for headless). Crucially,
- *  `active` does NOT mean the node is GENERATING right now: a live engine sits
- *  dormant between turns (waiting on a child, a human, or just left open), so
- *  `active` ≠ busy — it only means the process was never closed. To tell whether
- *  an active node is actually working, check its pi session-file mtime or CPU,
- *  not its status. UI shows active+idle; `done` is hidden but revivable;
+/** What a node is doing right now. `active` means the engine process — a detached
+ *  headless broker — is live, NOT that it holds a window or that anyone is
+ *  watching it (attachment is a separate axis: the `focuses` table tracks each
+ *  node's one viewer pane, and the broker records its helloed-viewer count).
+ *  Crucially, `active` does NOT mean the node is GENERATING right now: a live
+ *  engine sits dormant between turns (waiting on a child, a human, or just left
+ *  open), so `active` ≠ busy — it only means the process was never closed. To tell
+ *  whether an active node is actually working, check its pi session-file mtime or
+ *  CPU, not its status. UI shows active+idle; `done` is hidden but revivable;
  *  `canceled` is a user-closed node (also hidden, also revivable — not a fault);
  *  only `dead` is a fault. */
 export type NodeStatus = 'active' | 'idle' | 'done' | 'dead' | 'canceled';
@@ -149,13 +149,11 @@ export interface NodeRuntime {
    *  Optional on the hydrated view (a fresh construction omits it); the row
    *  column is always present, defaulting null. */
   intent?: ExitIntent;
-  /** OS pid of the live pi process, recorded on boot (stophook session_start).
-   *  The daemon's authoritative liveness signal: an inline root runs pi as a
-   *  child of a persistent login shell, so its tmux window outlives a dead pi —
-   *  window-existence alone can't detect the death, but a dead pid can. Cleared
-   *  to null by a window-backed relaunch (reviveNode) until the fresh pi
-   *  re-records it; left intact by an in-place respawn (reviveInPlace) so a
-   *  failed respawn surfaces as a dead pid. */
+  /** OS pid of the live broker process, recorded on boot (stophook session_start).
+   *  The daemon's authoritative liveness signal — every node is a detached broker,
+   *  so `isPidAlive(pi_pid)` is the sole liveness check. Cleared to null by
+   *  reviveNode until the fresh broker re-records it, so the relaunch gap reads as
+   *  a dead pid (guarded by the daemon's revive grace, not a double-spawn). */
   pi_pid?: number | null;
   /** Presence: the tmux session (its root's home) and window this node renders
    *  in while active. Cleared when the node goes done/dead and its window closes.

@@ -242,13 +242,14 @@ export function shortId(id: string): string {
 
 // ---------------------------------------------------------------------------
 // Attachment — is a human currently WATCHING a node? A separate axis from
-// running (status 'active' = the engine is live on its host, which may be an
-// unwatched backstage pane or a paneless broker). Two hosts, two signals:
-//   tmux   — a `focuses` row points at the node (one cheap sqlite read per
-//            render pass; pane-existence alone is NOT the signal).
-//   broker — the broker persists its helloed-viewer count to job/attach.json
-//            on every viewer change (src/core/runtime/broker.ts). Trusted only
-//            while the node is 'active': a broker crash can leave a stale file.
+// running (status 'active' = the engine is live on its detached broker, watched
+// or not). Two signals:
+//   viewer pane — a `focuses` row points at the node (one cheap sqlite read per
+//                 render pass; pane-existence alone is NOT the signal).
+//   broker      — the broker persists its helloed-viewer count (tmux panes AND
+//                 web tabs) to job/attach.json on every viewer change
+//                 (src/core/runtime/broker.ts). Trusted only while the node is
+//                 'active': a broker crash can leave a stale file.
 // ---------------------------------------------------------------------------
 
 /** Node ids currently shown in a tmux focus viewport. Built once per render. */

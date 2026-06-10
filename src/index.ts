@@ -11,7 +11,7 @@
 
 // ── Runtime control ──────────────────────────────────────────────────────
 // Sanctioned launchers/mutators. reviveNode is the ONLY sanctioned launcher of
-// `pi --session`; spawnChild's host is chosen via `hostKind: 'tmux' | 'broker'`.
+// the broker engine; every node is broker-hosted (no host_kind choice).
 export { spawnChild } from './core/runtime/spawn.js';
 export type { SpawnChildOpts, SpawnChildResult } from './core/runtime/spawn.js';
 export { reviveNode } from './core/runtime/revive.js';

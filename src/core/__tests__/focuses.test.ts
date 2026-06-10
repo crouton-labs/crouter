@@ -181,7 +181,7 @@ test('open / setOccupant / close round-trip with the reads', () => {
   assert.equal(getFocusByNode('A'), null, 'A no longer occupies the focus');
   assert.deepEqual(getFocusByNode('B'), { focus_id: 'f1', pane: '%a', session: 'Sa', node_id: 'B' });
 
-  // setFocusPane re-points the pane + session cache (reconcileFocus, Step 6).
+  // setFocusPane re-points the pane + session cache after a viewer move.
   setFocusPane('f1', '%a2', 'Sa2');
   assert.deepEqual(getFocusById('f1'), { focus_id: 'f1', pane: '%a2', session: 'Sa2', node_id: 'B' });
   assert.equal(getFocusByPane('%a'), null, 'the old pane no longer resolves');
@@ -212,7 +212,7 @@ test('UNIQUE(node_id): hot-swapping an occupant onto an already-focused node is 
   openFocusRow('f1', '%a', 'Sa', 'A');
   openFocusRow('f2', '%b', 'Sb', 'B');
   // B already occupies f2 — moving it onto f1 via setFocusOccupant must throw
-  // (the Q5 vacate-first is retargetFocus's job, Step 6, not this setter's).
+  // (the Q5 vacate-first is placement.focus()'s job, not this setter's).
   assert.throws(() => setFocusOccupant('f1', 'B'), /UNIQUE|constraint/i);
   assert.deepEqual(getFocusByNode('A'), { focus_id: 'f1', pane: '%a', session: 'Sa', node_id: 'A' });
   assert.deepEqual(getFocusByNode('B'), { focus_id: 'f2', pane: '%b', session: 'Sb', node_id: 'B' });

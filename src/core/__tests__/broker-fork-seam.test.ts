@@ -8,15 +8,25 @@
 // SessionManager.forkFrom (broker.ts buildBrokerSession, the `forking` branch) —
 // the same method pi's own `--fork` CLI flag uses.
 //
-// This test drives that EXACT seam (the SDK method the broker calls) end to end:
-// build a real source session .jsonl, fork it, and assert real fork metadata —
-// a NEW session id (not a colliding copy) and a `parentSession` header pointing
-// at the source, with the source's history copied in. That proves fork is NOT
-// thrown and yields genuine fork lineage, not a naïve .jsonl copy.
+// This test drives the BROKER's OWN fork branch (broker.ts buildBrokerSession,
+// the `forking` branch ~1106) end to end: it calls `buildBrokerSession` with
+// `cfg.forkFrom` set to a real source session .jsonl — the EXACT path a
+// `node new --fork-from <id>` boot takes through the broker — and asserts the
+// resulting live session is a genuine fork: a NEW session id (not a colliding
+// copy) and a `parentSession` header pointing at the source, with the source's
+// history copied in. Because it invokes `buildBrokerSession` (not
+// `SessionManager.forkFrom` directly), it goes RED if broker.ts's fork branch
+// reverts to `throw "--fork is not supported by the headless broker"` — it
+// guards its own stated regression.
+//
+// Like the C3/C4 real-SDK wiring tests, it drives the REAL engine (broker-sdk's
+// static SDK re-exports) — NOT the CRTR_BROKER_ENGINE fake the lifecycle suite
+// uses, whose fixture omits forkFrom and so could never exercise this branch. It
+// runs offline (fork + session/services assembly are all local: no network/auth).
 //
 // (fork.test.ts covers the pure argv/resolve layers — buildPiArgv emitting
 // `--fork`, resolveForkSource turning a ref into a path. THIS file covers the
-// runtime SDK seam those layers feed.)
+// broker runtime branch those layers feed.)
 
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
@@ -24,7 +34,24 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { SessionManager } from '@earendil-works/pi-coding-agent';
+import {
+  createAgentSessionServices,
+  createAgentSessionFromServices,
+  SessionManager,
+  VERSION,
+  type BrokerEngine,
+} from '../runtime/broker-sdk.js';
+import { buildBrokerSession } from '../runtime/broker.js';
+import type { BrokerSdkConfig } from '../runtime/launch.js';
+
+// The REAL engine — bypasses the CRTR_BROKER_ENGINE fake entirely (the whole
+// point: the fake omits forkFrom, so only the real SDK can prove the branch).
+const realEngine: BrokerEngine = {
+  createAgentSessionServices,
+  createAgentSessionFromServices,
+  SessionManager,
+  VERSION,
+};
 
 let dir: string;
 
@@ -49,26 +76,57 @@ function writeSourceSession(path: string, srcId: string): number {
   return 2; // entry count (the two message lines)
 }
 
-test('D2 broker fork seam: SessionManager.forkFrom yields a NEW id + parentSession header, copying history (never throws "fork not supported")', () => {
+test('D2 broker fork branch: buildBrokerSession(cfg.forkFrom) yields a NEW id + parentSession header, copying history (never throws "fork not supported")', async () => {
   // 1. A real source session on disk.
   const srcFile = join(dir, 'src.jsonl');
   const srcId = '019eb338-029b-7536-b3eb-d33bd6f641a8';
   const srcEntryCount = writeSourceSession(srcFile, srcId);
 
-  // 2. The EXACT call the broker makes for a fork (broker.ts buildBrokerSession):
-  //    SessionManager.forkFrom(sourcePath, targetCwd). The OLD broker threw here.
-  let forked: ReturnType<typeof SessionManager.forkFrom> | undefined;
-  assert.doesNotThrow(() => {
-    forked = SessionManager.forkFrom(srcFile, dir);
-  }, 'fork must NOT throw "fork is not supported by the headless broker"');
-  assert.ok(forked !== undefined, 'forkFrom returned a SessionManager');
+  // 2. Drive the BROKER's fork branch: buildBrokerSession with cfg.forkFrom set —
+  //    the same recipe a `node new --fork-from <id>` boot produces. The OLD broker
+  //    THREW in this branch ("--fork is not supported by the headless broker"), so
+  //    if broker.ts:~1106 reverts to that throw, this rejects and the test goes RED.
+  const cfg: BrokerSdkConfig = { cwd: dir, extensionPaths: [], forkFrom: srcFile };
+  let session: Awaited<ReturnType<typeof buildBrokerSession>>['session'] | undefined;
+  let resuming: boolean | undefined;
+  await assert.doesNotReject(async () => {
+    const built = await buildBrokerSession(realEngine, cfg);
+    session = built.session;
+    resuming = built.resuming;
+  }, 'the broker fork branch must NOT throw "fork is not supported by the headless broker"');
+  assert.ok(session !== undefined, 'buildBrokerSession returned a live session for the fork');
 
-  // 3. Real fork metadata, not a colliding .jsonl copy.
-  assert.notEqual(forked.getSessionId(), srcId, 'the fork is a NEW session id (not a copy that would collide on resume)');
+  try {
+    // 3. A fork boots as a FRESH spawn (resuming=false) so the kickoff firstPrompt
+    //    fires — the new node gets the source history AND a new task to start on.
+    assert.equal(resuming, false, 'a fork is a fresh spawn (resuming=false) so the kickoff fires');
 
-  const header = forked.getHeader() as { parentSession?: string };
-  assert.equal(header.parentSession, srcFile, 'the fork header records parentSession pointing at the source .jsonl');
+    // 4. Real fork metadata on the broker's selected SessionManager, not a
+    //    colliding .jsonl copy.
+    const sm = session!.sessionManager;
+    assert.notEqual(
+      sm.getSessionId(),
+      srcId,
+      'the fork is a NEW session id (not a copy that would collide on resume)',
+    );
 
-  // 4. The source history is carried into the fork (fork copies, it does not start empty).
-  assert.equal(forked.getEntries().length, srcEntryCount, 'the fork carries the source conversation history forward');
+    const header = sm.getHeader() as { parentSession?: string } | null;
+    assert.equal(
+      header?.parentSession,
+      srcFile,
+      'the fork header records parentSession pointing at the source .jsonl',
+    );
+
+    // 5. The source history is carried into the fork (fork copies, not empty
+    //    start). The broker boot may append its own session-start entry, so the
+    //    fork holds AT LEAST the source's messages — a naïve empty session would
+    //    have zero.
+    assert.ok(
+      sm.getEntries().length >= srcEntryCount,
+      `the fork carries the source conversation history forward ` +
+        `(>= ${srcEntryCount} source entries; got ${sm.getEntries().length})`,
+    );
+  } finally {
+    session!.dispose();
+  }
 });

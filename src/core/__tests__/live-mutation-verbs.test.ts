@@ -14,8 +14,8 @@
 //       mints a DIFFERENT fresh general/base/resident root.
 //     • A4: a base→orchestrator yield auto-promotes (mode→orchestrator) and sets
 //       intent=refresh but NEVER commits persona_ack — the drift is left pending
-//       and, because a yield's agent_end goes straight to reviveInPlace with NO
-//       preceding turn_end, the only steer-delivery site is bypassed.
+//       and, because a yield's agent_end goes straight to the refresh-revive with
+//       NO preceding turn_end, the only steer-delivery site is bypassed.
 // (2) WHY MODEL-LEVEL, NOT PANE/WINDOW — demote writes lifecycle on the row
 //     (setLifecycle→updateNode); recycle's FINISH+MINT half is pushFinal +
 //     spawnNode (pure model) — only its pane-respawn is tmux (a deliberately-
@@ -29,7 +29,7 @@
 //     / pending-drift asserts go RED.
 //
 // STOPHOOK CAVEAT — split (option b). The original drove a LIVE fake-pi so the
-// REAL stophook enacted recycle's pane teardown and A4's reviveInPlace ack-drain
+// REAL stophook enacted recycle's viewer teardown and A4's refresh-revive ack-drain
 // at agent_end. Fabrication cannot run those hooks. So: recycle is driven through
 // the real recycleNode (its FINISH+MINT model half runs fully; the pane respawn
 // is the only tmux artifact, intentionally skipped → recycled:false). For A4 the
@@ -130,7 +130,7 @@ test(
 // ===========================================================================
 // (b) A4 BOUNDARY — promote-then-yield emits a steer that is discarded. A
 //     `node yield` on a base node auto-promotes (mode→orchestrator, ack NOT
-//     committed) and its agent_end goes STRAIGHT to reviveInPlace (b') with NO
+//     committed) and its agent_end goes STRAIGHT to the refresh-revive with NO
 //     preceding turn_end — so the only steer-delivery site (turn_end) is
 //     BYPASSED. The deterministic, host-independent facts the yield verb leaves
 //     behind pin the boundary:
@@ -138,7 +138,7 @@ test(
 //       (2) intent=refresh set.
 //       (3) persona_ack STILL base — the verb never commits it (only an injector
 //           or the refresh drain does); the drift is left PENDING.
-//     The ack's silent advance at the refresh drain (reviveInPlace→drainBearings
+//     The ack's silent advance at the refresh drain (refresh-revive→drainBearings
 //     →commitPersonaAck) is locked by persona.test.ts; because no turn_end ever
 //     fires on the yield path, that ack moves WITHOUT the orchestration steer
 //     ever being delivered — the A4 LOSS.

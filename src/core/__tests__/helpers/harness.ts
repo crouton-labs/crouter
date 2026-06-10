@@ -224,7 +224,6 @@ export interface Harness {
   turn(nodeId: string, text?: string): Promise<void>;
   stop(nodeId: string, reason?: 'stop' | 'length' | 'aborted' | 'error'): Promise<void>;
   finish(nodeId: string, finalText: string): Promise<void>;
-  yieldNode(nodeId: string, note: string): Promise<void>;
 
   // the daemon decision pass, in-process, with an injectable clock.
   tick(now?: number): Promise<void>;
@@ -340,10 +339,9 @@ export async function createHarness(opts: HarnessOpts = {}): Promise<Harness> {
     spawnSync('tmux', ['new-session', '-d', '-s', session, '-c', CROUTER, 'sleep 100000'], {
       stdio: 'ignore',
     });
-    // Put CRTR_PI_BINARY in the SESSION environment so EVERY pane spawned in this
-    // session inherits it — critically the fake-pi's OWN process, so when its real
-    // stophook fires reviveInPlace (respawn-pane -k on its own pane, the refresh-
-    // yield path) the in-process piCommand there substitutes the fake-pi too.
+    // Put CRTR_PI_BINARY in the SESSION environment so EVERY pane/process spawned
+    // in this session inherits it — so any pi the runtime launches (boot, revive)
+    // resolves to the fake-pi vehicle, not a real pi.
     spawnSync('tmux', ['set-environment', '-t', session, 'CRTR_PI_BINARY', FAKE_PI_BINARY], {
       stdio: 'ignore',
     });
@@ -576,31 +574,6 @@ export async function createHarness(opts: HarnessOpts = {}): Promise<Harness> {
       sendCmd(nodeId, { cmd: 'stop', id: `finish-${Date.now()}` });
       await awaitAgentEnd(nodeId, base, `finish agent_end for ${nodeId}`);
       await harness.waitForPaneGone(nodeId);
-    },
-
-    async yieldNode(nodeId, note): Promise<void> {
-      const res = cli(nodeId, ['node', 'yield', note]);
-      if (res.code !== 0) {
-        throw new Error(`yieldNode(${nodeId}): node yield failed (code ${res.code})\n${res.stderr}`);
-      }
-      // node yield set intent=refresh (active, kept). Fire agent_end so the real
-      // (b') branch runs reviveInPlace (respawn-pane -k) IN the fake-pi's pane —
-      // a FRESH fake-pi boots (resume); its session_start clears intent=refresh.
-      const baseBoots = bootCount(nodeId);
-      sendCmd(nodeId, { cmd: 'stop', id: `yield-${Date.now()}` });
-      await waitFor(() => bootCount(nodeId) > baseBoots, {
-        timeoutMs: 30_000,
-        label: `fresh boot after yield for ${nodeId}`,
-      });
-      await waitFor(
-        () => {
-          closeDb();
-          const n = getNode(nodeId);
-          return n?.intent == null && n?.status === 'active';
-        },
-        { timeoutMs: 20_000, label: `intent=refresh cleared after yield for ${nodeId}` },
-      );
-      await harness.awaitBoot(nodeId, { minCount: baseBoots + 1 });
     },
 
     async tick(now?: number): Promise<void> {

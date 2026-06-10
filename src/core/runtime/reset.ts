@@ -30,6 +30,7 @@ import {
 } from '../canvas/index.js';
 import { transition } from './lifecycle.js';
 import { headlessBrokerHost } from './host.js';
+import { tearDownNode } from './placement.js';
 import { buildLaunchSpec } from './launch.js';
 import { roadmapPath } from './roadmap.js';
 
@@ -56,9 +57,12 @@ export function reapDescendants(rootId: string): string[] {
       // `cancel` event encodes): a non-supervised status + cleared intent first,
       // so the daemon can't revive a descendant mid-teardown. Teardown then sends
       // the broker the `shutdown` frame so its PROCESS exits and releases the
-      // sole .jsonl writer.
+      // sole .jsonl writer; tearDownNode then proactively closes the on-screen
+      // viewer pane + registry row (attach auto-reconnects, so the viewer must be
+      // closed here or it lingers ~30s in a misleading "reconnecting…" state).
       transition(id, 'cancel');
       headlessBrokerHost.teardown(id);
+      tearDownNode(id);
       reaped.push(id);
     } catch {
       /* one bad node never aborts the reap */

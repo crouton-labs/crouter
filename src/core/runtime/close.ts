@@ -12,10 +12,12 @@
 //      only ever revives an active|idle node, so flipping to canceled first
 //      closes the race where the supervisor sees a window-gone live node and
 //      either revives it or marks it dead (overwriting our canceled).
-//   2. Kill its tmux PANE (the window closes once its last pane goes) — which
-//      kills pi and, with it, the inbox watcher. Pane-granular so that nodes
-//      the user co-located as panes in ONE window (via swap-pane focus) are not
-//      all taken down when one of them is closed.
+//   2. Tear down the broker ENGINE (the `shutdown` frame → SIGTERM fallback so
+//      the broker process exits and releases the sole .jsonl writer; this also
+//      ends the inbox watcher) AND proactively close the node's on-screen viewer
+//      pane + registry row. The viewer teardown is explicit because attach
+//      auto-reconnects: left to the socket drop alone, the viewer would sit in a
+//      misleading "reconnecting…" state for ~30s on a deliberate close.
 //   3. Append the cancellation notice to its inbox AFTER the watcher is gone.
 //      The watcher advances its cursor when it READS an entry, so appending
 //      while it is still live would let it consume + skip the notice (cursor
@@ -36,6 +38,7 @@ import {
 } from '../canvas/index.js';
 import { transition } from './lifecycle.js';
 import { headlessBrokerHost } from './host.js';
+import { tearDownNode } from './placement.js';
 import { appendInbox } from '../feed/inbox.js';
 import { appendPassive } from '../feed/passive.js';
 
@@ -155,9 +158,12 @@ export function closeNode(rootId: string): CloseNodeResult {
       transition(id, 'cancel');
 
       // 2) Tear the node's ENGINE down: send the `shutdown` frame so the broker
-      //    PROCESS exits and releases the sole .jsonl writer. The node's viewer
-      //    pane/window (if any) closes on its own when the broker socket drops.
+      //    PROCESS exits and releases the sole .jsonl writer. Then proactively
+      //    close the viewer pane + registry row — attach auto-reconnects, so on a
+      //    deliberate close the viewer must be torn down here or it lingers ~30s
+      //    showing a misleading "reconnecting…" instead of going away at once.
       headlessBrokerHost.teardown(id);
+      tearDownNode(id);
 
       // 3) Leave the resume notice AFTER the watcher is gone, so it survives.
       appendInbox(id, {

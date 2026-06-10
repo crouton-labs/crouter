@@ -152,14 +152,13 @@ export async function runBroker(nodeId: string): Promise<void> {
   // (T6) also sets this; we set it again so the broker is self-sufficient.
   process.env[FRONT_DOOR_ENV] = '1';
 
-  // The broker is PANELESS. A `--headless` child spawned by a tmux-resident
-  // parent inherits the parent's TMUX_PANE/TMUX in its env (T6 spawns with
-  // {...process.env}); left in place, the bound stophook's refresh-yield branch
-  // (canvas-stophook.ts) would call reviveInPlace on the PARENT's %pane_id
-  // (respawn-pane -k) — hijacking the parent's pane with a fresh pi, killing the
-  // parent and orphaning this broker. Strip both so every stophook pane-branch
-  // takes its no-pane path (→ ctx.shutdown() → our shutdownHandler → clean exit;
-  // the daemon then respawns the node as a broker).
+  // The broker is PANELESS and detached, but a broker spawned by a tmux-resident
+  // parent inherits the parent's TMUX_PANE/TMUX in its env (the launcher spawns
+  // with {...process.env}). Left in place, every `crtr` command the engine runs
+  // (bash tool, goal-capture naming, a child spawn) would resolve `currentTmux()`
+  // to the PARENT's pane/session and act there — e.g. open viewers beside, or
+  // close, the parent's pane. Strip both so this broker's children see no tmux
+  // context and take their paneless path.
   delete process.env['TMUX_PANE'];
   delete process.env['TMUX'];
 

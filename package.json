@@ -29,7 +29,7 @@
     "link": "npm link",
     "prepublishOnly": "npm run build",
     "test": "node --import tsx/esm --test 'src/**/__tests__/*.test.ts'",
-    "test:full": "node --import tsx/esm --test 'src/**/__tests__/**/*.test.ts'"
+    "test:full": "node --import tsx/esm --test-concurrency=4 --test 'src/**/__tests__/**/*.test.ts'"
   },
   "repository": {
     "type": "git",
