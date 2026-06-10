@@ -1,5 +1,7 @@
 allowBuilds:
   '@crouton-kit/humanloop': true
+  '@google/genai': false
   esbuild: true
+  protobufjs: false
 minimumReleaseAgeExclude:
   - '@crouton-kit/humanloop'
