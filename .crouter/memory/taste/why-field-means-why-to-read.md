@@ -7,6 +7,7 @@ when-and-why-to-read: When authoring or reviewing substrate frontmatter, help
 short-form: "why = 'why READ this doc', never 'why obey it'. Fields merged into
   one routing sentence: 'When <circumstance>, this <kind> should be read
   <optional because>'."
+system-prompt-visibility: name
 ---
 
 CTO ruling (2026-06-10), during the substrate work:
