@@ -58,10 +58,16 @@ jobs:
           DISP="$PWD/node_modules/@crouton-kit/humanloop/dist/surfaces/display.js"
           printf "import { display } from '%s';\nconst r = display('/tmp/diag-doc.md', { window: 'split' });\nconsole.log('PANEID=' + (r.paneId ?? 'NONE'));\n" "$DISP" > /tmp/diag-display.mjs
           tmux new-session -d -s diagci -x 200 -y 50 "node /tmp/diag-display.mjs > /tmp/disp.out 2>/tmp/disp.err; sleep 30"
-          sleep 10
-          echo "--- panes ---"; tmux list-panes -s -t diagci -F '#{pane_id} cmd=#{pane_current_command} start=#{pane_start_command}'
+          tmux set-option -g remain-on-exit on
+          sleep 3
+          echo "--- panes @3s ---"; tmux list-panes -s -t diagci -F '#{pane_id} cmd=#{pane_current_command} dead=#{pane_dead} start=#{pane_start_command}'
           echo "--- disp.out ---"; cat /tmp/disp.out
           echo "--- disp.err ---"; cat /tmp/disp.err
+          echo "--- render pane (%1) captured content (incl. any crash) ---"
+          tmux capture-pane -p -t diagci:0.1 2>&1 | head -40 || echo "capture %1 failed"
+          sleep 8
+          echo "--- panes @11s ---"; tmux list-panes -s -t diagci -F '#{pane_id} cmd=#{pane_current_command} dead=#{pane_dead}'
+          tmux set-option -g remain-on-exit off
           tmux kill-session -t diagci || true
       - run: npm run test:full
 
