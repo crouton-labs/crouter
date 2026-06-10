@@ -46,7 +46,7 @@ import { closeDb } from '../../canvas/db.js';
 import { isNodePaneAlive } from '../../runtime/placement.js';
 import { superviseTick } from '../../../daemon/crtrd.js';
 import { readInboxSince } from '../../feed/inbox.js';
-import type { NodeMeta, NodeStatus, Mode, Lifecycle } from '../../canvas/types.js';
+import type { NodeMeta, NodeStatus, Mode, Lifecycle, ExitIntent } from '../../canvas/types.js';
 import type { InboxEntry } from '../../feed/inbox.js';
 
 // --- locations --------------------------------------------------------------
@@ -157,12 +157,44 @@ export interface CliResult {
 
 export interface HarnessOpts {
   sessionPrefix?: string;
+  /** HEADLESS mode: drive ONLY broker-hosted (paneless) nodes. When set the
+   *  harness does NOT gate on tmux, does NOT eagerly create the isolated tmux
+   *  session, and skips the per-pane `set-environment` seeding — nothing in a
+   *  headless run opens a window. CRTR_NODE_SESSION is still set to the isolated
+   *  name (and dispose still kill-sessions it) because `spawnChild` in spawn.ts
+   *  calls `ensureSession()` UNCONDITIONALLY to record each node's durable
+   *  `home_session` revive target — even a broker birth, which then ignores it.
+   *  So `node new --headless` may LAZILY create that one isolated session as a
+   *  side effect, but never a window/pane; the broker boots detached, supervised
+   *  by pid. Headless tests must use `spawnHeadlessChild`, never `spawnChild`
+   *  (which opens a real window). See createHeadlessHarness(). */
+  headless?: boolean;
 }
 
 export interface SpawnOpts {
   kind?: string;
   mode?: Mode;
   lifecycle?: Lifecycle;
+  id?: string;
+}
+
+/** Fabricate a broker-hosted node row directly — tmux-free, boot-free, NO
+ *  subprocess. Builds a full NodeMeta (identity ∪ runtime) and calls createNode,
+ *  which seeds BOTH halves in one statement (seedRow writes status/intent/pi_pid
+ *  from the meta; writeMeta persists pi_session_id). The result is a row the
+ *  daemon supervises by pid exactly as if a real broker had booted — so a test
+ *  can drive superviseTick(now) liveness decisions against arbitrary liveness
+ *  state (alive/dead pid, with/without session, any intent) with ZERO real boot.
+ *  See foundation-spec §E.2. */
+export interface FabricateOpts {
+  parent?: string | null;
+  kind?: string;
+  mode?: Mode;
+  lifecycle?: Lifecycle;
+  status?: NodeStatus;
+  intent?: ExitIntent;
+  pi_pid?: number | null;
+  pi_session_id?: string | null;
   id?: string;
 }
 
@@ -173,6 +205,8 @@ export interface Harness {
   // spawn an acting root in-process (createNode; no inline bootRoot which would
   // exec pi and never return). Returns the new node id.
   spawnRoot(task: string, o?: SpawnOpts): string;
+  // fabricate a broker-hosted node row directly — no boot, no subprocess (§E.2).
+  fabricateBrokerNode(o?: FabricateOpts): string;
   // spawn a managed child through the REAL CLI `node new`, AS `parentId`.
   spawnChild(parentId: string, task: string, o?: SpawnOpts): Promise<string>;
 
@@ -225,8 +259,14 @@ export interface Harness {
   dispose(): Promise<void>;
 }
 
+/** Thin wrapper: a headless-only harness (broker-hosted, paneless nodes). */
+export async function createHeadlessHarness(opts: HarnessOpts = {}): Promise<Harness> {
+  return createHarness({ ...opts, headless: true });
+}
+
 export async function createHarness(opts: HarnessOpts = {}): Promise<Harness> {
-  if (!hasTmux()) throw new Error('createHarness: tmux not available');
+  const headless = opts.headless === true;
+  if (!headless && !hasTmux()) throw new Error('createHarness: tmux not available');
 
   const origHome = process.env['CRTR_HOME'];
   const origPiBinary = process.env['CRTR_PI_BINARY'];
@@ -288,17 +328,23 @@ export async function createHarness(opts: HarnessOpts = {}): Promise<Harness> {
   // a custom-socket server (`tmux -L foo`) would be invisible to it; this harness
   // therefore assumes the default socket and only ever kill-sessions, never the
   // server.
-  spawnSync('tmux', ['new-session', '-d', '-s', session, '-c', CROUTER, 'sleep 100000'], {
-    stdio: 'ignore',
-  });
-  // Put CRTR_PI_BINARY in the SESSION environment so EVERY pane spawned in this
-  // session inherits it — critically the fake-pi's OWN process, so when its real
-  // stophook fires reviveInPlace (respawn-pane -k on its own pane, the refresh-
-  // yield path) the in-process piCommand there substitutes the fake-pi too.
-  spawnSync('tmux', ['set-environment', '-t', session, 'CRTR_PI_BINARY', FAKE_PI_BINARY], {
-    stdio: 'ignore',
-  });
-  spawnSync('tmux', ['set-environment', '-t', session, 'CRTR_HOME', home], { stdio: 'ignore' });
+  // HEADLESS: skip ALL eager tmux setup. No node in a headless run opens a
+  // window, so there is no pane to pre-seed an env into and no session to pre-
+  // create. (`node new --headless` may still lazily ensureSession() the isolated
+  // name for home_session — dispose kill-sessions it regardless.)
+  if (!headless) {
+    spawnSync('tmux', ['new-session', '-d', '-s', session, '-c', CROUTER, 'sleep 100000'], {
+      stdio: 'ignore',
+    });
+    // Put CRTR_PI_BINARY in the SESSION environment so EVERY pane spawned in this
+    // session inherits it — critically the fake-pi's OWN process, so when its real
+    // stophook fires reviveInPlace (respawn-pane -k on its own pane, the refresh-
+    // yield path) the in-process piCommand there substitutes the fake-pi too.
+    spawnSync('tmux', ['set-environment', '-t', session, 'CRTR_PI_BINARY', FAKE_PI_BINARY], {
+      stdio: 'ignore',
+    });
+    spawnSync('tmux', ['set-environment', '-t', session, 'CRTR_HOME', home], { stdio: 'ignore' });
+  }
 
   const pidsToKill = new Set<number>();
   let nextRootSeq = 0;
@@ -409,6 +455,28 @@ export async function createHarness(opts: HarnessOpts = {}): Promise<Harness> {
         lifecycle: o.lifecycle ?? 'resident',
         status: 'active',
         parent: null,
+      };
+      createNode(meta);
+      closeDb();
+      return id;
+    },
+
+    fabricateBrokerNode(o = {}): string {
+      const id = o.id ?? `brk-${process.pid}-${nextRootSeq++}`;
+      const meta: NodeMeta = {
+        node_id: id,
+        name: id,
+        created: new Date().toISOString(),
+        cwd: CROUTER,
+        host_kind: 'broker',
+        kind: o.kind ?? 'developer',
+        mode: o.mode ?? 'base',
+        lifecycle: o.lifecycle ?? 'terminal',
+        parent: o.parent ?? null,
+        pi_session_id: o.pi_session_id ?? null,
+        status: o.status ?? 'active',
+        intent: o.intent ?? null,
+        pi_pid: o.pi_pid ?? null,
       };
       createNode(meta);
       closeDb();
@@ -635,6 +703,28 @@ export async function createHarness(opts: HarnessOpts = {}): Promise<Harness> {
 
     async dispose(): Promise<void> {
       spawnSync('tmux', ['kill-session', '-t', session], { stdio: 'ignore' });
+      // Best-effort: a superviseTick-triggered revive of a fabricated node fires
+      // a DETACHED throwaway broker (it loads the real SDK; the rmSync of home
+      // below makes a mid-boot one self-terminate when its files vanish). Kill
+      // any that recorded a pid first — scan every node's row pid + recorded
+      // boot pids and add them to the kill set.
+      closeDb();
+      for (const d of nodeDirs()) {
+        try {
+          const n = getNode(d);
+          if (n?.pi_pid != null) pidsToKill.add(n.pi_pid);
+        } catch {
+          /* row gone — fine */
+        }
+        for (const line of readLines(join(nodeDir(d), 'fake-pi.boots.jsonl'))) {
+          try {
+            const p = (JSON.parse(line) as { pid?: number }).pid;
+            if (typeof p === 'number') pidsToKill.add(p);
+          } catch {
+            /* skip */
+          }
+        }
+      }
       for (const p of pidsToKill) {
         try {
           process.kill(p, 'SIGKILL');
