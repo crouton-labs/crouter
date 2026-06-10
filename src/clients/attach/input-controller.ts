@@ -58,6 +58,12 @@ export interface InputControllerHooks {
    *  reports notices up the same way it reports commands. Absent → notices are
    *  dropped silently. */
   onNotice?: (message: string) => void;
+  /** OPTIONAL: the canvas node this viewer is attached to — forwarded to the
+   *  slash context so `/promote` targets it (Unit Q wires it from runAttach). */
+  nodeId?: string;
+  /** OPTIONAL: toggle the GRAPH overlay — forwarded to the slash context so
+   *  `/graph` opens/closes it (Unit Q wires it from runAttach). */
+  onGraph?: () => void;
 }
 
 export class InputController {
@@ -124,6 +130,8 @@ export class InputController {
       notify: (message) => this.notify(message),
       state: this.state,
       cwd: process.cwd(),
+      nodeId: this.hooks.nodeId,
+      onGraph: this.hooks.onGraph,
     };
   }
 

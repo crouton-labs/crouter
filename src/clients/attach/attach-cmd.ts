@@ -16,7 +16,9 @@
 // is therefore a BRANCH wrapping a single leaf: `crtr attach to <node>`.
 
 import { randomUUID } from 'node:crypto';
+import { execFile } from 'node:child_process';
 import {
+  CombinedAutocompleteProvider,
   Container,
   ProcessTerminal,
   Text,
@@ -41,10 +43,35 @@ import type {
   BrokerToClient,
   ClientRole,
 } from '../../core/runtime/broker-protocol.js';
+import { climbRoot } from '../../core/canvas/nav-model.js';
 import { ChatView } from './chat-view.js';
 import { InputController } from './input-controller.js';
+import { buildCanvasPanelLines } from './canvas-panels.js';
+import { GraphOverlay } from './graph-overlay.js';
+import { slashCommandList } from './slash-commands.js';
 import { applyTheme, createKeybindingsManager } from './config-load.js';
 import { BrokerUnavailableError, ViewSocketClient, reconnectShouldGiveUp } from './view-socket.js';
+
+/** Async per-node ask-map fetch (NON-blocking — the viewer must never block its
+ *  input pump on a shell-out, unlike canvas-nav's execFileSync). Buckets a whole
+ *  sub-DAG's pending asks in one `crtr` process; on any error the callback is not
+ *  invoked, so the caller keeps its last good map. */
+function fetchAsksAsync(rootId: string, cb: (counts: Record<string, number>) => void): void {
+  execFile(
+    'crtr',
+    ['canvas', 'attention', 'map', '--view', rootId, '--json'],
+    { timeout: 2_500, maxBuffer: 4 * 1024 * 1024 },
+    (err, stdout) => {
+      if (err) return;
+      try {
+        const parsed = JSON.parse(stdout.trim()) as { counts?: Record<string, number> };
+        cb(parsed.counts ?? {});
+      } catch {
+        /* malformed — keep last map */
+      }
+    },
+  );
+}
 
 /** `CustomEditor`'s ctor wants pi's app-subclass KeybindingsManager; our
  *  `createKeybindingsManager()` returns pi-tui's base manager. CustomEditor only
@@ -126,12 +153,27 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
   applyTheme({ cwd: meta.cwd });
   const km = createKeybindingsManager();
 
-  // 2. TUI + chat container + editor.
+  // 2. TUI + layout containers + editor. Top-to-bottom render order (set at
+  //    step 8): chat · badge · managers (↑ subscriber) · editor · reports
+  //    (↓ subscriptions) · footer. The badge sits in the BOTTOM-anchored chrome
+  //    stack (directly above managers), NOT as the topmost child: pi-tui anchors
+  //    the viewport to the cursor at the bottom, so a topmost badge scrolls off
+  //    into scrollback the instant the chat exceeds one screen. The badge + the
+  //    two canvas panels reproduce the pi-extension chrome natively (Unit Q).
   const tui = new TUI(new ProcessTerminal());
+  const badge = new Container();
   const chatContainer = new Container();
+  const managers = new Container();
+  const reports = new Container();
   const footer = new Container();
   const editorTheme: EditorTheme = { borderColor: (s) => s, selectList: getSelectListTheme() };
   const editor = new CustomEditor(tui, editorTheme, km as unknown as EditorKeybindings, { paddingX: 1 });
+  // Slash-command autocomplete: builtins + native canvas commands now; enriched
+  // with the broker's engine/extension/skill commands on the get_commands ack.
+  const setCommands = (commands?: ReadonlyArray<{ name: string; description?: string }>): void => {
+    editor.setAutocompleteProvider(new CombinedAutocompleteProvider(slashCommandList(commands), meta.cwd));
+  };
+  setCommands();
 
   // 3. Render layer (T5). ChatView owns the chat scroll + activity spinner; the
   //    footer/status line below is ours, so onFooterEvent is left unset (footer
@@ -147,7 +189,6 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
     const bits: string[] = [role === 'controller' ? 'drive' : 'read-only'];
     if (liveState?.model) bits.push(liveState.model);
     if (liveState?.isStreaming) bits.push('streaming');
-    if (liveState?.sessionName) bits.push(liveState.sessionName);
     if (liveState && liveState.pendingMessageCount > 0) bits.push(`queued ${liveState.pendingMessageCount}`);
     let line = `\x1b[2m${bits.join(' · ')}\x1b[22m`;
     if (notice) line += `   \x1b[33m${notice}\x1b[39m`;
@@ -160,11 +201,48 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
     renderFooter();
   };
 
-  // 5. Input layer (T6). onCommand/onDialogResponse → socket; onNotice → footer.
+  // Name badge — the session name (= the canvas editor label `kind (mode)
+  // name`), relayed over the socket and patched live (Feature 1). Rendered just
+  // above the managers line in the bottom chrome so it stays in-viewport.
+  const renderBadge = (): void => {
+    badge.clear();
+    if (liveState?.sessionName) badge.addChild(new Text(`\x1b[1m${liveState.sessionName}\x1b[22m`, 1, 0));
+    tui.requestRender();
+  };
+
+  // Subscribed-node panel — manager line above the editor, live reports below,
+  // read straight from canvas.db via nav-model (Feature 2). asksMap is refreshed
+  // by the low-rate poll below; beginFrame() inside buildCanvasPanelLines memoizes
+  // the db reads for each rebuild.
+  let asksMap: Record<string, number> = {};
+  const renderPanels = (): void => {
+    const { managers: mLines, reports: rLines } = buildCanvasPanelLines(nodeId, asksMap);
+    managers.clear();
+    for (const l of mLines) managers.addChild(new Text(l, 1, 0));
+    reports.clear();
+    for (const l of rLines) reports.addChild(new Text(l, 1, 0));
+    tui.requestRender();
+  };
+
+  // The alt+g GRAPH overlay (Feature 3) — a full-screen navigator over the same
+  // nav-model graph, reading the live asksMap.
+  const graphOverlay = new GraphOverlay(tui, nodeId, () => asksMap);
+
+  // Refresh all canvas chrome (panels + overlay if open) from canvas.db.
+  const refreshChrome = (): void => {
+    renderPanels();
+    graphOverlay.refresh();
+  };
+
+  // 5. Input layer (T6). onCommand/onDialogResponse → socket; onNotice → footer;
+  //    nodeId/onGraph feed the slash context (/promote targets this node, /graph
+  //    toggles the overlay).
   const input = new InputController(tui, editor, km, {
     onCommand: (frame) => socket.send(frame),
     onDialogResponse: (resp) => socket.send(resp),
     onNotice: (msg) => setNotice(msg),
+    nodeId,
+    onGraph: () => graphOverlay.toggle(),
   });
 
   // Feed fresh state into the input controller AND the footer. Steer-vs-prompt
@@ -175,6 +253,11 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
     liveState = state;
     input.setState(state);
     renderFooter();
+    renderBadge();
+    // Panel liveness rides the relayed event stream (agent_start/agent_end/
+    // queue_update/session_info_changed all patch state through here) plus the
+    // low-rate poll below for changes that emit no event (child status flips).
+    refreshChrome();
   };
   const patchState = (patch: Partial<BrokerSnapshot['state']>): void => {
     if (liveState === undefined) return;
@@ -188,6 +271,9 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
         role = frame.role;
         chatView.applySnapshot(frame.snapshot);
         setLiveState(frame.snapshot.state);
+        // Ask the broker for its merged command list (engine/extension/skill
+        // commands) to enrich slash autocomplete beyond the builtins+canvas set.
+        socket.send({ type: 'get_commands' });
         if (frame.pending_dialog != null) input.attachDialog(frame.pending_dialog);
         break;
       }
@@ -207,10 +293,18 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
         break;
       }
       case 'ack': {
-        // Dynamic-command autocomplete (feeding get_commands into T6's palette)
-        // is DEFERRED for Phase 4 (would require editing T6's input-controller —
-        // out of my 3-file scope; the fall-through-to-prompt path already makes
-        // extension commands functional). Surface only command failures here.
+        // get_commands replies with the broker's merged command list as JSON in
+        // `detail` — rebuild the autocomplete provider with it (slashCommandList
+        // re-appends the native canvas commands, deduped).
+        if (frame.for === 'get_commands' && frame.ok && frame.detail) {
+          try {
+            const list = JSON.parse(frame.detail) as Array<{ name: string; description?: string }>;
+            setCommands(list);
+          } catch {
+            /* malformed — keep the current provider */
+          }
+          break;
+        }
         if (!frame.ok) {
           setNotice(`command failed: ${frame.for}${frame.detail ? ` — ${frame.detail}` : ''}`);
         }
@@ -257,9 +351,12 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
   const done = new Promise<void>((r) => {
     resolveDone = r;
   });
+  let asksTimer: ReturnType<typeof setInterval> | undefined;
   const teardown = (reason: 'detach' | 'broker-gone' | 'signal'): void => {
     if (tornDown) return;
     tornDown = true;
+    if (asksTimer !== undefined) clearInterval(asksTimer);
+    graphOverlay.close();
     clearPaneTag();
     removeKeyListener();
     // A clean detach tells the broker to drop this viewer (the engine runs on);
@@ -349,6 +446,13 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
       teardown('detach');
       return { consume: true };
     }
+    // alt+g toggles the GRAPH overlay. The global listener fires BEFORE the
+    // focused component, so this works whether the editor or the overlay holds
+    // focus (closing it from inside the overlay too).
+    if (matchesKey(data, 'alt+g')) {
+      graphOverlay.toggle();
+      return { consume: true };
+    }
     return undefined;
   });
 
@@ -362,13 +466,34 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
   // 8. Lay out, focus the editor, start, then handshake. Starting before the
   //    handshake means the welcome's applySnapshot renders into a live TUI.
   tui.addChild(chatContainer);
-  tui.addChild(footer);
+  tui.addChild(badge);
+  tui.addChild(managers);
   tui.addChild(editor);
+  tui.addChild(reports);
+  tui.addChild(footer);
   tui.setFocus(editor);
   renderFooter();
+  renderBadge();
+  renderPanels();
   tui.start();
 
   sendHello();
+
+  // Low-rate canvas-chrome refresh: repaint panels/overlay from canvas.db (child
+  // status flips emit no broker event) and re-poll the ask map asynchronously.
+  const ASKS_POLL_MS = 5_000;
+  const pollChrome = (): void => {
+    refreshChrome();
+    fetchAsksAsync(climbRoot(nodeId), (counts) => {
+      if (JSON.stringify(counts) !== JSON.stringify(asksMap)) {
+        asksMap = counts;
+        refreshChrome();
+      }
+    });
+  };
+  pollChrome();
+  asksTimer = setInterval(pollChrome, ASKS_POLL_MS);
+  if (typeof asksTimer.unref === 'function') asksTimer.unref();
 
   await done;
 }
