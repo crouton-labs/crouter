@@ -56,17 +56,17 @@ jobs:
           echo "=== one-shot render (should work) ==="
           printf '# Render check\n\n:::callout{type="info"}\nRENDER-MARKER body\n:::\n' > /tmp/diag-doc.md
           node_modules/@crouton-kit/humanloop/.venv/bin/termrender doc render --color on < /tmp/diag-doc.md 2>&1 | head -8
-          echo "=== watch in tmux pane, pipe-pane to capture raw pty (incl tracebacks) ==="
+          echo "=== watch as pane cmd: stdout=pty, stderr->file to catch traceback ==="
           TR="$PWD/node_modules/@crouton-kit/humanloop/.venv/bin/termrender"
-          rm -f /tmp/pipe.log
-          tmux new-session -d -s diagw -x 200 -y 50 "sleep 60"
-          P=$(tmux list-panes -t diagw -F '#{pane_id}' | head -1)
-          tmux pipe-pane -t "$P" -o "cat >> /tmp/pipe.log"
-          tmux send-keys -t diagw "TERM=tmux-256color '$TR' doc watch --color on -- /tmp/diag-doc.md; echo WATCH_EXITED=\$?" Enter
-          sleep 6
-          echo "--- pane state ---"; tmux list-panes -s -t diagw -F '#{pane_id} cmd=#{pane_current_command} dead=#{pane_dead}'
-          echo "--- raw pty stream (cat -v) ---"; cat -v /tmp/pipe.log | head -60
-          tmux kill-session -t diagw || true
+          rm -f /tmp/watch.err
+          tmux new-session -d -s diagw -x 200 -y 50 "'$TR' doc watch --color on -- /tmp/diag-doc.md 2>/tmp/watch.err; echo EXIT=\$? >>/tmp/watch.err; sleep 30"
+          sleep 5
+          echo "--- pane state @5s ---"; tmux list-panes -s -t diagw -F '#{pane_id} cmd=#{pane_current_command} dead=#{pane_dead}'
+          echo "--- watch.err (stderr + exit code) ---"; cat -v /tmp/watch.err | head -60
+          echo "--- TERM/locale in a fresh detached pane ---"
+          tmux new-session -d -s diagenv -x 200 -y 50 "env | grep -iE 'TERM|LANG|LC_' > /tmp/env.txt; sleep 10"
+          sleep 2; cat /tmp/env.txt
+          tmux kill-session -t diagw || true; tmux kill-session -t diagenv || true
       - run: npm run test:full
 
 # Runner caveats (cannot be exercised from this dev box — verify on first CI run):
