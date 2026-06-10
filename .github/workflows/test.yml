@@ -1,0 +1,43 @@
+name: Test
+
+on:
+  push:
+  pull_request:
+  workflow_call: # so publish.yml can gate on this suite (needs: tests)
+
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Fast tier — the local default (`npm test`). Tmux-free by contract (audit §2/§3): every file directly under any `__tests__/` runs here, the `full/` subdir is excluded by the single-trailing-segment glob. Deliberately NO tmux installed so the fast tier's tmux-free property stays honest — a misplaced tmux test would skip (hasTmux()=false), not fake-pass, and the full job below still runs it.
+  fast:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+  # Full tier (`npm run test:full`) — everything, including the 9 genuine-tmux chrome tests in src/core/__tests__/full/. These boot a REAL but isolated tmux session on the DEFAULT server (helpers/harness.ts) using scripted ops only (new-session -d, set-environment, respawn-pane, kill-session) — NO attach-session, so they run headless on a runner with no attached client/TTY. The LLM vehicle is faked: CRTR_PI_BINARY → fixtures/fake-pi-host.ts and CRTR_BROKER_ENGINE → fixtures/fake-engine.ts, so the real `pi` binary is never needed; the @earendil-works/pi-coding-agent SDK library IS needed (value imports in fake-engine) and comes in via `npm ci`. Broker unix sockets fit under the OS sun_path limit because the harness roots its canvas home at /tmp (present on ubuntu-latest).
+  full:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y tmux
+      - run: npm run build
+      - run: npm run test:full
+
+# Runner caveats (cannot be exercised from this dev box — verify on first CI run):
+#   • ubuntu-latest is the primary target: `apt-get install -y tmux` is reliable and free-tier. If the chrome tests ever prove flaky on the Linux tmux build, the alternative is `runs-on: macos-latest` with `brew install tmux` — but macOS runners cost ~10× the minutes and queue slower, so only switch the `full` job if a Linux-specific tmux bug is confirmed; keep `fast` on ubuntu regardless.
+#   • The full suite was profiled at ~39s / 488 tests locally (audit §2); CI cold-start + npm ci dominate wall time.

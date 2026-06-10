@@ -8,7 +8,14 @@ permissions:
   contents: write
 
 jobs:
+  # Gate the publish on the full test suite (reusable call into test.yml). Same
+  # `if:` as publish so auto-release commits skip both together.
+  tests:
+    if: "!startsWith(github.event.head_commit.message, 'chore: release')"
+    uses: ./.github/workflows/test.yml
+
   publish:
+    needs: tests
     runs-on: ubuntu-latest
     if: "!startsWith(github.event.head_commit.message, 'chore: release')"
     steps:

@@ -16,6 +16,11 @@ Only two kinds of tests belong in this codebase — nothing else:
 
 A real bug is the **only** trigger for a new non-lifecycle test. "This function ought to have coverage" is not — do not add speculative/feature-coverage tests. When you fix a bug, add the regression test that would have caught it, and reference the bug in the test.
 
+### Two tiers: fast (local default) vs full (CI)
+`npm test` is the **fast tier** — tmux-free, <10s, the local default; it globs `src/**/__tests__/*.test.ts`, matching every file directly under a `__tests__/` dir but NOT the `full/` subdir. `npm run test:full` is **everything**, including the genuine-tmux chrome tests in `src/core/__tests__/full/` (it globs `src/**/__tests__/**/*.test.ts`); it boots a real isolated tmux session and is what CI runs (`.github/workflows/test.yml`, which also gates publish).
+
+**Run only what you changed.** In the local loop, run the single file or dir you touched — `node --import tsx/esm --test <path>` — not the whole suite. Full-suite runs belong in CI, not in every dev iteration.
+
 ## Constraints
 - **crtr ONLY runs inside tmux.** The whole runtime (focus/placement, the `/resume-node` popup, `canvas browse`, the daemon's window management) assumes a tmux server. Do NOT add non-tmux fallback UIs — outside tmux a command should notify + no-op (or, for a non-TTY pipe, print a static dump), never reimplement an interactive path. (A non-TTY guard for piping is fine; a parallel non-tmux *interactive* fallback is not.)
 - **`reviveNode()` (`src/core/runtime/revive.ts`) is the ONLY sanctioned launcher of `pi --session <file>`.** It alone sets `CRTR_NODE_ID` + the `-e` canvas extensions and runs `transition('revive')`, keeping the canvas-db row ⇄ pi session in lockstep. A RAW `pi --session <file>` has neither, so every canvas hook is inert: the stophook never records `pi_pid` / clears `intent` / marks `done`, no inbox-watcher wakes it, and the row stays dormant; worst case (`idle + intent=idle-release`) the daemon can't see the raw pi and DOUBLE-SPAWNS a second pi on the same `.jsonl`, corrupting the conversation. UIs (e.g. the `/resume-node` picker in `src/pi-extensions/canvas-resume.ts`) must open nodes via `crtr node focus` / `crtr canvas revive`, NEVER by spawning pi directly.
