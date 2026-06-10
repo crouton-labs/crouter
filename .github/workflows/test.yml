@@ -49,8 +49,18 @@ jobs:
       # already has termrender on PATH, which is why this only bites CI.
       - name: Put managed termrender on PATH
         run: echo "$PWD/node_modules/@crouton-kit/humanloop/.venv/bin" >> "$GITHUB_PATH"
-      - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y tmux
+      # tmux hosts the panes; neovim is the review editor humanloop resolves
+      # FIRST (nvim, then vim) and the one the regression test drives via its
+      # <Space>s submit map. ubuntu-latest ships vim but not nvim, so without
+      # this the review worker falls back to vim and the submit never fires.
+      - name: Install tmux + neovim
+        run: sudo apt-get update && sudo apt-get install -y tmux neovim
+      - name: DIAG editor resolution
+        continue-on-error: true
+        run: |
+          set +e
+          echo "nvim: $(command -v nvim || echo MISSING)"; nvim --version 2>&1 | head -1
+          echo "vim:  $(command -v vim || echo MISSING)"; vim --version 2>&1 | head -1
       - run: npm run build
       - run: npm run test:full
 
