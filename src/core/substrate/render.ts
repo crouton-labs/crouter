@@ -292,11 +292,20 @@ function renderChildren(dir: DirNode, childPrefix: string, lines: string[]): voi
 }
 
 /** Build the file tree for a kind's eligible docs, headed by `rootLabel`.
- *  Returns '' when there are no docs at all (the empty-tree contract). */
+ *  Returns '' when there are no docs at all (the empty-tree contract).
+ *
+ *  `docs` arrives in precedence order (project > user > builtin, node-local last)
+ *  WITHOUT cross-scope dedup — `listAllMemoryDocs` returns every scope's hit for
+ *  a path-derived name and leaves first-wins dedup to the caller. So a name
+ *  present in two scopes is deduped here (first occurrence wins); otherwise it
+ *  would render as two identical sibling lines and double-count into `[+N more]`. */
 function buildTree(docs: SubstrateDoc[], rootLabel: string): string {
   if (docs.length === 0) return '';
   const root = newDir('');
+  const seen = new Set<string>();
   for (const d of docs) {
+    if (seen.has(d.name)) continue; // first-wins cross-scope dedup
+    seen.add(d.name);
     if (isIndexName(d.name)) {
       const dir = ensureDir(root, indexDirOf(d.name));
       if (dir.index === null) dir.index = d; // precedence-ordered → keep first (highest)
