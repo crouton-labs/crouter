@@ -55,12 +55,6 @@ jobs:
       # this the review worker falls back to vim and the submit never fires.
       - name: Install tmux + neovim
         run: sudo apt-get update && sudo apt-get install -y tmux neovim
-      - name: DIAG editor resolution
-        continue-on-error: true
-        run: |
-          set +e
-          echo "nvim: $(command -v nvim || echo MISSING)"; nvim --version 2>&1 | head -1
-          echo "vim:  $(command -v vim || echo MISSING)"; vim --version 2>&1 | head -1
       - run: npm run build
       - run: npm run test:full
 
