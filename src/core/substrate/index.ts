@@ -26,5 +26,16 @@ export type { NodeConfigSubject } from './subject.js';
 
 export { gatePasses } from './gate.js';
 
+export {
+  INDEX_NAME,
+  isIndexName,
+  indexDirOf,
+  displayName,
+  buildCeilingIndex,
+  effectiveRung,
+  applyCeilings,
+} from './ceiling.js';
+export type { Surface } from './ceiling.js';
+
 export { renderSkillsSection, renderPreferencesSection, renderReferencesBlock } from './render.js';
 export { renderOnReadDocs } from './on-read.js';

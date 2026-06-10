@@ -1,8 +1,7 @@
 import { defineLeaf } from '../../core/command.js';
 import type { Scope } from '../../types.js';
 import { listAllMemoryDocs } from '../../core/memory-resolver.js';
-import { parseSubstrateDoc } from '../../core/substrate/index.js';
-import type { SubstrateDoc } from '../../core/substrate/index.js';
+import { parseSubstrateDoc, isIndexName, indexDirOf } from '../../core/substrate/index.js';
 import { listAllSkills } from '../../core/resolver.js';
 import { MEMORY_KINDS, MEMORY_SCOPES, scopeRank } from './shared.js';
 
@@ -19,7 +18,7 @@ export const listLeaf = defineLeaf({
       { kind: 'flag', name: 'scope', type: 'enum', choices: [...MEMORY_SCOPES], required: false, constraint: 'Filter to a single scope. Default: all resolved scopes.' },
     ],
     output: [
-      { name: 'items', type: 'object[]', required: true, constraint: 'One row per document. Each: {name, title, short_form, kind, scope}. short_form is the abbreviated hook — shown here and nowhere else. Sorted by scope then kind then name ascending.' },
+      { name: 'items', type: 'object[]', required: true, constraint: 'One row per document. Each: {name, title, short_form, kind, scope, is_dir}. A directory INDEX.md surfaces as a dir entry (is_dir true, name = the directory path with a trailing slash); is_dir is false for an ordinary doc. short_form is the abbreviated hook — shown here and nowhere else. Sorted by scope then kind then name ascending.' },
       { name: 'follow_up', type: 'string', required: true, constraint: 'Concrete next commands — read a document in full or narrow the inventory.' },
     ],
     outputKind: 'object',
@@ -39,6 +38,7 @@ export const listLeaf = defineLeaf({
       kind: string;
       scope: Scope;
       shortForm: string;
+      isDir: boolean;
     }
 
     const seen = new Set<string>(); // "scope/name" → first wins
@@ -56,7 +56,11 @@ export const listLeaf = defineLeaf({
       const sub = parseSubstrateDoc(doc);
       if (sub === null) continue;
       if (kindFilter !== undefined && sub.kind !== kindFilter) continue;
-      addItem({ name: sub.name, kind: sub.kind, scope: sub.scope, shortForm: sub.shortForm });
+      // A directory INDEX surfaces as a dir entry: its dir path with a trailing
+      // slash, flagged is_dir, so the inventory distinguishes it from a doc.
+      const isDir = isIndexName(sub.name);
+      const name = isDir ? indexDirOf(sub.name) + '/' : sub.name;
+      addItem({ name, kind: sub.kind, scope: sub.scope, shortForm: sub.shortForm, isDir });
     }
 
     // Skill-plugin corpus (scope-root skills + plugin/marketplace skills).
@@ -66,7 +70,7 @@ export const listLeaf = defineLeaf({
         for (const skill of listAllSkills(scopeFilter)) {
           const raw = skill.frontmatter.description;
           const desc = typeof raw === 'string' ? raw : '';
-          addItem({ name: skill.name, kind: 'skill', scope: skill.scope, shortForm: desc });
+          addItem({ name: skill.name, kind: 'skill', scope: skill.scope, shortForm: desc, isDir: false });
         }
       } catch {
         /* skill corpus unavailable — list substrate documents alone */
@@ -88,6 +92,7 @@ export const listLeaf = defineLeaf({
         short_form: d.shortForm,
         kind: d.kind,
         scope: d.scope,
+        is_dir: d.isDir,
       })),
       follow_up:
         'Read one in full with `crtr memory read <name>`. Narrow with --kind / --scope, or search a topic with `crtr memory find <query>`.',

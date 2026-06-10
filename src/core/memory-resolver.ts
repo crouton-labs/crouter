@@ -88,15 +88,24 @@ export function listAllMemoryDocs(scope?: Scope): MemoryDoc[] {
 
 /** Direct full-path lookup of memory/<name>.md across scopes, precedence-first.
  *  Returns every scope's hit in precedence order; the resolver takes the first
- *  (highest-precedence) one — a fully-specified name is never ambiguous. */
+ *  (highest-precedence) one — a fully-specified name is never ambiguous.
+ *
+ *  A directory INDEX is the cleaner contract: when `<name>.md` is absent but
+ *  `<name>/INDEX.md` exists, the bare dir name (`taste`) resolves to the dir's
+ *  INDEX doc — carrying the dir name as its identity. (`taste/INDEX` still
+ *  resolves directly as the file path.) */
 function findMemoryMatches(name: string, scope: Scope | undefined): MemoryDoc[] {
   const matches: MemoryDoc[] = [];
   for (const s of scopesInPrecedence(scope)) {
     const dir = scopeMemoryDir(s);
     if (!dir) continue;
     const path = join(dir, ...name.split('/')) + '.md';
-    if (!pathExists(path)) continue;
-    matches.push(loadMemoryDoc(name, s, path));
+    if (pathExists(path)) {
+      matches.push(loadMemoryDoc(name, s, path));
+      continue;
+    }
+    const indexPath = join(dir, ...name.split('/'), 'INDEX.md');
+    if (pathExists(indexPath)) matches.push(loadMemoryDoc(name, s, indexPath));
   }
   return matches;
 }

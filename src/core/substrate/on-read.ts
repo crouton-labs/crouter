@@ -39,6 +39,9 @@ import { parseFrontmatterGeneric } from '../frontmatter.js';
 import { listAllMemoryDocs } from '../memory-resolver.js';
 import {
   assembleNodeSubject,
+  buildCeilingIndex,
+  displayName,
+  effectiveRung,
   gatePasses,
   parseSubstrateDoc,
   parseSubstrateFrontmatter,
@@ -287,6 +290,18 @@ export function renderOnReadDocs(
   // file content that follows it (the applies-to set, order -1, trails).
   candidates.sort((a, b) => b.order - a.order);
 
+  // INDEX ceiling: build the dir → governing-INDEX map over the whole resolved
+  // corpus PLUS the candidate docs, so a dir's INDEX caps (or `none`-hides) its
+  // subtree on-read exactly as it does at boot. The candidate's own
+  // fileReadVisibility and name are overridden by the effective rung / dir entry.
+  let ceil: Map<string, SubstrateDoc>;
+  try {
+    const resolved = cachedSubstrateDocs(listAllMemoryDocs, parseSubstrateDoc);
+    ceil = buildCeilingIndex([...resolved, ...candidates.map((c) => c.doc)]);
+  } catch {
+    ceil = buildCeilingIndex(candidates.map((c) => c.doc));
+  }
+
   const rendered: string[] = [];
   for (const c of candidates) {
     // Never re-surface the doc the agent is literally reading.
@@ -296,7 +311,12 @@ export function renderOnReadDocs(
     let block: string | null;
     try {
       if (!gatePasses(c.doc, subject)) continue; // gated out for this node
-      block = renderDocEnvelope(c.doc, absReadFile);
+      const rung = effectiveRung(c.doc, ceil, 'fileReadVisibility');
+      const doc: SubstrateDoc =
+        rung === c.doc.fileReadVisibility && displayName(c.doc.name) === c.doc.name
+          ? c.doc
+          : { ...c.doc, fileReadVisibility: rung, name: displayName(c.doc.name) };
+      block = renderDocEnvelope(doc, absReadFile);
     } catch {
       continue; // a single bad doc never breaks the read
     }

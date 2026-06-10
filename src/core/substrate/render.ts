@@ -27,6 +27,7 @@ import { parseFrontmatterGeneric } from '../frontmatter.js';
 import { pathExists, readText, walkFiles } from '../fs-utils.js';
 import { memoryDir } from '../runtime/memory.js';
 import {
+  applyCeilings,
   assembleNodeSubject,
   gatePasses,
   parseSubstrateDoc,
@@ -51,7 +52,12 @@ import {
  *  system-prompt rung above `none`. Resolver = user + project + builtin scopes
  *  (precedence-ordered); node-local is loaded separately (see nodeLocalDocs).
  *  Uses the per-session cache so the full corpus is scanned+parsed at most once
- *  per session across the three boot-render calls. */
+ *  per session across the three boot-render calls.
+ *
+ *  Ceilings are applied over the WHOLE corpus (cross-kind) BEFORE the kind
+ *  filter: an INDEX.md renders as its dir entry (`taste`, not `taste/INDEX`) at
+ *  its own rung, and every descendant's rung is capped by its ancestor INDEX
+ *  rungs — a `none` dir hides its whole subtree. */
 function resolverDocs(subject: NodeConfigSubject, kind: DocKind): SubstrateDoc[] {
   let docs: SubstrateDoc[];
   try {
@@ -59,10 +65,18 @@ function resolverDocs(subject: NodeConfigSubject, kind: DocKind): SubstrateDoc[]
   } catch {
     return [];
   }
-  return docs
+  return applyCeilings(docs, 'systemPromptVisibility')
     .filter((d) => d.kind === kind)
     .filter((d) => gatePasses(d, subject))
-    .filter((d) => d.systemPromptVisibility !== 'none');
+    .filter((d) => d.systemPromptVisibility !== 'none')
+    // Re-sort after the INDEX rename (taste/INDEX → taste) so a dir entry sorts
+    // immediately BEFORE its children, keeping scope precedence (project > user
+    // > builtin) intact.
+    .sort((a, b) => scopeRank(a.scope) - scopeRank(b.scope) || a.name.localeCompare(b.name));
+}
+
+function scopeRank(scope: Scope): number {
+  return scope === 'project' ? 0 : scope === 'user' ? 1 : 2;
 }
 
 /** The node-local memory docs eligible at boot. Node-local memory lives in the
