@@ -1,4 +1,7 @@
-// Run with: node --import tsx/esm --test src/core/__tests__/broker-dialogs.test.ts
+// Run with: node --import tsx/esm --test src/core/__tests__/full/broker-dialogs.test.ts
+//
+// FULL TIER (real-boot-bound): tmux-free, but it boots a REAL broker process
+// (~5s pi-SDK load), so it lives in full/ (CI), not the fast local loop.
 //
 // Broker dialog handling — the §5.4 C2 forward-progress proof plus the T8 attach
 // gates G5/G5b/G6. Split out of broker-lifecycle.test.ts; the gates are the
@@ -39,9 +42,9 @@
 import { test, before, after, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createHeadlessHarness, type Harness } from './helpers/harness.js';
-import { isPidAlive } from '../canvas/pid.js';
-import { createAttachKit } from './helpers/broker-clients.js';
+import { createHeadlessHarness, type Harness } from '../helpers/harness.js';
+import { isPidAlive } from '../../canvas/pid.js';
+import { createAttachKit } from '../helpers/broker-clients.js';
 
 let h: Harness;
 let id: string; // ONE shared broker, reused across C2/G5/G5b/G6 (1 real boot, not 4)

@@ -1,8 +1,9 @@
-// Run with: node --import tsx/esm --test src/core/__tests__/spike-harness.test.ts
+// Run with: node --import tsx/esm --test src/core/__tests__/full/spike-harness.test.ts
 //
 // HEADLESS RETARGET (foundation-spec §C.14 + §E). The throwaway-grade POC that a
 // faithful integration harness for the node/canvas runtime is feasible — now on
-// the BROKER path, in the FAST tier (no tmux, no hasTmux() gate). It drives the
+// the BROKER path, tmux-free (no hasTmux() gate). FULL TIER: it boots a REAL
+// broker process (~5s pi-SDK load), so it lives in full/ (CI), not the fast loop. It drives the
 // REAL `crtr` CLI to spawn a `--headless` node onto the REAL headless broker host,
 // which boots a REAL detached broker PROCESS hosting the fake SDK engine via the
 // CRTR_BROKER_ENGINE seam — proving the broker exec's with the right argv+env,
@@ -41,9 +42,9 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createHarness, type Harness } from './helpers/harness.js';
-import { piCommand } from '../runtime/placement.js';
-import { CANVAS_EXTENSIONS } from '../runtime/launch.js';
+import { createHarness, type Harness } from '../helpers/harness.js';
+import { piCommand } from '../../runtime/placement.js';
+import { CANVAS_EXTENSIONS } from '../../runtime/launch.js';
 
 let h: Harness;
 let root: string;

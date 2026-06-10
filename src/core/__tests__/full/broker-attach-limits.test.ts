@@ -1,4 +1,7 @@
-// Run with: node --import tsx/esm --test src/core/__tests__/broker-attach-limits.test.ts
+// Run with: node --import tsx/esm --test src/core/__tests__/full/broker-attach-limits.test.ts
+//
+// FULL TIER (real-boot-bound): tmux-free, but it boots a REAL broker process
+// (~5s pi-SDK load), so it lives in full/ (CI), not the fast local loop.
 //
 // T8 — the `crtr attach` acceptance gate, gates G4/G7/G8/G9 (controller
 // arbitration, decoder overflow caps, backpressure shedding, and the load-bearing
@@ -42,8 +45,8 @@ import { test, before, after, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { join } from 'node:path';
 
-import { createHeadlessHarness, type Harness } from './helpers/harness.js';
-import { isPidAlive } from '../canvas/pid.js';
+import { createHeadlessHarness, type Harness } from '../helpers/harness.js';
+import { isPidAlive } from '../../canvas/pid.js';
 import {
   createAttachKit,
   delay,
@@ -51,7 +54,7 @@ import {
   frameHas,
   brokerLogText,
   lsofHolders,
-} from './helpers/broker-clients.js';
+} from '../helpers/broker-clients.js';
 
 let h: Harness;
 let id: string; // ONE shared broker, reused across G4/G7/G8/G9 (1 real boot, not 4)

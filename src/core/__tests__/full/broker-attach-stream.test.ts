@@ -1,4 +1,7 @@
-// Run with: node --import tsx/esm --test src/core/__tests__/broker-attach-stream.test.ts
+// Run with: node --import tsx/esm --test src/core/__tests__/full/broker-attach-stream.test.ts
+//
+// FULL TIER (real-boot-bound): tmux-free, but it boots a REAL broker process
+// (~5s pi-SDK load), so it lives in full/ (CI), not the fast local loop.
 //
 // T8 — the `crtr attach` acceptance gate, gates G1/G1b/G2/G3 (controller drive,
 // relay/coalescing, detach survival, catch-up snapshot). Split out of
@@ -37,9 +40,9 @@
 import { test, before, after, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createHeadlessHarness, type Harness } from './helpers/harness.js';
-import { isPidAlive } from '../canvas/pid.js';
-import { createAttachKit, delay, tok, frameHas } from './helpers/broker-clients.js';
+import { createHeadlessHarness, type Harness } from '../helpers/harness.js';
+import { isPidAlive } from '../../canvas/pid.js';
+import { createAttachKit, delay, tok, frameHas } from '../helpers/broker-clients.js';
 
 let h: Harness;
 let id: string; // ONE shared broker, reused across G1/G1b/G2/G3 (1 real boot, not 4)

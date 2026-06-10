@@ -1,8 +1,9 @@
-// Run with: node --import tsx/esm --test src/core/__tests__/broker-lifecycle.test.ts
+// Run with: node --import tsx/esm --test src/core/__tests__/full/broker-lifecycle.test.ts
 //
 // HEADLESS RETARGET (foundation-spec §C.6 + §E). The broker-backed lifecycle
-// acceptance gate (plan T11), items 1–3, run in the FAST tier — no tmux session,
-// no hasTmux() gate. The suite is SPLIT across sibling files (one isolated
+// acceptance gate (plan T11), items 1–3 — no tmux session, no hasTmux() gate.
+// FULL TIER: item 3 boots a REAL broker process (~5s pi-SDK load), so the file
+// lives in full/ (CI), not the fast local loop. (Items 1–2 are pure model reads.) The suite is SPLIT across sibling files (one isolated
 // harness each); the asserting test per acceptance item (plan §4):
 //   1 spawn --headless → host_kind='broker', null placement                      → "spawn" (here, MODEL)
 //   2 supervised by the broker pid (signal-0) — a healthy broker is left alone    → "spawn" (here, MODEL)
@@ -36,9 +37,9 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 
-import { createHarness, type Harness } from './helpers/harness.js';
-import { appendInbox } from '../feed/inbox.js';
-import { isPidAlive } from '../canvas/pid.js';
+import { createHarness, type Harness } from '../helpers/harness.js';
+import { appendInbox } from '../../feed/inbox.js';
+import { isPidAlive } from '../../canvas/pid.js';
 
 let h: Harness;
 let root: string;

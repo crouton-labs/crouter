@@ -1,11 +1,12 @@
-// Run with: node --import tsx/esm --test src/core/__tests__/broker-crash-teardown.test.ts
+// Run with: node --import tsx/esm --test src/core/__tests__/full/broker-crash-teardown.test.ts
 //
 // HEADLESS RETARGET (foundation-spec §C.3 + §E). Broker crash / teardown / boot-
 // failure — acceptance items 4–6 of the headless-broker migration plus the
-// M-1/M-2 boot-failure regression — run in the FAST tier (no tmux, no hasTmux()
-// gate). Boot budget is minimized: the crash + teardown items genuinely exercise
-// a real broker PROCESS so they share ONE spawn + ONE grace-revive (2 boots); the
-// boot-failure lock is PURE daemon logic, so it is fabricated with ZERO boots.
+// M-1/M-2 boot-failure regression — tmux-free (no hasTmux() gate). FULL TIER: the
+// crash + teardown items genuinely exercise a real broker PROCESS so they share
+// ONE spawn + ONE grace-revive (2 boots, ~5s each), which is why the file lives
+// in full/ (CI), not the fast local loop. (The boot-failure lock is PURE daemon
+// logic, fabricated with ZERO boots.)
 //
 // (1) BUG LOCKED — two locks:
 //     • items 4–6: a CRASHED broker (pid killed out from under the daemon) must
@@ -42,9 +43,9 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 
-import { createHarness, type Harness } from './helpers/harness.js';
-import { subscribe } from '../canvas/canvas.js';
-import { isPidAlive } from '../canvas/pid.js';
+import { createHarness, type Harness } from '../helpers/harness.js';
+import { subscribe } from '../../canvas/canvas.js';
+import { isPidAlive } from '../../canvas/pid.js';
 
 // crtrd.ts module const (not exported): the fresh-pi-boot grace window the daemon
 // waits before grace-reviving / boot-failing a pi observed dead. Reference:
