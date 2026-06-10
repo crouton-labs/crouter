@@ -18,7 +18,11 @@
 // These tests lock in (a) behavioral equivalence with the old decoder across
 // randomized chunkings — frames, blank-line skip, malformed-JSON drop, multibyte
 // splits, and both FrameOverflowError caps with identical byte accounting — and
-// (b) the linear growth curve, so the quadratic shape cannot silently return.
+// (b) the linear growth curve via a SCALING-RATIO assertion (per-MiB decode cost
+// at 4 MiB vs 16 MiB must stay ~flat), so the quadratic shape cannot silently
+// return. The ratio is measured with min-of-reps and interleaved sizes so it is
+// robust to CPU contention from parallel `test:full` workers — see the perf test
+// for the full rationale.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -182,34 +186,57 @@ test('FrameDecoder — a frame exactly AT each cap passes; one byte over throws 
 });
 
 test('FrameDecoder — large-frame decode is linear, not quadratic (the observed attach-lag regression)', () => {
-  // Decode a single N-MiB frame in 64 KiB chunks; compare per-MiB cost at 2 MiB
-  // vs 8 MiB. Quadratic shape ⇒ per-MiB cost grows ~4× per 4× size (measured
-  // 5.5×+ pre-fix); linear stays ~flat. Threshold 3× is far above linear noise
-  // and far below the quadratic signature, so this fails ONLY on a complexity
-  // regression, not on a slow CI box.
+  // STRATEGY (contention-robust SCALING assertion): decode a single frame in
+  // 64 KiB socket-sized chunks at two sizes 4× apart (4 MiB vs 16 MiB) and assert
+  // the per-MiB cost stays ~flat. A linear decoder has per-MiB cost independent of
+  // size (ratio ≈ 1); the O(n²) bug makes per-MiB cost grow with size, so over a 4×
+  // size jump it grows ~4× (measured 5.5×+ pre-fix). Threshold 3× sits cleanly
+  // between the two signatures: well above linear noise, well below the quadratic
+  // signature.
+  //
+  // Why a RATIO, not an absolute wall-clock budget: an absolute budget is fragile
+  // under the parallel `test:full` workers — CPU contention scales every
+  // measurement up, so a tight budget flakes red on a loaded box without any code
+  // regression. A ratio of two contention-scaled measurements cancels whole-box
+  // slowdown, leaving only the algorithmic shape. Two further guards keep the
+  // minima clean under load: (1) MIN across REPS — contention only ADDS time, so
+  // the minimum approximates the uncontended cost; (2) the two sizes are timed
+  // INTERLEAVED within each rep, so a contention burst inflates both numerator and
+  // denominator alike instead of skewing the ratio. This fails ONLY on a
+  // complexity regression, not on a slow/busy CI box.
   const CHUNK = 64 * 1024;
-  const decodeMs = (mib: number): number => {
+  const SMALL_MIB = 4;
+  const LARGE_MIB = 16; // 4× SMALL — quadratic ⇒ per-MiB ~4×; linear ⇒ ~1×
+  const REPS = 7;
+  const makeFrame = (mib: number): Buffer => {
     const overhead = Buffer.byteLength('{"type":"welcome","blob":""}\n');
-    const frame = Buffer.from(`{"type":"welcome","blob":"${'x'.repeat(mib * 1024 * 1024 - overhead)}"}\n`);
-    let best = Infinity;
-    for (let rep = 0; rep < 3; rep++) {
-      const dec = new FrameDecoder(CLIENT_READ_CAPS);
-      const t0 = performance.now();
-      let n = 0;
-      for (let off = 0; off < frame.length; off += CHUNK) {
-        n += dec.push(frame.subarray(off, Math.min(off + CHUNK, frame.length))).length;
-      }
-      const ms = performance.now() - t0;
-      assert.equal(n, 1, 'decoded exactly one frame');
-      if (ms < best) best = ms;
-    }
-    return best;
+    return Buffer.from(`{"type":"welcome","blob":"${'x'.repeat(mib * 1024 * 1024 - overhead)}"}\n`);
   };
-  decodeMs(1); // warmup
-  const perMibSmall = decodeMs(2) / 2;
-  const perMibLarge = decodeMs(8) / 8;
+  const smallFrame = makeFrame(SMALL_MIB);
+  const largeFrame = makeFrame(LARGE_MIB);
+  const decodeMs = (frame: Buffer): number => {
+    const dec = new FrameDecoder(CLIENT_READ_CAPS);
+    const t0 = performance.now();
+    let n = 0;
+    for (let off = 0; off < frame.length; off += CHUNK) {
+      n += dec.push(frame.subarray(off, Math.min(off + CHUNK, frame.length))).length;
+    }
+    const ms = performance.now() - t0;
+    assert.equal(n, 1, 'decoded exactly one frame');
+    return ms;
+  };
+  decodeMs(smallFrame); // warm JIT on both paths before timing
+  decodeMs(largeFrame);
+  let bestSmall = Infinity;
+  let bestLarge = Infinity;
+  for (let rep = 0; rep < REPS; rep++) {
+    bestSmall = Math.min(bestSmall, decodeMs(smallFrame));
+    bestLarge = Math.min(bestLarge, decodeMs(largeFrame));
+  }
+  const perMibSmall = bestSmall / SMALL_MIB;
+  const perMibLarge = bestLarge / LARGE_MIB;
   assert.ok(
     perMibLarge < perMibSmall * 3,
-    `per-MiB decode cost grew superlinearly: ${perMibSmall.toFixed(2)}ms/MiB @2MiB → ${perMibLarge.toFixed(2)}ms/MiB @8MiB (quadratic regression)`,
+    `per-MiB decode cost grew superlinearly: ${perMibSmall.toFixed(2)}ms/MiB @${SMALL_MIB}MiB → ${perMibLarge.toFixed(2)}ms/MiB @${LARGE_MIB}MiB (ratio ${(perMibLarge / perMibSmall).toFixed(2)}×; quadratic regression)`,
   );
 });
