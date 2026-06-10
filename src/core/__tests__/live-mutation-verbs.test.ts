@@ -1,66 +1,77 @@
 // Run with: node --import tsx/esm --test src/core/__tests__/live-mutation-verbs.test.ts
 //
-// AXIS: LIVE MUTATION, part 2 — the demote/recycle verb split and the A4
-// promote-then-yield boundary. Split out of live-mutation.test.ts (see its
-// header for the coverage rationale and the oracle reference) so node:test's
-// file-level parallelism applies; each test builds its OWN isolated harness and
-// is moved here UNCHANGED.
+// HEADLESS RETARGET (foundation-spec §C.11 + §E). AXIS: LIVE MUTATION, part 2 —
+// the demote/recycle verb split and the A4 promote-then-yield boundary, driven
+// against FABRICATED broker-hosted (paneless) nodes — no real tmux session, no
+// pane chrome, and NO real broker boot. Split out of live-mutation.test.ts for
+// node:test file-level parallelism; each test holds its OWN isolated harness.
+//
+// THREE-PART LOCK HEADER ──────────────────────────────────────────────────
+// (1) BUG LOCKED — the demote/recycle SPLIT and the A4 steer-loss boundary:
+//     • `node demote` flips lifecycle→TERMINAL IN PLACE — keeps MODE, parentage,
+//       and a live (active) status; NOT finalized. It is NOT a mode flip.
+//     • `node recycle` is FINISH+RECYCLE — pushes a final → done (mode KEPT), and
+//       mints a DIFFERENT fresh general/base/resident root.
+//     • A4: a base→orchestrator yield auto-promotes (mode→orchestrator) and sets
+//       intent=refresh but NEVER commits persona_ack — the drift is left pending
+//       and, because a yield's agent_end goes straight to reviveInPlace with NO
+//       preceding turn_end, the only steer-delivery site is bypassed.
+// (2) WHY MODEL-LEVEL, NOT PANE/WINDOW — demote writes lifecycle on the row
+//     (setLifecycle→updateNode); recycle's FINISH+MINT half is pushFinal +
+//     spawnNode (pure model) — only its pane-respawn is tmux (a deliberately-
+//     skipped artifact here, recycled:false). yield's auto-promote + intent set
+//     are row writes; persona_ack/personaDrift are pure. No pane is read for any
+//     assertion.
+// (3) HOW THE HEADLESS DRIVE STILL FAILS IF THE FIX REGRESSES — if demote also
+//     flipped MODE, the 'mode stays orchestrator' assert goes RED; if recycle
+//     re-roled instead of finishing, 'recycled node → done' / 'fresh root born
+//     base×resident' go RED; if yield committed the ack, the A4 'ack STILL base'
+//     / pending-drift asserts go RED.
+//
+// STOPHOOK CAVEAT — split (option b). The original drove a LIVE fake-pi so the
+// REAL stophook enacted recycle's pane teardown and A4's reviveInPlace ack-drain
+// at agent_end. Fabrication cannot run those hooks. So: recycle is driven through
+// the real recycleNode (its FINISH+MINT model half runs fully; the pane respawn
+// is the only tmux artifact, intentionally skipped → recycled:false). For A4 the
+// PURE pre-stop facts are asserted (auto-promote, intent=refresh, ack PENDING,
+// personaDrift); the ack-commit-at-refresh-drain is locked by persona.test.ts
+// ('… then clears on commit'), and the steer-bypass follows because no turn_end
+// ever fires on the yield path.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
 
-import { createHarness, hasTmux, type Harness, type Injected } from './helpers/harness.js';
+import { createHeadlessHarness, type Harness } from './helpers/harness.js';
+import { subscribe } from '../canvas/canvas.js';
+import { recycleNode } from '../runtime/recycle.js';
+import { commitPersonaAck, personaDrift } from '../runtime/persona.js';
 import type { NodeMeta } from '../canvas/types.js';
 
-const SKIP = !hasTmux() ? 'tmux unavailable' : false;
-
-function sessionExists(session: string): boolean {
-  return spawnSync('tmux', ['has-session', '-t', session], { stdio: 'ignore' }).status === 0;
-}
-
-// --- pure test-local helpers (shared verbatim with live-mutation.test.ts) ---
-/** The injected entries delivered as a turn-boundary `steer`. */
-function steers(inj: Injected[]): Injected[] {
-  return inj.filter((e) => e.deliverAs === 'steer');
-}
-/** A steer carrying the base→orchestrator orchestration guidance. */
-function orchestrationSteers(inj: Injected[]): Injected[] {
-  return steers(inj).filter((e) => /ORCHESTRATOR/i.test(e.content));
-}
 /** Normalize the two persona axes off a NodeMeta for deepEqual. */
 function persona(m: NodeMeta): { mode: string; lifecycle: string } {
   return { mode: m.mode, lifecycle: m.lifecycle };
 }
-/** The first %pane_id of a tmux window. The spawn path records window+session
- *  but NOT pane (spawn.ts: pane is null until a reconcile/focus), so a node's
- *  live pane must be resolved from its window here. */
-function firstPaneOf(window: string): string | null {
-  const r = spawnSync('tmux', ['list-panes', '-t', window, '-F', '#{pane_id}'], { encoding: 'utf8' });
-  if (r.status !== 0) return null;
-  return r.stdout.split('\n').map((s) => s.trim()).filter(Boolean)[0] ?? null;
-}
 
 // ===========================================================================
-// (b) THE demote / recycle SPLIT — two DISTINCT verbs after the rename:
+// (b) THE demote / recycle SPLIT — two DISTINCT verbs:
 //   • `node demote`  flips a LIVE node's lifecycle→TERMINAL IN PLACE — it keeps
-//     its pane, its MODE, and its parentage, keeps running, is NOT finalized; it
-//     now merely owes a final up the spine (vision F5). It is NOT an
-//     orchestrator→base mode flip — MODE is untouched (so persona.ts
-//     `baseModeGuidance` stays unreachable via live mutation, as before).
-//   • `node recycle` is FINISH+RECYCLE — push final → done, then recycle the
-//     pane into a FRESH general/base/resident root (a DIFFERENT node). The
-//     recycled node keeps mode=orchestrator (it is merely `done`).
-// This test drives BOTH real verbs on one live node and pins each behavior.
+//     its MODE and parentage, keeps running (active), is NOT finalized; it now
+//     merely owes a final up the spine (vision F5). MODE is untouched.
+//   • `node recycle` is FINISH+RECYCLE — push final → done, then recycle the pane
+//     into a FRESH general/base/resident root (a DIFFERENT node). The recycled
+//     node keeps mode=orchestrator (it is merely `done`).
+// This test drives demote via the real CLI verb and recycle via the real
+// recycleNode, pinning each behavior at the model layer.
 // ===========================================================================
 test(
   'node demote flips lifecycle→terminal IN PLACE; node recycle is FINISH+RECYCLE',
-  { skip: SKIP, timeout: 120_000 },
+  { timeout: 20_000 },
   async () => {
-    const h: Harness = await createHarness({ sessionPrefix: 'crtr-live-demote' });
+    const h: Harness = await createHeadlessHarness({ sessionPrefix: 'crtr-live-demote' });
     try {
       const A = h.spawnRoot('resident root');
-      const B = await h.spawnChild(A, 'do the work', { kind: 'developer' });
+      const B = h.fabricateBrokerNode({ parent: A, kind: 'developer', mode: 'base', lifecycle: 'terminal', status: 'active' });
+      subscribe(A, B, true);
       // Make B resident + orchestrator so the demote's flip→terminal is visible
       // and we can prove MODE/parentage survive it.
       assert.equal(h.cli(B, ['node', 'lifecycle', 'resident', '--node', B]).code, 0, 'B → resident');
@@ -86,18 +97,14 @@ test(
         assert.notEqual(b.intent ?? null, 'done', 'demote does NOT finalize B');
       }
 
-      // --- node recycle: FINISH + RECYCLE the SAME pane into a fresh root.
-      //     Resolve B's live %pane_id from its window (the row's `pane` is null
-      //     until a reconcile; the spawn path records only window+session).
-      const pane = firstPaneOf(h.node(B)!.window!);
-      assert.ok(typeof pane === 'string' && pane !== '', 'B has a live pane to recycle');
-      // RECYCLE via the real verb (TMUX_PANE is scrubbed from child env → pass --pane).
-      const res = h.cli(B, ['node', 'recycle', '--node', B, '--pane', pane!]);
-      assert.equal(res.code, 0, `recycle exit 0\n${res.stderr}`);
-      // The leaf renders plain markdown: a lead sentence + `- finalized:` / `- new root:` bullets.
-      assert.match(res.stdout, /^Recycled the pane /, `recycle recycled the pane\n${res.stdout}`);
-      const newRoot = /- new root: (\S+)/.exec(res.stdout)?.[1];
-      const finalized = /- finalized: true/.test(res.stdout);
+      // --- node recycle: FINISH + RECYCLE. Driven through the real recycleNode.
+      //     Its FINISH+MINT model half runs fully; the pane respawn is the only
+      //     tmux artifact (no pane for a broker node), so recycled:false while
+      //     finalized:true and a fresh root IS minted — the bug-lock (recycle ≠
+      //     demote) is entirely in that model half.
+      const res = await recycleNode(B, '%recycle-headless');
+      assert.equal(res.finalized, true, 'recycle pushed a final for the node (FINISH half ran)');
+      assert.ok(typeof res.newRoot === 'string' && res.newRoot !== B, 'a fresh root (≠ B) was minted');
 
       // The recycled node is FINISHED, not mode-flipped.
       {
@@ -105,59 +112,54 @@ test(
         assert.equal(b.status, 'done', 'recycled node → done (finished), NOT re-roled');
         assert.equal(b.intent, 'done', 'intent=done (finalize), per the push-final path');
         assert.equal(b.mode, 'orchestrator', 'recycled node KEEPS mode=orchestrator — recycle is NOT a mode flip');
-        assert.ok(finalized, 'recycle pushed a final for the node');
       }
 
       // The fresh root is a DIFFERENT, BASE×RESIDENT node.
-      assert.ok(typeof newRoot === 'string' && newRoot !== B, 'a fresh root (≠ B) was minted');
       {
-        const fresh = h.node(newRoot!)!;
+        const fresh = h.node(res.newRoot!)!;
         assert.deepEqual(persona(fresh), { mode: 'base', lifecycle: 'resident' }, 'recycled root is born base×resident (general)');
         assert.deepEqual(fresh.persona_ack, { mode: 'base', lifecycle: 'resident' }, 'fresh root born acked base×resident');
+        assert.equal(fresh.parent ?? null, null, 'the fresh root is a root (no parent)');
       }
     } finally {
-      const session = h.session;
       await h.dispose();
-      assert.equal(sessionExists(session), false, 'isolated session killed — no stray');
     }
   },
 );
 
 // ===========================================================================
-// (b) A4 BOUNDARY — promote-then-yield emits a steer that is discarded. The
-//     oracle/flagship boundary: the base→orchestrator guidance lands as a STEER
-//     only if a turn_end fires while the drift is pending. A `node yield` on a
-//     base node auto-promotes (mode→orchestrator, ack NOT committed) and its
-//     agent_end goes STRAIGHT to reviveInPlace (b') with NO preceding turn_end —
-//     so the only steer-delivery site (turn_end) is BYPASSED. Two deterministic
-//     facts pin the boundary, both confirmed by direct observation:
-//       (1) NO orchestration STEER is ever delivered (the LOSS).
-//       (2) The ack is silently advanced base→orchestrator at the refresh DRAIN
-//           (reviveInPlace→drainBearings→commitPersonaAck), NOT via a steer — so
-//           neither this turn nor (per A4) the fresh revive re-offers it as a
-//           steer; the guidance survives only in the kickoff PROMPT it built.
-//     ⚑ FLAGGED (not fixed): the in-place refresh of this LARGE pending-drift
-//        kickoff prompt did NOT complete a fresh fake-pi boot in the harness (it
-//        stayed at 1 boot, intent=refresh, ack=orchestrator, pane alive) — a
-//        base→orchestrator yield's giant <persona-transition> kickoff pushed
-//        through respawn-pane did not bring up the fresh vehicle. Whether a real
-//        edge (oversized argv through respawn-pane) or a harness artifact, it is
-//        out of scope to fix; this test asserts only the deterministic boundary.
+// (b) A4 BOUNDARY — promote-then-yield emits a steer that is discarded. A
+//     `node yield` on a base node auto-promotes (mode→orchestrator, ack NOT
+//     committed) and its agent_end goes STRAIGHT to reviveInPlace (b') with NO
+//     preceding turn_end — so the only steer-delivery site (turn_end) is
+//     BYPASSED. The deterministic, host-independent facts the yield verb leaves
+//     behind pin the boundary:
+//       (1) auto-promote: mode→orchestrator.
+//       (2) intent=refresh set.
+//       (3) persona_ack STILL base — the verb never commits it (only an injector
+//           or the refresh drain does); the drift is left PENDING.
+//     The ack's silent advance at the refresh drain (reviveInPlace→drainBearings
+//     →commitPersonaAck) is locked by persona.test.ts; because no turn_end ever
+//     fires on the yield path, that ack moves WITHOUT the orchestration steer
+//     ever being delivered — the A4 LOSS.
 // ===========================================================================
 test(
-  'A4: a base→orchestrator yield with no preceding turn_end loses the orchestration STEER (ack advances silently at the refresh drain)',
-  { skip: SKIP, timeout: 120_000 },
+  'A4: a base→orchestrator yield auto-promotes + sets refresh but leaves persona_ack PENDING (the steer is never delivered)',
+  { timeout: 20_000 },
   async () => {
-    const h: Harness = await createHarness({ sessionPrefix: 'crtr-live-a4' });
+    const h: Harness = await createHeadlessHarness({ sessionPrefix: 'crtr-live-a4' });
     try {
       const A = h.spawnRoot('resident root');
-      const B = await h.spawnChild(A, 'do the work', { kind: 'developer' });
+      const B = h.fabricateBrokerNode({ parent: A, kind: 'developer', mode: 'base', lifecycle: 'terminal', status: 'active' });
+      subscribe(A, B, true);
+      // Born acked to its own persona (mirroring a real birth) → no spurious
+      // drift before the yield.
+      commitPersonaAck(B, { mode: 'base', lifecycle: 'terminal' });
       assert.deepEqual(persona(h.node(B)!), { mode: 'base', lifecycle: 'terminal' }, 'B born base×terminal');
+      assert.equal(personaDrift(B), null, 'no drift before the yield');
 
-      const injBefore = h.injected(B).length;
-
-      // `crtr node yield` (base → auto-promote → intent=refresh). INTERMEDIATE
-      // state, BEFORE any agent_end: mode flipped, ack NOT yet committed (the
+      // `crtr node yield` (base → auto-promote → intent=refresh). State AFTER the
+      // verb, BEFORE any agent_end: mode flipped, ack NOT yet committed (the
       // turn_end injector has not run), intent=refresh, drift PENDING.
       const y = h.cli(B, ['node', 'yield', 'refresh against the roadmap']);
       assert.equal(y.code, 0, `node yield exit 0\n${y.stderr}`);
@@ -168,45 +170,23 @@ test(
         assert.deepEqual(
           b.persona_ack,
           { mode: 'base', lifecycle: 'terminal' },
-          'ack STILL base — promote/yield never commits it; only an injector does',
+          'ack STILL base — promote/yield never commits it; only an injector or the refresh drain does',
         );
       }
 
-      // Fire the stop: agent_end sees intent=refresh → (b') reviveInPlace, whose
-      // drainBearings commits the ack synchronously BEFORE the respawn. NO
-      // turn_end fires this turn, so the turn_end steer site is bypassed.
-      await h.stop(B);
-
-      // (2) The ack is silently advanced to orchestrator at the refresh DRAIN —
-      // not by any steer. (waitFor: the agent_end handler runs after h.stop
-      // observes the recorded event.)
-      await h.waitFor(
-        () => {
-          const a = h.node(B)?.persona_ack;
-          return a?.mode === 'orchestrator' && a?.lifecycle === 'terminal';
-        },
-        { timeoutMs: 20_000, label: 'persona_ack advanced at the refresh drain (not via a steer)' },
-      );
-      assert.deepEqual(
-        h.node(B)!.persona_ack,
-        { mode: 'orchestrator', lifecycle: 'terminal' },
-        'ack committed base→orchestrator by drainBearings during reviveInPlace',
-      );
-
-      // (1) ⚑ LOSS site: across the whole yield→refresh, NO orchestration
-      // guidance was ever delivered as a turn-boundary STEER (the only steer
-      // site, turn_end, never ran). The ack moved without the agent ever being
-      // steered with the new-role guidance — it survives only in the kickoff
-      // prompt drainBearings built for the (here, non-booting) fresh vehicle.
-      assert.equal(
-        orchestrationSteers(h.injected(B).slice(injBefore)).length,
-        0,
-        '⚑ A4: no orchestration STEER delivered — the turn_end injector was bypassed by the yield',
-      );
+      // THE A4 PENDING-DRIFT LOCK — the base→orchestrator guidance is left
+      // PENDING (personaDrift reports it) and is the ONLY thing the (bypassed)
+      // turn_end injector would have delivered as a steer. The ack's silent
+      // advance at the refresh drain — NOT via a steer — is locked by
+      // persona.test.ts; the steer is lost because no turn_end fires on this path.
+      {
+        const drift = personaDrift(B);
+        assert.ok(drift !== null, 'the orchestration guidance is PENDING after the yield (drift detected)');
+        assert.deepEqual(drift?.to, { mode: 'orchestrator', lifecycle: 'terminal' }, 'pending drift → orchestrator×terminal');
+        assert.match(drift?.guidance ?? '', /ORCHESTRATOR/i, 'the pending (lost) steer carries the orchestration guidance');
+      }
     } finally {
-      const session = h.session;
       await h.dispose();
-      assert.equal(sessionExists(session), false, 'isolated session killed — no stray');
     }
   },
 );

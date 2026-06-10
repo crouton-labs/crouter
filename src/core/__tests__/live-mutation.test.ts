@@ -1,96 +1,100 @@
 // Run with: node --import tsx/esm --test src/core/__tests__/live-mutation.test.ts
 //
-// AXIS: LIVE MUTATION of the 2×2 state vector (mode {base,orchestrator} ×
-// lifecycle {terminal,resident}) while a node is ACTIVE/LIVE — driven through
-// the REAL `crtr node lifecycle` / `node promote` / `node demote` / `node recycle`
-// CLI verbs against a live fake-pi, with the REAL stophook / kickoff / daemon hooks doing
-// the work. Every assertion reads the canvas data layer and is checked against
-// the state-model ORACLE (mq1su40t .../state-model.md).
+// HEADLESS RETARGET (foundation-spec §C.12 + §E). AXIS: LIVE MUTATION of the
+// 2×2 state vector (mode {base,orchestrator} × lifecycle {terminal,resident})
+// driven through the REAL `node lifecycle` / `node promote` CLI verbs against
+// FABRICATED broker-hosted (paneless) nodes — no real tmux session, no pane
+// chrome, and NO real broker boot. The mutation verbs and the decisions they
+// gate are host-independent model logic, so the file never pays the ~5s SDK-boot
+// cost. Every assertion reads the canvas data layer / a PURE decision function.
 //
-// This file is ADDITIVE and uses ONLY the public Harness API + a couple of pure
-// test-local helpers (noted below). It does not edit harness.ts / fake-pi-host.ts
-// or any production file.
+// THREE-PART LOCK HEADER ──────────────────────────────────────────────────
+// (1) BUG LOCKED — (a) a live lifecycle flip changes the idle-release decision:
+//     a resident node is NEVER forced dormant (suppressed), a terminal one with
+//     an active live sub IS legitimately awaiting (restored). (b) a live promote
+//     flips mode but leaves persona_ack PENDING for the injector — it never
+//     commits the ack itself.
+// (2) WHY MODEL-LEVEL, NOT PANE/WINDOW — the flip writes lifecycle/mode on the
+//     row (updateNode) and the idle-release call is decided by the PURE
+//     evaluateStop (stop-guard.ts), which keys on lifecycle + active live subs,
+//     never on a pane. persona_ack lives in meta.json; personaDrift is pure. No
+//     pane/window is read anywhere.
+// (3) HOW THE HEADLESS DRIVE STILL FAILS IF THE FIX REGRESSES — (a) after the
+//     terminal→resident flip, evaluateStop(B) must read 'dormant' NOT 'awaiting';
+//     if the resident-suppression branch in stop-guard regresses (lifecycle
+//     ignored), B still has its active live sub to C so evaluateStop returns
+//     'awaiting' → the 'dormant' assert goes RED (verified by bug-injection
+//     below). (b) after promote, personaDrift(B) must still report base→
+//     orchestrator PENDING; if promote wrongly committed the ack, drift reads
+//     null → the pending-drift assert goes RED.
 //
-// Coverage rationale (grep of src/core/__tests__/ before writing):
-//   • persona.test.ts        — UNIT-level personaDrift/transitionGuidance (pure
-//                              functions; no live pi, no turn_end firing).
-//   • stop-guard.test.ts      — UNIT-level evaluateStop (no live flip via CLI).
-//   • daemon-liveness.test.ts — superviseTick over BORN-terminal idle-release
-//                              rows (never a live lifecycle FLIP).
-//   • flagship-lifecycle      — B born terminal idle-releases; A born resident
-//                              stays live; promote+turn fires the steer ONCE.
-// GENUINELY MISSING (this file): the LIVE FLIP itself — flipping a running
-// node's lifecycle/mode through the real verb and proving the runtime behavior
-// (idle-release vs dormant; persona-ack recompose; the A4 boundary) changes
-// accordingly. None of the above drives `crtr node lifecycle` on a live node,
-// nor asserts persona_ack mutation across a live promote, nor the A4 loss site.
-//
-// Part 2 of this axis — the demote/recycle verb split and the A4 promote-then-
-// yield boundary — lives in live-mutation-verbs.test.ts (split for node:test
-// file-level parallelism; each test holds its own isolated harness).
+// STOPHOOK CAVEAT — split (option b). The original drove a LIVE fake-pi turn so
+// the REAL stophook enacted the idle-release at agent_end and committed
+// persona_ack at turn_end. Fabrication cannot run those hooks. So this test
+// asserts the PURE decisions the hooks enact (evaluateStop / personaDrift) and
+// leaves the hook-commit proof to the already-pure siblings:
+//   • idle-release / resident-suppression commit at agent_end → canvas-stophook-
+//     agentend.test.ts ('natural stop while awaiting a live worker → idle-release'
+//     and '§5.1.7 resident attended … nothing happens').
+//   • persona_ack recompose at turn_end → persona.test.ts ('personaDrift detects
+//     base→orchestrator after promote, then clears on commit').
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
 
-import { createHarness, hasTmux, type Harness, type Injected } from './helpers/harness.js';
+import { createHeadlessHarness, type Harness } from './helpers/harness.js';
+import { subscribe } from '../canvas/canvas.js';
+import { commitPersonaAck, personaDrift } from '../runtime/persona.js';
+import { evaluateStop } from '../runtime/stop-guard.js';
 import type { NodeMeta } from '../canvas/types.js';
 
-const SKIP = !hasTmux() ? 'tmux unavailable' : false;
-
-function sessionExists(session: string): boolean {
-  return spawnSync('tmux', ['has-session', '-t', session], { stdio: 'ignore' }).status === 0;
-}
-
-// --- pure test-local helpers (candidates to fold into harness.ts later) -----
-/** The injected entries delivered as a turn-boundary `steer`. */
-function steers(inj: Injected[]): Injected[] {
-  return inj.filter((e) => e.deliverAs === 'steer');
-}
-/** A steer carrying the base→orchestrator orchestration guidance. */
-function orchestrationSteers(inj: Injected[]): Injected[] {
-  return steers(inj).filter((e) => /ORCHESTRATOR/i.test(e.content));
-}
 /** Normalize the two persona axes off a NodeMeta for deepEqual. */
 function persona(m: NodeMeta): { mode: string; lifecycle: string } {
   return { mode: m.mode, lifecycle: m.lifecycle };
 }
+const SIGNALS = { pushedFinal: false, askedHuman: false };
 
 // ===========================================================================
 // (a) LIFECYCLE FLIP — `crtr node lifecycle` on a LIVE node, both directions,
-//     observing the idle-release behavior change. A round-trip on ONE live
-//     node (terminal→resident→terminal) proves both directions faithfully:
-//     a flipped-resident node no longer idle-releases (stays live, daemon does
-//     NOT release it); flipped-terminal it idle-releases again on pi-death.
+//     observing the idle-release DECISION change. A round-trip on ONE node
+//     (terminal→resident→terminal) proves both directions: a flipped-resident
+//     node no longer idle-releases (evaluateStop → dormant); flipped-terminal it
+//     idle-releases again (evaluateStop → awaiting, on its active live sub).
 // ===========================================================================
 test(
   'live lifecycle flip: terminal→resident suppresses idle-release; resident→terminal restores it',
-  { skip: SKIP, timeout: 120_000 },
+  { timeout: 20_000 },
   async () => {
-    const h: Harness = await createHarness({ sessionPrefix: 'crtr-live-life' });
+    const h: Harness = await createHeadlessHarness({ sessionPrefix: 'crtr-live-life' });
     try {
-      // A (resident root, data-layer) ─ B (base/terminal, live) ─ C (base/terminal, live).
-      // B holds an ACTIVE live subscription to C → a TERMINAL B that stops is
-      // legitimately 'awaiting' (stop-guard) and would idle-release. That live
-      // sub is the precondition that makes the resident-vs-terminal flip the
-      // ONLY variable.
+      // A (resident root) ─ B (base/terminal) ─ C (base/terminal). B holds an
+      // ACTIVE live sub to C → a TERMINAL B that stops is legitimately 'awaiting'
+      // and would idle-release. That live sub is the precondition that makes the
+      // resident-vs-terminal flip the ONLY variable in the stop decision.
       const A = h.spawnRoot('resident root');
-      const B = await h.spawnChild(A, 'do the work', { kind: 'developer' });
-      const C = await h.spawnChild(B, 'a subtask');
+      const B = h.fabricateBrokerNode({ parent: A, kind: 'developer', mode: 'base', lifecycle: 'terminal', status: 'active' });
+      const C = h.fabricateBrokerNode({ parent: B, mode: 'base', lifecycle: 'terminal', status: 'active' });
+      subscribe(A, B, true);
+      subscribe(B, C, true);
       {
         const b = h.node(B)!;
         assert.deepEqual(persona(b), { mode: 'base', lifecycle: 'terminal' }, 'B born base×terminal');
         assert.equal(b.status, 'active', 'B active');
         assert.equal(b.intent ?? null, null, 'B no intent');
         assert.equal(h.status(C), 'active', 'C active — B holds a live sub to it');
-        assert.ok(
-          h.subscriptions(B).some((s) => s.node_id === C && s.active),
-          'B subscribes_to C (active) — the awaiting precondition',
-        );
+        assert.ok(h.subscriptions(B).some((s) => s.node_id === C && s.active), 'B subscribes_to C (active) — the awaiting precondition');
+      }
+
+      // BASELINE — as a TERMINAL node with the active live sub, B's stop is
+      // 'awaiting' (it would idle-release).
+      {
+        const stop = evaluateStop(B, SIGNALS);
+        assert.equal(stop.action, 'allow', 'terminal B → allow');
+        assert.equal(stop.reason, 'awaiting', 'terminal B with an active live sub → awaiting (would idle-release)');
       }
 
       // --- FLIP 1: terminal → RESIDENT (live). Oracle §4: sets lifecycle + the
-      // launch spec, status/intent UNTOUCHED. ---
+      //     launch spec, status/intent UNTOUCHED. ---
       {
         const res = h.cli(B, ['node', 'lifecycle', 'resident', '--node', B]);
         assert.equal(res.code, 0, `lifecycle resident exit 0\n${res.stderr}`);
@@ -101,43 +105,20 @@ test(
         assert.equal(b.intent ?? null, null, 'intent UNTOUCHED by node lifecycle (oracle §4)');
       }
 
-      // B stops AS RESIDENT: agent_end runs the stop-guard, which keys on
-      // lifecycle==='resident' → 'dormant' → the handler does NOT shut pi down
-      // (oracle §3a). So B stays active, pi alive, pane held — it does NOT
-      // idle-release despite holding the same live sub that would release a
-      // terminal node.
-      await h.stop(B);
-      // MINOR-2: asserting a NON-event (B must NOT idle-release) cannot be a single
-      // immediate read — h.stop() resolves once agent_end is RECORDED, BEFORE the
-      // handler completes, so a regression where the resident 'dormant' branch
-      // wrongly ran transition('release') + ctx.shutdown() asynchronously would
-      // still observe the pre-release state and false-pass. Instead POLL-STABLE:
-      // sample repeatedly across a real settle (a daemon tick partway, so the
-      // handler + a full superviseTick have both run) and assert the invariant
-      // holds on EVERY sample. A regression that idle-releases within the window
-      // is caught the moment it flips.
+      // THE SUPPRESSION LOCK — as RESIDENT, B's stop is 'dormant' (NOT awaiting):
+      // a resident node is never forced to submit a final, so it does NOT idle-
+      // release even though it still holds the SAME active live sub to C that
+      // would release a terminal node. evaluateStop is the PURE decision the
+      // stophook enacts (the actual no-release commit is locked by canvas-
+      // stophook-agentend §5.1.7). NON-VACUOUS: revert the resident branch in
+      // stop-guard and B reads 'awaiting' → this goes RED (see bug-injection).
       {
-        const deadline = Date.now() + 2_000;
-        let ticked = false;
-        for (;;) {
-          const b = h.node(B)!;
-          assert.equal(b.status, 'active', 'resident B stays ACTIVE on stop (dormant, not released)');
-          assert.equal(b.intent ?? null, null, 'resident B has NO idle-release intent');
-          assert.equal(h.paneAlive(B), true, 'resident B keeps its live pi/pane (no shutdown)');
-          assert.equal(h.status(C), 'active', 'C untouched while B is dormant-resident');
-          // Drive a real daemon decision pass midway: a superviseTick sees B
-          // active + pane-alive + pid-alive → handleLiveWindow 'leave'. If the
-          // daemon wrongly released a resident node, the next sample catches it.
-          if (!ticked) {
-            await h.tick();
-            ticked = true;
-          }
-          if (Date.now() >= deadline) break;
-          await new Promise((r) => setTimeout(r, 100));
-        }
+        const stop = evaluateStop(B, SIGNALS);
+        assert.equal(stop.action, 'allow', 'resident B → allow');
+        assert.equal(stop.reason, 'dormant', 'resident B → dormant, NOT awaiting — idle-release SUPPRESSED by the live flip');
       }
 
-      // --- FLIP 2: resident → TERMINAL (live), on the now-resident live node. ---
+      // --- FLIP 2: resident → TERMINAL (live), on the now-resident node. ---
       {
         const res = h.cli(B, ['node', 'lifecycle', 'terminal', '--node', B]);
         assert.equal(res.code, 0, `lifecycle terminal exit 0\n${res.stderr}`);
@@ -147,24 +128,16 @@ test(
         assert.equal(b.intent ?? null, null, 'intent still UNTOUCHED by the flip');
       }
 
-      // B stops AS TERMINAL now: stop-guard sees terminal + an active live sub to
-      // C → 'awaiting' → transition('release') + ctx.shutdown(). idle/idle-release;
-      // pi dies; UNFOCUSED backstage pane closes (oracle §3b). The exact behavior
-      // the resident flip had suppressed.
-      await h.stop(B);
-      await h.waitForStatus(B, 'idle');
+      // THE RESTORE LOCK — terminal again, B's stop is 'awaiting' once more: the
+      // exact idle-release behavior the resident flip had suppressed.
       {
-        const b = h.node(B)!;
-        assert.equal(b.status, 'idle', 'terminal B idle-releases on stop');
-        assert.equal(b.intent, 'idle-release', 'intent=idle-release (transition release)');
+        const stop = evaluateStop(B, SIGNALS);
+        assert.equal(stop.action, 'allow', 'terminal B → allow');
+        assert.equal(stop.reason, 'awaiting', 'terminal B with the active live sub → awaiting AGAIN (idle-release RESTORED)');
       }
-      await h.waitForPaneGone(B);
-      assert.equal(h.paneAlive(B), false, 'unfocused terminal B → pane closed on idle-release');
-      assert.equal(h.status(C), 'active', 'C still active while B sleeps');
+      assert.equal(h.status(C), 'active', 'C untouched throughout the round-trip');
     } finally {
-      const session = h.session;
       await h.dispose();
-      assert.equal(sessionExists(session), false, 'isolated session killed — no stray');
     }
   },
 );
@@ -172,28 +145,29 @@ test(
 // ===========================================================================
 // (b) MODE FLIP — promote: base → orchestrator on a LIVE node. The flip itself
 //     does NOT commit the persona ack; the turn_end injector recomposes (commits
-//     the ack + delivers the steer) on the next turn, and a second turn is a
-//     no-op (drift cleared). Flagship asserts the steer fires once; the NEW
-//     assertions here are the persona_ack MUTATION across the live flip and the
-//     idempotence — neither is covered elsewhere.
+//     the ack + delivers the steer) on the next turn. The NEW assertions here
+//     are that promote leaves the ack PENDING (not committed) and personaDrift
+//     reports the exact base→orchestrator transition the injector would deliver —
+//     the model precondition of the recompose (whose commit is locked by
+//     persona.test.ts).
 // ===========================================================================
 test(
-  'live mode flip: promote base→orchestrator recomposes persona_ack at turn_end (and is idempotent)',
-  { skip: SKIP, timeout: 120_000 },
+  'live mode flip: promote base→orchestrator leaves persona_ack PENDING for the turn_end injector',
+  { timeout: 20_000 },
   async () => {
-    const h: Harness = await createHarness({ sessionPrefix: 'crtr-live-mode' });
+    const h: Harness = await createHeadlessHarness({ sessionPrefix: 'crtr-live-mode' });
     try {
       const A = h.spawnRoot('resident root');
-      const B = await h.spawnChild(A, 'do the work', { kind: 'developer' });
+      const B = h.fabricateBrokerNode({ parent: A, kind: 'developer', mode: 'base', lifecycle: 'terminal', status: 'active' });
+      subscribe(A, B, true);
+      // Born acked to its own persona (mirroring a real birth) → no spurious
+      // drift before the promote (invariant 11).
+      commitPersonaAck(B, { mode: 'base', lifecycle: 'terminal' });
       {
         const b = h.node(B)!;
         assert.deepEqual(persona(b), { mode: 'base', lifecycle: 'terminal' }, 'B born base×terminal');
-        // Invariant 11: born acked to its own persona → no spurious drift turn 1.
-        assert.deepEqual(
-          b.persona_ack,
-          { mode: 'base', lifecycle: 'terminal' },
-          'persona_ack born equal to the initial persona (invariant 11)',
-        );
+        assert.deepEqual(b.persona_ack, { mode: 'base', lifecycle: 'terminal' }, 'persona_ack born equal to the initial persona (invariant 11)');
+        assert.equal(personaDrift(B), null, 'no drift before the promote');
       }
 
       // PROMOTE (live): mode→orchestrator, lifecycle UNCHANGED, status/intent
@@ -207,52 +181,32 @@ test(
         assert.equal(b.lifecycle, 'terminal', 'lifecycle UNCHANGED (promote is mode-only)');
         assert.equal(b.status, 'active', 'status untouched by promote');
         assert.equal(b.intent ?? null, null, 'intent untouched by promote');
-        assert.deepEqual(
-          b.persona_ack,
-          { mode: 'base', lifecycle: 'terminal' },
-          'promote does NOT commit the ack — drift left PENDING for the injector',
-        );
+        assert.deepEqual(b.persona_ack, { mode: 'base', lifecycle: 'terminal' }, 'promote does NOT commit the ack — drift left PENDING for the injector');
       }
 
-      // A TURN fires turn_end: personaDrift base→orchestrator → inject the
-      // orchestration guidance as a STEER, then commitPersonaAck. agent_end then
-      // stalls (orchestrator, no live sub, no final) → reprompt → B stays alive.
-      const injBefore = h.injected(B).length;
-      await h.turn(B, 'orchestrating');
-      const fresh = await h.waitFor(
-        () => {
-          const slice = h.injected(B).slice(injBefore);
-          return orchestrationSteers(slice).length > 0 ? slice : null;
-        },
-        { timeoutMs: 15_000, label: 'base→orchestrator steer at turn_end' },
-      );
-      assert.ok(orchestrationSteers(fresh).length >= 1, 'turn_end delivered the orchestration guidance as a steer');
+      // THE PENDING-DRIFT LOCK — personaDrift(B) reports the exact base→
+      // orchestrator transition the turn_end injector would deliver as a steer
+      // (and then commit). NON-VACUOUS: if promote wrongly committed the ack,
+      // personaDrift reads null and the asserts below go RED. The actual delivery
+      // + commit (and its idempotence on a second turn) is locked by
+      // persona.test.ts ('… then clears on commit').
       {
-        const b = h.node(B)!;
-        assert.deepEqual(
-          b.persona_ack,
-          { mode: 'orchestrator', lifecycle: 'terminal' },
-          'persona RECOMPOSE committed: persona_ack advanced to the new persona at turn_end',
-        );
-        assert.equal(b.status, 'active', 'B not stranded — reprompt keeps it alive');
+        const drift = personaDrift(B);
+        assert.ok(drift !== null, 'a recompose is pending after the live promote');
+        assert.deepEqual(drift?.from, { mode: 'base', lifecycle: 'terminal' }, 'drift.from = the acked base×terminal');
+        assert.deepEqual(drift?.to, { mode: 'orchestrator', lifecycle: 'terminal' }, 'drift.to = the new orchestrator persona');
+        assert.match(drift?.guidance ?? '', /ORCHESTRATOR/i, 'the steer carries the base→orchestrator orchestration guidance');
       }
 
-      // IDEMPOTENCE: a SECOND turn finds no drift (ack already committed) → NO
-      // new persona steer is injected.
-      const injBeforeSecond = h.injected(B).length;
-      await h.turn(B, 'orchestrating again');
-      const afterSecond = h.injected(B).slice(injBeforeSecond);
-      assert.equal(
-        orchestrationSteers(afterSecond).length,
-        0,
-        'no fresh orchestration steer on the second turn — drift cleared (idempotent recompose)',
-      );
-      assert.equal(h.node(B)!.mode, 'orchestrator', 'B still orchestrator');
+      // And the recompose IS the injector's job, committed at turn_end — modeled
+      // here by commitPersonaAck (what the injector calls), proving drift then
+      // clears (idempotent). The firing of that commit inside the live stophook
+      // is locked by persona.test.ts.
+      commitPersonaAck(B, { mode: 'orchestrator', lifecycle: 'terminal' });
+      assert.deepEqual(h.node(B)!.persona_ack, { mode: 'orchestrator', lifecycle: 'terminal' }, 'persona_ack recomposed to the new persona');
+      assert.equal(personaDrift(B), null, 'no fresh drift after the ack commit (idempotent recompose)');
     } finally {
-      const session = h.session;
       await h.dispose();
-      assert.equal(sessionExists(session), false, 'isolated session killed — no stray');
     }
   },
 );
-
