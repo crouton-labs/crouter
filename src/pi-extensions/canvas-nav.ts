@@ -49,7 +49,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { getNode, subscribersOf, subscriptionsOf, jobDir, fullName, listFocuses } from '../core/canvas/index.js';
-import type { NodeMeta } from '../core/canvas/index.js';
+import type { NodeMeta, SubscriptionRef } from '../core/canvas/index.js';
 import { readConfig } from '../core/config.js';
 import type { CanvasNavConfig, CanvasBind } from '../types.js';
 
@@ -238,6 +238,64 @@ function fillBar(content: string, width: number, open: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Per-frame read cache
+//
+// One render fans the SAME handful of nodes out 5-10× each: computeSubtreeActivity
+// walks the whole tree (getNode + subscriptions per node), buildGraphModel walks it
+// again (climbRoot, sortedChildIds), then every visible row re-reads getNode +
+// telemetry + subscriptions for its badges. getNode alone is an fs.readFileSync of
+// meta.json plus a sqlite row read, and readTelemetry another readFileSync — so on a
+// modest graph a single 'j' keystroke fanned out to DOZENS of redundant disk reads.
+// That redundancy is the GRAPH view's open/scroll lag.
+//
+// Each render is a synchronous snapshot, so we memoize the read primitives for the
+// duration of one frame and clear at the top of render(): the next keystroke (or the
+// ask-poll / inbox render) re-reads fresh, so a killed node, a new spawn, or a status
+// flip all surface on the very next frame. Nothing here writes, so a stale entry can
+// at worst be one frame old — and render() always reruns immediately after any action.
+// ---------------------------------------------------------------------------
+
+const frameNodes = new Map<string, NodeMeta | null>();
+const frameTelem = new Map<string, Telemetry>();
+const frameSubs = new Map<string, SubscriptionRef[]>();
+const frameMgrs = new Map<string, SubscriptionRef[]>();
+
+function beginFrame(): void {
+  frameNodes.clear();
+  frameTelem.clear();
+  frameSubs.clear();
+  frameMgrs.clear();
+}
+
+/** getNode memoized for the current frame (meta.json read + sqlite row). */
+function cNode(id: string): NodeMeta | null {
+  if (frameNodes.has(id)) return frameNodes.get(id) ?? null;
+  const v = getNode(id);
+  frameNodes.set(id, v);
+  return v;
+}
+
+/** subscriptionsOf (a node's reports) memoized for the current frame. */
+function cSubscriptions(id: string): SubscriptionRef[] {
+  const hit = frameSubs.get(id);
+  if (hit !== undefined) return hit;
+  let v: SubscriptionRef[];
+  try { v = subscriptionsOf(id); } catch { v = []; }
+  frameSubs.set(id, v);
+  return v;
+}
+
+/** subscribersOf (a node's managers) memoized for the current frame. */
+function cSubscribers(id: string): SubscriptionRef[] {
+  const hit = frameMgrs.get(id);
+  if (hit !== undefined) return hit;
+  let v: SubscriptionRef[];
+  try { v = subscribersOf(id); } catch { v = []; }
+  frameMgrs.set(id, v);
+  return v;
+}
+
+// ---------------------------------------------------------------------------
 // Telemetry
 // ---------------------------------------------------------------------------
 
@@ -250,13 +308,17 @@ interface Telemetry {
 }
 
 function readTelemetry(nodeId: string): Telemetry {
+  const hit = frameTelem.get(nodeId);
+  if (hit !== undefined) return hit;
+  let v: Telemetry;
   try {
     const p = join(jobDir(nodeId), 'telemetry.json');
-    if (!existsSync(p)) return {};
-    return JSON.parse(readFileSync(p, 'utf8')) as Telemetry;
+    v = existsSync(p) ? (JSON.parse(readFileSync(p, 'utf8')) as Telemetry) : {};
   } catch {
-    return {};
+    v = {};
   }
+  frameTelem.set(nodeId, v);
+  return v;
 }
 
 function fmtTokens(n: number): string {
@@ -358,7 +420,7 @@ function fetchAsksMap(rootId: string): Record<string, number> {
 
 /** First manager (by created) — the UP step for the ancestry spine. */
 function managerOf(id: string): string | undefined {
-  try { return subscribersOf(id)[0]?.node_id; } catch { return undefined; }
+  return cSubscribers(id)[0]?.node_id;
 }
 
 /** A kind:'human' node is a control-plane ASK (a humanloop deck on the human's
@@ -369,23 +431,19 @@ function managerOf(id: string): string | undefined {
  *  own. Drop it from every navigable list (the tree, BASE reports, child counts,
  *  subtree expansion) so it can never be selected. */
 function isHumanAsk(id: string): boolean {
-  return getNode(id)?.kind === 'human';
+  return cNode(id)?.kind === 'human';
 }
 
 /** A node's direct children that are navigable conversations — human-ask nodes
  *  dropped. The one place the nav chrome enumerates children. */
 function convoChildIds(id: string): string[] {
-  try {
-    return subscriptionsOf(id).map((s) => s.node_id).filter((cid) => !isHumanAsk(cid));
-  } catch {
-    return [];
-  }
+  return cSubscriptions(id).map((s) => s.node_id).filter((cid) => !isHumanAsk(cid));
 }
 
 /** Live reports (active|idle) of a node — the DOWN set in BASE. */
 function liveReports(id: string): string[] {
   return convoChildIds(id).filter((cid) => {
-    const st = getNode(cid)?.status;
+    const st = cNode(cid)?.status;
     return st === 'active' || st === 'idle';
   });
 }
@@ -455,7 +513,7 @@ function liveBelowBadge(node: NodeMeta | null, activeBelow: ReadonlyMap<string, 
  *  terminal ones, so sessions still running surface at the TOP of each child
  *  group instead of being buried under finished/failed ones. */
 function statusRank(id: string): number {
-  switch (getNode(id)?.status) {
+  switch (cNode(id)?.status) {
     case 'active':   return 0;
     case 'idle':     return 1;
     case 'done':     return 2;
@@ -507,7 +565,7 @@ function computeSubtreeActivity(root: string, self: string): SubtreeActivity {
   // Returns the count of active nodes in subtree(id) INCLUDING id, and whether
   // that subtree is worth revealing (holds an active node or self).
   const visit = (id: string): { active: number; reveal: boolean } => {
-    const selfActive = getNode(id)?.status === 'active';
+    const selfActive = cNode(id)?.status === 'active';
     if (seen.has(id)) return { active: selfActive ? 1 : 0, reveal: selfActive || id === self };
     seen.add(id);
     let below = 0;
@@ -579,7 +637,7 @@ function renderGraphRow(
     const line = `${r.branch}  ${DIM}↺ ${shortId(r.id)}${RESET}`;
     return wrap(line, false);
   }
-  const node = getNode(r.id);
+  const node = cNode(r.id);
   const dot = coloredGlyph(node);
   const rawName = navLabel(node, r.id);
   const name = r.isSelf ? `${BOLD}${rawName}${RESET}` : rawName;
@@ -734,7 +792,7 @@ export function registerCanvasNav(pi: PiLike): void {
       // Root node: no manager → drop the widget rather than show "↑ (root)" chrome.
       ui.setWidget('crtr-managers', undefined, { placement: 'aboveEditor' });
     } else {
-      const mn = getNode(mgr);
+      const mn = cNode(mgr);
       const name = navLabel(mn, mgr);
       const mgrLine = truncate(
         `↑ ${name} ${coloredGlyph(mn)} ${DIM}${mn?.kind ?? ''}${RESET} ${DIM}${tokensCell(mgr)}${RESET}${cycleBadge(mn)}${childBadge(mn)}${liveBelowBadge(mn, activity.activeBelow)}${askBadge(mgr)}${activityCell(mgr, mn)}`,
@@ -746,9 +804,9 @@ export function registerCanvasNav(pi: PiLike): void {
     const lines: string[] = [];
     // Report rows only — no "↓ reports (N)" header (the label carries no signal).
     if (reports.length > 0) {
-      const nameW = Math.min(20, Math.max(...reports.map((id) => navLabel(getNode(id), id).length)));
+      const nameW = Math.min(20, Math.max(...reports.map((id) => navLabel(cNode(id), id).length)));
       for (const id of reports) {
-        const n = getNode(id);
+        const n = cNode(id);
         const name = navLabel(n, id).padEnd(nameW);
         const kind = `${DIM}${(n?.kind ?? '').padEnd(6)}${RESET}`;
         const tokens = `${DIM}${tokensCell(id).padStart(5)}${RESET}`;
@@ -827,6 +885,9 @@ export function registerCanvasNav(pi: PiLike): void {
 
   const render = (): void => {
     if (ui === undefined) return;
+    // Fresh snapshot per render: drop last frame's memoized node/telemetry/edge
+    // reads so this paint reflects current disk+db state, then read-once within it.
+    beginFrame();
     try {
       if (view === 'graph') renderGraph();
       else renderBase();
@@ -867,7 +928,7 @@ export function registerCanvasNav(pi: PiLike): void {
     view = 'graph';
     pendingConfirm = undefined;
     scrollTop = 0;
-    if (cursorId === undefined || getNode(cursorId) === null) cursorId = nodeId;
+    if (cursorId === undefined || cNode(cursorId) === null) cursorId = nodeId;
     render();
   };
   const exitGraph = (): void => {
@@ -882,7 +943,7 @@ export function registerCanvasNav(pi: PiLike): void {
 
   /** Template vars for a graphBind, resolved against the CURSOR node. */
   const graphVars = (cur: string): Record<string, string> => {
-    const cn = getNode(cur);
+    const cn = cNode(cur);
     return {
       id: cur,
       self: nodeId,
@@ -952,10 +1013,9 @@ export function registerCanvasNav(pi: PiLike): void {
 
     if (isEnterKey(data)) { if (cursorId !== undefined) focusTarget(cursorId); render(); return { consume: true }; }
     if (isPlain(data, 'm')) { const mgr = managerOf(nodeId); if (mgr !== undefined) focusTarget(mgr); render(); return { consume: true }; }
-    if (isPlain(data, 'e')) { shellCrtr(['canvas', 'tmux-spread', nodeId]); return { consume: true }; }
     if (isPlain(data, 'x')) {
       const target = cursorId ?? nodeId;
-      const n = getNode(target);
+      const n = cNode(target);
       const nm = n !== null ? fullName(n) : shortId(target);
       pendingConfirm = { label: `kill ${nm}?`, action: () => shellCrtr(['node', 'close', '--node', target], render) };
       render();
@@ -970,7 +1030,7 @@ export function registerCanvasNav(pi: PiLike): void {
       const argv = interpolateArgv(bind.run, graphVars(target));
       if (argv.length === 0) return { consume: true };
       if (bind.confirm === true) {
-        const n = getNode(target);
+        const n = cNode(target);
         const nm = n !== null ? fullName(n) : shortId(target);
         pendingConfirm = { label: `${bind.desc ?? bind.run} ${nm}?`, action: () => shellCrtr(argv, render) };
       } else {
