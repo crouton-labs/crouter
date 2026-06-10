@@ -32,14 +32,15 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      # uv must precede `npm ci`: humanloop's postinstall provisions its OWN
+      # termrender venv via uv and resolves the binary by absolute path inside it
+      # (never $PATH — a bare `pip install termrender` does nothing for it; CI
+      # finding 2026-06-10). The review-render-pane regression test needs that
+      # venv to boot the live render pane.
+      - uses: astral-sh/setup-uv@v5
       - run: npm ci
-      - name: Install tmux + termrender
-        # tmux hosts the chrome tests; termrender (our PyPI renderer) is booted in a
-        # live pane by the review-render-pane regression test — without it the test
-        # times out waiting for the render pane (first-CI-run finding, 2026-06-10).
-        run: |
-          sudo apt-get update && sudo apt-get install -y tmux
-          pip install termrender
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y tmux
       - run: npm run build
       - run: npm run test:full
 
