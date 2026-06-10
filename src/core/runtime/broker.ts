@@ -385,7 +385,7 @@ export async function runBroker(nodeId: string): Promise<void> {
   };
 
   const buildSnapshot = (): BrokerSnapshot => ({
-    messages: session.messages,
+    messages: snapshotMessages(session),
     stats: session.getSessionStats(),
     state: {
       sessionId: session.sessionId,
@@ -962,6 +962,34 @@ export async function runBroker(nodeId: string): Promise<void> {
       process.stderr.write(`[broker] first prompt failed: ${String(err)}\n`);
     });
   }
+}
+
+// ---------------------------------------------------------------------------
+// snapshotMessages — the catch-up snapshot's ordered message history.
+//
+// The broker is the SOLE writer of the node's session `.jsonl`, so the session
+// manager's persisted tree (`buildSessionContext`) is the canonical, complete,
+// ordered history — byte-identical to what a dormant reader (crouter-web's static
+// normalizer) reconstructs from the same file. We serve THAT, NOT the agent's
+// live `session.messages` (`agent.state.messages`), because pi's recovery paths
+// mutate the live array away from the persisted history: auto-retry, context-
+// overflow recovery, and compaction each SLICE the errored/superseded assistant
+// message out of `state.messages` while DELIBERATELY keeping it on disk ("keep in
+// session for history", agent-session.js). So `session.messages` can OMIT — or, via
+// branch/compaction reshaping, reorder — a turn the `.jsonl` still holds. Pre-
+// close that drift is invisible (the live stream and the live array agree); after
+// a revive the welcome snapshot built from the reloaded array would diverge from
+// the on-disk history a dormant viewer just saw. Reconstructing from the session
+// manager makes the live snapshot == the persisted history (single source of
+// truth); the relayed live stream then continues from there.
+//
+// `AgentSession.sessionManager` is a public readonly field of the real pi SDK; the
+// fake-engine test fixture mirrors the same `sessionManager.buildSessionContext()`
+// surface, so this is a single path with no engine-capability fallback.
+export function snapshotMessages(
+  session: CreateAgentSessionResult['session'],
+): BrokerSnapshot['messages'] {
+  return session.sessionManager.buildSessionContext().messages;
 }
 
 // ---------------------------------------------------------------------------

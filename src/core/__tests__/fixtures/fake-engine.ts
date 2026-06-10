@@ -248,6 +248,16 @@ class FakeSession {
   get messages(): unknown[] {
     return this.messageLog;
   }
+  // The broker's catch-up snapshot reconstructs history from the persisted
+  // session tree (sessionManager.buildSessionContext) — the single source of
+  // truth, since `session.messages` can be sliced by pi's retry/overflow/
+  // compaction recovery. Mirror that surface so the fake's snapshot still serves
+  // the accrued history (G2/G3). The fake's persisted analog IS messageLog.
+  get sessionManager(): { buildSessionContext: () => { messages: unknown[]; thinkingLevel: string; model: null } } {
+    return {
+      buildSessionContext: () => ({ messages: this.messageLog, thinkingLevel: 'off', model: null }),
+    };
+  }
   get sessionId(): string {
     return this.sm.getSessionId();
   }
