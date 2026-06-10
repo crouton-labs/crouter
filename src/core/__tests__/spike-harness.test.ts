@@ -1,155 +1,64 @@
 // Run with: node --import tsx/esm --test src/core/__tests__/spike-harness.test.ts
 //
-// SPIKE — a throwaway-grade proof that a faithful integration harness for the
-// node/canvas runtime is feasible. It drives the REAL `crtr` CLI into an
-// isolated REAL tmux session, substitutes a FAKE-PI vehicle (the fake-pi-host
-// fixture) via the CRTR_PI_BINARY seam, and proves the spawned window actually
-// exec's the fake pi with the right argv+env, that the fake loads the REAL
-// extensions, and that one real lifecycle hook drives a real canvas transition.
+// HEADLESS RETARGET (foundation-spec §C.14 + §E). The throwaway-grade POC that a
+// faithful integration harness for the node/canvas runtime is feasible — now on
+// the BROKER path, in the FAST tier (no tmux, no hasTmux() gate). It drives the
+// REAL `crtr` CLI to spawn a `--headless` node onto the REAL headless broker host,
+// which boots a REAL detached broker PROCESS hosting the fake SDK engine via the
+// CRTR_BROKER_ENGINE seam — proving the broker exec's with the right argv+env,
+// loads the REAL `-e` canvas extensions, and that real lifecycle hooks drive real
+// canvas transitions.
 //
 // Milestones (de-risk order):
-//   1. SEAM      — piCommand substitutes CRTR_PI_BINARY only when set (unit).
-//   2. ROUND-TRIP— real `node new` → isolated tmux window → fake pi boots with
-//                  CRTR_NODE_ID + the -e env intact (GO/NO-GO).
-//   3. REAL HOOKS— the fake pi loads the real stophook and a clean /quit drives
-//                  status=done via the real session_shutdown handler.
-//   4. TEARDOWN  — the isolated session + fake-pi procs are killed; no strays.
+//   1. SEAM      — piCommand substitutes CRTR_PI_BINARY only when set (pure unit).
+//   2. ROUND-TRIP— real `node new --headless` → real broker boots with CRTR_NODE_ID
+//                  + the -e canvas extensions intact (GO/NO-GO).
+//   3. REAL HOOKS— the broker loads the real stophook: session_start captures
+//                  pi_session_id + recordPid(broker pid); a `push --final` agent_end
+//                  drives status=done through the stophook's clean-exit branch.
+//
+// (1) BUG LOCKED — harness faithfulness. A real `node new --headless` must boot a
+//     real broker that loads EVERY canvas `-e` extension with none failing, the
+//     REAL stophook must capture the session id on session_start, and the REAL
+//     stophook agent_end clean-exit branch must transition the node to done.
+//
+// (2) WHY MODEL-LEVEL / HEADLESS — the broker hosts the fake engine over the SDK
+//     seam (no real LLM), boots DETACHED supervised by pid (no tmux pane), and
+//     every proof is a file the broker writes (fake-pi.boots.jsonl) or a canvas
+//     row — nothing reads a pane. ONE real boot is inherent: the POC's whole
+//     point is that a real broker PROCESS loads real extensions + fires real hooks.
+//     (The fake engine models a clean exit via the broker's shutdownHandler rather
+//     than a pi `session_shutdown` frame, so the clean done transition is driven
+//     through the stophook's `push --final` agent_end branch — the same real
+//     stophook code path that shuts a done broker down.)
+//
+// (3) HOW THE HEADLESS DRIVE STILL FAILS IF THE BUG REGRESSES — if the seam or an
+//     extension load broke, failedExt is non-empty or extPaths drifts from
+//     CANVAS_EXTENSIONS → RED; if the stophook didn't capture the session,
+//     pi_session_id stays null → RED; if the clean-exit branch didn't shut the
+//     broker down, status never reaches done → the finish wait times out.
 
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import {
-  mkdtempSync,
-  rmSync,
-  existsSync,
-  readFileSync,
-  readdirSync,
-  writeFileSync,
-} from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { createRequire } from 'node:module';
 
-import { createNode, getNode } from '../canvas/canvas.js';
-import { closeDb } from '../canvas/db.js';
+import { createHarness, type Harness } from './helpers/harness.js';
 import { piCommand } from '../runtime/placement.js';
 import { CANVAS_EXTENSIONS } from '../runtime/launch.js';
-import type { NodeMeta } from '../canvas/types.js';
 
-// --- locations --------------------------------------------------------------
-const HERE = dirname(fileURLToPath(import.meta.url)); // src/core/__tests__
-const CROUTER = join(HERE, '..', '..', '..'); // package root
-const CLI_SRC = join(CROUTER, 'src', 'cli.ts');
-const FAKE_PI_HOST = join(HERE, 'fixtures', 'fake-pi-host.ts');
-const TSX_ESM = createRequire(import.meta.url).resolve('tsx/esm');
-// A multi-word launcher baked verbatim ahead of the (shell-quoted) argv.
-const FAKE_PI_BINARY = `${process.execPath} --import ${TSX_ESM} ${FAKE_PI_HOST}`;
+let h: Harness;
+let root: string;
 
-function hasTmux(): boolean {
-  return spawnSync('tmux', ['-V'], { stdio: 'ignore' }).status === 0;
-}
-
-function tmuxSessionExists(session: string): boolean {
-  return spawnSync('tmux', ['has-session', '-t', session], { stdio: 'ignore' }).status === 0;
-}
-
-// --- env isolation: scrub every canvas var the harness itself runs under, so
-// the spawned CLI cannot leak into the real canvas. -------------------------
-const CANVAS_ENV_KEYS = [
-  'CRTR_NODE_ID',
-  'CRTR_HOME',
-  'CRTR_ROOT_SESSION',
-  'CRTR_SUBTREE',
-  'CRTR_NODE_SESSION',
-  'CRTR_PARENT_NODE_ID',
-  'CRTR_FRONT_DOOR',
-  'CRTR_KIND',
-  'CRTR_MODE',
-  'CRTR_LIFECYCLE',
-  'CRTR_NODE_CWD',
-  'CRTR_PI_BINARY',
-  'TMUX',
-  'TMUX_PANE',
-];
-
-function cleanBaseEnv(): Record<string, string> {
-  const e: Record<string, string> = {};
-  for (const [k, v] of Object.entries(process.env)) if (v !== undefined) e[k] = v;
-  for (const k of CANVAS_ENV_KEYS) delete e[k];
-  // Contain per-invocation bootstrap + auto-update side effects.
-  e['CRTR_NO_BOOTSTRAP'] = '1';
-  e['CRTR_NO_AUTO_UPDATE'] = '1';
-  e['CRTR_NO_BOOT_SKILL'] = '1';
-  e['CRTR_NO_MODE_CMDS'] = '1';
-  e['CRTR_NO_AUTO_INIT'] = '1';
-  return e;
-}
-
-function node(id: string, over: Partial<NodeMeta> = {}): NodeMeta {
-  return {
-    node_id: id,
-    name: id,
-    created: new Date().toISOString(),
-    cwd: CROUTER,
-    kind: 'general',
-    mode: 'base',
-    lifecycle: 'resident',
-    status: 'active',
-    parent: null,
-    ...over,
-  };
-}
-
-async function waitFor<T>(
-  probe: () => T | undefined | null | false,
-  opts: { timeoutMs?: number; intervalMs?: number; label?: string } = {},
-): Promise<T> {
-  const timeoutMs = opts.timeoutMs ?? 20_000;
-  const intervalMs = opts.intervalMs ?? 150;
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const v = probe();
-    if (v) return v as T;
-    if (Date.now() > deadline) throw new Error(`waitFor timed out: ${opts.label ?? 'condition'}`);
-    await new Promise((r) => setTimeout(r, intervalMs));
-  }
-}
-
-// --- harness state ----------------------------------------------------------
-let home: string;
-let tmpHome: string;
-let origHome: string | undefined;
-const sessionsToKill = new Set<string>();
-const pidsToKill = new Set<number>();
-
-before(() => {
-  origHome = process.env['CRTR_HOME'];
-  home = mkdtempSync(join(tmpdir(), 'crtr-spike-home-'));
-  tmpHome = mkdtempSync(join(tmpdir(), 'crtr-spike-HOME-'));
-  // The harness reads/writes the isolated canvas in-process.
-  process.env['CRTR_HOME'] = home;
-  closeDb();
+before(async () => {
+  h = await createHarness({ headless: true, sessionPrefix: 'crtr-spike' });
+  root = h.spawnRoot('spike acting-root');
 });
 
-after(() => {
-  for (const s of sessionsToKill) spawnSync('tmux', ['kill-session', '-t', s], { stdio: 'ignore' });
-  for (const p of pidsToKill) {
-    try {
-      process.kill(p, 'SIGKILL');
-    } catch {
-      /* already gone */
-    }
-  }
-  closeDb();
-  if (home) rmSync(home, { recursive: true, force: true });
-  if (tmpHome) rmSync(tmpHome, { recursive: true, force: true });
-  if (origHome === undefined) delete process.env['CRTR_HOME'];
-  else process.env['CRTR_HOME'] = origHome;
+after(async () => {
+  if (h !== undefined) await h.dispose();
 });
 
 // ===========================================================================
-// MILESTONE 1 — the CRTR_PI_BINARY seam (always runs; no tmux needed).
+// MILESTONE 1 — the CRTR_PI_BINARY seam (pure unit; no boot, no tmux).
 // ===========================================================================
 test('M1 seam: piCommand exec\'s `pi` when CRTR_PI_BINARY is unset, substitutes when set', () => {
   const saved = process.env['CRTR_PI_BINARY'];
@@ -185,115 +94,50 @@ test('M1 seam: piCommand exec\'s `pi` when CRTR_PI_BINARY is unset, substitutes 
 });
 
 // ===========================================================================
-// MILESTONES 2 + 3 — real CLI → isolated tmux → fake pi → real hooks.
-// THE GO/NO-GO. Shares one spawned child across both milestones.
+// MILESTONES 2 + 3 — real `node new --headless` → real broker → real hooks.
+// THE GO/NO-GO. One spawned broker drives both milestones (one real boot).
 // ===========================================================================
-test(
-  'M2+M3 round-trip: real `node new` reaches the fake pi via the seam, and a real hook drives status=done',
-  { skip: !hasTmux() },
-  async () => {
-    const session = `crtr-spike-${process.pid}-rt`;
-    sessionsToKill.add(session);
-    // Pre-create the isolated session (default tmux server — the runtime shells
-    // `tmux` with no -L, so an -L server would be invisible to the real CLI).
-    spawnSync('tmux', ['new-session', '-d', '-s', session, '-c', CROUTER, 'sleep 600'], {
-      stdio: 'ignore',
-    });
-    assert.ok(tmuxSessionExists(session), 'isolated tmux session created');
+test('M2+M3 round-trip: real `node new --headless` boots the broker via the seam, real hooks drive status=done', async () => {
+  const id = await h.spawnHeadlessChild(root, 'spike task');
 
-    // Bootstrap the acting node in the isolated canvas (the parent `node new`
-    // spawns under). createNode shares the harness CRTR_HOME.
-    createNode(node('A', { name: 'acting-root' }));
+  // ---- MILESTONE 2: the round-trip reached the real broker -----------------
+  const boot = await h.awaitBoot(id);
+  const env = boot.env as Record<string, string | null>;
+  assert.equal(env['CRTR_NODE_ID'], id, 'CRTR_NODE_ID is the CHILD id, intact');
+  assert.equal(env['CRTR_HOME'], h.home, 'CRTR_HOME isolated value intact');
+  assert.ok(env['CRTR_KIND'], 'CRTR_KIND present');
+  assert.ok(env['CRTR_MODE'], 'CRTR_MODE present');
+  assert.ok(env['CRTR_LIFECYCLE'], 'CRTR_LIFECYCLE present');
+  assert.equal(env['CRTR_FRONT_DOOR'], '1', 'CRTR_FRONT_DOOR overlay present (broker host)');
 
-    // Drive the REAL CLI: `crtr node new` AS node A, into the isolated session,
-    // with the fake-pi seam. Body passed as a positional (dodges the stdin hang).
-    const env = cleanBaseEnv();
-    env['CRTR_HOME'] = home;
-    env['HOME'] = tmpHome;
-    env['CRTR_NODE_ID'] = 'A';
-    env['CRTR_NODE_SESSION'] = session;
-    env['CRTR_PI_BINARY'] = FAKE_PI_BINARY;
+  // argv from buildPiArgv arrived: every canvas -e extension + the kickoff. Assert
+  // against the live CANVAS_EXTENSIONS count so this never drifts again.
+  assert.equal(
+    boot.extPaths.length,
+    CANVAS_EXTENSIONS.length,
+    `all ${CANVAS_EXTENSIONS.length} canvas -e extension paths in argv`,
+  );
+  assert.ok(
+    boot.loaded.some((p: string) => p.includes('canvas-stophook')),
+    'real stophook module loaded by the broker',
+  );
+  assert.ok(
+    boot.loaded.some((p: string) => p.includes('canvas-inbox-watcher')),
+    'real inbox-watcher module loaded by the broker',
+  );
+  assert.equal(boot.failedExt.length, 0, `no extension failed to load: ${JSON.stringify(boot.failedExt)}`);
+  assert.equal(boot.resuming, false, 'fresh start (no --session)');
+  assert.equal(boot.prompt, 'spike task', 'kickoff prompt is the last positional');
 
-    const res = spawnSync(
-      process.execPath,
-      ['--import', TSX_ESM, CLI_SRC, 'node', 'new', 'spike task', '--parent', 'A', '--cwd', CROUTER],
-      { cwd: CROUTER, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 60_000 },
-    );
-    assert.equal(
-      res.status,
-      0,
-      `node new should exit 0\n--- stdout ---\n${res.stdout}\n--- stderr ---\n${res.stderr}`,
-    );
+  // The REAL stophook session_start handler ran inside the broker and wrote shared
+  // canvas state (proves the hook chain, not just the boot).
+  const afterBoot = h.node(id)!;
+  assert.equal(afterBoot.pi_session_id, (boot as { sessionId?: string }).sessionId, 'stophook captured pi_session_id');
+  assert.equal(afterBoot.status, 'active', 'child active after boot');
 
-    // Find the spawned child: the only node dir that isn't the acting root.
-    closeDb();
-    const nodesDir = join(home, 'nodes');
-    const childId = readdirSync(nodesDir).find((d) => d !== 'A');
-    assert.ok(childId, 'a child node dir was created by node new');
-
-    // ---- MILESTONE 2 assertions: the round-trip reached the fake pi --------
-    const bootPath = join(nodesDir, childId!, 'fake-pi.boot.json');
-    const errPath = join(nodesDir, childId!, 'fake-pi.error');
-    await waitFor(
-      () => existsSync(bootPath),
-      {
-        timeoutMs: 30_000,
-        label: `fake-pi boot proof at ${bootPath}${existsSync(errPath) ? ` (error file: ${readFileSync(errPath, 'utf8')})` : ''}`,
-      },
-    );
-    const boot = JSON.parse(readFileSync(bootPath, 'utf8'));
-    if (typeof boot.pid === 'number') pidsToKill.add(boot.pid);
-
-    // env delivered via tmux -e arrived in the fake pi's process.env.
-    assert.equal(boot.env.CRTR_NODE_ID, childId, 'CRTR_NODE_ID is the CHILD id, intact');
-    assert.equal(boot.env.CRTR_HOME, home, 'CRTR_HOME isolated value intact');
-    assert.ok(boot.env.CRTR_KIND, 'CRTR_KIND present');
-    assert.ok(boot.env.CRTR_MODE, 'CRTR_MODE present');
-    assert.ok(boot.env.CRTR_LIFECYCLE, 'CRTR_LIFECYCLE present');
-    assert.equal(boot.env.CRTR_FRONT_DOOR, '1', 'CRTR_FRONT_DOOR overlay present');
-    // argv from buildPiArgv arrived: every canvas -e extension + the kickoff.
-    // Assert against the live CANVAS_EXTENSIONS count (8 at current HEAD — the
-    // placement-v3 refactor added canvas-resume) so this never drifts again.
-    assert.equal(
-      boot.extPaths.length,
-      CANVAS_EXTENSIONS.length,
-      `all ${CANVAS_EXTENSIONS.length} canvas -e extension paths in argv`,
-    );
-    assert.ok(
-      boot.loaded.some((p: string) => p.includes('canvas-stophook')),
-      'real stophook module loaded by the fake pi',
-    );
-    assert.ok(
-      boot.loaded.some((p: string) => p.includes('canvas-inbox-watcher')),
-      'real inbox-watcher module loaded by the fake pi',
-    );
-    assert.equal(boot.failedExt.length, 0, `no extension failed to load: ${JSON.stringify(boot.failedExt)}`);
-    assert.equal(boot.resuming, false, 'fresh start (no --session)');
-    assert.equal(boot.prompt, 'spike task', 'kickoff prompt is the last positional');
-
-    // The REAL stophook session_start handler ran inside the fake pi and wrote
-    // shared canvas state (proves the hook chain, not just the boot).
-    closeDb();
-    const afterBoot = getNode(childId!);
-    assert.ok(afterBoot, 'child node readable from the shared canvas');
-    assert.equal(afterBoot!.pi_session_id, boot.sessionId, 'stophook captured pi_session_id');
-    assert.equal(afterBoot!.status, 'active', 'child active after boot');
-
-    // ---- MILESTONE 3: a clean /quit drives a real transition to done -------
-    writeFileSync(join(nodesDir, childId!, 'fake-pi.cmd'), JSON.stringify({ cmd: 'shutdown' }));
-    const done = await waitFor(
-      () => {
-        closeDb();
-        return getNode(childId!)?.status === 'done' ? true : false;
-      },
-      { timeoutMs: 20_000, label: 'child status=done after clean /quit' },
-    );
-    assert.ok(done, 'real session_shutdown hook resolved the node to done');
-    assert.equal(getNode(childId!)?.status, 'done', 'status=done via the real stophook');
-
-    // ---- MILESTONE 4: teardown leaves no stray session ---------------------
-    spawnSync('tmux', ['kill-session', '-t', session], { stdio: 'ignore' });
-    sessionsToKill.delete(session);
-    assert.ok(!tmuxSessionExists(session), 'isolated session killed, no stray left');
-  },
-);
+  // ---- MILESTONE 3: a clean finish drives a real transition to done --------
+  // push --final flips status=done; the broker's agent_end runs the REAL stophook
+  // clean-exit branch (status already done → ctx.shutdown → broker disposes/exits).
+  await h.finish(id, 'spike done');
+  assert.equal(h.status(id), 'done', 'real stophook agent_end resolved the node to done');
+});
