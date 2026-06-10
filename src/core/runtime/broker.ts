@@ -813,7 +813,10 @@ export async function runBroker(nodeId: string): Promise<void> {
         break;
       }
       case 'get_commands': {
-        if (notController(client, 'list commands')) break;
+        // OBSERVERS may call this: the merged command inventory is static
+        // (extensions + templates + skills + builtins) and drives nothing in the
+        // engine, so it is not a controller-gated op. The web bridge fetches it on
+        // its observer-by-default upstream connection to populate the palette.
         // The merged command list rides in ack.detail as JSON (the foundation's
         // AckFrame.detail field) — the viewer (T6) JSON.parses it when for ===
         // 'get_commands'. Keeps every command op a uniform ack reply.
