@@ -148,6 +148,10 @@ export interface SpawnChildOpts {
    *  headless broker. Persisted as `host_kind` at birth (resolved from
    *  `--headless` / the `headless` config default by the caller). */
   hostKind?: 'tmux' | 'broker';
+  /** Pin the node to a model TIER (ultra/strong/medium/light), overriding the
+   *  persona's declared default. Persisted to `meta.model_override` so it
+   *  survives polymorphs. Omit to use the persona default. */
+  model?: string;
 }
 
 /** Resolve a `--fork-from` value to the source pi gets as `--fork <path|id>`.
@@ -216,7 +220,7 @@ export function spawnChild(opts: SpawnChildOpts): SpawnChildResult {
   // Spine: a managed child reports up to its spawner (has a manager); an
   // independent root sits top-of-spine with nobody to push to. Mirrors the
   // `parent` set below (root ? null : spawner), so hasManager === parent!==null.
-  const { launch } = buildLaunchSpec(opts.kind, mode, { lifecycle, hasManager: !root });
+  const { launch } = buildLaunchSpec(opts.kind, mode, { lifecycle, hasManager: !root, model: opts.model });
   // Name the worker from its task now, so its first editor label carries it.
   const meta = spawnNode({
     kind: opts.kind,
@@ -235,6 +239,7 @@ export function spawnChild(opts: SpawnChildOpts): SpawnChildResult {
     // identity over the source's copied-in conversation.
     forkFrom: opts.forkFrom,
     hostKind: opts.hostKind,
+    modelOverride: opts.model,
     launch,
   });
 

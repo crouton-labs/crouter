@@ -206,6 +206,10 @@ export interface SpawnNodeOpts {
   passiveDefault?: boolean;
   /** Resolved pi launch recipe (from resolve(kind,mode)). */
   launch?: LaunchSpec;
+  /** Caller-pinned model tier (ultra/strong/medium/light) that overrides the
+   *  persona default. Persisted to `meta.model_override` so polymorphs preserve
+   *  it. Omit to use the persona default. */
+  modelOverride?: string | null;
   /** Override the generated id (e.g. when a caller pre-allocates one). */
   nodeId?: string;
 }
@@ -244,6 +248,7 @@ export function spawnNode(opts: SpawnNodeOpts): NodeMeta {
     parent,
     spawned_by: spawnedBy,
     fork_from: opts.forkFrom,
+    model_override: opts.modelOverride ?? null,
     passive_default: opts.passiveDefault ?? false,
     intent: null,
     pi_session_id: null,

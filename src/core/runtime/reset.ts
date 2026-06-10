@@ -147,7 +147,7 @@ export function resetRoot(
   //    Re-seed persona_ack to the fresh persona so the pristine `/new`
   //    conversation never gets a spurious mode/lifecycle transition steer (the
   //    persona injector compares against this ack).
-  const { launch } = buildLaunchSpec(meta.kind, 'base', { lifecycle: 'resident', hasManager: false });
+  const { launch } = buildLaunchSpec(meta.kind, 'base', { lifecycle: 'resident', hasManager: false, model: meta.model_override ?? undefined });
   updateNode(nodeId, {
     mode: 'base',
     lifecycle: 'resident',
@@ -244,7 +244,7 @@ export function relaunchRoot(
     window: oldMeta.window ?? null,
   };
   const newId = newNodeId();
-  const { launch } = buildLaunchSpec(oldMeta.kind, 'base', { lifecycle: 'resident', hasManager: false });
+  const { launch } = buildLaunchSpec(oldMeta.kind, 'base', { lifecycle: 'resident', hasManager: false, model: oldMeta.model_override ?? undefined });
 
   // Park-old + mint-new is the single most fragile spot in the runtime, so it is
   // ONE atomic unit: every ROW write below runs inside a sqlite transaction. A
@@ -272,6 +272,7 @@ export function relaunchRoot(
       parent: null,
       spawnedBy: oldId,            // audit-only successor link; does NOT touch the spine
       nodeId: newId,
+      modelOverride: oldMeta.model_override,
       launch,
     });
     transition(newId, 'yield');    // active (from spawn) + intent=refresh safety net

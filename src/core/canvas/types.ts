@@ -121,6 +121,12 @@ export interface NodeIdentity {
    *  PATH is opened directly — immune to any cwd discrepancy. Null for older
    *  nodes booted before this field existed → revive falls back to the bare id. */
   pi_session_file?: string | null;
+  /** A caller-pinned model TIER (ultra/strong/medium/light) that overrides the
+   *  persona's declared default. Durable so it survives a polymorph: every
+   *  spec-rebuild path (promote/demote/lifecycle/reset) re-passes it to
+   *  buildLaunchSpec, while the persona default is recomputed fresh for the
+   *  (possibly new) kind. Null/undefined ⇒ use the persona default. */
+  model_override?: string | null;
   /** Full pi launch recipe; rewritten on every polymorph. */
   launch?: LaunchSpec;
 }

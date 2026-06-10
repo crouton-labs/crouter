@@ -1,11 +1,9 @@
-// Tests for the canvas-node inbox watcher pi extension.
+// Tests for the canvas-node inbox watcher pi extension, part 2 — the
+// refresh-yield HOLD path and idle delivery. Split out of
+// canvas-inbox-watcher.test.ts (see its header) so node:test's file-level
+// parallelism applies; the tests and the scaffold are moved here UNCHANGED.
 //
-// Run with: node --import tsx/esm --test src/core/__tests__/canvas-inbox-watcher.test.ts
-//
-// Focus: a finished node (push final → InboxEntry kind 'final') must STEER a
-// mid-stream subscriber, not queue behind its current turn as a follow-up.
-// Part 2 — the refresh-yield HOLD path and idle delivery — lives in
-// canvas-inbox-watcher-hold.test.ts (split for node:test file-level parallelism).
+// Run with: node --import tsx/esm --test src/core/__tests__/canvas-inbox-watcher-hold.test.ts
 
 import { test, describe, before, after, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
@@ -14,6 +12,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import registerCanvasInboxWatcher from '../../pi-extensions/canvas-inbox-watcher.js';
 import { appendInbox } from '../feed/inbox.js';
+import { createNode, setIntent } from '../canvas/canvas.js';
+import { closeDb } from '../canvas/db.js';
+import type { NodeMeta } from '../canvas/types.js';
 
 // Mirror the watcher's internal cadence (TICK_MS=800, DEBOUNCE_MS=1000): allow a
 // resolve+seed tick, a read tick, and the debounce window before asserting.
@@ -69,29 +70,41 @@ after(() => {
   for (const h of homes) { try { rmSync(h, { recursive: true, force: true }); } catch { /* noop */ } }
 });
 
-describe('canvas inbox watcher — finished-node delivery', () => {
-  test('mid-stream: a finished node (kind final) steers the subscriber', async () => {
-    freshNode('node-final');
+describe('canvas inbox watcher — hold + idle delivery', () => {
+  test('refresh-yield in flight: inbox entries are HELD, then delivered once intent clears (no loss)', async () => {
+    freshNode('node-refresh');
+    closeDb(); // rebind the canvas db to this test's fresh home
+    const meta: NodeMeta = {
+      node_id: 'node-refresh', name: 'r', created: new Date().toISOString(),
+      cwd: '/tmp', kind: 'general', mode: 'base', lifecycle: 'resident',
+      status: 'active', intent: 'refresh',
+    };
+    createNode(meta);
     const pi = makeFakePi();
     disposers.push(registerCanvasInboxWatcher(pi as any));
-    // Subscriber is actively streaming when the worker finishes.
+    // Streaming (mid-turn) when a child finishes — normally this would steer.
     pi.fire('agent_start', { type: 'agent_start' }, { isIdle: () => false });
     await wait(TICK_MS + 100);
-    appendInbox('node-final', { from: 'child-1', tier: 'normal', kind: 'final', label: 'all done' });
+    appendInbox('node-refresh', { from: 'child-x', tier: 'urgent', kind: 'final', label: 'done' });
     await wait(SETTLE_MS);
-    assert.equal(pi.injected.length, 1, 'one coalesced injection');
-    assert.equal(pi.injected[0]!.deliverAs, 'steer', 'a finished node steers, not follows up');
+    assert.equal(pi.injected.length, 0, 'entries are held while a refresh-yield is in flight (no steer-hijack)');
+
+    // The fresh pi clears intent on boot; the held entry must then be delivered
+    // — the cursor was never advanced, so nothing is lost.
+    setIntent('node-refresh', null);
+    await wait(SETTLE_MS);
+    assert.equal(pi.injected.length, 1, 'the held entry is delivered once the refresh clears');
   });
 
-  test('mid-stream: a routine update still follows up', async () => {
-    freshNode('node-update');
+  test('idle: a finished node triggers a fresh turn (no deliverAs)', async () => {
+    freshNode('node-idle');
     const pi = makeFakePi();
     disposers.push(registerCanvasInboxWatcher(pi as any));
-    pi.fire('agent_start', { type: 'agent_start' }, { isIdle: () => false });
+    // No agent_start fired → watcher treats the node as idle.
     await wait(TICK_MS + 100);
-    appendInbox('node-update', { from: 'child-2', tier: 'normal', kind: 'update', label: 'still working' });
+    appendInbox('node-idle', { from: 'child-3', tier: 'normal', kind: 'final', label: 'done while idle' });
     await wait(SETTLE_MS);
     assert.equal(pi.injected.length, 1);
-    assert.equal(pi.injected[0]!.deliverAs, 'followUp', 'a normal update is not urgent → followUp');
+    assert.equal(pi.injected[0]!.deliverAs, undefined, 'idle → sendUserMessage triggers a turn, no deliverAs');
   });
 });

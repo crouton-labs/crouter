@@ -58,6 +58,9 @@ export function promote(nodeId: string, opts: { kind?: string; resident?: boolea
   const { launch } = buildLaunchSpec(targetKind, 'orchestrator', {
     lifecycle: opts.resident === true ? 'resident' : node.lifecycle,
     hasManager: node.parent !== null,
+    // Preserve a caller-pinned model tier across the polymorph (the persona
+    // default is recomputed fresh for targetKind).
+    model: node.model_override ?? undefined,
   });
 
   // Seed a barebones roadmap scaffold if absent so the file exists for a

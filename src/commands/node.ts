@@ -145,6 +145,7 @@ const nodeNew = defineLeaf({
       { kind: 'flag', name: 'root', type: 'bool', required: false, constraint: 'Spawn an INDEPENDENT root instead of a managed child: no parent (top-level on the canvas), NO subscription back to you (you are NOT woken by it), resident lifecycle. It records spawned_by=you for provenance and is brought forefront so it can be driven directly. Use for a node you hand off and do not manage (e.g. a sub-orchestrator a human will discuss with).' },
       { kind: 'flag', name: 'fork-from', type: 'string', required: false, constraint: 'FORK the new node from an existing pi conversation instead of starting it fresh: pass a node id (forks from that node\'s session), an absolute session `.jsonl` path, or a partial pi session uuid. pi copies that whole history into a NEW session for the child (the source is untouched), then the prompt is delivered as the next message — i.e. the child wakes up as a continuation of that conversation. Use to branch exploratory work off a node that already built up the context you need, instead of re-deriving it. One-shot at birth: the fork resumes its own session thereafter.' },
       { kind: 'flag', name: 'headless', type: 'bool', required: false, constraint: 'Spawn the node on the HEADLESS broker host (no tmux pane) instead of a tmux window. Overrides the `headless` config default for this spawn; omit to use that default (which itself defaults to a tmux pane).' },
+      { kind: 'flag', name: 'model', type: 'enum', choices: ['ultra', 'strong', 'medium', 'light'], required: false, constraint: 'Override the model the node runs on, by capability TIER: ultra (frontier), strong (opus), medium (sonnet), light (haiku). Omit to use the kind\'s persona default (explore=light, every other kind=strong). The override is durable — it survives revives and polymorphs (promote/demote).' },
     ],
     output: [
       { name: 'node_id', type: 'string', required: true, constraint: 'The new node id.' },
@@ -174,11 +175,12 @@ const nodeNew = defineLeaf({
     const parent = input['parent'] as string | undefined;
     const root = input['root'] === true;
     const forkFrom = input['forkFrom'] as string | undefined;
+    const model = input['model'] as string | undefined;
     // Host precedence: explicit --headless flag > config `headless` default > tmux.
     const hostKind: 'tmux' | 'broker' =
       input['headless'] === true ? 'broker' : readConfig('user').headless === true ? 'broker' : 'tmux';
 
-    const res = spawnChild({ kind, mode, cwd, name, prompt, parent, root, forkFrom, hostKind });
+    const res = spawnChild({ kind, mode, cwd, name, prompt, parent, root, forkFrom, hostKind, model });
     return {
       node_id: res.node.node_id,
       name: res.node.name,
@@ -726,6 +728,7 @@ function setLifecycle(id: string, value: Lifecycle, opts: { pane?: string | unde
   const { launch } = buildLaunchSpec(target.kind, target.mode, {
     lifecycle: value,
     hasManager: target.parent !== null,
+    model: target.model_override ?? undefined,
   });
   const meta = updateNode(id, { lifecycle: value, launch });
   // --detach: shove the still-running agent into the background crtr session,

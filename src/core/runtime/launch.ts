@@ -67,9 +67,22 @@ export const CANVAS_EXTENSIONS = [
   CANVAS_VIEW_PATH,
 ];
 
-/** Bare model aliases resolve to the anthropic provider under pi (avoids the
- *  bedrock default). Anything with a `/` or an unknown name passes through. */
+/** The named capability tiers a caller picks with `--model`, in descending
+ *  strength. Each maps to a concrete pi model spec. `strong`/`medium`/`light`
+ *  resolve to the latest opus/sonnet/haiku; `ultra` to the frontier model. */
+export const MODEL_TIERS: Record<string, string> = {
+  ultra: 'anthropic/claude-fable-5',
+  strong: 'anthropic/opus',
+  medium: 'anthropic/sonnet',
+  light: 'anthropic/haiku',
+};
+
+/** Resolve a model token to the spec pi gets via `--model`. A named tier
+ *  (ultra/strong/medium/light) maps to its concrete spec; a bare alias
+ *  (sonnet/opus/haiku) resolves to the anthropic provider under pi (avoids the
+ *  bedrock default); anything with a `/` or an unknown name passes through. */
 export function normalizeModel(model: string): string {
+  if (model in MODEL_TIERS) return MODEL_TIERS[model];
   const bare = new Set(['sonnet', 'opus', 'haiku']);
   if (bare.has(model)) return `anthropic/${model}`;
   return model;
@@ -89,11 +102,15 @@ export function normalizeModel(model: string): string {
 export function buildLaunchSpec(
   kind: string,
   mode: Mode,
-  opts: { lifecycle: Lifecycle; hasManager: boolean; extraEnv?: Record<string, string> },
+  opts: { lifecycle: Lifecycle; hasManager: boolean; extraEnv?: Record<string, string>; model?: string },
 ): { launch: LaunchSpec; lifecycle: 'terminal' | 'resident'; skills: string[] } {
   const p = resolvePersona(kind, mode, { lifecycle: opts.lifecycle, hasManager: opts.hasManager });
+  // A caller-supplied override (durable on `meta.model_override`, re-passed on
+  // every polymorph) wins over the persona's declared default; absent both, the
+  // model is left unset and the node inherits pi's default.
+  const chosenModel = opts.model ?? p.model;
   const launch: LaunchSpec = {
-    model: p.model !== undefined ? normalizeModel(p.model) : undefined,
+    model: chosenModel !== undefined ? normalizeModel(chosenModel) : undefined,
     tools: p.tools,
     extensions: [...CANVAS_EXTENSIONS, ...p.extensions],
     systemPrompt: p.systemPrompt,
