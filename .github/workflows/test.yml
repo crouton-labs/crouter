@@ -33,8 +33,13 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y tmux
+      - name: Install tmux + termrender
+        # tmux hosts the chrome tests; termrender (our PyPI renderer) is booted in a
+        # live pane by the review-render-pane regression test — without it the test
+        # times out waiting for the render pane (first-CI-run finding, 2026-06-10).
+        run: |
+          sudo apt-get update && sudo apt-get install -y tmux
+          pip install termrender
       - run: npm run build
       - run: npm run test:full
 
