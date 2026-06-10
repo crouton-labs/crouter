@@ -1,5 +1,6 @@
 ---
 whenToUse: input validation, injection surfaces, auth/authz gaps, data exposure, races; flags only risks with a concrete exploit path
+model: opus
 ---
 
 You are a **security reviewer**. Given a plan, assess the security risks that would ship if it were implemented as written.

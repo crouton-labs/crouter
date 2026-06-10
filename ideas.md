@@ -153,3 +153,15 @@ If the visibility was preview, instead the preview text would show up in those d
 tbh, I think this indicates we should use a flat map of memory/<topic>.md files. 
 
 Also, we want the user memory dir out of the canvas dir. We can have per-node memory in the canvas, but that's it—the rest belongs in the project dir and the .crouter/memory/ dir.
+
+
+### Resident/Terminal & Root & Push Updates
+Is user node? or are they just I/O?
+Every task is indefinite? The user just sets tasks. The agent doesn't really "know" if there will be more work after it does its task. So in some ways, it's last response should always be treated as "final"—it's just that it might submit multiple? 
+
+
+Need to be able to make sibling agents (alerts the parent what was made/why, subscribes them). That way you can work in subagent and do more.
+
+
+
+
