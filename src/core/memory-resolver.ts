@@ -140,22 +140,28 @@ function findMemoryMatches(name: string, scope: Scope | undefined): MemoryDoc[] 
         continue;
       }
     }
-    // Plugin memory dir: a fully-qualified `<plugin>/<rest>` name resolves
-    // against that enabled plugin's memory/ tree (the `<pluginName>/` mount
-    // that listAllMemoryDocs enumerates — `read` must resolve what `list` shows).
+    // Plugin memory dir: a `<plugin>/<rest>` name resolves against that enabled
+    // plugin's memory/ tree (the `<pluginName>/` mount that listAllMemoryDocs
+    // enumerates — `read` must resolve what `list` shows). A BARE plugin name
+    // (no slash) resolves the plugin-root INDEX.md, mirroring the native
+    // bare-dir-name -> INDEX.md contract for the plugin mount root.
     const slash = name.indexOf('/');
-    if (slash <= 0) continue;
-    const pluginName = name.slice(0, slash);
-    const rest = name.slice(slash + 1);
+    const pluginName = slash > 0 ? name.slice(0, slash) : name;
+    const rest = slash > 0 ? name.slice(slash + 1) : '';
     for (const p of listInstalledPlugins(s)) {
       if (!p.enabled || p.name !== pluginName) continue;
       const pdir = pluginMemoryDir(p);
-      const ppath = join(pdir, ...rest.split('/')) + '.md';
-      if (pathExists(ppath)) {
-        matches.push(loadMemoryDoc(name, s, ppath));
-        break;
+      if (rest) {
+        const ppath = join(pdir, ...rest.split('/')) + '.md';
+        if (pathExists(ppath)) {
+          matches.push(loadMemoryDoc(name, s, ppath));
+          break;
+        }
       }
-      const pindex = join(pdir, ...rest.split('/'), 'INDEX.md');
+      // Bare name -> <plugin>/memory/INDEX.md; slashed name -> dir INDEX.
+      const pindex = rest
+        ? join(pdir, ...rest.split('/'), 'INDEX.md')
+        : join(pdir, 'INDEX.md');
       if (pathExists(pindex)) {
         matches.push(loadMemoryDoc(name, s, pindex));
         break;

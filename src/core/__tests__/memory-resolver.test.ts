@@ -10,8 +10,15 @@
 // resolved. The fix taught findMemoryMatches to resolve `<plugin>/<rest>` against
 // each enabled plugin's pluginMemoryDir, native-before-plugin precedence kept.
 //
-// This test FAILS on the pre-fix code (the two fully-qualified reads throw
-// notFound) and PASSES on the current code.
+// Follow-up bug (same seat): the `<plugin>/<rest>` branch required a non-empty
+// rest (`if (slash <= 0) continue`), so a BARE plugin name never tried the
+// plugin-root INDEX.md — `read claude-godot-prompter` / `read ai` returned
+// not_found even though `<plugin>/INDEX` and `<plugin>/<child>` resolved. The
+// fix resolves a bare plugin name to `<plugin>/memory/INDEX.md`, mirroring the
+// native bare-dir-name -> INDEX.md contract, native-before-plugin kept.
+//
+// This test FAILS on the pre-fix code (the fully-qualified and bare-plugin-name
+// reads throw notFound) and PASSES on the current code.
 //
 // Run: node --import tsx/esm --test src/core/__tests__/memory-resolver.test.ts
 
@@ -59,6 +66,9 @@ before(() => {
   writeFileSync(join(pluginMem, 'widget.md'), doc('plugin-widget'));
   writeFileSync(join(pluginMem, 'area', 'zone.md'), doc('plugin-zone'));
   writeFileSync(join(pluginMem, 'shared.md'), doc('plugin-shared'));
+  // Plugin-root INDEX.md: a BARE plugin name must resolve this (mirrors the
+  // native bare-dir-name -> INDEX.md contract for the plugin mount root).
+  writeFileSync(join(pluginMem, 'INDEX.md'), doc('plugin-root-index'));
 
   // Explicitly enable the plugin in config (default is enabled, but be robust).
   writeFileSync(
@@ -97,6 +107,16 @@ test('the bare leaf still resolves via last-segment fallback', () => {
   // enumerate plugin docs) — the gap was the direct fully-qualified path only.
   const d = resolveMemoryDoc('widget');
   assert.equal(d.name, `${PLUGIN}/widget`);
+});
+
+test('bare plugin name resolves the plugin-root INDEX.md', () => {
+  // Regression: findMemoryMatches skipped the plugin branch for a bare name
+  // (`if (slash <= 0) continue`), so a bare plugin name never tried the
+  // plugin-root INDEX.md and returned not_found — even though `<plugin>/INDEX`
+  // resolved. The fix resolves the bare mount root to <plugin>/memory/INDEX.md.
+  const d = resolveMemoryDoc(PLUGIN);
+  assert.equal(d.name, PLUGIN);
+  assert.ok(d.path.endsWith(join('plugins', PLUGIN, 'memory', 'INDEX.md')));
 });
 
 test('native doc wins over a plugin doc of the same canonical name', () => {
