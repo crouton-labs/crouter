@@ -53,22 +53,20 @@ jobs:
           ls -la node_modules/@crouton-kit/humanloop/.venv/bin/ || echo "NO VENV DIR"
           node_modules/@crouton-kit/humanloop/.venv/bin/termrender -h >/dev/null 2>&1 && echo "BINARY OK" || echo "BINARY FAIL"
           node_modules/@crouton-kit/humanloop/.venv/bin/python -c 'import importlib.metadata as m; print("VER", m.version("termrender"))' 2>&1 || echo "VER FAIL"
-          echo "=== live pane open via display() in tmux ==="
+          echo "=== one-shot render (should work) ==="
           printf '# Render check\n\n:::callout{type="info"}\nRENDER-MARKER body\n:::\n' > /tmp/diag-doc.md
-          DISP="$PWD/node_modules/@crouton-kit/humanloop/dist/surfaces/display.js"
-          printf "import { display } from '%s';\nconst r = display('/tmp/diag-doc.md', { window: 'split' });\nconsole.log('PANEID=' + (r.paneId ?? 'NONE'));\n" "$DISP" > /tmp/diag-display.mjs
-          tmux new-session -d -s diagci -x 200 -y 50 "node /tmp/diag-display.mjs > /tmp/disp.out 2>/tmp/disp.err; sleep 30"
-          tmux set-option -g remain-on-exit on
-          sleep 3
-          echo "--- panes @3s ---"; tmux list-panes -s -t diagci -F '#{pane_id} cmd=#{pane_current_command} dead=#{pane_dead} start=#{pane_start_command}'
-          echo "--- disp.out ---"; cat /tmp/disp.out
-          echo "--- disp.err ---"; cat /tmp/disp.err
-          echo "--- render pane (%1) captured content (incl. any crash) ---"
-          tmux capture-pane -p -t diagci:0.1 2>&1 | head -40 || echo "capture %1 failed"
-          sleep 8
-          echo "--- panes @11s ---"; tmux list-panes -s -t diagci -F '#{pane_id} cmd=#{pane_current_command} dead=#{pane_dead}'
-          tmux set-option -g remain-on-exit off
-          tmux kill-session -t diagci || true
+          node_modules/@crouton-kit/humanloop/.venv/bin/termrender doc render --color on < /tmp/diag-doc.md 2>&1 | head -8
+          echo "=== watch in tmux pane, pipe-pane to capture raw pty (incl tracebacks) ==="
+          TR="$PWD/node_modules/@crouton-kit/humanloop/.venv/bin/termrender"
+          rm -f /tmp/pipe.log
+          tmux new-session -d -s diagw -x 200 -y 50 "sleep 60"
+          P=$(tmux list-panes -t diagw -F '#{pane_id}' | head -1)
+          tmux pipe-pane -t "$P" -o "cat >> /tmp/pipe.log"
+          tmux send-keys -t diagw "TERM=tmux-256color '$TR' doc watch --color on -- /tmp/diag-doc.md; echo WATCH_EXITED=\$?" Enter
+          sleep 6
+          echo "--- pane state ---"; tmux list-panes -s -t diagw -F '#{pane_id} cmd=#{pane_current_command} dead=#{pane_dead}'
+          echo "--- raw pty stream (cat -v) ---"; cat -v /tmp/pipe.log | head -60
+          tmux kill-session -t diagw || true
       - run: npm run test:full
 
 # Runner caveats (cannot be exercised from this dev box — verify on first CI run):
