@@ -181,8 +181,8 @@ export function buildWakeBearings(origin: WakeOrigin): string {
  *  any copied-in persona) followed by the `<crtr-context>` bearings block. Base
  *  framing rides for EVERY node; the across-cycles context-dir note is added
  *  ONLY for an orchestrator (by mode) — the one node whose dir a future cycle
- *  resumes from. The `## References` block (substrate reference docs +
- *  node-local docs) replaces the old `<memory>` block. */
+ *  resumes from. The `## References` block carries the substrate reference docs
+ *  + node-local docs. */
 export function buildContextBearings(nodeId: string): string {
   const identity = buildIdentityAssertion(nodeId);
   const dir = contextDir(nodeId);

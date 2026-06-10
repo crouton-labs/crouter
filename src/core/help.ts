@@ -119,7 +119,7 @@ export interface RootEntry {
   useWhen: string;
   /** Optional bounded block this subtree contributes to its <name> block at
    *  root. Returns a complete self-named state element (build it with
-   *  stateBlock), e.g. `<skills count="42">…</skills>`. Aggregate, never an
+   *  stateBlock), e.g. `<kinds count="7">…</kinds>`. Aggregate, never an
    *  unbounded enumeration on a cold path. Soft-fails to omission on
    *  null/throw. */
   dynamicState?: () => string | null;
@@ -163,7 +163,7 @@ export interface BranchHelp {
    *  child's purpose lives in its own listing row). */
   model?: string;
   /** Bounded runtime aggregate as a complete self-named state element (build
-   *  it with stateBlock), e.g. `<skills count="42">…</skills>`. Renderer
+   *  it with stateBlock), e.g. `<kinds count="7">…</kinds>`. Renderer
    *  soft-fails to omission if this returns null or throws. */
   dynamicState?: () => string | null;
   /** Parent-level listing assembled by defineBranch from the actual child defs.
@@ -311,7 +311,7 @@ export function renderRoot(h: RootHelp): string {
     // between the selection rubric and any live state block.
     for (const l of rootSubcommandLines(c)) lines.push(l);
     // dynamicState returns a complete self-named element (e.g.
-    // <skills count="42">…</skills>) — emit it as-is, nested in the command.
+    // <kinds count="7">…</kinds>) — emit it as-is, nested in the command.
     const state = evalDynamic(c.dynamicState);
     if (state !== null) lines.push(state);
     lines.push('</command>');

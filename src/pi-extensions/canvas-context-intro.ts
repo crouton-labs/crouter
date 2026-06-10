@@ -15,9 +15,11 @@
 //
 // The block carries: the path to the node's own context dir and the framing for
 // what belongs there (a shared document store for the other nodes). EVERY node
-// also gets a <memory> block merging the indexes of its three scoped memory
-// stores (user-global, project, node-local), each labeled with its dir — one
-// consistent surface, since every node is born with all three stores. An
+// also gets a `## References` block rendered from the document substrate —
+// eligible `reference` docs at their system-prompt visibility rung, plus the
+// node's own node-local substrate docs — so the bearings name what to read on
+// demand. (Skills and preferences surface as their own `## Skills` /
+// `## Preferences` sections of the system prompt, not in this block.) An
 // orchestrator additionally gets the across-refresh-cycles framing (the one
 // thing a terminal worker's bearings drop). The prose lives in
 // core/runtime/bearings.ts (shared with the promotion guidance dump).

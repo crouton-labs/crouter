@@ -481,7 +481,7 @@ function formatNotFoundMessage(
       .slice(0, 3);
     lines.push(`       did you mean: ${formatted.join(', ')}`);
   } else {
-    lines.push('       run `crtr skill find list` or `crtr skill find search <query>` to discover skills');
+    lines.push('       run `crtr memory list` or `crtr memory find "<query>"` to discover skills');
   }
   return lines.join('\n');
 }

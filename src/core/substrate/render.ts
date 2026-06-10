@@ -5,8 +5,7 @@
 //     (renderPreferencesSection) — strings the D2 `before_agent_start` extension
 //     splices into the system prompt (built by a sibling AFTER this module);
 //   • the `<crtr-context>` half — `## References` (renderReferencesBlock) — the
-//     string wired into bearings.ts's session_start message, REPLACING the old
-//     `<memory>` block.
+//     string wired into bearings.ts's session_start message.
 //
 // Every doc flows through the same pipeline (design §4/§6/§9):
 //   MemoryDoc → parseSubstrateDoc → (null-filter non-substrate) →
@@ -70,10 +69,9 @@ function resolverDocs(subject: NodeConfigSubject, kind: DocKind): SubstrateDoc[]
  *  canvas home (`nodes/<id>/context/memory/`) and is OUTSIDE the scope resolver,
  *  so it is loaded directly here, its raw frontmatter run through
  *  parseSubstrateFrontmatter (mirroring the resolver pipeline), then gate-passed.
- *  Old-format / non-substrate files (incl. the MEMORY.md index, which has no
- *  `kind`) parse to null and drop out. Returned across ALL kinds — node-local is
- *  the catch-all this-node store and rides into the references block as the
- *  replacement for the old node-local `<memory>` stanza.
+ *  Non-substrate files (those with no `kind`) parse to null and drop out.
+ *  Returned across ALL kinds — node-local is the catch-all this-node store and
+ *  rides into the references block.
  *
  *  IMPORTANT: node-local docs are NOT filtered by `systemPromptVisibility` rung.
  *  A migrated node-local reference defaults to rung `none`, which would make it
@@ -138,8 +136,8 @@ function renderSubSection(d: SubstrateDoc): string {
  *  resolver-provided, NOT migrated — named-plugin skills at user/project scope;
  *  the SCOPE_SKILL_PLUGIN sentinel and builtin scope are EXCLUDED because they
  *  become substrate docs). Reuses skill/shared.ts's renderCatalogSection
- *  group-collapse so the boot catalog matches today's `<skills count=N>` shape.
- *  Returns '' when nothing is in the catalog. */
+ *  group-collapse for a compact, source-grouped catalog. Returns '' when nothing
+ *  is in the catalog. */
 function renderSkillCatalog(nameRungSkillDocs: SubstrateDoc[]): string {
   let pluginSkills: Skill[];
   try {
@@ -157,8 +155,8 @@ function renderSkillCatalog(nameRungSkillDocs: SubstrateDoc[]): string {
   ];
   if (entries.length === 0) return '';
 
-  // Group by scope+plugin → forest-root names (drop nested children), mirroring
-  // buildSkillCatalog's source construction.
+  // Group by scope+plugin → forest-root names (drop nested children) so each
+  // source contributes only its top-level skills.
   const bySource = new Map<string, Entry[]>();
   for (const e of entries) {
     const key = `${e.scope}\t${e.plugin}`;
@@ -243,8 +241,7 @@ export function renderPreferencesSection(nodeId: string): string {
  *  drops it when ''). Holds every eligible `kind: reference` resolver doc at its
  *  `system-prompt-visibility` (reference boot default is `none`, so only
  *  author-promoted references show) PLUS the node-local memory docs (any kind),
- *  each a `###` sub-section. Replaces the old `<memory>` block. Returns '' when
- *  nothing is eligible.
+ *  each a `###` sub-section. Returns '' when nothing is eligible.
  *
  *  DEFENSIVE: each doc is rendered in its own try/catch so a single malformed
  *  doc drops only itself (with a loud stderr warning naming the offending path),

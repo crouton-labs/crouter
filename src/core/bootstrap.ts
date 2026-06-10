@@ -36,36 +36,40 @@ const BOOT_SKILL_MARKER_PREFIX = '<!-- crtr-boot-skill v';
 function bootSkillBody(): string {
   return `---
 name: crtr-skills
-description: 'Capture, list, search, and load skills via the crtr CLI. Skills are durable agent memory — markdown future LLM sessions load on demand. Use when the user wants to remember/save knowledge, build a context primer, or recall a previously saved skill. Triggers: "save", "remember", "build context for", "what skills do we have", "skill for X".'
+description: 'Author, list, search, and load crtr memory documents (skills, references, preferences) via the crtr CLI. These are durable agent memory — markdown future LLM sessions load on demand. Use when the user wants to remember/save knowledge, build a context primer, or recall a previously saved doc. Triggers: "save", "remember", "build context for", "what skills do we have", "skill for X".'
 argument-hint: [topic or verb]
 ---
 
 ${BOOT_SKILL_MARKER}
 
-# /crtr-skills — skill router
+# /crtr-skills — crtr memory router
 
-Skills = durable agent memory. Written for **future LLM sessions**, not the
-user. \`crtr skill\` is the index — discoverable via list/search/grep.
+crtr memory documents = durable agent memory (kind: skill, reference, or
+preference). Written for **future LLM sessions**, not the user. \`crtr memory\`
+is the surface — author, discover, and load them.
 
 ## Route by intent
 
 - **Capture** ("save", "remember", "build context for", "make a skill"):
-  \`crtr skill create $ARGUMENTS\` → pick template (primer/playbook/freeform)
-  → \`crtr skill template <type> $ARGUMENTS\` for the full workflow. Follow it
-  directly.
-- **Find** ("what do we have on X"): \`crtr skill search "$ARGUMENTS"\` →
-  \`crtr skill show <name>\` on the best hit.
-- **Load by name**: \`crtr skill show <name>\`.
-- **List all**: \`crtr skill list\`.
-- **Anything else**: \`crtr skill\` (no args) prints the full workflow guide.
+  \`crtr memory write <name> --kind <skill|reference|preference>\` with the
+  body piped on stdin — e.g.
+  \`crtr memory write $ARGUMENTS --kind skill <<'EOF' … EOF\`. Run
+  \`crtr memory write -h\` for the full frontmatter schema (--when, --why,
+  --short-form, --scope, visibility rungs), then \`crtr memory lint\` to
+  validate what you wrote.
+- **Find** ("what do we have on X"): \`crtr memory find "$ARGUMENTS"\` →
+  \`crtr memory read <name>\` on the best hit (add --body/--grep to search
+  bodies).
+- **Load by name**: \`crtr memory read <name>\`.
+- **List all**: \`crtr memory list\`.
 
 If \`$ARGUMENTS\` is empty, ask the user what they want before running.
 
 ## Rules
 
 - CLI stdout is the prompt — act on it, don't paraphrase to the user.
-- Don't load \`create\` and \`template\` outputs in the same turn (progressive
-  disclosure). \`create\` decides type; \`template\` returns the workflow.
+- Append \`-h\` at any leaf (\`crtr memory write -h\`) for its full schema
+  before authoring.
 - If \`crtr\` is not on PATH, tell the user and stop.
 `;
 }

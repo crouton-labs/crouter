@@ -36,7 +36,7 @@ after(() => {
 });
 
 // ---------------------------------------------------------------------------
-// Kernel + guidance: substrate flow, not MEMORY.md
+// Kernel + guidance: the document substrate flow
 // ---------------------------------------------------------------------------
 
 test('the orchestration kernel names the three stores and the substrate commands', () => {
@@ -49,7 +49,7 @@ test('the orchestration kernel names the three stores and the substrate commands
   assert.ok(kernel.includes('crtr memory list'), 'kernel mentions crtr memory list');
   assert.ok(kernel.includes('crtr memory find'), 'kernel mentions crtr memory find');
   assert.ok(kernel.includes('crtr memory read'), 'kernel mentions crtr memory read');
-  // The old MEMORY.md pointer-line flow must NOT be present.
+  // It teaches the substrate flow only — no MEMORY.md pointer-line index.
   assert.ok(!kernel.includes('MEMORY.md'), 'kernel does not mention MEMORY.md');
   assert.ok(!kernel.includes('pointer line'), 'kernel does not teach the pointer-line flow');
 });
@@ -64,6 +64,6 @@ test('promotion guidance references the three stores; no <memory> block', () => 
   for (const store of ['user-global', 'project', 'node-local']) {
     assert.ok(guidance.includes(store), `guidance names the ${store} store`);
   }
-  // The old <memory> block reference must NOT be present in guidance.
-  assert.ok(!guidance.includes('<memory>'), 'guidance does not point at the removed <memory> block');
+  // The guidance points at the substrate flow, not a <memory> block.
+  assert.ok(!guidance.includes('<memory>'), 'guidance does not point at a <memory> block');
 });
