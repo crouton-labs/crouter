@@ -4,8 +4,7 @@ description: Where crouter content belongs — CLI prompts vs builtin skills vs 
 paths:
   - "**/src/prompts/**/*.ts"
   - "**/src/commands/**/*.ts"
-  - "**/src/builtin-skills/**/*.md"
-  - "**/src/builtin-skills/**/*.json"
+  - "**/src/builtin-memory/**/*.md"
 ---
 
 # Content placement in crouter
@@ -17,8 +16,8 @@ Four tiers can hold agent-facing content. Picking the wrong tier wastes effort a
 | Tier | Path | Audience | Loaded when |
 |---|---|---|---|
 | **CLI prompts** | `src/prompts/`, `--help`, command output | Every crtr user | They run a command |
-| **Builtin skills** | `src/builtin-skills/skills/` (phantom plugin `crtr`) | Crouter contributors — plugin/marketplace authors | They run `crtr skill show <name>` |
-| **Official-marketplace plugins** | `crouter-official-marketplace` repo | Anyone who installs the plugin | They run `crtr skill show <plugin>/<name>` |
+| **Builtin skills** | `src/builtin-memory/` (kind: skill, surfaced via the memory substrate) | Crouter contributors — plugin/marketplace authors | They run `crtr memory read <name>` |
+| **Official-marketplace plugins** | `crouter-official-marketplace` repo | Anyone who installs the plugin | They run `crtr memory read <plugin>/<name>` |
 | **Scope-owned skills** | `~/.crouter/skills/`, `<project>/.crouter/skills/` | The user who wrote them | Same as above |
 
 ## Decision rules

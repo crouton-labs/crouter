@@ -8,17 +8,9 @@ import { usage } from './errors.js';
 
 let cachedProjectRoot: string | null | undefined;
 
-export function builtinSkillsRoot(): string {
-  // Resolve relative to this file: src/core/scope.ts → src/builtin-skills/ OR dist/core/scope.js → dist/builtin-skills/
-  const thisFile = fileURLToPath(import.meta.url);
-  const coreDir = dirname(thisFile);
-  const pkgDir = dirname(coreDir); // src/ or dist/
-  return join(pkgDir, 'builtin-skills');
-}
-
 export function builtinViewsRoot(): string {
-  // Resolved relative to this file exactly like builtinSkillsRoot — sibling of
-  // builtin-skills: dist/core/scope.js → dist/builtin-views/ (src/ at dev time).
+  // Resolved relative to this file: dist/core/scope.js → dist/builtin-views/
+  // (src/ at dev time).
   const thisFile = fileURLToPath(import.meta.url);
   const coreDir = dirname(thisFile);
   const pkgDir = dirname(coreDir); // src/ or dist/
@@ -27,11 +19,10 @@ export function builtinViewsRoot(): string {
 
 export function builtinMemoryRoot(): string {
   // The substrate's shipped built-in documents live in their OWN package dir,
-  // a sibling of builtin-skills — resolved relative to this file exactly like
-  // builtinSkillsRoot/builtinViewsRoot: dist/core/scope.js → dist/builtin-memory/
+  // resolved relative to this file: dist/core/scope.js → dist/builtin-memory/
   // (src/ at dev time). This is a HARD special case (design verdict m2): builtin
-  // memory is NOT scopeRoot('builtin')/memory, which would land under
-  // builtin-skills/ — builtin's scopeRoot is builtinSkillsRoot().
+  // memory is the only content the builtin scope carries — the scope has no
+  // scopeRoot (scopeRoot('builtin') is null).
   const thisFile = fileURLToPath(import.meta.url);
   const coreDir = dirname(thisFile);
   const pkgDir = dirname(coreDir); // src/ or dist/
@@ -72,7 +63,9 @@ export function projectScopeRoot(startDir?: string): string | null {
 }
 
 export function scopeRoot(scope: Scope): string | null {
-  if (scope === 'builtin') return builtinSkillsRoot();
+  // The builtin scope has no scope-root dir: its only content is memory
+  // (builtinMemoryRoot) and views (builtinViewsRoot), both hard special cases.
+  if (scope === 'builtin') return null;
   return scope === 'user' ? userScopeRoot() : projectScopeRoot();
 }
 
@@ -111,9 +104,9 @@ export function scopeSkillsDir(scope: Scope): string | null {
 }
 
 /** Where substrate memory documents live per scope. Builtin memory is the
- *  special case — its own package dir (builtinMemoryRoot, a sibling of
- *  builtin-skills), NOT scopeRoot('builtin')/memory — mirroring viewsDir's
- *  builtin handling. User and project memory live at scopeRoot(scope)/memory. */
+ *  special case — its own package dir (builtinMemoryRoot), since the builtin
+ *  scope has no scopeRoot — mirroring viewsDir's builtin handling. User and
+ *  project memory live at scopeRoot(scope)/memory. */
 export function scopeMemoryDir(scope: Scope): string | null {
   if (scope === 'builtin') return builtinMemoryRoot();
   const root = scope === 'user' ? userScopeRoot() : projectScopeRoot();

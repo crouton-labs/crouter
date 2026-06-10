@@ -61,11 +61,10 @@ function skillUnit(s: Skill): Unit {
  *  broken skill corpus must degrade the union to substrate-docs-only, never
  *  crash `memory find`.
  *
- *  Dedup by (scope, name): the substrate and skill-plugin corpora overlap
- *  (builtin-memory/ contains migrated copies of builtin-skills/; a skill name
- *  can also appear in multiple installed plugins at the same scope). The FIRST
- *  unit encountered for a given identity wins — substrate docs before skill-plugin
- *  docs, which mirrors the memory resolver's own precedence. */
+ *  Dedup by (scope, name): the substrate and skill-plugin corpora can collide on
+ *  identity (a skill name can appear in multiple installed plugins at the same
+ *  scope). The FIRST unit encountered for a given identity wins — substrate docs
+ *  before skill-plugin docs, which mirrors the memory resolver's own precedence. */
 function candidates(kindFilter: string | undefined): Unit[] {
   const seen = new Set<string>(); // "scope/name" → first wins
   const add = (u: Unit): void => {

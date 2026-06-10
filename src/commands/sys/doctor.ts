@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import { defineLeaf } from '../../core/command.js';
 import { readConfig, updateConfig } from '../../core/config.js';
-import { scopeRoot, listScopes, builtinSkillsRoot, marketplacesDir, pluginsDir } from '../../core/scope.js';
+import { scopeRoot, listScopes, marketplacesDir, pluginsDir } from '../../core/scope.js';
 import { listInstalledPlugins, listSkillsInPlugin } from '../../core/resolver.js';
 import { readMarketplaceManifest, readPluginManifest } from '../../core/manifest.js';
 import { parseFrontmatter } from '../../core/frontmatter.js';
@@ -138,31 +138,7 @@ function readRawTypeField(skillPath: string): string | undefined {
   return v;
 }
 
-function runChecksForBuiltin(): CheckResult[] {
-  const root = builtinSkillsRoot();
-  const plugins = listInstalledPlugins('builtin');
-  if (plugins.length === 0) {
-    return [failCheck('builtin', 'builtin:crtr:root', `builtin-skills root missing or has no valid plugin.json: ${root}`)];
-  }
-  const results: CheckResult[] = [
-    pass('builtin', 'builtin:crtr:root', `builtin-skills root present: ${root}`),
-  ];
-  for (const plugin of plugins) {
-    results.push(pass('builtin', `builtin:${plugin.name}:manifest`, `manifest valid`));
-    const skills = listSkillsInPlugin(plugin);
-    for (const skill of skills) {
-      if (!skill.frontmatter.name) {
-        results.push(failCheck('builtin', `builtin:${plugin.name}:skill:${skill.name}:frontmatter`, `frontmatter missing or name field empty`));
-      } else {
-        results.push(pass('builtin', `builtin:${plugin.name}:skill:${skill.name}:frontmatter`, `frontmatter valid`));
-      }
-    }
-  }
-  return results;
-}
-
 function runChecksForScope(scope: Scope, opts: { fix: boolean; remote: boolean }): CheckResult[] {
-  if (scope === 'builtin') return runChecksForBuiltin();
   const results: CheckResult[] = [];
   const root = scopeRoot(scope);
   if (!root) return results;

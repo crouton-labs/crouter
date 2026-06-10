@@ -26,7 +26,6 @@ import { ambiguous, notFound, usage } from './errors.js';
 import { warn } from './output.js';
 import { InputError } from './io.js';
 import {
-  builtinSkillsRoot,
   marketplacesDir,
   pluginsDir,
   projectScopeRoot,
@@ -34,27 +33,9 @@ import {
   userScopeRoot,
 } from './scope.js';
 
-function getBuiltinPlugin(): InstalledPlugin | null {
-  const root = builtinSkillsRoot();
-  if (!pathExists(root)) return null;
-  const manifest = readPluginManifest(root);
-  if (!manifest) return null;
-  return {
-    name: manifest.name,
-    scope: 'builtin',
-    root,
-    manifest,
-    enabled: true,
-    builtin: true,
-    version: manifest.version,
-  };
-}
-
 export function listInstalledPlugins(scope: Scope): InstalledPlugin[] {
-  if (scope === 'builtin') {
-    const builtin = getBuiltinPlugin();
-    return builtin ? [builtin] : [];
-  }
+  // The builtin scope has no scopeRoot, so pluginsDir('builtin') is null and
+  // this returns [] — builtin content is the memory substrate, not plugins.
   const dir = pluginsDir(scope);
   if (!dir || !pathExists(dir)) return [];
   const cfg = readConfig(scope);
