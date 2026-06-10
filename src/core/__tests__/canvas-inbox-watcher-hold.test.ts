@@ -16,11 +16,13 @@ import { createNode, setIntent } from '../canvas/canvas.js';
 import { closeDb } from '../canvas/db.js';
 import type { NodeMeta } from '../canvas/types.js';
 
-// Mirror the watcher's internal cadence (TICK_MS=800, DEBOUNCE_MS=1000): allow a
-// resolve+seed tick, a read tick, and the debounce window before asserting.
-const TICK_MS = 800;
-const DEBOUNCE_MS = 1000;
-const SETTLE_MS = TICK_MS * 2 + DEBOUNCE_MS + 500;
+// Drive the watcher's injectable cadence seam (CRTR_WATCHER_TICK_MS /
+// CRTR_WATCHER_DEBOUNCE_MS) at a fast tempo so the test sleeps milliseconds, not
+// seconds. SETTLE_MS still allows a resolve+seed tick, a read tick, and the
+// debounce window before asserting, exactly as against the real 800/1000 cadence.
+const TICK_MS = 20;
+const DEBOUNCE_MS = 25;
+const SETTLE_MS = TICK_MS * 2 + DEBOUNCE_MS + 30;
 
 let origHome: string | undefined;
 let origNode: string | undefined;
@@ -55,9 +57,16 @@ function makeFakePi(): FakePi {
 
 const wait = (ms: number): Promise<void> => new Promise<void>((r) => setTimeout(r, ms));
 
+let origTick: string | undefined;
+let origDebounce: string | undefined;
+
 before(() => {
   origHome = process.env['CRTR_HOME'];
   origNode = process.env['CRTR_NODE_ID'];
+  origTick = process.env['CRTR_WATCHER_TICK_MS'];
+  origDebounce = process.env['CRTR_WATCHER_DEBOUNCE_MS'];
+  process.env['CRTR_WATCHER_TICK_MS'] = String(TICK_MS);
+  process.env['CRTR_WATCHER_DEBOUNCE_MS'] = String(DEBOUNCE_MS);
 });
 
 afterEach(() => {
@@ -67,6 +76,8 @@ afterEach(() => {
 after(() => {
   if (origHome === undefined) delete process.env['CRTR_HOME']; else process.env['CRTR_HOME'] = origHome;
   if (origNode === undefined) delete process.env['CRTR_NODE_ID']; else process.env['CRTR_NODE_ID'] = origNode;
+  if (origTick === undefined) delete process.env['CRTR_WATCHER_TICK_MS']; else process.env['CRTR_WATCHER_TICK_MS'] = origTick;
+  if (origDebounce === undefined) delete process.env['CRTR_WATCHER_DEBOUNCE_MS']; else process.env['CRTR_WATCHER_DEBOUNCE_MS'] = origDebounce;
   for (const h of homes) { try { rmSync(h, { recursive: true, force: true }); } catch { /* noop */ } }
 });
 

@@ -64,8 +64,24 @@ interface PiLike {
 
 let liveTimer: ReturnType<typeof setInterval> | undefined;
 
-const TICK_MS = 800;     // polling cadence
-const DEBOUNCE_MS = 1000; // flush once the burst has been quiet for this long
+const DEFAULT_TICK_MS = 800;     // polling cadence
+const DEFAULT_DEBOUNCE_MS = 1000; // flush once the burst has been quiet for this long
+
+// Testability seam: a test can inject a much shorter cadence so it doesn't have
+// to sleep against the real ~800ms/1000ms wall-clock timing. Read per-registration
+// (not as an import-time module const) so each registerCanvasInboxWatcher() call
+// picks up the env current at that moment. Unset → production defaults.
+function resolveCadence(): { tickMs: number; debounceMs: number } {
+  const parse = (raw: string | undefined, fallback: number): number => {
+    if (raw === undefined) return fallback;
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : fallback;
+  };
+  return {
+    tickMs: parse(process.env['CRTR_WATCHER_TICK_MS'], DEFAULT_TICK_MS),
+    debounceMs: parse(process.env['CRTR_WATCHER_DEBOUNCE_MS'], DEFAULT_DEBOUNCE_MS),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Extension
@@ -79,6 +95,8 @@ const DEBOUNCE_MS = 1000; // flush once the burst has been quiet for this long
  * the module-level liveTimer guard is the actual stacking prevention.
  */
 export function registerCanvasInboxWatcher(pi: PiLike): () => void {
+  const { tickMs: TICK_MS, debounceMs: DEBOUNCE_MS } = resolveCadence();
+
   // Capture the latest event context so isIdle() is readable inside the timer
   // callback, which has no ctx of its own.
   let lastCtx: any;
