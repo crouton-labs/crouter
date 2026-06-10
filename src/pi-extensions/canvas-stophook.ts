@@ -43,7 +43,7 @@ import { focusOf, handFocusToManager, tearDownNode, closeFocusToShell } from '..
 // Minimal PiLike interface (avoids hard dep on @earendil-works/*)
 // ---------------------------------------------------------------------------
 
-type PiEvents = 'agent_start' | 'turn_end' | 'agent_end' | 'session_shutdown' | 'session_start';
+type PiEvents = 'agent_start' | 'turn_end' | 'agent_end' | 'session_shutdown' | 'session_start' | 'tool_execution_start';
 
 interface PiLike {
   on: (event: PiEvents, handler: (event: any, ctx: any) => void | Promise<void>) => void;
@@ -61,8 +61,24 @@ interface Telemetry {
    *  out-of-process readers (e.g. `crtr node new`'s yield nudge) see how full a
    *  node's window is without pi's in-memory gauge. */
   context_tokens?: number;
+  /** One-line summary of the most recent tool the node ran (`tool: detail`) — the
+   *  live "what is it doing" cue the nav chrome shows inline on active rows.
+   *  Written on tool_execution_start; preserved across turns when unchanged. */
+  last_activity?: string;
   model: string;
   updated_at: string;
+}
+
+/** Condense a tool call into one short line for the activity cue. Picks the most
+ *  identifying arg (command / path / pattern / description), collapses whitespace,
+ *  and hard-caps the length so a giant bash command can't bloat telemetry.json. */
+const ACTIVITY_CAP = 80;
+function summarizeActivity(toolName: string, args: any): string {
+  const a = (args ?? {}) as Record<string, unknown>;
+  const pick = (v: unknown): string => (typeof v === 'string' ? v : '');
+  const detail = pick(a['command']) || pick(a['path']) || pick(a['file_path']) || pick(a['pattern']) || pick(a['description']) || pick(a['prompt']);
+  const line = (detail !== '' ? `${toolName}: ${detail}` : toolName).replace(/\s+/g, ' ').trim();
+  return line.length > ACTIVITY_CAP ? line.slice(0, ACTIVITY_CAP) : line;
 }
 
 /**
@@ -77,6 +93,7 @@ function flushTelemetry(
   tokensOut: number,
   model: string,
   contextTokens: number | null,
+  activity: string | null,
 ): void {
   try {
     if (!existsSync(jobDirPath)) mkdirSync(jobDirPath, { recursive: true });
@@ -98,6 +115,7 @@ function flushTelemetry(
       tokens_in: tokensIn,
       tokens_out: tokensOut,
       context_tokens: contextTokens ?? existing.context_tokens,
+      last_activity: activity ?? existing.last_activity,
       model: model !== '' ? model : (existing.model ?? ''),
       updated_at: new Date().toISOString(),
     };
@@ -247,6 +265,10 @@ export function registerCanvasStophook(pi: PiLike): void {
   let totalIn = 0;
   let totalOut = 0;
   let model = '';
+  // Last live context-window gauge + last tool summary, tracked across handlers so
+  // a tool_execution_start flush (activity-only) preserves the latest token figure.
+  let lastContext: number | null = null;
+  let lastActivity: string | null = null;
 
   // Context-size steering. As input context grows we nudge the node once per
   // band on an escalating, persona-specific schedule (see steerBand/steerNote).
@@ -335,6 +357,18 @@ export function registerCanvasStophook(pi: PiLike): void {
   });
 
   // ---------------------------------------------------------------------------
+  // tool_execution_start — capture the live "what is it doing" cue. Writes the
+  // one-line tool summary to telemetry.json so out-of-process readers (the nav
+  // chrome) show it inline without a second file or any extra read on their side.
+  // ---------------------------------------------------------------------------
+  pi.on('tool_execution_start', (event: any): void => {
+    try {
+      lastActivity = summarizeActivity(String(event?.toolName ?? ''), event?.args);
+      flushTelemetry(jobDirPath, totalIn, totalOut, model, lastContext, lastActivity);
+    } catch { /* best-effort */ }
+  });
+
+  // ---------------------------------------------------------------------------
   // session_shutdown — clean exit → done.
   //
   // pi hands us a reason as a session tears down. Only 'quit' is a node-ending
@@ -385,9 +419,10 @@ export function registerCanvasStophook(pi: PiLike): void {
       const t = ctx.getContextUsage()?.tokens;
       if (typeof t === 'number') contextTokens = t;
     } catch { /* gauge unavailable this turn */ }
+    if (contextTokens !== null) lastContext = contextTokens;
 
     // Fire-and-forget: flushTelemetry uses synchronous fs writes and never throws.
-    flushTelemetry(jobDirPath, totalIn, totalOut, model, contextTokens);
+    flushTelemetry(jobDirPath, totalIn, totalOut, model, contextTokens, lastActivity);
 
     // Context-size steering: fire the current band once, with lifecycle-specific
     // guidance (lifecycle is read live — a terminal worker may have promoted to

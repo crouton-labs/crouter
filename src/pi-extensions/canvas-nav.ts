@@ -242,7 +242,11 @@ function fillBar(content: string, width: number, open: string): string {
 // ---------------------------------------------------------------------------
 
 interface Telemetry {
-  tokens_in?: number;
+  /** Live context-window size (pi's getContextUsage) — the figure pi's own footer
+   *  shows. This is the node's window fill, NOT a per-turn delta. */
+  context_tokens?: number;
+  /** One-line "what is it doing" cue (`tool: detail`), written on every tool start. */
+  last_activity?: string;
 }
 
 function readTelemetry(nodeId: string): Telemetry {
@@ -259,8 +263,35 @@ function fmtTokens(n: number): string {
   return n < 1_000 ? `${n}` : `${Math.round(n / 1_000)}k`;
 }
 
+/** The context-window cell — live window fill rounded to the nearest 1k (the same
+ *  figure pi's footer shows), NOT a per-turn token delta. */
 function tokensCell(id: string): string {
-  return fmtTokens(readTelemetry(id).tokens_in ?? 0);
+  return fmtTokens(readTelemetry(id).context_tokens ?? 0);
+}
+
+/** Dimmed live "what is it doing" cue for an ACTIVE node — the last tool it ran.
+ *  Empty for non-active rows (stale once a node parks) and when none is recorded. */
+function activityCell(id: string, node: NodeMeta | null): string {
+  if (node?.status !== 'active') return '';
+  const a = (readTelemetry(id).last_activity ?? '').trim();
+  return a === '' ? '' : ` ${DIM}· ${a}${RESET}`;
+}
+
+/** Revive-count badge (meta.cycles). Hidden on the first cycle (0) to cut noise. */
+function cycleBadge(node: NodeMeta | null): string {
+  const c = node?.cycles ?? 0;
+  return c > 0 ? ` ${DIM}⟳${c}${RESET}` : '';
+}
+
+/** Short on-screen label: the explicit handle when set, else the pi-generated
+ *  description, else the bare name. fullName joins BOTH (`handle description`);
+ *  the nav chrome shows just the first so rows stay compact. */
+function navLabel(node: NodeMeta | null, id: string): string {
+  if (node === null) return shortId(id);
+  const handle = node.name && node.name !== node.kind ? node.name : '';
+  if (handle !== '') return handle;
+  const desc = (node.description ?? '').trim();
+  return desc !== '' ? desc : node.name;
 }
 
 function shortId(id: string): string {
@@ -410,6 +441,16 @@ function askBadge(id: string): string {
   return k > 0 ? ` ${YELLOW}⚑${k}${RESET}` : '';
 }
 
+/** "Live work below" badge — green ⇣N when this node is NOT itself active but has
+ *  N active descendants. The one signal that an idle/parked node isn't dead: real
+ *  work is still running beneath it. Count comes from the single subtree-activity
+ *  pass (no per-row walk). Suppressed on active rows (their own ● already says so). */
+function liveBelowBadge(node: NodeMeta | null, activeBelow: ReadonlyMap<string, number>): string {
+  if (node === null || node.status === 'active') return '';
+  const n = activeBelow.get(node.node_id) ?? 0;
+  return n > 0 ? ` ${GREEN}⇣${n}${RESET}` : '';
+}
+
 /** Sort rank for sibling ordering — live nodes (active, then idle) ahead of
  *  terminal ones, so sessions still running surface at the TOP of each child
  *  group instead of being buried under finished/failed ones. */
@@ -446,29 +487,54 @@ interface FlatRow {
   collapsed: boolean; // currently folded (default policy or manual override)
 }
 
-/** Default fold policy: which nodes auto-EXPAND. A node expands only when one
- *  of its child subtrees holds a running ('active') agent or self — so the path
- *  to any live agent (and to you) is revealed while quiescent branches stay
- *  folded. One bottom-up O(N) pass from the ancestry root; cycle-guarded. */
-function computeDefaultExpanded(root: string, self: string): Set<string> {
+/** One bottom-up O(N) pass over the local graph, computing TWO things at once so
+ *  the render path never walks twice:
+ *   - `expand`: which nodes auto-UNFOLD — a node expands when a child subtree holds
+ *     a running ('active') agent or self, so the path to any live agent (and to
+ *     you) is revealed while quiescent branches stay folded.
+ *   - `activeBelow`: per node, the count of ACTIVE descendants (excluding itself) —
+ *     drives the ⇣N "live work below" badge on idle/parked nodes.
+ *  Cycle-guarded (the graph is declared acyclic; a re-seen id contributes only
+ *  its own status, never its subtree again, so counts can't double or loop). */
+interface SubtreeActivity {
+  expand: Set<string>;
+  activeBelow: Map<string, number>;
+}
+function computeSubtreeActivity(root: string, self: string): SubtreeActivity {
   const expand = new Set<string>();
+  const activeBelow = new Map<string, number>();
   const seen = new Set<string>();
-  // Returns whether subtree(id), INCLUDING id, holds an active node or self.
-  const visit = (id: string): boolean => {
-    if (seen.has(id)) return id === self || getNode(id)?.status === 'active';
+  // Returns the count of active nodes in subtree(id) INCLUDING id, and whether
+  // that subtree is worth revealing (holds an active node or self).
+  const visit = (id: string): { active: number; reveal: boolean } => {
+    const selfActive = getNode(id)?.status === 'active';
+    if (seen.has(id)) return { active: selfActive ? 1 : 0, reveal: selfActive || id === self };
     seen.add(id);
-    let childRevealing = false;
-    for (const c of convoChildIds(id)) if (visit(c)) childRevealing = true;
-    if (childRevealing) expand.add(id); // a descendant is worth revealing → unfold id
-    return childRevealing || id === self || getNode(id)?.status === 'active';
+    let below = 0;
+    let childReveal = false;
+    for (const c of convoChildIds(id)) {
+      const r = visit(c);
+      below += r.active;
+      if (r.reveal) childReveal = true;
+    }
+    activeBelow.set(id, below);
+    if (childReveal) expand.add(id); // a descendant is worth revealing → unfold id
+    return { active: below + (selfActive ? 1 : 0), reveal: childReveal || selfActive || id === self };
   };
   visit(root);
-  return expand;
+  return { expand, activeBelow };
 }
 
-function buildGraphModel(self: string): FlatRow[] {
+/** Fold policy alone — thin wrapper over computeSubtreeActivity for the keypress
+ *  path (buildGraphModel without a precomputed set). The render path computes the
+ *  activity once and threads `expand` in, so it never recomputes here. */
+function computeDefaultExpanded(root: string, self: string): Set<string> {
+  return computeSubtreeActivity(root, self).expand;
+}
+
+function buildGraphModel(self: string, expand?: ReadonlySet<string>): FlatRow[] {
   const rootId = climbRoot(self);
-  const defaultExpanded = computeDefaultExpanded(rootId, self);
+  const defaultExpanded = expand ?? computeDefaultExpanded(rootId, self);
   // userExpanded / userCollapsed override the auto policy; absent → policy decides.
   const isFolded = (id: string): boolean =>
     userExpanded.has(id) ? false : userCollapsed.has(id) ? true : !defaultExpanded.has(id);
@@ -499,7 +565,12 @@ function buildGraphModel(self: string): FlatRow[] {
  *  (human-watched) node → a coloured background bar; SELF → bold name. The
  *  cursor outranks the attached tint when both land on the same row. Running
  *  is signaled by the dot glyph alone (● green = active engine). */
-function renderGraphRow(r: FlatRow, isCursor: boolean, focused: ReadonlySet<string>): string {
+function renderGraphRow(
+  r: FlatRow,
+  isCursor: boolean,
+  focused: ReadonlySet<string>,
+  activeBelow: ReadonlyMap<string, number>,
+): string {
   const wrap = (line: string, attached: boolean): string =>
     isCursor ? fillBar(line, fillWidth(), REVERSE)
     : attached ? fillBar(line, fillWidth(), BG_ATTACHED)
@@ -510,7 +581,7 @@ function renderGraphRow(r: FlatRow, isCursor: boolean, focused: ReadonlySet<stri
   }
   const node = getNode(r.id);
   const dot = coloredGlyph(node);
-  const rawName = node !== null ? fullName(node) : shortId(r.id);
+  const rawName = navLabel(node, r.id);
   const name = r.isSelf ? `${BOLD}${rawName}${RESET}` : rawName;
   const kind = `${DIM}${node?.kind ?? ''}${RESET}`;
   const tokens = `${DIM}${tokensCell(r.id)}${RESET}`;
@@ -520,7 +591,7 @@ function renderGraphRow(r: FlatRow, isCursor: boolean, focused: ReadonlySet<stri
   const expandable = r.hasKids && r.collapsed;
   const caret = !isCursor && expandable ? `${DIM}▸${RESET} ` : '  ';
   const fold = expandable ? ` ${DIM}[+${childCount(r.id)}]${RESET}` : '';
-  const line = `${r.branch}${caret}${dot} ${name} ${kind} ${tokens}${childBadge(node)}${fold}${askBadge(r.id)}`;
+  const line = `${r.branch}${caret}${dot} ${name} ${kind} ${tokens}${cycleBadge(node)}${childBadge(node)}${liveBelowBadge(node, activeBelow)}${fold}${askBadge(r.id)}${activityCell(r.id, node)}`;
   return wrap(line, isAttached(r.id, node, focused));
 }
 
@@ -654,15 +725,19 @@ export function registerCanvasNav(pi: PiLike): void {
   const renderBase = (): void => {
     if (ui === undefined) return;
 
+    // One subtree-activity pass (rooted at the ancestry root) feeds the ⇣N
+    // live-work-below badge on both the manager line and every report row.
+    const activity = computeSubtreeActivity(climbRoot(nodeId), nodeId);
+
     const mgr = managerOf(nodeId);
     if (mgr === undefined) {
       // Root node: no manager → drop the widget rather than show "↑ (root)" chrome.
       ui.setWidget('crtr-managers', undefined, { placement: 'aboveEditor' });
     } else {
       const mn = getNode(mgr);
-      const name = mn !== null ? fullName(mn) : shortId(mgr);
+      const name = navLabel(mn, mgr);
       const mgrLine = truncate(
-        `↑ ${name} ${coloredGlyph(mn)} ${DIM}${mn?.kind ?? ''}${RESET} ${DIM}${tokensCell(mgr)}${RESET}${childBadge(mn)}${askBadge(mgr)}`,
+        `↑ ${name} ${coloredGlyph(mn)} ${DIM}${mn?.kind ?? ''}${RESET} ${DIM}${tokensCell(mgr)}${RESET}${cycleBadge(mn)}${childBadge(mn)}${liveBelowBadge(mn, activity.activeBelow)}${askBadge(mgr)}${activityCell(mgr, mn)}`,
       );
       ui.setWidget('crtr-managers', [mgrLine], { placement: 'aboveEditor' });
     }
@@ -671,16 +746,13 @@ export function registerCanvasNav(pi: PiLike): void {
     const lines: string[] = [];
     // Report rows only — no "↓ reports (N)" header (the label carries no signal).
     if (reports.length > 0) {
-      const nameW = Math.min(20, Math.max(...reports.map((id) => {
-        const n = getNode(id);
-        return (n !== null ? fullName(n) : shortId(id)).length;
-      })));
+      const nameW = Math.min(20, Math.max(...reports.map((id) => navLabel(getNode(id), id).length)));
       for (const id of reports) {
         const n = getNode(id);
-        const name = (n !== null ? fullName(n) : shortId(id)).padEnd(nameW);
+        const name = navLabel(n, id).padEnd(nameW);
         const kind = `${DIM}${(n?.kind ?? '').padEnd(6)}${RESET}`;
         const tokens = `${DIM}${tokensCell(id).padStart(5)}${RESET}`;
-        lines.push(truncate(`  ${coloredGlyph(n)} ${name} ${kind} ${tokens}${childBadge(n)}${askBadge(id)}`));
+        lines.push(truncate(`  ${coloredGlyph(n)} ${name} ${kind} ${tokens}${cycleBadge(n)}${childBadge(n)}${liveBelowBadge(n, activity.activeBelow)}${askBadge(id)}${activityCell(id, n)}`));
       }
     }
     // Self's own pending asks (no self row in BASE) → a trailing inline line.
@@ -697,7 +769,10 @@ export function registerCanvasNav(pi: PiLike): void {
   const renderGraph = (): void => {
     if (ui === undefined) return;
 
-    const rows = buildGraphModel(nodeId);
+    // One subtree-activity pass feeds BOTH the fold policy (which rows show) and
+    // the ⇣N live-work-below badge — computed once here, never re-walked per row.
+    const activity = computeSubtreeActivity(climbRoot(nodeId), nodeId);
+    const rows = buildGraphModel(nodeId, activity.expand);
 
     // Re-resolve the cursor id → row (it may have vanished under a fold or a
     // close); clamp to nearest visible row.
@@ -736,7 +811,7 @@ export function registerCanvasNav(pi: PiLike): void {
     const lines: string[] = [];
     const focused = focusedNodeIds(); // one sqlite read per render pass
     if (scrollTop > 0) lines.push(`${DIM}  ↑ ${scrollTop} more${RESET}`);
-    for (let i = scrollTop; i < end; i++) lines.push(renderGraphRow(rows[i]!, i === cursorIdx, focused));
+    for (let i = scrollTop; i < end; i++) lines.push(renderGraphRow(rows[i]!, i === cursorIdx, focused, activity.activeBelow));
     if (end < rows.length) lines.push(`${DIM}  ↓ ${rows.length - end} more${RESET}`);
 
     const hint = pendingConfirm !== undefined
