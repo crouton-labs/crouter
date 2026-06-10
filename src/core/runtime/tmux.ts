@@ -230,6 +230,19 @@ export function paneExists(pane: string): boolean {
   return r.ok && r.stdout === pane;
 }
 
+/** Does this pane exist AND have its command still RUNNING (`#{pane_dead}` = 0)?
+ *  Distinguishes a pane genuinely hosting a process — a live pi, or a pi still
+ *  BOOTING whose pid hasn't been recorded yet — from a remain-on-exit corpse
+ *  frozen after exit (`pane_dead` = 1). Node panes run pi as the pane command
+ *  (openNodeWindow / respawn-pane), never a shell, so pane-running ⟹ a pi (or
+ *  its respawn) occupies it. The probe handFocusToManager's live-swap gates on:
+ *  the recorded `pi_pid` is a stale proxy in the just-revived window (the new pi
+ *  records its pid only at session_start), but the pane itself never lies. */
+export function paneRunning(pane: string): boolean {
+  const r = tmux(['display-message', '-p', '-t', pane, '#{pane_id}\t#{pane_dead}']);
+  return r.ok && r.stdout === `${pane}\t0`;
+}
+
 /** Every live pane id on the server (`list-panes -a`), as a Set for membership
  *  probes. Returns null when tmux is unreachable (no server / transient failure)
  *  so callers can tell "no panes" apart from "can't tell" — a GC pass must skip,

@@ -167,6 +167,86 @@ test('handFocusToManager: LIVE backstage manager → swaps its pane INTO the foc
   }
 });
 
+// ---------------------------------------------------------------------------
+// BUG REGRESSION (lost focus pane on the push-final race): a focused child's
+// `crtr push final` seeds its manager's inbox MID-TURN; the daemon's second pass
+// can revive the dormant manager BACKSTAGE (the focus row still points at the
+// child) before the child's agent_end runs this handoff. At that point the
+// manager is status='active' with a real backstage pane whose pi is still
+// BOOTING — its recorded pi_pid is the OLD dead pid (the fresh pi records its
+// pid only at session_start). Pre-fix, MAJOR 1 gated on isPidAlive(pi_pid), so
+// it missed the booting manager; the dormant branch missed it too (no longer
+// idle-release) → handFocusToManager returned false → the stophook disarmed the
+// freeze and the USER'S VIEWPORT PANE REAPED while the manager ran on invisibly
+// backstage — the "pane gets lost" bug. The gate is now the PANE itself
+// (paneRunning: exists + command running), which a booting pi satisfies.
+// ---------------------------------------------------------------------------
+
+test('handFocusToManager (BUG REGRESSION): just-revived manager (RUNNING pane, STALE dead pi_pid) → swap, not reap', { skip: !hasTmux() }, () => {
+  const user = `crtr-hfm-race-user-${process.pid}`;
+  const back = `crtr-hfm-race-back-${process.pid}`;
+  spawnSync('tmux', ['new-session', '-d', '-s', user, '-c', '/tmp', 'sleep 600']);
+  spawnSync('tmux', ['new-session', '-d', '-s', back, '-c', '/tmp', 'sleep 600']);
+  try {
+    const userWindow = tmuxOut(['list-windows', '-t', user, '-F', '#{window_id}']).split('\n')[0]!;
+    const backWindow = tmuxOut(['list-windows', '-t', back, '-F', '#{window_id}']).split('\n')[0]!;
+    const focusPane = tmuxOut(['display-message', '-p', '-t', `${user}:${userWindow}`, '#{pane_id}']);
+    // The manager's backstage pane: a RUNNING command (the booting pi stand-in).
+    const mgrPane = tmuxOut(['split-window', '-d', '-P', '-F', '#{pane_id}', '-t', `${back}:${backWindow}`, 'sleep 600']);
+
+    createNode(node('M', { pane: focusPane, tmux_session: user, window: userWindow, status: 'done' }));
+    // The just-revived state: active (transition 'revive'), intent cleared, but
+    // pi_pid NOT yet re-recorded — dead/stale (revive deliberately leaves it).
+    createNode(node('mgr', { pane: mgrPane, tmux_session: back, window: backWindow, status: 'active', pi_pid: null }));
+    openFocusRow('f', focusPane, user, 'M');
+
+    assert.equal(handFocusToManager('f', 'mgr'), true, 'a booting just-revived manager takes the focus — the pane is what matters, not the stale pid');
+    assert.equal(getFocusByNode('mgr')?.focus_id, 'f', 'the manager occupies the focus row');
+    assert.equal(getFocusById('f')?.pane, mgrPane, 'focus row re-anchored to the manager pane (swap happened)');
+    assert.equal(paneSession(mgrPane), user, 'the booting manager pane physically moved into the user viewport');
+    // Non-vacuous: the pre-fix isPidAlive(mgr.pi_pid) gate fails on pi_pid=null →
+    // returns false without repointing → every assert above fails, and the caller
+    // would have reaped the user's pane.
+  } finally {
+    spawnSync('tmux', ['kill-session', '-t', user], { stdio: 'ignore' });
+    spawnSync('tmux', ['kill-session', '-t', back], { stdio: 'ignore' });
+  }
+});
+
+test('handFocusToManager: manager pane is a FROZEN remain-on-exit corpse (pane_dead=1) → false, no swap (dead-focus-pane guarantee holds under the pane gate)', { skip: !hasTmux() }, async () => {
+  const user = `crtr-hfm-corpse-user-${process.pid}`;
+  const back = `crtr-hfm-corpse-back-${process.pid}`;
+  spawnSync('tmux', ['new-session', '-d', '-s', user, '-c', '/tmp', 'sleep 600']);
+  spawnSync('tmux', ['new-session', '-d', '-s', back, '-c', '/tmp', 'sleep 600']);
+  try {
+    const userWindow = tmuxOut(['list-windows', '-t', user, '-F', '#{window_id}']).split('\n')[0]!;
+    const backWindow = tmuxOut(['list-windows', '-t', back, '-F', '#{window_id}']).split('\n')[0]!;
+    const focusPane = tmuxOut(['display-message', '-p', '-t', `${user}:${userWindow}`, '#{pane_id}']);
+    // A short-lived command frozen by remain-on-exit → pane EXISTS but pane_dead=1.
+    const mgrPane = tmuxOut(['split-window', '-d', '-P', '-F', '#{pane_id}', '-t', `${back}:${backWindow}`, 'sleep 0.2']);
+    spawnSync('tmux', ['set-option', '-p', '-t', mgrPane, 'remain-on-exit', 'on'], { stdio: 'ignore' });
+    // Wait until tmux reports the pane dead (frozen corpse), bounded.
+    for (let i = 0; i < 50; i++) {
+      if (tmuxOut(['display-message', '-p', '-t', mgrPane, '#{pane_dead}']) === '1') break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    assert.equal(tmuxOut(['display-message', '-p', '-t', mgrPane, '#{pane_dead}']), '1', 'precondition: the manager pane is a frozen corpse');
+
+    createNode(node('M', { pane: focusPane, tmux_session: user, window: userWindow, status: 'done' }));
+    createNode(node('mgr', { pane: mgrPane, tmux_session: back, window: backWindow, status: 'active', pi_pid: null }));
+    openFocusRow('f', focusPane, user, 'M');
+
+    assert.equal(handFocusToManager('f', 'mgr'), false, 'a corpse pane never claims the viewport — caller disarms + reaps');
+    assert.equal(getFocusByNode('mgr'), null, 'occupant NOT repointed (no stranded frozen focus)');
+    assert.equal(getFocusById('f')?.node_id, 'M', 'M still occupies the focus → caller runs closeFocusToShell');
+    // Non-vacuous: a gate of bare paneExists (existence without pane_dead) would
+    // swap the corpse into the viewport and return true — both asserts fail.
+  } finally {
+    spawnSync('tmux', ['kill-session', '-t', user], { stdio: 'ignore' });
+    spawnSync('tmux', ['kill-session', '-t', back], { stdio: 'ignore' });
+  }
+});
+
 test('handFocusToManager: DORMANT idle-release manager (dead pane) → occupant repointed, NO swap, focus pane UNCHANGED', () => {
   openFocusRow('f', '%focus', 'Suser', 'M');
   // The manager is dormant + idle-release (the ONLY dormant manager the daemon

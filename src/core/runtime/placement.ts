@@ -50,6 +50,7 @@ import {
 } from '../canvas/index.js';
 import {
   paneExists,
+  paneRunning,
   paneLocation,
   paneOfWindow,
   windowAlive,
@@ -1044,12 +1045,13 @@ export function recycleFocusPane(nodeId: string, pane: string, launch: ReviveLau
  *      manager that is NOT idle-release (done/dead/canceled, or idle with another
  *      intent) is one the daemon will NEVER revive, so this returns false WITHOUT
  *      repointing — the caller then disarms the freeze (see below).
- *    - LIVE manager (pi alive in the backstage, the normal multi-child state):
- *      the daemon never revives it (it only respawns dead-pi nodes), so we must
- *      bring it into the viewport SYNCHRONOUSLY here — swap its backstage pane
- *      into the focus slot (MAJOR 1). Otherwise the manager runs off-screen
- *      forever while %m sits orphaned in the viewport and the focus row lies
- *      about LOCATION.
+ *    - RUNNING backstage pane (a live pi — the normal multi-child state — OR a
+ *      pi still BOOTING because the daemon already revived the manager off the
+ *      `push final` before this handoff ran): the daemon never (re)revives it,
+ *      so we must bring it into the viewport SYNCHRONOUSLY here — swap its
+ *      backstage pane into the focus slot (MAJOR 1). Otherwise the manager runs
+ *      off-screen forever while %m sits orphaned in the viewport and the focus
+ *      row lies about LOCATION.
  *  Returns false — the caller closes the focus (Q1: closeFocusToShell disarms
  *  remain-on-exit so the pane REAPS on exit) — whenever NO successor will claim
  *  the frozen pane: no manager, the manager IS this node, the manager already
@@ -1073,11 +1075,22 @@ export function handFocusToManager(focusId: string, managerId: string | null): b
   const mgr = getRow(managerId);
   if (mgr === null) return false; // no row to hand to
 
-  // MAJOR 1 — LIVE backstage manager → swap it into the focus slot NOW. The
-  // daemon never revives a live node (it only respawns dead-pi nodes), so this
-  // synchronous swap is the ONLY way a live manager claims the frozen %m. Commit
-  // the occupant repoint only here, on a path that genuinely takes the pane.
-  if (mgr.pane != null && isNodePaneAlive(mgr) && isPidAlive(mgr.pi_pid) && f.pane != null) {
+  // MAJOR 1 — manager with a RUNNING backstage pane → swap it into the focus
+  // slot NOW. The daemon never revives a live node (it only respawns dead-pi
+  // nodes), so this synchronous swap is the ONLY way it claims the frozen %m.
+  // Commit the occupant repoint only here, on a path that genuinely takes the
+  // pane. The gate is the PANE (`paneRunning`: exists + command running, i.e.
+  // not a remain-on-exit corpse), NOT `isPidAlive(mgr.pi_pid)` — the recorded
+  // pid is a STALE proxy in the lost-pane race: the finishing child's `push
+  // final` seeds the manager's inbox mid-turn, the daemon's second pass revives
+  // the still-unfocused manager BACKSTAGE before this agent_end runs, and the
+  // fresh pi records its pid only at session_start, seconds into boot. Gating on
+  // the old dead pid made this branch miss the booting manager, the dormant
+  // branch miss it too (revive already flipped it active), and the caller reap
+  // the user's viewport while the manager ran on invisibly backstage. A booting
+  // pane is as swappable as a live one — swap it in; only a frozen corpse
+  // (pane_dead=1) is excluded, preserving the dead-focus-pane guarantees.
+  if (mgr.pane != null && paneRunning(mgr.pane) && f.pane != null) {
     setFocusOccupant(focusId, managerId);
     const focusLoc = paneLocation(f.pane); // F2's window/session — the slot mgr swaps INTO (%m is currently there)
     if (swapPaneInPlace(mgr.pane, f.pane) && focusLoc !== null) {
