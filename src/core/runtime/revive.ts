@@ -38,6 +38,7 @@ import {
 import { hostFor } from './host.js';
 import { nodeSession, childBackstageOf, rootOfSpine } from './nodes.js';
 import { isPidAlive } from '../canvas/pid.js';
+import { clearInjectedDocs } from '../substrate/injected-store.js';
 
 // ---------------------------------------------------------------------------
 // resumeArgs — which session source a revive resumes from
@@ -134,6 +135,10 @@ export function reviveNode(
     // woke you"); every other reviveNode caller passes nothing → no block.
     const bearings = drainBearings(meta);
     inv = buildPiArgv(meta, { prompt: buildReviveKickoff(meta, bearings, opts.wakeReason) });
+    // Fresh (no-resume) revive starts a NEW transcript — reset the on-read doc
+    // dedup so the new conversation surfaces docs from scratch (a resume below
+    // would instead KEEP the persisted set, continuing the same transcript).
+    clearInjectedDocs(nodeId);
   }
 
   // Placement owns WHERE this revive lands (§1.4): resume into a live focus pane
@@ -190,6 +195,9 @@ export function reviveInPlace(
   // A refresh-yield is a cycle too — advance the label's trailing N.
   meta.cycles = (meta.cycles ?? 0) + 1;
   updateNode(nodeId, { cycles: meta.cycles });
+
+  // Fresh re-exec → new transcript: reset the on-read doc dedup.
+  clearInjectedDocs(nodeId);
 
   // The node's LOCATION — the session its pane physically lives in. The re-exec
   // is IN PLACE (the pane never moves), so this is preserved unchanged below.
@@ -256,6 +264,8 @@ export function relaunchRootInPane(nodeId: string, pane: string): void {
   }
 
   // No prompt, no resume → a brand-new root conversation at cycle 0.
+  // Brand-new transcript: reset the on-read doc dedup.
+  clearInjectedDocs(nodeId);
   const inv = buildPiArgv(meta, {});
   // Source CRTR_ROOT_SESSION from childBackstageOf, the same backstage rule as
   // reviveInPlace. relaunchRootInPane runs only on a root, whose children must

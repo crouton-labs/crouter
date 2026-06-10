@@ -76,6 +76,16 @@ export function sessionPtrPath(nodeId: string): string {
   return join(nodeDir(nodeId), 'session.ptr');
 }
 
+/** On-read injection dedup set — the doc realpaths already surfaced on-read in
+ *  this node's CURRENT conversation transcript. Persisted so the once-per-
+ *  transcript dedup survives a dormancy → revive(resume) cycle: a resume reuses
+ *  the same .jsonl transcript in a NEW pi process, so the in-memory set would
+ *  otherwise start empty and re-inject docs already present in the transcript.
+ *  Deleted by the launch paths that start a FRESH transcript. */
+export function injectedDocsPath(nodeId: string): string {
+  return join(nodeDir(nodeId), 'injected-docs.json');
+}
+
 /** Create the full directory skeleton for a node. Idempotent. */
 export function ensureNodeDirs(nodeId: string): void {
   for (const d of [contextDir(nodeId), jobDir(nodeId), reportsDir(nodeId)]) {

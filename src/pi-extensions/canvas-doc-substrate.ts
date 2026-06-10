@@ -42,6 +42,7 @@ import {
   renderSkillsSection,
 } from '../core/substrate/index.js';
 import { clearSessionCache } from '../core/substrate/session-cache.js';
+import { loadInjectedDocs, saveInjectedDocs } from '../core/substrate/injected-store.js';
 
 // ---------------------------------------------------------------------------
 // Minimal PiLike interface (avoids a hard dep on @earendil-works/*). Mirrors
@@ -118,14 +119,19 @@ export function registerCanvasDocSubstrate(pi: PiLike): void {
   const nodeId = process.env['CRTR_NODE_ID'];
   if (nodeId === undefined || nodeId.trim() === '') return; // not a canvas node — inert
 
-  // Per-session set of injected doc realpaths → a doc surfaces at most once per
-  // session across repeated reads. Cleared on every session_start (so a resume
-  // starts fresh, matching the on-read precedent).
-  // Also clears the per-session substrate parse cache so the corpus is re-scanned
-  // fresh for each new session (avoids stale docs after a skill/memory write).
-  const injectedDocs = new Set<string>();
+  // Per-TRANSCRIPT set of injected doc realpaths → a doc surfaces at most once
+  // across the node's conversation, EVEN across a dormancy → revive(resume)
+  // cycle. A resume reuses the same .jsonl transcript in a NEW pi process, so
+  // the set is REHYDRATED from disk at process start (not started empty) and is
+  // NOT cleared on session_start — a resume continues the transcript, so the
+  // dedup must carry forward. The launch paths that begin a FRESH transcript
+  // (revive resume=false, reviveInPlace, relaunchRootInPane) delete the file, so
+  // a new conversation rehydrates empty here. See core/substrate/injected-store.ts.
+  const injectedDocs = loadInjectedDocs(nodeId);
   pi.on('session_start', () => {
-    injectedDocs.clear();
+    // Only the per-session substrate PARSE cache resets each session (so the
+    // corpus is re-scanned, picking up skill/memory writes). injectedDocs is
+    // transcript-scoped, not session-scoped — deliberately NOT cleared here.
     clearSessionCache();
   });
 
@@ -171,6 +177,10 @@ export function registerCanvasDocSubstrate(pi: PiLike): void {
 
       const injected = renderOnReadDocs(nodeId, absFile, injectedDocs);
       if (injected === '') return; // nothing surfaced — pass the read through unchanged
+
+      // A doc surfaced → renderOnReadDocs grew injectedDocs; persist the set so
+      // the dedup survives a later dormancy → revive(resume).
+      saveInjectedDocs(nodeId, injectedDocs);
 
       // Prepend the surfacing docs ahead of the file contents.
       return { content: [{ type: 'text', text: injected }, ...event.content] };
