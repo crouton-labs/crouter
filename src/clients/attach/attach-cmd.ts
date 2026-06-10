@@ -33,6 +33,9 @@ import { defineBranch, defineLeaf } from '../../core/command.js';
 import type { BranchDef, LeafDef } from '../../core/command.js';
 import { InputError } from '../../core/io.js';
 import { getNode } from '../../core/canvas/index.js';
+// tmux driver verbs only through placement (the §5.1 model-over-driver seam) —
+// never `core/runtime/tmux.js` directly.
+import { setPaneOption, currentTmux } from '../../core/runtime/placement.js';
 import type {
   BrokerSnapshot,
   BrokerToClient,
@@ -100,6 +103,23 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
       next: 'Check the node has a running headless broker.',
     });
   });
+
+  // Self-tag this pane with the node it now views so the host-agnostic
+  // `nodeInPane()` (node cycle/recycle/close/demote/lifecycle) resolves a
+  // broker-hosted node from its VIEWER pane — the broker engine runs detached
+  // (window=null), so a window→node lookup can't find it; this pane tag is the
+  // handle. Set AFTER the connect proves a broker is here, mirrors view-run's
+  // `@crtr_view` self-tag. Cleared on teardown so a stray tag can't outlive the
+  // viewer (best-effort; tmux-only).
+  const tagPane = process.env['TMUX_PANE'] ?? currentTmux()?.pane;
+  if (tagPane !== undefined && tagPane !== '') {
+    try { setPaneOption(tagPane, '@crtr_node', nodeId); } catch { /* best-effort */ }
+  }
+  const clearPaneTag = (): void => {
+    if (tagPane !== undefined && tagPane !== '') {
+      try { setPaneOption(tagPane, '@crtr_node', ''); } catch { /* best-effort */ }
+    }
+  };
 
   // 1. Theme + keybindings FIRST — pi's components throw "Theme not initialized"
   //    otherwise (T5 contract). One KeybindingsManager feeds BOTH editor + input.
@@ -240,6 +260,7 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
   const teardown = (reason: 'detach' | 'broker-gone' | 'signal'): void => {
     if (tornDown) return;
     tornDown = true;
+    clearPaneTag();
     removeKeyListener();
     // A clean detach tells the broker to drop this viewer (the engine runs on);
     // on broker-gone the socket is already dead, so skip `bye`.

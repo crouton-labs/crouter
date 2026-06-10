@@ -17,7 +17,7 @@ import { readRoadmap } from '../core/runtime/roadmap.js';
 import { parseWhen, parseCadence, cadenceDisplay, type WakeError } from '../core/wake.js';
 
 import { recycleNode } from '../core/runtime/recycle.js';
-import { detachToBackground, focus as placementFocus, windowAlive, windowOfPane, currentTmux } from '../core/runtime/placement.js';
+import { detachToBackground, focus as placementFocus, windowAlive, windowOfPane, currentTmux, getPaneOption } from '../core/runtime/placement.js';
 import { buildLaunchSpec } from '../core/runtime/launch.js';
 import { closeNode } from '../core/runtime/close.js';
 import { appendInbox, type InboxTier } from '../core/feed/inbox.js';
@@ -347,15 +347,30 @@ function nodeByWindow(win: string): string | undefined {
   return undefined;
 }
 
-/** The live node occupying a tmux pane (pane → window → node), or undefined.
- *  Defaults to $TMUX_PANE / the caller's current pane when `pane` is omitted —
- *  shared by `node recycle` / `node demote` / `node lifecycle` / `node close` /
- *  `node cycle`, all of which act on "the agent in front of you". Exported for
- *  the `canvas chord` / `canvas tmux-spread` leaves,
- *  which resolve the active pane's node the same way. */
+/** The live node "in front of you" in a tmux pane, HOST-AGNOSTIC. Defaults to
+ *  $TMUX_PANE / the caller's current pane when `pane` is omitted — shared by
+ *  `node recycle` / `node demote` / `node lifecycle` / `node close` / `node
+ *  cycle`, and the `canvas chord` / `canvas tmux-spread` leaves.
+ *
+ *  Two resolutions, tried in order:
+ *    1. VIEWER pane (broker host): a `crtr attach` viewer self-tags its pane with
+ *       the node it views (`@crtr_node`). A broker engine runs DETACHED with
+ *       window=null, so the window→node lookup never finds it — the pane tag is
+ *       the only handle. Checked FIRST because the tag is pane-precise, whereas a
+ *       window is shared: a viewer SPLIT beside a tmux engine pane sits in that
+ *       engine's window, so window→node would mis-resolve to the engine.
+ *    2. ENGINE pane (tmux host): the node owns this pane's window.
+ *  A stale tag (attach SIGKILLed without clearing) is ignored — the tagged node
+ *  must still be live (active/idle); recycle clears it on the tmux respawn path. */
 export function nodeInPane(pane?: string): string | undefined {
   const resolvePane = pane ?? process.env['TMUX_PANE'] ?? currentTmux()?.pane;
-  const win = resolvePane !== undefined && resolvePane !== '' ? windowOfPane(resolvePane) : null;
+  if (resolvePane === undefined || resolvePane === '') return undefined;
+  const tagged = getPaneOption(resolvePane, '@crtr_node');
+  if (tagged !== undefined && tagged !== '') {
+    const m = getNode(tagged);
+    if (m !== null && (m.status === 'active' || m.status === 'idle')) return tagged;
+  }
+  const win = windowOfPane(resolvePane);
   return win !== null ? nodeByWindow(win) : undefined;
 }
 
@@ -397,7 +412,15 @@ const nodeRecycle = defineLeaf({
     return { recycled: res.recycled, node_id: id, finalized: res.finalized, delivered: res.delivered.length, new_root: res.newRoot ?? undefined };
   },
   render: (r) => {
-    if (r['recycled'] !== true) return `Recycle failed for ${r['node_id'] ?? '?'} — not in tmux, or no agent in this pane.`;
+    if (r['recycled'] !== true) {
+      // A broker recycle that finalized + spawned a fresh root but whose new
+      // broker never served its socket: the state DID change (node finished, root
+      // born), only the viewer re-attach failed — say so, don't call it a no-op.
+      if (r['finalized'] === true && r['new_root']) {
+        return `Finished ${r['node_id']} and spawned a fresh broker root (${r['new_root']}), but its viewer did not attach — the new broker did not come up. Re-focus the root to view it.`;
+      }
+      return `Recycle failed for ${r['node_id'] ?? '?'} — not in tmux, or no agent in this pane.`;
+    }
     const lines = [`Recycled the pane — finished ${r['node_id']}.`, `- finalized: ${r['finalized']}`];
     if (r['finalized'] === true) lines.push(`- delivered: ${r['delivered']}`);
     if (r['new_root']) lines.push(`- new root: ${r['new_root']}`);

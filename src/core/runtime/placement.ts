@@ -472,6 +472,17 @@ export function detachToBackground(nodeId: string, pane?: string): boolean {
   reconcile(nodeId);
   const row = getRow(nodeId);
   if (row === null) return false;
+  // A broker node has NO engine pane — it is ALREADY headless, so the only thing
+  // on screen is a `crtr attach` VIEWER pane. "Detach" (the Alt+C → D let-go)
+  // therefore means "stop foregrounding it": close the viewer pane and leave the
+  // broker running untouched. The engine-in-pane relocate/release below would
+  // mis-anchor the live engine row to the viewer pane and (when idle) flip a
+  // LIVE broker to idle-release — corrupting state. Never reach it for a broker.
+  if (row.host_kind === 'broker') {
+    const viewer = pane ?? null;
+    if (viewer !== null && paneExists(viewer)) return closePane(viewer);
+    return false;
+  }
   const target = pane ?? row.pane;
   if (target === null || !paneExists(target)) return false;
   // Anchor the durable handle on the pane we relocate so the post-move reconcile
@@ -855,7 +866,7 @@ const BROKER_FOCUS_SOCKET_RETRY_MS = 100;
  *  process blocks in `spawnSync`. Success proves more than file existence: it is
  *  robust to a stale leftover socket that the launching broker has not unlinked
  *  yet, because only an accepting listener exits 0. */
-function waitForBrokerViewSocket(nodeId: string): boolean {
+export function waitForBrokerViewSocket(nodeId: string): boolean {
   const sockPath = join(nodeDir(nodeId), 'view.sock');
   const probe = `
 const net = require('node:net');
@@ -947,15 +958,20 @@ function focusBroker(
     return { focused: false, session: null, inPlace: false, revived };
   }
 
-  // Propagate CRTR_HOME so the viewer resolves the SAME canvas home (and thus
-  // the right view.sock) under a non-default override; otherwise an empty env
-  // (the split inherits the tmux server env, like every other crtr chrome pane).
-  const crtrHome = process.env['CRTR_HOME'];
-  const env: Record<string, string> = crtrHome !== undefined ? { CRTR_HOME: crtrHome } : {};
   // Node ids are shell-safe identifiers (base36-ts + hex); no quoting needed.
-  const pane = splitWindow(callerPane, { cwd: meta.cwd, env, command: `crtr attach to ${nodeId}` });
+  const pane = splitWindow(callerPane, { cwd: meta.cwd, env: viewerSplitEnv(), command: `crtr attach to ${nodeId}` });
   if (pane === null) return { focused: false, session: null, inPlace: false, revived };
   return { focused: true, session: paneLocation(pane)?.session ?? null, inPlace: false, revived };
+}
+
+/** Env for a `crtr attach` VIEWER pane (the focusBroker split AND recycle's
+ *  re-attach respawn): propagate CRTR_HOME so the viewer resolves the SAME canvas
+ *  home — and thus the right view.sock — under a non-default override; otherwise
+ *  an empty env (the pane inherits the tmux server env, like every other crtr
+ *  chrome pane). One helper so the two viewer-pane sites can't drift. */
+export function viewerSplitEnv(): Record<string, string> {
+  const crtrHome = process.env['CRTR_HOME'];
+  return crtrHome !== undefined ? { CRTR_HOME: crtrHome } : {};
 }
 
 /** Register the caller's CURRENT pane as a focus so a `node focus`/`cycle` from a
