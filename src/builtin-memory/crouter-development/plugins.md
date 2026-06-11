@@ -101,7 +101,7 @@ Three ways a plugin lands in a scope:
 mkdir -p my-plugin/.crouter-plugin my-plugin/skills
 $EDITOR my-plugin/.crouter-plugin/plugin.json      # write the manifest
 cd my-plugin
-crtr skill author scaffold my-plugin/my-first-skill --type playbook --description "Use when …"
+$EDITOR my-plugin/skills/my-first-skill/SKILL.md   # author the skill — `crtr memory write -h` is the frontmatter + routing guide
 
 # Symlink for fast iteration — no clone, edits land immediately
 ln -s $(pwd) ~/.crouter/plugins/my-plugin
@@ -131,7 +131,7 @@ Standard semver:
 
 `crtr pkg plugin manage disable <name>` flips the per-scope config without removing files. Disabled plugins are hidden from `crtr memory list` and don't resolve via `crtr memory read <name>`. Re-enable with `crtr pkg plugin manage enable <name>`.
 
-Individual skills inside an enabled plugin can also be disabled: `crtr skill state disable <plugin>/<skill>`.
+Individual skills inside an enabled plugin are hidden by setting their frontmatter visibility rungs to `none` (or a gate that fails), not by a command — see `crtr memory write -h`.
 
 ## What goes in a plugin
 
@@ -153,7 +153,7 @@ If your skill conceptually depends on another plugin's skill, link via `## Relat
 `crtr sys doctor` checks every plugin:
 - Manifest exists and is valid JSON.
 - Manifest `name` matches the directory name.
-- Every skill under `skills/` passes the skill-validation contract (frontmatter parses, `name` matches dir path, `type` in enum). Run `crtr skill author guide` for the authoring workflow + SKILL.md format reference.
+- Every skill under `skills/` passes the substrate contract (frontmatter parses, valid `kind`, both visibility rungs set). Run `crtr memory write -h` for the authoring + routing guide, and `crtr memory lint` to validate.
 - Sibling artifact dirs (`commands/`, `hooks/`, etc.) — validated by their respective specs as those land.
 
 ## Cross-publishing with Claude Code

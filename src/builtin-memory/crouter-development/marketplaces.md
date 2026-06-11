@@ -111,8 +111,8 @@ cd <marketplace-repo>
 mkdir -p plugins/my-new-plugin/.crouter-plugin plugins/my-new-plugin/skills
 $EDITOR plugins/my-new-plugin/.crouter-plugin/plugin.json
 
-# Add at least one skill
-crtr skill author scaffold my-new-plugin/first-skill --type playbook --description "Use when …"
+# Add at least one skill (`crtr memory write -h` is the authoring + routing guide)
+$EDITOR plugins/my-new-plugin/skills/first-skill/SKILL.md
 
 # Add the plugin to the marketplace index
 $EDITOR .crouter-marketplace/marketplace.json

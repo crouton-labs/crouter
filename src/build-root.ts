@@ -1,6 +1,5 @@
 import { defineRoot } from './core/command.js';
 import type { RootDef } from './core/command.js';
-import { registerSkill } from './commands/skill.js';
 import { registerMemory } from './commands/memory.js';
 import { registerPkg } from './commands/pkg.js';
 import { registerHuman } from './commands/human.js';
@@ -23,7 +22,6 @@ export function buildRoot(): RootDef {
     tagline: 'crtr: agentic planning runtime.',
     globals: [],
     subtrees: [
-      registerSkill(),
       registerMemory(),
       registerPkg(),
       registerHuman(),

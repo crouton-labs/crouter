@@ -23,7 +23,7 @@ Four tiers can hold agent-facing content. Picking the wrong tier wastes effort a
 ## Decision rules
 
 **CLI prompts** when:
-- Every user encounters this by running a normal command (`crtr skill new`, `crtr plugin install`, `crtr --help`).
+- Every user encounters this by running a normal command (`crtr memory write`, `crtr plugin install`, `crtr --help`).
 - The content describes *intrinsic CLI behavior* — exit codes, flag semantics, output format, scaffold conventions.
 - An agent should already know it after reading `crtr <thing> --help`.
 - Examples: SKILL.md format, template workflows, scope resolution, skill identifier syntax.
@@ -43,10 +43,10 @@ Four tiers can hold agent-facing content. Picking the wrong tier wastes effort a
 
 ## Anti-patterns
 
-- **Format reference as a skill** — if `crtr skill template <type>` already emits per-type guidance, don't ship a duplicate `format-reference` skill. The CLI is the index; drift between the two confuses agents.
+- **Format reference as a skill** — if `crtr memory write -h` already emits the authoring + routing guidance, don't ship a duplicate `format-reference` skill. The CLI is the index; drift between the two confuses agents.
 - **Workflow procedure as a CLI prompt** — if it's a numbered procedure with rollback (a runbook), it's a skill, not `--help` output.
 - **Tool-specific knowledge in builtin** — Claude Code skill format goes in `claude-authoring`, not the crouter binary. The crouter binary teaches crouter.
-- **Cross-ref skills from CLI prompts unless they're canonical** — a prompt saying "see `crtr skill show foo`" makes that skill a hard dependency. Inline what's actually needed; reserve cross-refs for genuine deep-dive content.
+- **Cross-ref skills from CLI prompts unless they're canonical** — a prompt saying "see `crtr memory read foo`" makes that skill a hard dependency. Inline what's actually needed; reserve cross-refs for genuine deep-dive content.
 - **Mixed-audience skills** — a skill that's half consumer-facing (use crtr) and half developer-facing (extend crtr) should split. Audience drives placement; conflating them puts content in the wrong tier.
 
 ## When the boundary is fuzzy
