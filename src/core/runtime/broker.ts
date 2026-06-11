@@ -1047,9 +1047,17 @@ export async function runBroker(nodeId: string): Promise<void> {
       }
       case 'navigate_tree': {
         if (notController(client, 'navigate the session tree')) break;
+        // navigateTree rewinds IN-PLACE (same session file, new leaf) and emits no
+        // relayed event, so every viewer must be re-snapshotted onto the rewound
+        // transcript — same reWelcomeAll the session-replacing ops use. The ack's
+        // detail carries the navigated-to user message's text (pi parity: the
+        // interactive tree navigator restores it to the editor for re-editing).
         void session
           .navigateTree(frame.targetId, frame.options)
-          .then((r) => ackTo(client, 'navigate_tree', !r.cancelled))
+          .then((r) => {
+            if (!r.cancelled) reWelcomeAll();
+            ackTo(client, 'navigate_tree', !r.cancelled, r.editorText);
+          })
           .catch(engineErrorTo(client));
         break;
       }

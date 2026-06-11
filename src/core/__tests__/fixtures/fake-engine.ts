@@ -298,6 +298,18 @@ class FakeSession {
   abort(): Promise<void> {
     return Promise.resolve();
   }
+  /** In-place tree rewind (broker `navigate_tree`). Mirrors the real SDK's
+   *  contract: the session file is unchanged, the live history is truncated,
+   *  and the navigated-to user message's text comes back as `editorText`. The
+   *  fake's "rewind" drops the last accrued turn so a re-welcome snapshot is
+   *  observably shorter (the navigate-tree-rewelcome regression lock). */
+  navigateTree(
+    targetId: string,
+    _options?: unknown,
+  ): Promise<{ editorText?: string; cancelled: boolean }> {
+    this.messageLog.pop();
+    return Promise.resolve({ cancelled: false, editorText: `rewound-to:${targetId}` });
+  }
 
   // --- the single engine event stream the broker fans out (broker.ts subscribes
   //     here and broadcasts each event VERBATIM to every attached viewer) --------

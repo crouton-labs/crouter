@@ -375,6 +375,16 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
           }
           break;
         }
+        // navigate_tree's detail is the navigated-to user message's text (pi
+        // parity: the tree navigator restores it to the editor for re-editing);
+        // the rewound transcript itself arrives via the broker's re-welcome.
+        if (frame.for === 'navigate_tree' && frame.ok) {
+          if (frame.detail) {
+            editor.setText(frame.detail);
+            tui.requestRender();
+          }
+          break;
+        }
         if (!frame.ok) {
           setNotice(`command failed: ${frame.for}${frame.detail ? ` — ${frame.detail}` : ''}`);
         }
