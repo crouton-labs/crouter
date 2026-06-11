@@ -53,6 +53,20 @@ type ToolCallContent = { type: 'toolCall'; id: string; name: string; arguments: 
  *  themselves still use `getMarkdownTheme()` for full-fidelity rendering. */
 const defaultSpinnerStyle = (s: string): string => `\x1b[2m${s}\x1b[22m`;
 const defaultDimStyle = (s: string): string => `\x1b[2m${s}\x1b[22m`;
+
+/** A component supports the Ctrl+O global tool-output toggle. Mirrors pi's
+ *  `isExpandable` duck-type (interactive-mode.js): any rendered child carrying a
+ *  `setExpanded(boolean)` method — tool executions, custom/compaction/branch/skill
+ *  message components — participates; everything else (the status container, plain
+ *  text, assistant/user bubbles) is skipped. */
+function isExpandable(obj: unknown): obj is { setExpanded(expanded: boolean): void } {
+  return (
+    typeof obj === 'object' &&
+    obj !== null &&
+    'setExpanded' in obj &&
+    typeof (obj as { setExpanded?: unknown }).setExpanded === 'function'
+  );
+}
 const defaultErrorStyle = (s: string): string => `\x1b[31m${s}\x1b[39m`;
 
 export interface ChatViewOptions {
@@ -90,9 +104,9 @@ export class ChatView {
   private readonly cwd: string;
   private readonly showImages: boolean;
   private readonly imageWidthCells: number;
-  private readonly hideThinking: boolean;
+  private hideThinking: boolean;
   private readonly hiddenThinkingLabel: string;
-  private readonly toolOutputExpanded: boolean;
+  private toolOutputExpanded: boolean;
   private readonly onFooterEvent: ((event: AgentSessionEvent) => void) | undefined;
   /** Theme-derived colorizers for the activity/status area. */
   private readonly spinnerStyle: (s: string) => string;
@@ -213,6 +227,36 @@ export class ChatView {
    *  one process it should call this on detach to avoid a leaked interval. */
   dispose(): void {
     this.setActivity(undefined);
+  }
+
+  // -------------------------------------------------------------------------
+  // Global display toggles (Ctrl+O / Ctrl+T), driven by the input controller.
+  // Pure client-side render state — no broker round-trip — ported from pi's
+  // `setToolsExpanded` / `toggleThinkingBlockVisibility`.
+  // -------------------------------------------------------------------------
+
+  /** Ctrl+O / app.tools.expand — flip global tool-output expansion and apply it to
+   *  every rendered component that supports it. Returns the new expanded state so
+   *  the caller can surface a notice. */
+  toggleToolsExpanded(): boolean {
+    this.toolOutputExpanded = !this.toolOutputExpanded;
+    for (const child of this.container.children) {
+      if (isExpandable(child)) child.setExpanded(this.toolOutputExpanded);
+    }
+    this.tui.requestRender();
+    return this.toolOutputExpanded;
+  }
+
+  /** Ctrl+T / app.thinking.toggle — flip thinking-block visibility and apply it to
+   *  every assistant message (the in-flight streaming bubble is itself a child of
+   *  the container, so the loop covers it too). Returns the new HIDDEN state. */
+  toggleThinking(): boolean {
+    this.hideThinking = !this.hideThinking;
+    for (const child of this.container.children) {
+      if (child instanceof AssistantMessageComponent) child.setHideThinkingBlock(this.hideThinking);
+    }
+    this.tui.requestRender();
+    return this.hideThinking;
   }
 
   // -------------------------------------------------------------------------

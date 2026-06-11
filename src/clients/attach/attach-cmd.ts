@@ -270,6 +270,12 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
     onNotice: (msg) => setNotice(msg),
     nodeId,
     onGraph: () => graphOverlay.toggle(),
+    // Global display toggles (Ctrl+O tools / Ctrl+T thinking) — pure render state
+    // owned by ChatView, surfaced as a footer notice mirroring pi's status line.
+    onToggleToolsExpand: () =>
+      setNotice(chatView.toggleToolsExpanded() ? 'Tool output: expanded' : 'Tool output: collapsed'),
+    onToggleThinking: () =>
+      setNotice(chatView.toggleThinking() ? 'Thinking blocks: hidden' : 'Thinking blocks: visible'),
     // Wire the correlated read-op channel so the native pickers (/model,
     // /resume, /fork, /tree, /settings, /scoped-models) can fetch their payloads.
     // Without this every picker degrades to the "isn't available in this viewer"

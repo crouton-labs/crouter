@@ -13,6 +13,10 @@
 // editor's `onSubmit`/`onEscape`/`onPasteImage` hooks + `onAction(app.*)`
 // registrations rather than matching raw keys itself.
 
+import { spawn } from 'node:child_process';
+import { readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { CustomEditor } from '@earendil-works/pi-coding-agent';
 import type { KeybindingsManager, OverlayHandle, TUI } from '@earendil-works/pi-tui';
 import type { ImageContent } from '@earendil-works/pi-ai';
@@ -84,6 +88,12 @@ export interface InputControllerHooks {
   /** OPTIONAL: toggle the GRAPH overlay — forwarded to the slash context so
    *  `/graph` opens/closes it (Unit Q wires it from runAttach). */
   onGraph?: () => void;
+  /** OPTIONAL: Ctrl+O / app.tools.expand — flip global tool-output expansion in
+   *  the render layer (ChatView owns the components). Absent → the key no-ops. */
+  onToggleToolsExpand?: () => void;
+  /** OPTIONAL: Ctrl+T / app.thinking.toggle — flip thinking-block visibility in
+   *  the render layer. Absent → the key no-ops. */
+  onToggleThinking?: () => void;
   /** OPTIONAL: issue a correlated read-op and resolve with the broker's `data`
    *  reply. MUST be wired by attach-cmd (`onRequest: (f) => socket.request(f)`)
    *  for the native pickers to work; when absent every picker degrades to a
@@ -150,8 +160,20 @@ export class InputController {
     };
     // Keyboard shortcuts that map 1:1 to a frame needing no engine-side data.
     this.editor.onAction('app.session.new', () => this.hooks.onCommand({ type: 'new_session' }));
-    this.editor.onAction('app.model.cycleForward', () => this.hooks.onCommand({ type: 'cycle_model' }));
+    this.editor.onAction('app.model.cycleForward', () =>
+      this.hooks.onCommand({ type: 'cycle_model', direction: 'forward' }),
+    );
+    this.editor.onAction('app.model.cycleBackward', () =>
+      this.hooks.onCommand({ type: 'cycle_model', direction: 'backward' }),
+    );
+    this.editor.onAction('app.thinking.cycle', () => this.hooks.onCommand({ type: 'cycle_thinking' }));
     this.editor.onAction('app.message.followUp', () => this.handleFollowUp());
+    this.editor.onAction('app.message.dequeue', () => void this.handleDequeue());
+    // Pure client-side render toggles (ChatView owns the components).
+    this.editor.onAction('app.tools.expand', () => this.hooks.onToggleToolsExpand?.());
+    this.editor.onAction('app.thinking.toggle', () => this.hooks.onToggleThinking?.());
+    // Ctrl+G — compose the prompt in $VISUAL/$EDITOR, then load it back.
+    this.editor.onAction('app.editor.external', () => void this.openExternalEditor());
     // Native pickers via keybinding. `app.model.select` is bound to ctrl+l by
     // default (vendored in config-load); the session.* actions ship with no
     // default key but fire if the user binds one — wiring them keeps parity.
@@ -345,6 +367,81 @@ export class InputController {
     this.clearPendingImages();
     if (text) this.editor.addToHistory(text);
     this.editor.setText('');
+  }
+
+  /** Ctrl+G / app.editor.external — open the current editor text in $VISUAL/$EDITOR
+   *  and load the saved result back. Ported from pi's `openExternalEditor`: stop
+   *  the TUI to release the terminal, run the editor with inherited stdio, and on
+   *  a clean exit (status 0) replace the editor text; the socket keeps running in
+   *  the background throughout. */
+  private async openExternalEditor(): Promise<void> {
+    const editorCmd = process.env.VISUAL || process.env.EDITOR;
+    if (!editorCmd) {
+      this.notify('No editor configured — set $VISUAL or $EDITOR');
+      return;
+    }
+    const editorWithExpanded = this.editor as CustomEditor & { getExpandedText?: () => string };
+    const currentText = editorWithExpanded.getExpandedText?.() ?? this.editor.getText();
+    const tmpFile = join(tmpdir(), `crtr-attach-editor-${Date.now()}.pi.md`);
+    try {
+      writeFileSync(tmpFile, currentText, 'utf-8');
+      this.tui.stop();
+      // Split on spaces so `code --wait`-style commands keep their args.
+      const [cmd, ...args] = editorCmd.split(' ');
+      process.stdout.write(`Launching external editor: ${editorCmd}\nThe viewer resumes when it exits.\n`);
+      const status = await new Promise<number | null>((resolve) => {
+        const child = spawn(cmd, [...args, tmpFile], {
+          stdio: 'inherit',
+          shell: process.platform === 'win32',
+        });
+        child.on('error', () => resolve(null));
+        child.on('close', (code) => resolve(code));
+      });
+      if (status === 0) {
+        this.editor.setText(readFileSync(tmpFile, 'utf-8').replace(/\n$/, ''));
+      }
+    } catch (err) {
+      this.notify(`External editor failed: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      try {
+        unlinkSync(tmpFile);
+      } catch {
+        /* ignore temp-file cleanup errors */
+      }
+      this.tui.start();
+      this.tui.requestRender(true);
+    }
+  }
+
+  /** Alt+Up / app.message.dequeue — clear the broker's queued steering + follow-up
+   *  messages and restore them to the editor, prepended to any in-progress text
+   *  (pi's `restoreQueuedMessagesToEditor`: queued text first, joined by blank
+   *  lines). A read-AND-mutate op over the correlated request channel. */
+  private async handleDequeue(): Promise<void> {
+    if (this.hooks.onRequest === undefined) {
+      this.notify("Restoring queued messages isn't available in this viewer");
+      return;
+    }
+    let reply: BrokerDataFrame;
+    try {
+      reply = await this.hooks.onRequest({ type: 'dequeue' });
+    } catch (err) {
+      this.notify(`Could not restore queued messages: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    if (reply.kind !== 'dequeue') {
+      this.notify('Unexpected reply restoring queued messages');
+      return;
+    }
+    const queued = [...reply.steering, ...reply.followUp];
+    if (queued.length === 0) {
+      this.notify('No queued messages to restore');
+      return;
+    }
+    const combined = [queued.join('\n\n'), this.editor.getText()].filter((t) => t.trim()).join('\n\n');
+    this.editor.setText(combined);
+    this.tui.requestRender();
+    this.notify(`Restored ${queued.length} queued message${queued.length > 1 ? 's' : ''} to editor`);
   }
 
   /** Send a drive frame iff the WHOLE encoded frame fits under MAX_FRAME_BYTES
