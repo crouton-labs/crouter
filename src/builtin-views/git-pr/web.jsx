@@ -15,7 +15,7 @@
  */
 
 import { relAge } from './core.mjs';
-import { Loading, NotReady, Empty } from '@crouton-kit/crouter/web';
+import { Loading, NotReady, ErrorState, Empty } from '@crouton-kit/crouter/web';
 
 /** @typedef {import('./core.mjs').GitPrState} GitPrState */
 
@@ -164,38 +164,26 @@ function BoardRow({ row, selected, onClick }) {
  * @param {import('../../core/view/contract.js').ViewProps<GitPrState>} props
  */
 export default function GitPr({ state, dispatch }) {
-  // ── Whole-view takeovers (no git data to anchor a header) — same vocabulary
-  //    as the TUI's notReadyState/loadingState. ──
+  // ── Whole-view takeovers (no git data to anchor a header). The copy comes
+  //    from the typed SourceError's `display` VERBATIM (the contract display/kind
+  //    split — we never branch on `kind`); only the four-state component is a
+  //    presentation map off `display.level` so the hue matches the TUI (error →
+  //    red ErrorState, action → amber NotReady). ──
   if (!state.git) {
-    if (state.gitErrorKind === 'not-a-repo') {
+    if (state.gitErr) {
+      const d = state.gitErr.display;
+      const Takeover = d.level === 'error' ? ErrorState : NotReady;
       return (
-        <NotReady
-          headline="Not a git repository"
-          explanation="This view monitors a git repo, and the current directory is not one."
-          nextStep="cd into a repository (or run `git init`), then refresh."
+        <Takeover
+          headline={d.headline}
+          explanation={d.explanation}
+          nextStep={d.nextStep}
           onRetry={() => dispatch('refresh')}
         />
       );
     }
-    if (state.gitErrorKind === 'git-missing') {
-      return (
-        <NotReady
-          headline="git not found"
-          explanation="crtr could not find the git binary on PATH."
-          nextStep="Install git, then refresh."
-          onRetry={() => dispatch('refresh')}
-        />
-      );
-    }
-    if (state.lastFetch === 0) return <Loading label="Reading git…" />;
-    return (
-      <NotReady
-        headline="Git unavailable"
-        explanation={state.gitError || 'A git command failed.'}
-        nextStep="Retry."
-        onRetry={() => dispatch('refresh')}
-      />
-    );
+    // No error yet → first-load loading state.
+    return <Loading label="Reading git…" />;
   }
 
   const g = state.git;

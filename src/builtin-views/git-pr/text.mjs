@@ -25,7 +25,7 @@ export function dump(state, ctx) {
   const lines = ['Git / PR board'];
   const banner = ctx && ctx.banner ? ctx.banner : null;
   if (banner) lines.push('', `[${banner.level}] ${banner.msg}`);
-  else if (state.gitError) lines.push('', `[error] ${state.gitError}`);
+  else if (state.gitErr) lines.push('', `[${state.gitErr.display.level}] ${state.gitErr.display.explanation}`);
 
   const g = state.git;
   if (!g) {

@@ -236,39 +236,24 @@ export function render(state, draw, content) {
   if (content.width <= 0 || content.height <= 0) return;
 
   // ── Whole-screen takeovers (no git data to anchor a header) ──
+  // The copy comes from the typed SourceError's `display` VERBATIM (the contract
+  // display/kind split — we never branch on `kind`); only the glyph + hue are a
+  // presentation map off `display.level` (action → ⊙ yellow, error → ⚠ red).
   if (!state.git) {
-    if (state.gitErrorKind === 'not-a-repo') {
+    if (state.gitErr) {
+      const d = state.gitErr.display;
+      const g = d.level === 'action' ? { glyph: '⊙', fg: '33' } : { glyph: '⚠', fg: '31' };
       notReadyState(draw, content, {
-        glyph: '⊙',
-        glyphFg: '33', // yellow — pairs with the action chip
-        headline: 'Not a git repository',
-        explanation: 'This view monitors a git repo, and the current directory is not one.',
-        nextStep: 'cd into a repository (or run `git init`), then press g.',
+        glyph: g.glyph,
+        glyphFg: g.fg,
+        headline: d.headline,
+        explanation: d.explanation,
+        nextStep: d.nextStep,
       });
       return;
     }
-    if (state.gitErrorKind === 'git-missing') {
-      notReadyState(draw, content, {
-        glyph: '⚠',
-        glyphFg: '31', // red — pairs with the blocked chip
-        headline: 'git not found',
-        explanation: 'crtr could not find the git binary on PATH.',
-        nextStep: 'Install git, then press g.',
-      });
-      return;
-    }
-    if (state.lastFetch === 0) {
-      loadingState(draw, content, { rows: Math.min(5, content.height), label: 'Reading git…' });
-      return;
-    }
-    // git-failed on the first load (nothing to keep) → guided takeover.
-    notReadyState(draw, content, {
-      glyph: '⚠',
-      glyphFg: '31',
-      headline: 'Git unavailable',
-      explanation: state.gitError || 'A git command failed.',
-      nextStep: 'Press g to retry.',
-    });
+    // No error yet → first-load loading skeleton.
+    loadingState(draw, content, { rows: Math.min(5, content.height), label: 'Reading git…' });
     return;
   }
 

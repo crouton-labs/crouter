@@ -76,8 +76,7 @@
  * The view's immutable state (the core owns it; intents replace it via ctx.set).
  * @typedef {Object} GitPrState
  * @property {GitState|null} git
- * @property {string|null} gitError
- * @property {string|null} gitErrorKind   'not-a-repo' | 'git-missing' | 'git-failed'
+ * @property {SourceError|null} gitErr   Typed git failure; presenters render its `display` VERBATIM.
  * @property {Pr[]} prs
  * @property {string|null} prNote
  * @property {BoardRow[]} board
@@ -511,8 +510,7 @@ const core = {
   init() {
     return {
       git: null,
-      gitError: null,
-      gitErrorKind: null,
+      gitErr: null,
       prs: [],
       prNote: null,
       board: [],
@@ -554,7 +552,7 @@ const core = {
         const keep = !err.display.blocking && hadGit;
         ctx.set((s) => {
           /** @type {GitPrState} */
-          const next = { ...s, gitError: err.display.explanation, gitErrorKind: err.kind };
+          const next = { ...s, gitErr: err };
           if (!keep) {
             next.git = null;
             next.prs = [];
@@ -647,7 +645,7 @@ const core = {
 
       ctx.set((s) => {
         /** @type {GitPrState} */
-        const next = { ...s, git, gitError: null, gitErrorKind: null, prs, prNote };
+        const next = { ...s, git, gitErr: null, prs, prNote };
         next.board = buildBoard(next);
         if (next.cursor >= next.board.length) next.cursor = Math.max(0, next.board.length - 1);
         next.lastFetch = Date.now();
