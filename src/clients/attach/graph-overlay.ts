@@ -14,8 +14,10 @@
 // decoded with pi-tui's canonical matchesKey (kitty/CSI-u aware).
 //
 // Enter/m/x SHELL `crtr` out-of-process (node focus / node close) — the viewer
-// itself never spawns pi or opens a session (the §0 one-writer invariant); it
-// runs inside a tmux pane, so `crtr node focus --pane` swaps the chosen node in.
+// itself never spawns pi or opens a session (the §0 one-writer invariant). It
+// passes its own pane as `crtr node focus --pane <anchor>`: under the
+// one-viewer-per-node model the target's existing viewer is navigated in place,
+// or a fresh viewer opens BESIDE this pane — never a second pane for the same node.
 
 import { execFile } from 'node:child_process';
 import { matchesKey, truncateToWidth, type Component, type OverlayHandle, type TUI } from '@earendil-works/pi-tui';
@@ -266,9 +268,11 @@ export class GraphOverlay implements Component {
 
   // -------------------------------------------------------------------------
 
-  /** Swap `id` into THIS viewer's tmux pane (mirrors canvas browse's return-pane
-   *  shell). Default --pane is the caller TMUX_PANE; we pass it explicitly when
-   *  set so the focus lands here even if env resolution differs. */
+  /** Focus node `id` from the overlay by shelling `crtr node focus <id> --pane <here>`.
+   *  Under the one-viewer-per-node model `--pane` is the ANCHOR to open beside: if
+   *  `id` has no viewer yet a fresh one splits beside this pane; if it already has
+   *  one, that viewer is navigated in place (this pane is left as-is). We pass
+   *  TMUX_PANE explicitly so the anchor is THIS pane even if env resolution differs. */
   private focusTarget(id: string): void {
     const argv = ['node', 'focus', id];
     const pane = process.env['TMUX_PANE'];
