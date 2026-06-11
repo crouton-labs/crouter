@@ -199,9 +199,6 @@ export interface SpawnNodeOpts {
    *  the boot intro can re-assert this node's OWN identity over the source's
    *  copied-in conversation. Omit for a fresh node. */
   forkFrom?: string | null;
-  /** Which HOST launches + supervises this node: a tmux pane (default) or the
-   *  headless broker. Persisted to `meta.host_kind` (NULL/'tmux' ⇒ tmux). */
-  hostKind?: 'tmux' | 'broker';
   /** New subscriptions this node opens default to passive when true. */
   passiveDefault?: boolean;
   /** Resolved pi launch recipe (from resolve(kind,mode)). */
@@ -236,7 +233,9 @@ export function spawnNode(opts: SpawnNodeOpts): NodeMeta {
     cycles: 0,
     created: new Date().toISOString(),
     cwd: opts.cwd,
-    host_kind: opts.hostKind ?? 'tmux',
+    // Broker is the only host: every node runs on the headless broker; a tmux
+    // pane is only an attach viewer.
+    host_kind: 'broker',
     kind: opts.kind,
     mode,
     lifecycle,

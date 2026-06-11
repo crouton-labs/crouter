@@ -143,7 +143,7 @@ let eventSeq = 0;
 // Append a durable record of every fired event BEFORE its handlers run. This is
 // the harness's robust "the host received my command and is dispatching it"
 // signal — it survives even when a handler tears the process down mid-flight
-// (e.g. agent_end→reviveInPlace does respawn-pane -k on our own pane), which is
+// (e.g. agent_end on a refresh/done node drives the broker shutdown), which is
 // exactly the case where an after-the-fact ack would be lost.
 function recordEvent(event: string, ev: unknown): void {
   try {
@@ -237,7 +237,7 @@ const boot = {
 };
 writeFileSync(join(nodeDir, 'fake-pi.boot.json'), JSON.stringify(boot, null, 2));
 // Append-only boot log so the harness can count re-boots (a resume after an
-// idle-release wake, or a fresh pi after a refresh-yield reviveInPlace).
+// idle-release wake, or a fresh pi after a refresh-yield).
 try {
   appendFileSync(join(nodeDir, 'fake-pi.boots.jsonl'), JSON.stringify(boot) + '\n');
 } catch {

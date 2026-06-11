@@ -1,27 +1,31 @@
 // crtrd — the thin supervisor daemon. One instance per canvas.
 //
-// Sole responsibility: supervise engine-container exit (a tmux pane or a
-// headless broker process — `host_kind`) and revive nodes. No orchestration
+// Sole responsibility: supervise engine exit and revive nodes. No orchestration
 // logic lives here. The daemon is a process-lifecycle watcher.
 //
-// Model (v3: tmux liveness is PANE-existence, not window-existence — a manual
-// move-pane/join-pane/break-pane must never read as a node death; broker-hosted
-// nodes are supervised via their recorded pid — see handleBrokerLiveness)
+// Model (broker-is-the-only-host): EVERY node runs on a detached headless broker
+// process; a tmux pane, when present, is only a VIEWER of that engine and never
+// hosts it. So liveness is pid-only — the broker pid the stophook records on
+// session_start. A viewer window closing is not a node death; the daemon never
+// reaps a node on pane/window state. All node liveness routes through
+// handleNodeLiveness:
 //   • Poll every intervalMs (default 2000ms).
-//   • For each active|idle tmux node: check whether its tmux PANE is still alive
-//     (isNodePaneAlive; window-existence is only a legacy/no-pane fallback).
-//   • Pane alive → reconcile its LOCATION (follow any manual move; lazy-backfill
-//     a legacy row's pane), then judge pi liveness — healthy, skip otherwise.
-//   • Pane gone + intent==='refresh' → fresh respawn (node asked to yield).
-//   • Pane gone + intent==='idle-release' → node freed its own pane while
-//     dormant; clear the stale window ref and revive (resume) when its inbox
-//     gains an unseen entry.
-//   • Pane gone + any other intent → route on what the node was doing:
-//       - never-booted (pi_session_id null) → crash ('dead') + surface boot fail
-//       - mid-generation (busy marker present) → crash ('dead')
-//       - finished its turn, still awaiting a live child → crash ('dead'), for now
-//       - finished its turn, awaiting nothing live → finalize ('done')
-//   • Nodes with no tmux placement (inline roots) are skipped.
+//   • pid alive → leave; but enforce a stuck refresh-yield (§H, see below).
+//   • pid null + pi_session_id set → relaunch in flight; leave.
+//   • pid null + pi_session_id null → after a boot grace, crash + surface boot
+//     failure (the broker exited before session_start).
+//   • pid dead + intent==='refresh' → fresh respawn (node asked to yield).
+//   • pid dead + intent==='idle-release' → dormant by choice; the second pass
+//     revives (resume) when its inbox gains an unseen entry.
+//   • pid dead + any other intent → grace-revive RESUME on the saved session.
+//
+// §H refresh-authority: a stale in-process stophook (pi extensions never reload,
+// so a days-old resident carries an old hook) can leave intent='refresh' on a
+// LIVE engine forever — the hook never calls shutdown, so the pid never dies and
+// the normal dead-pid refresh path never fires. The daemon is the authority:
+// when intent='refresh' persists on a live engine whose turn is over, past a
+// grace, it force-kills the engine itself (handleYieldStall) so the dead-pid
+// refresh path then revives it fresh.
 //
 // Single-instance guarantee
 //   A PID file at crtrHome()/crtrd.pid prevents double-runs. On start, if the
@@ -41,10 +45,7 @@ import { crtrHome, nodeDir, jobDir } from '../core/canvas/paths.js';
 import {
   listNodes,
   getRow,
-  setPresence,
   getNode,
-  hasActiveLiveSubscription,
-  hasPendingSelfWake,
   dueWakes,
   consumeWake,
   advanceWake,
@@ -59,12 +60,11 @@ import {
 import { transition } from '../core/runtime/lifecycle.js';
 import { isBusy } from '../core/runtime/busy.js';
 import { isPidAlive } from '../core/canvas/pid.js';
-import { reconcile, listLivePanes, tearDownNode } from '../core/runtime/placement.js';
-import { hostFor } from '../core/runtime/host.js';
+import { listLivePanes, tearDownNode } from '../core/runtime/placement.js';
 import { reviveNode } from '../core/runtime/revive.js';
 import { spawnChild, type SpawnChildOpts } from '../core/runtime/spawn.js';
 import { wakeOriginFrom } from '../core/runtime/bearings.js';
-import { pushUrgent, pushUpdate } from '../core/feed/feed.js';
+import { pushUrgent } from '../core/feed/feed.js';
 import { appendInbox, readInboxSince, readCursor } from '../core/feed/inbox.js';
 import { nextSlotAfter } from '../core/wake.js';
 
@@ -90,65 +90,30 @@ async function surfaceBootFailure(meta: NodeMeta): Promise<void> {
   await pushUrgent(meta.node_id, body, { from: meta.node_id });
 }
 
-/** Wake an inbox-waiting PARENT when the daemon ends a child the child did NOT
- *  end itself — a mid-generation CRASH (the pane died inside a turn) or a quiet-
- *  turn FINALIZE (the pane was dismissed after the turn ended with nothing live
- *  to wait for). Mirrors surfaceBootFailure: a single push fanned to
- *  subscribersOf(child), so a purely-inbox-waiting parent is woken on the SAME
- *  channel as a `push final` — its live inbox-watcher, or this daemon's dormant-
- *  revive second pass. Without it a parent that delegated and just stopped hangs
- *  forever on these outcomes (D-1 finding: today only `push final` / never-booted
- *  wake it). The doctrine "delegate and stop; the runtime wakes you" requires
- *  EVERY terminal child outcome to reach the parent.
- *
- *  Fires ONLY on genuine death — NEVER on healthy dormancy. The CALLER owns that
- *  boundary: this is invoked from the crash + finalize branches only; a child
- *  that ended its turn still awaiting a live grandchild OR holding a pending
- *  self-wake routes to `release` (revivable) and never reaches here. A CRASH is
- *  URGENT (a fault, like a boot failure); a quiet FINALIZE is a normal update (a
- *  clean dismissal — wake the dormant parent without interrupting a live one
- *  mid-turn). */
-async function surfaceChildDeath(meta: NodeMeta, cause: 'crash' | 'finalize'): Promise<void> {
-  if (cause === 'crash') {
-    await pushUrgent(
-      meta.node_id,
-      `⚠ Child died — \`${meta.name}\` (${meta.kind}) was killed mid-task.\n\n` +
-        `Its pi vehicle went away mid-generation (the pane was closed or crashed while it was ` +
-        `working), so it never pushed a final report. Re-spawn it if the work still needs doing.`,
-      { from: meta.node_id },
-    );
-  } else {
-    await pushUpdate(
-      meta.node_id,
-      `\`${meta.name}\` (${meta.kind}) ended without a final report.\n\n` +
-        `Its turn ended and its pane was closed with nothing live left to wait for, so the runtime ` +
-        `finalized it. It pushed no \`final\` — check its reports/ for anything it left, and re-spawn ` +
-        `if the result is incomplete.`,
-      { from: meta.node_id },
-    );
-  }
-}
-
 const DEFAULT_INTERVAL_MS = 2000;
 
-// How long a node's pi may be observed dead-while-its-window-lives before the
-// daemon revives it. MUST exceed worst-case pi boot time: a normal in-place
-// refresh (reviveInPlace) transiently shows a dead OLD pid for the gap between
-// the old pi dying and the fresh pi booting + re-recording its pid, and we must
-// not double-spawn into that gap.
+// How long a node's broker pid may be observed dead before the daemon revives
+// it. MUST exceed worst-case broker boot time: a refresh / crash-revive
+// transiently shows a dead OLD pid for the gap between the old broker exiting
+// and the fresh broker booting + re-recording its pid, and we must not
+// double-spawn into that gap.
 const REVIVE_GRACE_MS = 20_000;
 
 // Per-node first-observed-dead timestamps, for the grace window above. In-memory
 // only — a daemon restart resets it (worst case: one extra grace interval).
 const unhealthySince = new Map<string, number>();
 
-// How long a node may sit with intent='refresh', its turn OVER (busy marker
-// absent) and its pi still ALIVE before the daemon concludes the yield stalled
-// and kills the pi. The healthy window is seconds: agent_end dispatches the
-// in-place respawn (which kills the old pi) immediately after clearing busy.
-// Minutes of that state means the shutdown/respawn path hung (observed at
-// ~200k-token contexts) and nothing else will ever unstick it — the daemon
-// only revives DEAD pis.
+// §H refresh-authority grace: how long a node may sit with intent='refresh', its
+// turn OVER (busy marker absent) and its engine still ALIVE before the daemon
+// concludes the refresh stalled and force-kills the engine. The healthy window is
+// seconds: a sound stophook calls shutdown() the instant the refresh turn ends,
+// the engine pid dies, and the dead-pid refresh path revives fresh. Minutes of
+// that state means the engine never exited — either the shutdown/respawn path
+// hung (observed at ~200k-token contexts) OR a STALE in-process stophook (pi
+// extensions never reload, so a days-old resident carries an old hook that
+// ignores intent='refresh' at stop) never called shutdown at all. Nothing else
+// will ever unstick it — the daemon only revives DEAD engines — so the daemon is
+// the authority: kill the engine here, then the dead-pid path revives.
 export const YIELD_STALL_GRACE_MS = 3 * 60_000;
 
 // After a yield-stall SIGTERM, how long the pi gets to die gracefully before
@@ -168,64 +133,21 @@ const yieldTermAt = new Map<string, number>();
 // notice). A successful spawn clears its entry so a future failure re-notifies.
 const notifiedWakeFailures = new Set<string>();
 
-// How old a spawned-but-sessionless node must be before the daemon treats it as
-// "never launched" and relaunches it. MUST generously exceed worst-case pi boot
-// under load: a healthy fresh spawn is sessionless (no pi_session_id, no pid,
-// zero cycles) for its whole boot, and relaunching into that window would
-// double-spawn.
-export const NEVER_LAUNCHED_GRACE_MS = 5 * 60_000;
-
-/** Never-launched decision (audit 2026-06-09, Bug 4 — node mq45b6ch-9ecc2f03):
- *  a spawn that opened its window but whose pi never came up leaves a row with
- *  ZERO cycles, NO session, NO pid — and, when the window lingers (e.g. a
- *  remain-on-exit corpse), the live-pane pass read "no pid to judge" and left it
- *  forever; the parent waited on a node that was never going to run. Pure core:
- *  a node that has ever booted (session recorded) or ever been revived (cycles
- *  bumped) is NOT never-launched — the cycles gate also bounds this to ONE
- *  automatic retry (the relaunch bumps cycles), so a persistently failing
- *  launch can't loop. Age below the grace is a normal in-flight boot. */
-export function neverLaunchedVerdict(
-  piSessionId: string | null,
-  cycles: number,
-  ageMs: number,
-): 'leave' | 'relaunch' {
-  if (piSessionId != null || cycles > 0) return 'leave';
-  return ageMs >= NEVER_LAUNCHED_GRACE_MS ? 'relaunch' : 'leave';
-}
-
-/** Enact the never-launched relaunch for a pane-alive, pid-less node (Bug 4):
- *  verify against meta (pi_session_id is identity, read on demand), reap the
- *  stale spawn window, and relaunch fresh via reviveNode — whose kickoff
- *  carries the node's goal (context/initial-prompt.md) when no roadmap exists,
- *  so the relaunched worker receives its original mandate. */
-function handleNeverLaunched(row: NodeRow, now: number, revivedThisTick: Set<string>): void {
-  const age = now - Date.parse(row.created); // NaN compares false → leave
-  if (!(age >= NEVER_LAUNCHED_GRACE_MS)) return;
-  const meta = getNode(row.node_id);
-  if (meta === null) return;
-  if (neverLaunchedVerdict(meta.pi_session_id ?? null, meta.cycles ?? 0, age) !== 'relaunch') {
-    return;
-  }
-  process.stderr.write(
-    `[crtrd] relaunch ${row.node_id} (spawned but never launched: 0 cycles, no session, age ${Math.round(age / 1000)}s)\n`,
-  );
-  tearDownNode(row.node_id); // reap the stale spawn pane — reviveNode opens a fresh window
-  reviveNode(row.node_id, { resume: false });
-  revivedThisTick.add(row.node_id);
-}
-
-/** Yield-stall decision (audit 2026-06-09, Bug 1 — node mq5v9hfa-74493d45 and
- *  three sibling orchestrators): a `node yield` records intent='refresh' and
- *  agent_end dispatches the in-place respawn, but at very large contexts the pi
- *  process can HANG instead of exiting — leaving pi alive, the turn over, and
- *  the intent pending forever. The daemon only revives DEAD pis, so without
- *  this verdict the node is permanently stuck (no revive, no wake). Pure core,
- *  mirroring livenessVerdict; the kill side effects live in handleYieldStall.
+/** Refresh-stall decision (§H refresh-authority; audit 2026-06-09, Bug 1 — node
+ *  mq5v9hfa-74493d45 and siblings; stuck-refresh — parent mq7s5o93): a `node
+ *  yield` / refresh records intent='refresh' and relies on the in-process
+ *  stophook to call shutdown at stop, but the engine can be left ALIVE — either
+ *  it HANGS instead of exiting (very large contexts) or a STALE stophook (pi
+ *  extensions never reload) ignores intent='refresh' entirely and never calls
+ *  shutdown. Either way: engine alive, turn over, intent pending forever. The
+ *  daemon only revives DEAD engines, so without this verdict the node is
+ *  permanently stuck (no revive, no wake). Pure core, mirroring livenessVerdict;
+ *  the kill side effects live in handleYieldStall.
  *
- *  'kill' ONLY when ALL of: pi alive, intent='refresh', the turn is over (busy
- *  marker absent — a node may legitimately keep working for many minutes after
- *  running `node yield` mid-turn, and a working pi must never be killed), and
- *  the state has persisted past YIELD_STALL_GRACE_MS. */
+ *  'kill' ONLY when ALL of: engine alive, intent='refresh', the turn is over
+ *  (busy marker absent — a node may legitimately keep working for many minutes
+ *  after running `node yield` mid-turn, and a working engine must never be
+ *  killed), and the state has persisted past YIELD_STALL_GRACE_MS. */
 export function yieldStallVerdict(
   piPidAlive: boolean | null,
   intent: NodeRow['intent'],
@@ -239,14 +161,16 @@ export function yieldStallVerdict(
   return 'kill';
 }
 
-/** Enact a yield-stall (Bug 1): clock the stalled state, then SIGTERM the hung
- *  pi (escalating to SIGKILL if it survives KILL_ESCALATE_MS — a pi hung at
- *  context overflow may never run its handlers). Once the pi is dead the
- *  ORDINARY machinery finishes the job: the pane-alive/pi-dead grace path
- *  revives with resume=false (intent is still 'refresh'), i.e. the fresh
- *  roadmap-revive the yield asked for. Safe against a graceful SIGTERM
- *  shutdown racing us: markCleanExitDone no-ops while intent is pending, so a
- *  dying pi can't mis-finalize the node. */
+/** Enact a refresh-stall (§H refresh-authority): clock the stalled state, then
+ *  SIGTERM the hung engine (escalating to SIGKILL if it survives
+ *  KILL_ESCALATE_MS — an engine hung at context overflow, or a stale hook that
+ *  never wired shutdown, may never run its handlers, so a graceful frame can't be
+ *  trusted; the signal escalation is what guarantees the engine actually dies).
+ *  Once the engine is dead the ORDINARY machinery finishes the job: the dead-pid
+ *  refresh branch in handleNodeLiveness revives with resume=false (intent is
+ *  still 'refresh'), i.e. the fresh roadmap-revive the yield asked for. Safe
+ *  against a graceful shutdown racing us: markCleanExitDone no-ops while intent
+ *  is pending, so a dying engine can't mis-finalize the node. */
 function handleYieldStall(row: NodeRow, pid: number, now: number): void {
   const id = row.node_id;
   if (row.intent !== 'refresh' || isBusy(id)) {
@@ -283,11 +207,11 @@ function handleYieldStall(row: NodeRow, pid: number, now: number): void {
 
 export type LivenessVerdict = 'leave' | 'pending' | 'revive';
 
-/** Decide what to do with a node whose tmux pane is alive, from its pi
- *  liveness and how long it's been dead. Pure — the time-and-tmux side effects
- *  live in handleLiveWindow; this is the unit-testable core.
- *    piPidAlive: true=alive, false=dead, null=no pid recorded (legacy node, or a
- *      relaunch in flight) — leave those to the pane-gone pass.
+/** Decide what to do with a node whose engine pid is DEAD, from how long it's
+ *  been dead. Pure — the time/revive side effects live in handleNodeLiveness;
+ *  this is the unit-testable core. (piPidAlive carries dead/alive/unknown, but
+ *  only `false` ever reaches a revive decision here — alive and null are routed
+ *  upstream by handleNodeLiveness.)
  *    deadFor: ms since first observed dead, or null on the first observation. */
 export function livenessVerdict(piPidAlive: boolean | null, deadFor: number | null): LivenessVerdict {
   if (piPidAlive !== false) return 'leave';
@@ -295,115 +219,62 @@ export function livenessVerdict(piPidAlive: boolean | null, deadFor: number | nu
   return 'revive';
 }
 
-/** A node whose tmux PANE is alive: pane-existence does NOT prove pi is
- *  alive (an inline root runs pi under a persistent login shell that survives
- *  pi's death), so gauge liveness on the recorded pid and revive a dead pi once
- *  it's been dead past the grace window. */
-function handleLiveWindow(row: NodeRow, now: number, revivedThisTick: Set<string>): void {
-  const id = row.node_id;
-  // Defensive: an idle-release node whose pane is still alive must NOT be
-  // grace-revived here — it is dormant BY CHOICE and is woken only by a worker's
-  // inbox push (the second pass below); grace-reviving would pre-empt that and
-  // churn the pane. (Focused-await nodes now stay pi-LIVE instead of releasing —
-  // see the stophook awaiting branch — so reaching this with a live pane is rare;
-  // the guard stays as a cheap safety net, e.g. a remain-on-exit pane frozen for
-  // a done-node's manager handoff.)
-  if (row.intent === 'idle-release') {
-    unhealthySince.delete(id);
-    yieldStallSince.delete(id);
-    yieldTermAt.delete(id);
-    return;
-  }
-  const pid = row.pi_pid;
-  const piPidAlive = pid == null ? null : isPidAlive(pid);
-
-  if (piPidAlive !== false) {
-    unhealthySince.delete(id); // alive, or no pid to judge — nothing pending
-    if (piPidAlive === null) {
-      // No pid recorded: a legacy row, a relaunch in flight — or a spawn whose
-      // pi NEVER came up while its window lingers (Bug 4). Judge the last case.
-      handleNeverLaunched(row, now, revivedThisTick);
-    } else {
-      // pi ALIVE: judge a hung refresh-yield (Bug 1) — alive is not healthy
-      // when the node yielded, its turn ended, and the pi never exited.
-      handleYieldStall(row, pid as number, now);
-    }
-    return;
-  }
-  // pi is DEAD — any pending yield-stall clock is moot (the normal dead-pi
-  // grace path below owns recovery now).
-  yieldStallSince.delete(id);
-  yieldTermAt.delete(id);
-
-  const since = unhealthySince.get(id);
-  const verdict = livenessVerdict(piPidAlive, since === undefined ? null : now - since);
-  if (verdict === 'pending') {
-    if (since === undefined) unhealthySince.set(id, now);
-    return;
-  }
-
-  // 'revive' — pi has been dead past the grace window while its window lived on.
-  unhealthySince.delete(id);
-  // A refresh-yield wants fresh context (re-read the roadmap); any other death
-  // resumes the saved conversation. reviveNode opens a fresh window and clears
-  // pi_pid, so the next tick won't re-fire on this stale pid.
-  const resume = row.intent !== 'refresh';
-  // A broker has no pane — say so (review Mn-4); the tmux wording is unchanged.
-  const where = row.host_kind === 'broker' ? 'broker, no pane' : 'pane alive';
-  process.stderr.write(
-    `[crtrd] revive ${id} (pi dead, ${where}, intent=${String(row.intent)})\n`,
-  );
-  reviveNode(id, { resume });
-  // Record for the third pass's bare double-spawn guard (Maj-4): this node's
-  // pi_pid is now NULL until the fresh pi re-records it, so a same-tick bare wake
-  // would otherwise read it as "not live" and double-spawn pi on the same .jsonl.
-  revivedThisTick.add(id);
-}
-
-/** A broker-hosted node has NO tmux pane — its only liveness signal is the
- *  recorded broker pid (the engine-container pid the stophook records on
- *  session_start, exactly like tmux pi). So the pane-gone user-close routing
- *  never applies: every unexpected death is a genuine crash. Reuses the EXISTING
- *  supervision primitive UNCHANGED — pid signal-0 + REVIVE_GRACE_MS grace +
- *  unhealthySince + revivedThisTick — NO new machinery (decision §1.7 / R3).
+/** The ONE liveness path for EVERY node. Every node runs on a detached headless
+ *  broker; a tmux pane is only a viewer and is never consulted here — liveness is
+ *  the recorded engine pid (signal-0) alone. Reuses the existing supervision
+ *  primitives, now universal: pid signal-0 + REVIVE_GRACE_MS grace +
+ *  unhealthySince + revivedThisTick. A viewer window closing is NOT a node death.
  *  Cases:
- *    • pid alive → leave; clear any stale grace timer.
+ *    • pid alive → leave; clear any stale grace timer. THEN enforce a stuck
+ *      refresh (§H): handleYieldStall self-guards (no-op unless intent='refresh'
+ *      with the turn over) and, once the engine has sat alive past the grace,
+ *      kills it — so the daemon, not the (possibly stale) in-process stophook, is
+ *      the authority on refresh, and the dead-pid refresh branch below then
+ *      revives it fresh.
  *    • pid null + pi_session_id set (a relaunch in flight — reviveNode clears
- *      pi_pid right after launch) → leave; the fresh broker re-records its pid.
+ *      pi_pid right after launch) → leave; the fresh engine re-records its pid.
  *    • pid null + pi_session_id null (NEVER booted) → normally the sub-second SDK
  *      boot gap, but a broker that throws BEFORE session_start records no pid and
  *      no session ever — so after a boot grace with STILL nothing, crash +
- *      surfaceBootFailure (the broker analog of the tmux never-booted path, M-1).
- *    • pid dead + intent==='refresh' → clean yield: respawn FRESH immediately, no
- *      grace wait (matches the tmux refresh path / design "as today").
+ *      surfaceBootFailure up the spine (M-1).
+ *    • pid dead + intent==='refresh' → clean yield (or the §H force-kill above
+ *      just landed): respawn FRESH immediately, no grace wait.
  *    • pid dead + intent==='idle-release' → dormant by choice; leave, the second
  *      pass revives (resume) on the next unseen inbox entry.
- *    • pid dead + any other intent (crash / no clean intent) → grace-revive
- *      RESUME on the saved .jsonl via handleLiveWindow. Its internal resume is
- *      `row.intent !== 'refresh'`, which is true here (refresh + idle-release are
- *      already handled above), so it resumes — no explicit resume flag needed. */
-async function handleBrokerLiveness(row: NodeRow, now: number, revivedThisTick: Set<string>): Promise<void> {
+ *    • pid dead + any other intent (a crash) → grace-revive RESUME on the saved
+ *      session (livenessVerdict → REVIVE_GRACE_MS → unhealthySince). */
+async function handleNodeLiveness(
+  row: NodeRow,
+  now: number,
+  revivedThisTick: Set<string>,
+): Promise<void> {
   const id = row.node_id;
   const pid = row.pi_pid;
-  // The broker engine is live → nothing pending; clear any boot/grace timer.
+
+  // The engine is live → nothing pending; clear any boot/grace timer. THEN
+  // enforce §H: handleYieldStall no-ops unless this node yielded (intent=refresh),
+  // its turn is over, and the engine never exited — past the grace it kills the
+  // engine so the dead-pid refresh branch below revives it fresh.
   if (pid != null && isPidAlive(pid)) {
     unhealthySince.delete(id);
+    handleYieldStall(row, pid, now);
     return;
   }
+
   if (pid == null) {
     // No supervised pid recorded. Two very different cases turn on pi_session_id:
     //   • a relaunch in flight — reviveNode clears pi_pid right after launch, but
     //     the node ALREADY booted once (pi_session_id captured), so the fresh
-    //     broker re-records its pid within a tick or two; leave it.
+    //     engine re-records its pid within a tick or two; leave it.
     //   • a NEVER-BOOTED broker (pi_session_id null) — normally the sub-second SDK
     //     boot gap, BUT a broker that THROWS before session_start (malformed
     //     broker-launch.json, SessionManager.open on a missing .jsonl, a loader/
-    //     registry/createAgentSession failure, the --fork / bare-id guards, or
+    //     registry/createAgentSession failure, the fork / bare-id guards, or
     //     broker-cli's own fatal catch) records NO pid and NO session — EVER.
     //     With pid==null read unconditionally as "still booting" that strands the
     //     node 'active' with no engine forever and its parent waits on a dead
-    //     child. Mirror the tmux never-booted path: after a boot grace with STILL
-    //     no pid AND no session, crash + surfaceBootFailure up the spine (M-1).
+    //     child. After a boot grace with STILL no pid AND no session, crash +
+    //     surfaceBootFailure up the spine (M-1).
     const meta = getNode(id);
     if (meta === null || meta.pi_session_id != null) {
       unhealthySince.delete(id); // relaunch in flight (or identity already bound)
@@ -428,10 +299,16 @@ async function handleBrokerLiveness(row: NodeRow, now: number, revivedThisTick: 
     }
     return;
   }
-  // The broker pid is dead. Branch on intent.
+
+  // The engine pid is DEAD — any pending refresh-stall clock is moot (the dead-
+  // pid paths below own recovery now). Branch on intent.
+  yieldStallSince.delete(id);
+  yieldTermAt.delete(id);
+
   if (row.intent === 'refresh') {
-    // Clean yield → respawn FRESH, immediately (no grace wait).
-    process.stderr.write(`[crtrd] revive ${id} (broker refresh-yield)\n`);
+    // Clean yield — or the §H force-kill above just landed — → respawn FRESH,
+    // immediately (no grace wait).
+    process.stderr.write(`[crtrd] revive ${id} (refresh-yield)\n`);
     reviveNode(id, { resume: false });
     revivedThisTick.add(id); // third-pass bare double-spawn guard (Maj-4)
     return;
@@ -442,10 +319,21 @@ async function handleBrokerLiveness(row: NodeRow, now: number, revivedThisTick: 
     unhealthySince.delete(id);
     return;
   }
-  // Any other intent → grace-revive RESUME, reusing handleLiveWindow's
-  // livenessVerdict → REVIVE_GRACE_MS → unhealthySince → revivedThisTick path
-  // unchanged (it re-probes the now-dead pid and accrues the grace window).
-  handleLiveWindow(row, now, revivedThisTick);
+  // Any other intent → a crash: grace-revive RESUME on the saved session.
+  // reviveNode clears pi_pid until the fresh engine re-records it, so the next
+  // tick won't re-fire on this stale pid.
+  const since = unhealthySince.get(id);
+  const verdict = livenessVerdict(false, since === undefined ? null : now - since);
+  if (verdict === 'pending') {
+    if (since === undefined) unhealthySince.set(id, now);
+    return;
+  }
+  unhealthySince.delete(id);
+  process.stderr.write(
+    `[crtrd] revive ${id} (engine dead, intent=${String(row.intent)})\n`,
+  );
+  reviveNode(id, { resume: true });
+  revivedThisTick.add(id); // third-pass bare double-spawn guard (Maj-4)
 }
 
 /** Fail loud for a drifted/broken wake (design §6.6/Q5): wake the ARMER DIRECTLY
@@ -631,170 +519,12 @@ export async function superviseTick(now: number = Date.now()): Promise<void> {
 
   for (const row of rows) {
     try {
-      // Broker-hosted node: it has NO tmux placement (tmux_session/window/pane
-      // are all NULL) but IS daemon-supervised via its recorded broker pid.
-      // Route it here BEFORE the inline-root carve-out below (which would
-      // wrongly skip a broker on the all-NULL placement) AND before the
-      // pane-gone block, whose first act (unhealthySince.delete) would wipe the
-      // broker's grace timer every tick. This single placement does both jobs
-      // (decision §1.6) — no edit to the carve-out is needed.
-      if (row.host_kind === 'broker') {
-        await handleBrokerLiveness(row, now, revivedThisTick);
-        continue;
-      }
-
-      // Runtime (tmux_session, window, intent, pi_pid) is now authoritative IN
-      // the row — no per-node getNode re-read. Only the boot-failure split below
-      // still needs identity (pi_session_id), read on demand there.
-
-      // Nodes with no tmux placement at all are inline roots — not daemon-
-      // managed. Pane-anchored: a node still counts as placed if it has a pane
-      // even when its derived window/session cache is null.
-      if (row.tmux_session == null && row.window == null && row.pane == null) continue;
-
-      if (hostFor(row).isAlive(row)) {
-        // The pane is up — but that alone doesn't mean pi is. Reconcile first
-        // (follow any manual pane move, and lazy-backfill a legacy row's pane
-        // from its live window), then judge pi liveness off the fresh row. The
-        // alive-gate means reconcile here only ever FOLLOWS/backfills — never
-        // nulls the LOCATION out from under the gone-branches below.
-        reconcile(row.node_id);
-        handleLiveWindow(getRow(row.node_id) ?? row, now, revivedThisTick);
-        continue;
-      }
-
-      // The pane is gone. Branch on why.
-      unhealthySince.delete(row.node_id); // pane-gone path owns it now
-      yieldStallSince.delete(row.node_id);
-      yieldTermAt.delete(row.node_id);
-
-      // Zombie vehicle (audit 2026-06-09, Bug 2 — node mq4ms6n4-fbc455cd): the
-      // pane died but its pi SURVIVED (pi can outlive the pane's SIGHUP). Every
-      // branch below assumes "pane gone ⇒ pi gone"; with a live orphan that
-      // assumption corrupts — the headless pi keeps re-arming its inbox watcher
-      // with no pane a human can reach, the second pass's pi-liveness gate skips
-      // a released node forever, and a refresh-revive would run a second pi
-      // beside it. There is no legitimate pane-gone+pi-alive state (in-place
-      // respawns keep the pane id; teardown paths null presence before reaping),
-      // so kill the orphan first, then route normally. SIGKILL, not SIGTERM: an
-      // orphaned pi's shutdown hooks mutating canvas state mid-routing is
-      // exactly what we're fencing out.
-      if (row.pi_pid != null && isPidAlive(row.pi_pid)) {
-        process.stderr.write(
-          `[crtrd] kill ${row.node_id} (zombie pi ${row.pi_pid}: pane gone, pi alive)\n`,
-        );
-        try {
-          process.kill(row.pi_pid, 'SIGKILL');
-        } catch {
-          /* raced its own death — fine */
-        }
-      }
-
-      if (row.intent === 'refresh') {
-        // The node set intent=refresh before stopping — a clean yield. Respawn
-        // fresh so it re-reads its roadmap/context dir.
-        process.stderr.write(`[crtrd] revive ${row.node_id} (refresh-yield)\n`);
-        reviveNode(row.node_id, { resume: false });
-        revivedThisTick.add(row.node_id); // third-pass bare double-spawn guard (Maj-4)
-      } else if (row.intent === 'idle-release') {
-        // The node freed its own window on purpose while dormant. Drop the stale
-        // window ref and keep it 'idle'; the inbox-poll pass below revives it
-        // (resume) the moment a subscribed worker delivers.
-        setPresence(row.node_id, { tmux_session: row.tmux_session, window: null });
-      } else {
-        // The pane vanished without the node yielding or releasing — most often
-        // the user CLOSED it (kill-pane/kill-window), which crtr cannot tell apart
-        // from a window death. Closing a pane is a benign "get it off my screen",
-        // NOT an orphan-the-work kill, so route on what the node was DOING and keep
-        // anything with outstanding work REVIVABLE:
-        //   • never-booted (pi_session_id null) → crash + surface boot failure.
-        //     A spawn failure the parent was never told about — it had no turn to
-        //     finish, so it can never be a finalize. (Boot-failed vs crashed turns
-        //     on pi_session_id, an IDENTITY field — the one place this pass still
-        //     reads meta; surfaceBootFailure also wants name/kind for its message.)
-        //   • MID-GENERATION (busy marker present) → crash (→dead). agent_start
-        //     touched the marker and agent_end never cleared it ⇒ the pane was
-        //     killed inside a turn: a genuine mid-run death. (The pane is gone, so
-        //     pi is dead; we read isBusy WITHOUT the usual AND-pidAlive guard on
-        //     purpose — here a stale marker IS the proof it died mid-turn.)
-        //   • finished its turn (busy ABSENT) but STILL WAITING — awaiting a LIVE
-        //     child OR holding a pending self-wake → RELEASE (→idle + idle-release),
-        //     NOT dead, and NO parent wake. This is HEALTHY DORMANCY (the same
-        //     boundary the stop-guard draws): real orchestration / a scheduled
-        //     clock is outstanding; killing it would orphan in-flight work, and
-        //     waking its parent here would re-create the spurious-wake storm the
-        //     wake doctrine exists to kill. Drop the stale window; the second /
-        //     wakeups pass revives it on the next child push or clock fire.
-        //   • finished its turn AND nothing live to wait for AND no pending clock →
-        //     finalize (→done): it did its own work and the pane was closed to
-        //     dismiss it. GENUINE death → wake the inbox-waiting parent.
-        const meta = getNode(row.node_id);
-        const neverBooted = meta !== null && meta.pi_session_id == null;
-        const finishedTurn = !neverBooted && !isBusy(row.node_id);
-        // The death-vs-dormancy boundary, drawn EXACTLY where the stop-guard draws
-        // it (stop-guard.ts): a live active subscription OR a pending self-wake is
-        // a legitimate wait. Only a finished node with NEITHER is genuinely done.
-        const stillWaiting =
-          hasActiveLiveSubscription(row.node_id) || hasPendingSelfWake(row.node_id);
-        if (finishedTurn && !stillWaiting) {
-          transition(row.node_id, 'finalize');
-          process.stderr.write(
-            `[crtrd] done ${row.node_id} (pane gone after turn end, nothing live to wait for)\n`,
-          );
-          // Wake the inbox-waiting parent: the child ended without a `push final`
-          // and was dismissed; without this the daemon-finalize reaches no one
-          // (D-1) and a purely-inbox-waiting parent hangs forever.
-          if (meta !== null) {
-            try {
-              await surfaceChildDeath(meta, 'finalize');
-            } catch (err) {
-              process.stderr.write(
-                `[crtrd] surfaceChildDeath(finalize) ${row.node_id} error: ${(err as Error).message}\n`,
-              );
-            }
-          }
-        } else if (finishedTurn) {
-          // Still legitimately waiting (a live child OR a pending self-wake) →
-          // revivable, NOT a death: closing the pane must not orphan in-flight
-          // work, and healthy dormancy must NOT wake the parent. Clear the stale
-          // window; the second / wakeups pass revives it.
-          setPresence(row.node_id, { tmux_session: row.tmux_session, window: null, pane: null });
-          transition(row.node_id, 'release');
-          process.stderr.write(
-            `[crtrd] release ${row.node_id} (pane gone while still waiting → revivable, no parent wake)\n`,
-          );
-        } else {
-          transition(row.node_id, 'crash');
-          if (neverBooted) {
-            process.stderr.write(
-              `[crtrd] boot-failed ${row.node_id} (pane gone before pi ever started)\n`,
-            );
-            try {
-              await surfaceBootFailure(meta as NodeMeta);
-            } catch (err) {
-              process.stderr.write(
-                `[crtrd] surfaceBootFailure ${row.node_id} error: ${(err as Error).message}\n`,
-              );
-            }
-          } else {
-            process.stderr.write(
-              `[crtrd] dead ${row.node_id} (pane gone mid-generation, intent=${String(row.intent)})\n`,
-            );
-            // Wake the inbox-waiting parent on a GENUINE mid-run death (D-1): a
-            // booted child whose pane died inside a turn is unambiguously dead
-            // (busy marker present), never healthy dormancy.
-            if (meta !== null) {
-              try {
-                await surfaceChildDeath(meta, 'crash');
-              } catch (err) {
-                process.stderr.write(
-                  `[crtrd] surfaceChildDeath(crash) ${row.node_id} error: ${(err as Error).message}\n`,
-                );
-              }
-            }
-          }
-        }
-      }
+      // Every node is broker-hosted (host_kind always 'broker'; pane/window/
+      // tmux_session always NULL) and supervised by its engine pid alone. A tmux
+      // pane, if any, is just a viewer — the daemon never consults it and a viewer
+      // closing is not a node death. There is no inline-root carve-out and no
+      // pane-gone reaping: one liveness path for all.
+      await handleNodeLiveness(row, now, revivedThisTick);
     } catch (err) {
       // One bad node must never kill the loop.
       process.stderr.write(
@@ -810,16 +540,14 @@ export async function superviseTick(now: number = Date.now()): Promise<void> {
   for (const row of rows) {
     try {
       // Re-read the ROW for fresh runtime (the first pass may have mutated it);
-      // no meta needed — status/intent/window/tmux_session all live in the row.
+      // no meta needed — status/intent live in the row.
       const r = getRow(row.node_id);
       if (r === null) continue;
       if (r.status !== 'idle' || r.intent !== 'idle-release') continue;
-      // The in-process inbox-watcher only owns delivery while pi is actually LIVE.
-      // A released node is pi-DEAD with no watcher — whether its pane is GONE
-      // (unfocused release) or still ALIVE (a remain-on-exit pane frozen for a
-      // done-node's manager handoff) — so the daemon must wake it. Gate the skip
-      // on pi liveness, NOT pane presence (which would skip a frozen pane
-      // forever, §3c).
+      // The in-process inbox-watcher only owns delivery while the engine is LIVE.
+      // A released node's broker is DEAD (it freed itself while dormant), so it
+      // has no watcher and the daemon must wake it. Gate the skip on engine
+      // liveness alone — viewer panes are irrelevant here.
       if (r.pi_pid != null && isPidAlive(r.pi_pid)) continue;
 
       const entries = readInboxSince(row.node_id, readCursor(row.node_id));

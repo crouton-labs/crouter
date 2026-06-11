@@ -124,20 +124,29 @@ test('natural stop while awaiting a live worker → idle-release with NO push (n
 // ---------------------------------------------------------------------------
 // §5.1 — the §1.7 agent_end branch map on the focuses table. Every assertion is
 // on the canvas focuses/runtime rows after firing agent_end (TMUX_PANE is
-// cleared in beforeEach, so the focus helpers in the handler are pure DB and the
-// '%pane' ids below are never read by tmux). status='done' is reached by setting
-// the runtime row directly (the branch reads getNode(nodeId).status).
+// cleared in beforeEach). NOTE (broker-host cut): the placement read `focusOf`
+// used by the handler now GC-prunes a viewer row whose pane is not a LIVE tmux
+// pane (liveOrPrune → paneExists), so a fabricated '%pane' id is pruned on the
+// first read. To drive the handler's focus path deterministically in the
+// tmux-free fast tier we register viewer rows with a NULL pane (a registered-
+// but-not-yet-realized viewer, which liveOrPrune passes through). status='done'
+// is reached by setting the runtime row directly (the branch reads
+// getNode(nodeId).status).
 // ---------------------------------------------------------------------------
 
-test('§5.1.1 truly-done + focused + dormant idle-release manager-not-focused → MANAGER TAKEOVER of the focus row', () => {
+test('§5.1.1 truly-done + focused → focus row CLOSED, NO manager takeover (broker cut deleted handFocusToManager)', () => {
+  // Regression guard for the broker-host cut: the engine is now a detached
+  // broker, not a pane, so there is no engine to hand to a manager. The old
+  // "dormant idle-release manager takes over the finished node's focus row"
+  // path (handFocusToManager) is DELETED — a truly-done focused node just
+  // tearDownNode's its own viewer and shuts down, EVEN when a dormant
+  // idle-release manager exists (the exact case that used to trigger takeover).
   createNode(node('root', { parent: null, lifecycle: 'resident' }));
-  // mgr is dormant + idle-release — the ONLY dormant manager the daemon will
-  // revive INTO the frozen pane, so the ONLY dormant case that is a real takeover.
   createNode(node('mgr', { parent: 'root', lifecycle: 'terminal', mode: 'orchestrator', status: 'idle', intent: 'idle-release' }));
-  // M starts WITH a recorded LOCATION so the MINOR presence-null is observable.
+  // M starts WITH a recorded LOCATION so the done-path presence-null is observable.
   createNode(node('M', { parent: 'mgr', lifecycle: 'terminal', pane: '%m', tmux_session: 'Suser', window: '@wm' }));
   subscribe('mgr', 'M', true);
-  openFocusRow('fM', '%m', 'Suser', 'M');
+  openFocusRow('fM', null, 'Suser', 'M'); // null pane → focusOf returns it → drives tearDownNode
 
   process.env['CRTR_NODE_ID'] = 'M';
   setStatus('M', 'done'); // pushed final this turn
@@ -147,18 +156,14 @@ test('§5.1.1 truly-done + focused + dormant idle-release manager-not-focused �
   let shutdown = false;
   pi.fire('agent_end', stopEvent('done — pushed final'), { shutdown: () => { shutdown = true; } });
 
-  // managerId = M.parent = 'mgr' (idle-release, not focused elsewhere, no live
-  // pane here → the DORMANT-takeover path) → handFocusToManager repoints fM's
-  // occupant M→mgr (true ONLY because mgr is idle+idle-release). The
-  // daemon later revives mgr INTO M's frozen focus pane. Non-vacuous: a no-op (no
-  // handoff) impl leaves M as occupant, so getFocusByNode('mgr') is null AND
-  // getFocusByNode('M') still names fM — both asserts fail.
-  assert.equal(getFocusByNode('mgr')?.focus_id, 'fM', 'focus row taken over by the manager');
+  // The done branch: focusOf('M') != null → tearDownNode('M') CLOSES fM. The
+  // manager is NOT handed anything (takeover deleted). Non-vacuous: a takeover
+  // impl would leave getFocusByNode('mgr').focus_id === 'fM'.
+  assert.equal(getFocusByNode('mgr'), null, 'the manager is NOT handed the finished node\'s focus (takeover deleted)');
+  assert.equal(getFocusById('fM'), null, 'the finished node\'s viewer focus row is closed');
   assert.equal(getFocusByNode('M'), null, 'the finished node no longer occupies any focus');
-  assert.equal(shutdown, true, 'pi shut down after the handoff');
-  // MINOR: after a successful takeover M (done) owns no pane (Invariant P) — its
-  // own presence is nulled so two rows never reference %m. Non-vacuous: an impl
-  // that skips the done-path setPresence-null leaves getNode('M').pane === '%m'.
+  assert.equal(shutdown, true, 'pi shut down after teardown');
+  // The done node's own presence is nulled (setPresence(null) on the done path).
   assert.equal(getNode('M')?.pane ?? null, null, 'the finished node\'s own LOCATION pane is nulled');
   assert.equal(getNode('M')?.window ?? null, null, 'the finished node\'s window presence is nulled too');
 });
@@ -236,7 +241,10 @@ test('§5.1.5 awaiting + FOCUSED → STAY ALIVE: pi keeps running (no release), 
   createNode(node('worker', { parent: 'mgr', lifecycle: 'terminal', status: 'active' }));
   subscribe('root', 'mgr', true);
   subscribe('mgr', 'worker', true); // mgr awaits a live worker → would idle-release if UNfocused
-  openFocusRow('fMgr', '%g', 'Suser', 'mgr');
+  // null pane (broker cut): focusOf passes a null-pane viewer row through, so the
+  // handler reads mgr as FOCUSED in the tmux-free fast tier (a fabricated %pane
+  // would be GC-pruned by liveOrPrune and the node would wrongly release).
+  openFocusRow('fMgr', null, 'Suser', 'mgr');
 
   process.env['CRTR_NODE_ID'] = 'mgr';
   const pi = makeFakePi();

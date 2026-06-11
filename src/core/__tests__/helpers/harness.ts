@@ -43,7 +43,7 @@ import {
   subscriptionsOf,
 } from '../../canvas/canvas.js';
 import { closeDb } from '../../canvas/db.js';
-import { isNodePaneAlive } from '../../runtime/placement.js';
+import { isFocused } from '../../runtime/placement.js';
 import { superviseTick } from '../../../daemon/crtrd.js';
 import { readInboxSince } from '../../feed/inbox.js';
 import type { NodeMeta, NodeStatus, Mode, Lifecycle, ExitIntent } from '../../canvas/types.js';
@@ -224,7 +224,6 @@ export interface Harness {
   turn(nodeId: string, text?: string): Promise<void>;
   stop(nodeId: string, reason?: 'stop' | 'length' | 'aborted' | 'error'): Promise<void>;
   finish(nodeId: string, finalText: string): Promise<void>;
-  yieldNode(nodeId: string, note: string): Promise<void>;
 
   // the daemon decision pass, in-process, with an injectable clock.
   tick(now?: number): Promise<void>;
@@ -246,6 +245,10 @@ export interface Harness {
   inbox(nodeId: string): InboxEntry[];
   injected(nodeId: string): Injected[];
 
+  // viewer-registry observability: a node has a live on-screen viewer pane iff
+  // a focus row points at a still-alive pane (isFocused GC-prunes dead rows on
+  // read). Replaces the deleted pane-existence probe (isNodePaneAlive) — liveness
+  // is pid-only now, but the viewer presence test reads the focuses table.
   // headless-broker observability: write a raw fake-engine command (turn|stop|
   // dialog) atomically; read the resolved unattended-dialog log; the node's
   // broker view.sock path.
@@ -336,10 +339,9 @@ export async function createHarness(opts: HarnessOpts = {}): Promise<Harness> {
     spawnSync('tmux', ['new-session', '-d', '-s', session, '-c', CROUTER, 'sleep 100000'], {
       stdio: 'ignore',
     });
-    // Put CRTR_PI_BINARY in the SESSION environment so EVERY pane spawned in this
-    // session inherits it — critically the fake-pi's OWN process, so when its real
-    // stophook fires reviveInPlace (respawn-pane -k on its own pane, the refresh-
-    // yield path) the in-process piCommand there substitutes the fake-pi too.
+    // Put CRTR_PI_BINARY in the SESSION environment so EVERY pane/process spawned
+    // in this session inherits it — so any pi the runtime launches (boot, revive)
+    // resolves to the fake-pi vehicle, not a real pi.
     spawnSync('tmux', ['set-environment', '-t', session, 'CRTR_PI_BINARY', FAKE_PI_BINARY], {
       stdio: 'ignore',
     });
@@ -505,7 +507,13 @@ export async function createHarness(opts: HarnessOpts = {}): Promise<Harness> {
 
     async spawnHeadlessChild(parentId, task, o = {}): Promise<string> {
       const before = new Set(nodeDirs());
-      const args = ['node', 'new', task, '--parent', parentId, '--cwd', CROUTER, '--headless'];
+      // POST-CUT: `--headless` is gone — EVERY node is a broker. spawnChild may
+      // still open a background `crtr attach` viewer WINDOW (the §A.3 spawn UX),
+      // but that viewer connects to the broker over view.sock as a SEPARATE
+      // process and never touches the engine — so the broker-socket gates here
+      // (zero-viewer dialogs, controller arbitration, one-writer) are unaffected
+      // by it. The node itself is supervised by pid alone.
+      const args = ['node', 'new', task, '--parent', parentId, '--cwd', CROUTER];
       if (o.kind) args.push('--kind', o.kind);
       if (o.mode) args.push('--mode', o.mode);
       const res = cli(parentId, args);
@@ -525,7 +533,7 @@ export async function createHarness(opts: HarnessOpts = {}): Promise<Harness> {
 
     async spawnHeadlessChildNoBoot(parentId, task, o = {}): Promise<string> {
       const before = new Set(nodeDirs());
-      const args = ['node', 'new', task, '--parent', parentId, '--cwd', CROUTER, '--headless'];
+      const args = ['node', 'new', task, '--parent', parentId, '--cwd', CROUTER];
       if (o.kind) args.push('--kind', o.kind);
       if (o.mode) args.push('--mode', o.mode);
       const res = cli(parentId, args);
@@ -566,31 +574,6 @@ export async function createHarness(opts: HarnessOpts = {}): Promise<Harness> {
       sendCmd(nodeId, { cmd: 'stop', id: `finish-${Date.now()}` });
       await awaitAgentEnd(nodeId, base, `finish agent_end for ${nodeId}`);
       await harness.waitForPaneGone(nodeId);
-    },
-
-    async yieldNode(nodeId, note): Promise<void> {
-      const res = cli(nodeId, ['node', 'yield', note]);
-      if (res.code !== 0) {
-        throw new Error(`yieldNode(${nodeId}): node yield failed (code ${res.code})\n${res.stderr}`);
-      }
-      // node yield set intent=refresh (active, kept). Fire agent_end so the real
-      // (b') branch runs reviveInPlace (respawn-pane -k) IN the fake-pi's pane —
-      // a FRESH fake-pi boots (resume); its session_start clears intent=refresh.
-      const baseBoots = bootCount(nodeId);
-      sendCmd(nodeId, { cmd: 'stop', id: `yield-${Date.now()}` });
-      await waitFor(() => bootCount(nodeId) > baseBoots, {
-        timeoutMs: 30_000,
-        label: `fresh boot after yield for ${nodeId}`,
-      });
-      await waitFor(
-        () => {
-          closeDb();
-          const n = getNode(nodeId);
-          return n?.intent == null && n?.status === 'active';
-        },
-        { timeoutMs: 20_000, label: `intent=refresh cleared after yield for ${nodeId}` },
-      );
-      await harness.awaitBoot(nodeId, { minCount: baseBoots + 1 });
     },
 
     async tick(now?: number): Promise<void> {
@@ -649,9 +632,9 @@ export async function createHarness(opts: HarnessOpts = {}): Promise<Harness> {
       await waitFor(
         () => {
           closeDb();
-          return !isNodePaneAlive(nodeId);
+          return !isFocused(nodeId);
         },
-        { timeoutMs, label: `pane gone for ${nodeId}` },
+        { timeoutMs, label: `viewer gone for ${nodeId}` },
       );
     },
 
@@ -667,7 +650,7 @@ export async function createHarness(opts: HarnessOpts = {}): Promise<Harness> {
     },
     paneAlive(nodeId): boolean {
       closeDb();
-      return isNodePaneAlive(nodeId);
+      return isFocused(nodeId);
     },
     inbox(nodeId): InboxEntry[] {
       closeDb();

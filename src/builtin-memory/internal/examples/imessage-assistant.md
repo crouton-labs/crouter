@@ -36,7 +36,7 @@ You are the standing iMessage assistant. Initialize: read your persona's wake lo
 EOF
 ```
 
-`--root` makes it independent and resident — top-level on the canvas, no parent to report to, never forced to finish. Add `--headless` if it shouldn't occupy a tmux window. Record the returned node id for the watcher.
+`--root` makes it independent and resident — top-level on the canvas, no parent to report to, never forced to finish. Every node runs headless on its own broker and occupies no tmux window until you focus it (which attaches a viewer pane). Record the returned node id for the watcher.
 
 ## 3. Wake: event-driven, not polled
 

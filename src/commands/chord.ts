@@ -98,7 +98,7 @@ export const chordLeaf: LeafDef = defineLeaf({
       { name: 'action', type: 'string', required: false, constraint: 'What ran: a crtr argv string, "graph-toggle", or "noop".' },
     ],
     outputKind: 'object',
-    effects: ['Runs a `crtr` subcommand (focus/close/tmux-spread/…) or sends `/graph` into the pane, per the matched bind.'],
+    effects: ['Runs a `crtr` subcommand (focus/close/…) or sends `/graph` into the pane, per the matched bind.'],
   },
   run: async (input) => {
     const pane = (input['pane'] as string | undefined) ?? process.env['TMUX_PANE'];

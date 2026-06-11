@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 import { createNode, getNode, subscribe } from '../canvas/canvas.js';
 import { closeDb } from '../canvas/db.js';
@@ -31,6 +32,12 @@ function node(id: string, over: Partial<NodeMeta> = {}): NodeMeta {
  *  child's pushes), so the daemon's boot-failure push reaches the parent. */
 function spawnEdge(parent: string, child: string): void {
   subscribe(parent, child, true);
+}
+
+/** A pid that is guaranteed dead (models a crashed engine). */
+function deadPid(): number {
+  const r = spawnSync('true', [], { stdio: 'ignore' });
+  return r.pid ?? 0x7ffffffe;
 }
 
 before(() => {
@@ -68,7 +75,13 @@ test('never-booted node is marked dead and surfaced to the parent as urgent', as
   );
   spawnEdge('P', 'C');
 
-  await superviseTick();
+  // BROKER CUT: liveness is pid-only — the bogus window/session is irrelevant. A
+  // never-booted broker (pi_pid null AND pi_session_id null) is caught by the
+  // in-memory boot-grace clock, so the boot-failure fires on the SECOND tick,
+  // once REVIVE_GRACE_MS (~20s) of "still no pid, no session" has elapsed.
+  const t0 = Date.now();
+  await superviseTick(t0); // first observation: starts the boot-grace clock
+  await superviseTick(t0 + 60_000); // grace elapsed → crash + surfaceBootFailure
 
   assert.equal(getNode('C')!.status, 'dead', 'never-booted child is dead');
 
@@ -79,42 +92,36 @@ test('never-booted node is marked dead and surfaced to the parent as urgent', as
   assert.match(inbox[0]!.label, /Spawn failed/);
 });
 
-// A node that HAD booted (pi_session_id set) then died mid-generation is a
-// genuine crash, not a boot failure. It is marked dead AND wakes the inbox-
-// waiting parent — but with a "child died" notice (surfaceChildDeath), NOT a
-// "Spawn failed" boot-failure pointer (surfaceBootFailure). The parent-wake
-// itself was added by main's b5abf6e (parent-wake on child death) and is locked
-// in by child-death-wake.test.ts; this test preserves the discriminating intent
-// — a crash is never surfaced as a false spawn-failure alarm.
-test('a crash after boot wakes the parent with a child-death notice, not a boot-failure push', async () => {
+// BROKER CUT: surfaceChildDeath was DELETED and liveness is pid-only. A crashed
+// booted child (engine pid DEAD, pi_session_id set) is no longer marked `dead`
+// and no longer fans a "child died" notice — the daemon now grace-REVIVES it on
+// its saved session, so the row stays active/revivable and the doctrine wake
+// relocated (the revived child pushes when it truly finishes; a deliberate close
+// is woken by close.ts). This test preserves the discriminating intent in the
+// new model: a crash is never reaped to `dead` and never raises a false
+// boot-failure alarm.
+test('a crashed booted child is revivable, not reaped, and raises no false boot-failure alarm', async () => {
   createNode(node('P2', { kind: 'developer', lifecycle: 'resident' }));
   createNode(
     node('C2', {
       parent: 'P2',
       kind: 'explore',
-      tmux_session: 'crtr-test-absent-session',
-      window: '@999992',
+      pi_pid: deadPid(), // engine crashed — its recorded pid is dead
       pi_session_id: '019e8f00-booted-once', // it booted before dying
       intent: null,
     }),
   );
   spawnEdge('P2', 'C2');
-  // MID-GENERATION when the window vanished (busy marker present, agent_end
-  // never cleared it) → a genuine mid-run crash. Without the marker a booted,
-  // unsubscribed pane-gone node would FINALIZE to 'done' instead (it would read
-  // as a finished node dismissed) — see the gone-pane routing in crtrd.ts.
-  markBusy('C2');
+  markBusy('C2'); // died mid-generation
 
   await superviseTick();
 
-  assert.equal(getNode('C2')!.status, 'dead', 'crashed child is dead');
-
-  const inbox = readInboxSince('P2');
-  assert.equal(inbox.length, 1, 'a genuine mid-run crash wakes the inbox-waiting parent (D-1 parent-wake)');
-  assert.equal(inbox[0]!.tier, 'urgent', 'mid-run crash is delivered as urgent');
-  assert.equal(inbox[0]!.from, 'C2');
-  assert.match(inbox[0]!.label, /died/i, 'the wake is a child-death notice (surfaceChildDeath), not silence');
-  assert.doesNotMatch(inbox[0]!.label, /Spawn failed/, 'a crash is NOT surfaced as a false boot-failure alarm');
+  // pid-only liveness: a dead engine pid is REVIVABLE (grace-revive RESUME on the
+  // saved session), not reaped to `dead`; the row stays active across the grace.
+  assert.equal(getNode('C2')!.status, 'active', 'crashed booted child stays revivable, NOT marked dead');
+  // surfaceChildDeath is gone and this is not a never-booted node, so the daemon
+  // fans NO push here — no false boot-failure / child-death alarm on a crash.
+  assert.equal(readInboxSince('P2').length, 0, 'no false boot-failure / child-death push on a crash (wake relocated to push/close)');
   clearBusy('C2');
 });
 

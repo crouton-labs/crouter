@@ -1,11 +1,12 @@
 // broker.ts — the headless node broker (design §4, §5; plan T4).
 //
-// One broker process per `--headless` node. It hosts ONE pi engine IN-PROCESS
+// One broker process per node — the SOLE host. It hosts ONE pi engine IN-PROCESS
 // via the SDK (createAgentSession), is the SOLE writer of the node's session
 // `.jsonl`, listens on `nodeDir(id)/view.sock`, fans the single engine event
 // stream out to N viewers, serializes a single controller's drive commands, and
-// routes blocking extension dialogs. It is the headless analog of pi-in-a-pane:
-// it runs one turn-cycle and, when the engine settles (the stophook calls
+// routes blocking extension dialogs. The engine has no terminal of its own; a
+// tmux pane (or web tab) is only a viewer of this socket. It
+// runs one turn-cycle and, when the engine settles (the stophook calls
 // ctx.shutdown(), or the engine goes idle), disposes the engine and exits 0 —
 // the daemon then routes revival per the intent the bound stophook set.
 //
@@ -154,14 +155,13 @@ export async function runBroker(nodeId: string): Promise<void> {
   // (T6) also sets this; we set it again so the broker is self-sufficient.
   process.env[FRONT_DOOR_ENV] = '1';
 
-  // The broker is PANELESS. A `--headless` child spawned by a tmux-resident
-  // parent inherits the parent's TMUX_PANE/TMUX in its env (T6 spawns with
-  // {...process.env}); left in place, the bound stophook's refresh-yield branch
-  // (canvas-stophook.ts) would call reviveInPlace on the PARENT's %pane_id
-  // (respawn-pane -k) — hijacking the parent's pane with a fresh pi, killing the
-  // parent and orphaning this broker. Strip both so every stophook pane-branch
-  // takes its no-pane path (→ ctx.shutdown() → our shutdownHandler → clean exit;
-  // the daemon then respawns the node as a broker).
+  // The broker is PANELESS and detached, but a broker spawned by a tmux-resident
+  // parent inherits the parent's TMUX_PANE/TMUX in its env (the launcher spawns
+  // with {...process.env}). Left in place, every `crtr` command the engine runs
+  // (bash tool, goal-capture naming, a child spawn) would resolve `currentTmux()`
+  // to the PARENT's pane/session and act there — e.g. open viewers beside, or
+  // close, the parent's pane. Strip both so this broker's children see no tmux
+  // context and take their paneless path.
   delete process.env['TMUX_PANE'];
   delete process.env['TMUX'];
 
@@ -184,15 +184,6 @@ export async function runBroker(nodeId: string): Promise<void> {
   const launchFile = join(dir, 'broker-launch.json');
   const inv = JSON.parse(readFileSync(launchFile, 'utf8')) as PiInvocation;
   const cfg: BrokerSdkConfig = piInvocationToSdkConfig(inv); // also merges inv.env
-
-  // Fork-on-spawn is the runtime.fork() path (createAgentSessionRuntime), not
-  // wired headless in Phase 3. Fail loud rather than silently mis-resume.
-  if (cfg.forkFrom !== undefined && cfg.forkFrom !== '') {
-    throw new Error(
-      `[broker] --fork is not supported by the headless broker in Phase 3 ` +
-        `(forkFrom=${cfg.forkFrom}); the SDK fork path is createAgentSessionRuntime.fork()`,
-    );
-  }
 
   // 2–4. Build the engine session via the SERVICES path (C3) — see
   //       buildBrokerSession below. Register it so the FATAL exit path (M3) can
@@ -924,18 +915,22 @@ export async function runBroker(nodeId: string): Promise<void> {
         break;
       }
       case 'request_control': {
-        if (controllerId === null) {
-          controllerId = client.id;
-          client.role = 'controller';
-          broadcastControlChanged();
-          reroutePendingDialogsTo(client); // T4: hand the new controller pending dialogs
-        } else {
-          sendFrame(client, {
-            type: 'error',
-            code: 'control_held',
-            message: 'another client holds control',
-          });
-        }
+        // §D preemptive handoff (last-requester-wins): a control request ALWAYS
+        // succeeds, reassigning control to the requester and demoting the prior
+        // controller to observer. This makes a tmux pane and a web tab true peers —
+        // either can take control of a node the other currently drives — which is
+        // the broker-is-the-host invariant (the prior cooperative-only model could
+        // not preempt an idle/abandoned controller, the common case). The prior
+        // controller demotes itself on receiving the control_changed broadcast
+        // (attach-cmd.ts already does this; the web client implements the same
+        // rule). Idempotent when the requester already holds control.
+        if (client.id === controllerId) break;
+        const prior = controllerClient();
+        if (prior !== null) prior.role = 'observer';
+        controllerId = client.id;
+        client.role = 'controller';
+        broadcastControlChanged();
+        reroutePendingDialogsTo(client); // T4: hand the new controller pending dialogs
         break;
       }
       case 'release_control': {
@@ -1368,15 +1363,6 @@ export async function buildBrokerSession(
    *  its new_session/switch_session/fork ops + rebind through it. */
   runtime?: AgentSessionRuntime;
 }> {
-  // Fork-on-spawn is the runtime.fork() path (createAgentSessionRuntime), not
-  // wired headless in Phase 3. Fail loud rather than silently mis-resume.
-  if (cfg.forkFrom !== undefined && cfg.forkFrom !== '') {
-    throw new Error(
-      `[broker] --fork is not supported by the headless broker in Phase 3 ` +
-        `(forkFrom=${cfg.forkFrom}); the SDK fork path is createAgentSessionRuntime.fork()`,
-    );
-  }
-
   // 2. Build cwd-bound runtime services via the SERVICES path (C3) — NOT plain
   //    createAgentSession. createAgentSessionServices builds + reloads the
   //    resource loader (the `-e` canvas extensions + --append-system-prompt) and
@@ -1451,9 +1437,12 @@ export async function buildBrokerSession(
     return { ...created, services };
   };
 
-  // 4. Open (resume) or create (fresh) the session — the broker is the sole writer.
+  // 4. Select the SessionManager: FORK (spawn-time --fork), OPEN (resume), or
+  //    CREATE (fresh). The broker is the sole writer of the resulting .jsonl.
   const resumePath = cfg.resumeSessionPath;
+  const forking = cfg.forkFrom !== undefined && cfg.forkFrom !== '';
   if (
+    !forking &&
     (resumePath === undefined || resumePath === '') &&
     cfg.resumeSessionId !== undefined &&
     cfg.resumeSessionId !== ''
@@ -1469,10 +1458,27 @@ export async function buildBrokerSession(
         `'${cfg.resumeSessionId}' (pi_session_file was never captured for this node)`,
     );
   }
-  const resuming = resumePath !== undefined && resumePath !== '';
-  const sessionManager = resuming
-    ? engine.SessionManager.open(resumePath as string)
-    : engine.SessionManager.create(cfg.cwd);
+  // A fork is a fresh spawn (resuming=false) so the kickoff firstPrompt fires: a
+  // `node new --fork-from <id>` gives the new node the source's full history AND a
+  // new task to start on. A resume replays the inbox instead and sends no kickoff.
+  const resuming = !forking && resumePath !== undefined && resumePath !== '';
+  let sessionManager: ReturnType<BrokerEngine['SessionManager']['create']>;
+  if (forking) {
+    // Spawn-time fork via pi's REAL fork seam, SessionManager.forkFrom — the exact
+    // method pi's own `--fork` CLI flag uses (main.js forkSessionOrExit). It writes
+    // a NEW session file with a NEW id and a `parentSession` header pointing at the
+    // source, then copies the source's history into it. NOT a naïve `.jsonl` copy
+    // (which would collide session ids and drop the fork metadata), and NOT
+    // runtime.fork() (which forks an entry WITHIN an already-loaded session — there
+    // is no current session to fork at boot). The caller (spawn.ts resolveForkSource)
+    // resolves cfg.forkFrom to an absolute source .jsonl before launch, so a bad ref
+    // fails loudly here (forkFrom throws on an empty/invalid/header-less source).
+    sessionManager = engine.SessionManager.forkFrom(cfg.forkFrom as string, cfg.cwd);
+  } else if (resuming) {
+    sessionManager = engine.SessionManager.open(resumePath as string);
+  } else {
+    sessionManager = engine.SessionManager.create(cfg.cwd);
+  }
 
   // When the engine exposes the replacement API (real SDK), wrap the builder in an
   // AgentSessionRuntime so new_session/switch_session/fork work; the runtime

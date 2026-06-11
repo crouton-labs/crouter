@@ -86,9 +86,12 @@ test('resolveForkSource resolves a node id to its absolute session FILE', () => 
   assert.equal(resolveForkSource('src'), '/abs/src.jsonl');
 });
 
-test('resolveForkSource falls back to the bare session id when no file captured', () => {
+test('resolveForkSource THROWS when a node has a session id but no captured FILE', () => {
+  // Broker-cut contract (U6/§B.broker): the broker forks an absolute .jsonl PATH,
+  // never a bare session id. A node row carrying only pi_session_id (no
+  // pi_session_file) can no longer be forked — it fails loudly pre-launch.
   createNode(node('src', { pi_session_id: 'uuid-1' }));
-  assert.equal(resolveForkSource('src'), 'uuid-1');
+  assert.throws(() => resolveForkSource('src'), /no pi session yet|session FILE/);
 });
 
 test('resolveForkSource throws when the node has no pi session to fork yet', () => {
@@ -96,12 +99,26 @@ test('resolveForkSource throws when the node has no pi session to fork yet', () 
   assert.throws(() => resolveForkSource('fresh'), /no pi session yet/);
 });
 
-test('resolveForkSource passes a path straight through', () => {
+test('resolveForkSource passes an absolute path straight through', () => {
   assert.equal(resolveForkSource('/some/where/sess.jsonl'), '/some/where/sess.jsonl');
 });
 
-test('resolveForkSource passes an unknown bare/partial uuid through to pi', () => {
-  assert.equal(resolveForkSource('019e8ce3-322e'), '019e8ce3-322e');
+test('resolveForkSource makes a relative path absolute', () => {
+  assert.equal(resolveForkSource('sub/sess.jsonl'), join(process.cwd(), 'sub/sess.jsonl'));
+});
+
+test('resolveForkSource THROWS on a bare/partial uuid that resolves to no session', () => {
+  // Broker-cut contract (U6): an unknown bare/partial uuid is scanned against
+  // pi's sessions store and fails loudly when it matches nothing — it is no
+  // longer passed through verbatim (the broker fork won't resolve a uuid).
+  const sessRoot = mkdtempSync(join(tmpdir(), 'crtr-pi-agent-'));
+  process.env['PI_CODING_AGENT_DIR'] = sessRoot;
+  try {
+    assert.throws(() => resolveForkSource('019e8ce3-322e'), /no pi session/);
+  } finally {
+    delete process.env['PI_CODING_AGENT_DIR'];
+    rmSync(sessRoot, { recursive: true, force: true });
+  }
 });
 
 test('resolveForkSource rejects an empty reference', () => {

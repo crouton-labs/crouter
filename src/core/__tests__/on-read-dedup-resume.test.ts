@@ -102,7 +102,7 @@ test('on-read doc surfaces once, stays deduped across a revive(resume), re-surfa
     'resumed process does NOT re-inject the doc (the bug)',
   );
 
-  // --- fresh launch (revive resume=false / reviveInPlace) clears the set ---
+  // --- fresh launch (revive resume=false, e.g. a refresh-yield) clears the set ---
   clearInjectedDocs(node);
   const seenFresh = loadInjectedDocs(node);
   assert.ok(

@@ -11,9 +11,9 @@
 //
 // This module persists the set to `nodes/<id>/injected-docs.json` so the resumed
 // process rehydrates it and skips docs already present in the transcript. The
-// launch paths that begin a FRESH transcript (reviveNode resume=false,
-// reviveInPlace, relaunchRootInPane — all in runtime/revive.ts) call
-// clearInjectedDocs(), so a new conversation starts with an empty set.
+// one launch path that begins a FRESH transcript (reviveNode with resume=false,
+// in runtime/revive.ts) calls clearInjectedDocs(), so a new conversation starts
+// with an empty set.
 //
 // All ops are best-effort: a failed read/write degrades to a possible re-inject,
 // never a crash — a dedup miss must never break a read or a revive.

@@ -47,8 +47,7 @@ export type LifecycleEvent =
   | 'crash'     // → dead, intent unchanged      (daemon: engine container gone, no yield/release)
   | 'yield'     // intent='refresh', status unchanged (requestYield / relaunch new-node safety net)
   | 'release'   // → idle, intent='idle-release'       (idle-release: free the host, wake on inbox)
-  | 'revive'    // → active, intent cleared      (reviveNode / resetRoot / boot-confirm clear)
-  | 'boot';     // → active, intent unchanged    (reviveInPlace: re-exec in place, keep the refresh net)
+  | 'revive';   // → active, intent cleared      (reviveNode / resetRoot / boot-confirm clear)
 
 /** One row of the transition table. A PRESENT `status`/`intent` key (even an
  *  explicit `null`) means "write this field"; an ABSENT key means "leave this
@@ -83,11 +82,6 @@ const TRANSITIONS: Readonly<Record<LifecycleEvent, TransitionSpec>> = {
   release: { status: 'idle', intent: 'idle-release', from: LIVE },
   // reviveNode · resetRoot · stophook boot-confirm (clear a pending refresh net).
   revive: { status: 'active', intent: null, from: ANY },
-  // reviveInPlace: re-exec a fresh pi in the SAME pane. Status (re)affirmed
-  // active; intent KEPT so a pending refresh survives as proof-of-boot until the
-  // fresh pi's session_start clears it (a premature clear is how a failed
-  // respawn became a silent death — see revive.ts).
-  boot: { status: 'active', from: LIVE },
 };
 
 /** Enact a lifecycle event on a node: validate the from-status against the

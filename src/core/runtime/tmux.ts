@@ -8,7 +8,7 @@
 // root) or switch-client + select-window (across roots). done/dead nodes close
 // their window; reviving opens a fresh one.
 
-import { spawn, spawnSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { readConfig } from '../config.js';
 import { nodeSession } from './nodes.js';
 
@@ -239,13 +239,9 @@ export function paneExists(pane: string): boolean {
 }
 
 /** Does this pane exist AND have its command still RUNNING (`#{pane_dead}` = 0)?
- *  Distinguishes a pane genuinely hosting a process — a live pi, or a pi still
- *  BOOTING whose pid hasn't been recorded yet — from a remain-on-exit corpse
- *  frozen after exit (`pane_dead` = 1). Node panes run pi as the pane command
- *  (openNodeWindow / respawn-pane), never a shell, so pane-running ⟹ a pi (or
- *  its respawn) occupies it. The probe handFocusToManager's live-swap gates on:
- *  the recorded `pi_pid` is a stale proxy in the just-revived window (the new pi
- *  records its pid only at session_start), but the pane itself never lies. */
+ *  Distinguishes a pane genuinely hosting a live process from a remain-on-exit
+ *  corpse frozen after exit (`pane_dead` = 1). Node viewer panes run `crtr attach`
+ *  as the pane command, so pane-running ⟹ a live viewer occupies it. */
 export function paneRunning(pane: string): boolean {
   const r = tmux(['display-message', '-p', '-t', pane, '#{pane_id}\t#{pane_dead}']);
   return r.ok && r.stdout === `${pane}\t0`;
@@ -287,28 +283,6 @@ export function getPaneOption(pane: string, name: string): string | undefined {
   return r.ok ? r.stdout : undefined;
 }
 
-/** Relocate a pane into another session as its own window WITHOUT killing the
- *  process in it — `break-pane -d` moves the pane out of its current window (the
- *  pi keeps generating) into a fresh window in `session`; `-d` leaves the caller's
- *  client where it is rather than following the pane to the background, and `-a`
- *  allocates the next free window index (same dodge as openNodeWindow). The
- *  "detach to background" driver behind `node lifecycle --detach`. Best-effort;
- *  false if tmux refuses (e.g. the pane is gone). The caller reconciles presence
- *  so the canvas follows the move. */
-export function breakPaneToSession(pane: string, session: string): boolean {
-  return tmux(['break-pane', '-d', '-a', '-s', pane, '-t', `${session}:`]).ok;
-}
-
-/** Swap `targetPane` into `callerPane`'s layout slot, IN PLACE. `-d` keeps the
- *  caller's window active, so the target's pane appears where the caller is
- *  rather than navigating the client off to the target's window. The caller's
- *  old pane lives on in the target's former window — the move is reversible
- *  (focusing back swaps it in again). Best-effort; never throws. */
-export function swapPaneInPlace(targetPane: string, callerPane: string): boolean {
-  if (targetPane === callerPane) return true;
-  return tmux(['swap-pane', '-d', '-s', targetPane, '-t', callerPane]).ok;
-}
-
 export interface RespawnPaneOpts {
   /** Target pane id (e.g. `%3`) — the pane to re-exec in place. */
   pane: string;
@@ -336,37 +310,12 @@ function respawnPaneArgs(opts: RespawnPaneOpts): string[] {
   ];
 }
 
-/** Re-exec a command in an EXISTING pane, in place — DETACHED. Spawned in its own
- *  process group (unref'd) so the request reaches the tmux server even though
- *  `-k` tears down the caller's own pi mid-flight. Used when a node respawns ITS
- *  OWN pane (refresh-yield): the dispatch can't be awaited because it kills the
- *  awaiter. Returns true once the request was dispatched. */
-export function respawnPaneDetached(opts: RespawnPaneOpts): boolean {
-  try {
-    const child = spawn('tmux', respawnPaneArgs(opts), {
-      detached: true,
-      stdio: 'ignore',
-    });
-    child.unref();
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /** Re-exec a command in an EXISTING pane, in place — SYNCHRONOUS. Runs the
  *  `respawn-pane` to completion and reports the real exit status. Used when the
  *  caller is NOT the pane being respawned (e.g. the daemon resuming a frozen
  *  focus pane), so it can confirm the respawn landed. Returns true on success. */
 export function respawnPaneSync(opts: RespawnPaneOpts): boolean {
   return tmux(respawnPaneArgs(opts)).ok;
-}
-
-/** @deprecated Use respawnPaneDetached. Retained so existing refresh-yield
- *  callers stay green while the placement layer migrates onto the explicit
- *  sync/detached split. */
-export function respawnPane(opts: RespawnPaneOpts): boolean {
-  return respawnPaneDetached(opts);
 }
 
 // ---------------------------------------------------------------------------
@@ -435,38 +384,8 @@ export function switchClient(session: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Multi-pane layout (used by `canvas tmux-spread`)
+// send-keys (chrome — used by the prefix menu + nav bindings)
 // ---------------------------------------------------------------------------
-
-/** Move a source pane into a destination window (`tmux join-pane`). The source
- *  pane's running process (e.g. a child's live pi) is preserved; its now-empty
- *  source window auto-closes. Best-effort; false if tmux fails. */
-export function joinPane(srcPane: string, dstWindow: string): boolean {
-  return tmux(['join-pane', '-s', srcPane, '-t', dstWindow]).ok;
-}
-
-/** Apply a named tmux layout to a window (`tmux select-layout`). Use
- *  `main-vertical` for one wide pane on the left + the rest stacked right.
- *  Best-effort; never throws. */
-export function selectLayout(window: string, layout: string): boolean {
-  return tmux(['select-layout', '-t', window, layout]).ok;
-}
-
-/** Set a tmux window option (`tmux set-window-option`). Used to size the main
- *  pane (`main-pane-width`) before a main-vertical layout. Best-effort. */
-export function setWindowOption(window: string, name: string, value: string): boolean {
-  return tmux(['set-window-option', '-t', window, name, value]).ok;
-}
-
-/** Toggle `remain-on-exit` on a window (§1.5 F3). `on` keeps a focus pane on
- *  screen after its pi exits — the viewport survives (F1), the final transcript
- *  is preserved, and `respawn-pane -k` can resurrect the node into the SAME pane
- *  id. NOTE (§1.5/§2.5, spike-confirmed): a dead/frozen pane is reaped only by
- *  `kill-pane`/`respawn-pane`, NEVER by toggling this off — the toggle does not
- *  reap an already-dead pane. Best-effort; never throws. */
-export function setRemainOnExit(window: string, on: boolean): boolean {
-  return tmux(['set-window-option', '-t', window, 'remain-on-exit', on ? 'on' : 'off']).ok;
-}
 
 /** Type a literal (e.g. a `/graph` slash command) into a pane and press Enter
  *  (`tmux send-keys -t <pane> '<text>' Enter`). Requires the pane's editor be

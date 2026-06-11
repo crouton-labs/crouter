@@ -11,7 +11,8 @@
 //     is rejected (upholds "a node occupies <=1 focus", Q5)
 //   - independent focus rows don't contend
 //   - placement focusOf / isFocused / focusByPane / focusedNodes / listFocuses
-//     agree with the rows
+//     GC dead-pane viewer rows on read (liveOrPrune), and pass null-pane rows
+//     through (broker-host cut: placement reads self-heal the viewer registry)
 import { test, before, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -180,7 +181,7 @@ test('open / setOccupant / close round-trip with the reads', () => {
   assert.equal(getFocusByNode('A'), null, 'A no longer occupies the focus');
   assert.deepEqual(getFocusByNode('B'), { focus_id: 'f1', pane: '%a', session: 'Sa', node_id: 'B' });
 
-  // setFocusPane re-points the pane + session cache (reconcileFocus, Step 6).
+  // setFocusPane re-points the pane + session cache after a viewer move.
   setFocusPane('f1', '%a2', 'Sa2');
   assert.deepEqual(getFocusById('f1'), { focus_id: 'f1', pane: '%a2', session: 'Sa2', node_id: 'B' });
   assert.equal(getFocusByPane('%a'), null, 'the old pane no longer resolves');
@@ -211,7 +212,7 @@ test('UNIQUE(node_id): hot-swapping an occupant onto an already-focused node is 
   openFocusRow('f1', '%a', 'Sa', 'A');
   openFocusRow('f2', '%b', 'Sb', 'B');
   // B already occupies f2 — moving it onto f1 via setFocusOccupant must throw
-  // (the Q5 vacate-first is retargetFocus's job, Step 6, not this setter's).
+  // (the Q5 vacate-first is placement.focus()'s job, not this setter's).
   assert.throws(() => setFocusOccupant('f1', 'B'), /UNIQUE|constraint/i);
   assert.deepEqual(getFocusByNode('A'), { focus_id: 'f1', pane: '%a', session: 'Sa', node_id: 'A' });
   assert.deepEqual(getFocusByNode('B'), { focus_id: 'f2', pane: '%b', session: 'Sb', node_id: 'B' });
@@ -234,23 +235,35 @@ test('independent focus rows do not contend', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Placement reads — focusOf / isFocused / focusByPane / focusedNodes / listFocuses
-// agree with the rows.
+// Placement reads — focusOf / isFocused / focusByPane / focusedNodes /
+// listFocuses GC dead-pane viewer rows on read (broker-host cut: liveOrPrune).
+// A row whose viewer pane no longer exists is pruned the next time it is read,
+// so the registry self-heals without a sweeper; a row with a null pane (a
+// registered-but-not-yet-realized viewer) is passed through. A live tmux pane
+// can't be fabricated in the fast tier, so we cover the prune + null-pane paths
+// here; the live-pane read is covered in the full-tier broker lifecycle suite.
 // ---------------------------------------------------------------------------
 
-test('placement focus reads agree with the focus rows', () => {
+test('placement reads GC dead-pane viewer rows and keep null-pane rows', () => {
   openDb();
-  openFocusRow('f1', '%a', 'Sa', 'A');
-  openFocusRow('f2', '%b', 'Sb', 'B');
+  openFocusRow('f1', '%a', 'Sa', 'A'); // %a is not a live tmux pane → pruned on read
+  openFocusRow('f2', null, 'Sb', 'B'); // null pane (not realized yet) → kept
 
-  assert.deepEqual(focusOf('A'), { focus_id: 'f1', pane: '%a', session: 'Sa', node_id: 'A' });
+  // The dead-pane row is GC'd on read: placement returns null AND the row is
+  // removed from the canvas table (self-healing registry).
+  assert.equal(focusOf('A'), null, 'a viewer whose pane is gone is pruned on read');
+  assert.equal(getFocusByNode('A'), null, 'the pruned row is closed in the db');
+  assert.equal(isFocused('A'), false);
+  assert.equal(focusByPane('%a'), null, 'focusByPane prunes the dead pane too');
+
+  // The null-pane row survives (liveOrPrune only prunes a non-null dead pane).
+  assert.deepEqual(focusOf('B'), { focus_id: 'f2', pane: null, session: 'Sb', node_id: 'B' });
+  assert.equal(isFocused('B'), true);
   assert.equal(focusOf('Z'), null, 'an unfocused node has no focus');
-  assert.equal(isFocused('A'), true);
   assert.equal(isFocused('Z'), false);
-  assert.deepEqual(focusByPane('%b'), { focus_id: 'f2', pane: '%b', session: 'Sb', node_id: 'B' });
-  assert.deepEqual(focusedNodes(), new Set(['A', 'B']));
+  assert.deepEqual(focusedNodes(), new Set(['B']));
   assert.deepEqual(
     placementListFocuses().map((f) => f.node_id),
-    ['A', 'B'],
+    ['B'],
   );
 });

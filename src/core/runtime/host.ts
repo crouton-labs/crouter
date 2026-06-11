@@ -1,113 +1,63 @@
 // src/core/runtime/host.ts
 //
 // The Host abstraction (design §3): owns an engine PROCESS's lifecycle, not its
-// display. TWO impls live here: TmuxPaneHost — a thin wrapper over today's
-// placement functions (the pane IS the engine container) — and, since Phase 3,
-// HeadlessBrokerHost — a detached broker process with no tmux pane. `host_kind`
-// (on the node row/meta since Wave 1) selects between them via hostFor().
+// display. After the broker-is-the-host cut there is ONE impl —
+// HeadlessBrokerHost — a detached broker process with no tmux pane. Every node
+// (managed child, named node, --root, front-door root) runs on it; a tmux pane
+// is only an attach VIEWER. The `Host` interface is kept as a one-impl seam (the
+// test/future-host boundary).
 //
-// IMPORT-LINT (tmux-surface.test.ts §5.1): this file must NOT import './tmux.js'
-// directly. It reaches every driver verb (piCommand, reviveIntoPlacement,
-// isNodePaneAlive, tearDownNode) through placement.ts's re-exports — placement.ts
-// and tmux-chrome.ts are the only sanctioned tmux.ts importers. The broker host
-// needs no tmux verb at all.
+// This file imports neither './tmux.js' nor './placement.js' — the broker host
+// needs no tmux verb at all (it supervises via the broker pid, tears down over
+// the node's unix socket).
 
 import { spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync, existsSync, unlinkSync, openSync, closeSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { connect } from 'node:net';
-import {
-  reviveIntoPlacement,
-  isNodePaneAlive,
-  tearDownNode,
-  piCommand,
-} from './placement.js';
-import { getNode, type NodeMeta, type NodeRow } from '../canvas/index.js';
+import { getNode, type NodeRow } from '../canvas/index.js';
 import { nodeDir, jobDir } from '../canvas/paths.js';
 import { encodeFrame } from './broker-protocol.js';
 import { FRONT_DOOR_ENV } from './front-door.js';
 import { isPidAlive } from '../canvas/pid.js';
 import type { PiInvocation } from './launch.js';
 
-/** View-side launch hints the legacy host needs beyond the PiInvocation. This is
- *  today's ReviveLaunch (placement.ts) MINUS `command`/`env` — the host derives
- *  `command = piCommand(inv.argv)` and `env = inv.env` from the PiInvocation
- *  itself. The broker (Phase 3) uses only `cwd` + `resuming`. */
+/** View-side launch hints the broker host needs beyond the PiInvocation. The
+ *  broker uses `cwd` + `resuming`; `name` is carried for the node's display. */
 export interface LaunchPlacement {
   cwd: string;
   name: string;
   resuming: boolean;
 }
 
-/** A handle to a node's running engine container.
- *  §3.2 specifies { kind, pid }; Phase 1 carries the placement coords too,
- *  because launch REPLACES reviveIntoPlacement (which returned PlacementResult)
- *  and reviveNode's unchanged ReviveResult is built from window+session. The
- *  daemon never reads window/session/pane (it supervises via pid / isAlive); the
- *  broker (Phase 3) returns window=null, pane=null. */
+/** A handle to a node's running engine container. The broker host supervises via
+ *  the broker pid recorded as pi_pid; no tmux placement coords exist (the engine
+ *  is never in a pane). */
 export interface HostHandle {
-  kind: 'tmux' | 'broker';
-  /** Supervised pid (signal-0 target). null at launch for TmuxPaneHost: the
-   *  pane's fresh pi records its own pid via the stophook (session_start →
-   *  recordPid), and reviveNode clearPid()s right after launch — so no Phase-1
-   *  caller reads this. Present for the §3.2 contract + the daemon. */
+  /** Supervised pid (signal-0 target). May be null right at launch before the
+   *  detached child reports its pid; the broker re-records pi_pid during its
+   *  extension bind, and reviveNode clearPid()s right after launch. */
   pid: number | null;
-  window: string | null;
-  session: string;
-  pane: string | null;
 }
 
 export interface Host {
   /** Bring a node's ENGINE into existence from its launch recipe; return a
-   *  supervisable handle. TmuxPaneHost ALSO performs placement (the pane IS the
-   *  engine container). */
+   *  supervisable handle. */
   launch(nodeId: string, inv: PiInvocation, opts: LaunchPlacement): HostHandle;
 
-  /** Is this node's engine container present? PURE / non-mutating. §3.2 types
-   *  this `NodeRow`; we keep `string | NodeRow` to match isNodePaneAlive (which
-   *  it IS) so both call sites — the guard (passes the id) and the Phase-2 daemon
-   *  (passes a row) — stay one-token changes. */
+  /** Is this node's engine alive? PURE / non-mutating. `string | NodeRow` so
+   *  both call sites — the revive guard (passes the id) and the daemon (passes a
+   *  row) — share one selector. For the broker this IS isPidAlive(pi_pid). */
   isAlive(node: string | NodeRow): boolean;
 
   /** Tear the engine down (close/cancel teardown). */
   teardown(nodeId: string): void;
 
   /** Deliver an OS signal to the engine container — present so the daemon never
-   *  reaches around the abstraction. No Phase-1 call site. */
+   *  reaches around the abstraction. */
   signal(nodeId: string, sig: NodeJS.Signals): void;
 }
-
-/** The sole Phase-1 host: today's behavior, wrapped. Stateless → a frozen
- *  singleton, no class needed. Every method delegates verbatim. */
-export const tmuxPaneHost: Host = {
-  launch(nodeId, inv, opts) {
-    const placed = reviveIntoPlacement(nodeId, {
-      command: piCommand(inv.argv),
-      env: inv.env,
-      cwd: opts.cwd,
-      name: opts.name,
-      resuming: opts.resuming,
-    });
-    return { kind: 'tmux', pid: null, window: placed.window, session: placed.session, pane: placed.pane };
-  },
-  isAlive(node) {
-    return isNodePaneAlive(node);
-  },
-  teardown(nodeId) {
-    tearDownNode(nodeId);
-  },
-  signal(nodeId, sig) {
-    const pid = getNode(nodeId)?.pi_pid;
-    if (pid != null) {
-      try {
-        process.kill(pid, sig);
-      } catch {
-        /* already gone */
-      }
-    }
-  },
-};
 
 // ---------------------------------------------------------------------------
 // HeadlessBrokerHost (design §3.3): a detached broker PROCESS, no tmux pane. It
@@ -153,7 +103,7 @@ export const headlessBrokerHost: Host = {
     // launching process (CLI or daemon) never leaks it.
     closeSync(logFd);
     child.unref();
-    return { kind: 'broker', pid: child.pid ?? null, window: null, session: '', pane: null };
+    return { pid: child.pid ?? null };
   },
   isAlive(node) {
     return isPidAlive((typeof node === 'string' ? getNode(node) : node)?.pi_pid);
@@ -229,11 +179,3 @@ export const headlessBrokerHost: Host = {
     }
   },
 };
-
-/** Select the Host for a node by its persisted `host_kind` (NULL/'tmux' → the
- *  tmux host; 'broker' → the headless broker host). The param is `NodeMeta |
- *  NodeRow` so both call sites — reviveNode `hostFor(meta)` and the daemon
- *  `hostFor(row)` — share one selector. */
-export function hostFor(node: NodeMeta | NodeRow): Host {
-  return node.host_kind === 'broker' ? headlessBrokerHost : tmuxPaneHost;
-}

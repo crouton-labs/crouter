@@ -30,14 +30,13 @@
 import { writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { getNode, jobDir, updateNode, recordPid, subscribersOf, setPresence } from '../core/canvas/index.js';
+import { getNode, jobDir, updateNode, recordPid, setPresence } from '../core/canvas/index.js';
 import { transition } from '../core/runtime/lifecycle.js';
 import { markBusy, clearBusy } from '../core/runtime/busy.js';
 import { evaluateStop } from '../core/runtime/stop-guard.js';
 import { personaDrift, commitPersonaAck } from '../core/runtime/persona.js';
-import { reviveInPlace } from '../core/runtime/revive.js';
 import { handleNewSession, markCleanExitDone } from '../core/runtime/reset.js';
-import { focusOf, handFocusToManager, tearDownNode, closeFocusToShell } from '../core/runtime/placement.js';
+import { focusOf, tearDownNode } from '../core/runtime/placement.js';
 
 // ---------------------------------------------------------------------------
 // Minimal PiLike interface (avoids hard dep on @earendil-works/*)
@@ -310,15 +309,14 @@ export function registerCanvasStophook(pi: PiLike): void {
       const filed: unknown = ctx?.sessionManager?.getSessionFile?.();
       const sessionFile = typeof filed === 'string' && filed !== '' ? filed : null;
 
-      // `/new` — a brand-new conversation in the same process. Route it: a
-      // non-root child refreshes its session id; a ROOT in a tmux pane RELAUNCHES
-      // (parks the old root + boots a fresh node in this pane via respawn-pane
-      // -k, which tears down THIS pi); a root with no pane falls back to an
-      // in-place reset. The relaunch's detached respawn may kill this pi before
-      // the lines after the call run — that's fine; do not rely on anything
-      // after handleNewSession.
+      // `/new` — a brand-new conversation in the same process. The broker already
+      // drove the engine-side new_session (the viewer's /new → broker
+      // new_session frame), so this only resets the runtime GRAPH state in place
+      // on the SAME node id: a non-root child refreshes its session id; a root
+      // reaps its descendants + wipes working state (resetRoot). No pane respawn
+      // (the engine is a detached broker, not a pane).
       if (event?.reason === 'new') {
-        try { handleNewSession(nodeId, id, process.env['TMUX_PANE'], {}, sessionFile); } catch { /* best-effort */ }
+        try { handleNewSession(nodeId, id, sessionFile); } catch { /* best-effort */ }
         // Clear in-memory context-steering so the fresh conversation starts clean.
         totalIn = 0;
         totalOut = 0;
@@ -327,13 +325,12 @@ export function registerCanvasStophook(pi: PiLike): void {
       }
 
       // Boot / startup / resume / reload / fork → (re)bind this process to its
-      // session id, record our OS pid (the daemon's liveness signal for inline
-      // roots whose window outlives pi), and CONFIRM any pending refresh-yield.
-      // Reaching session_start proves a fresh pi actually booted, so it is now
-      // safe to clear intent='refresh'. reviveInPlace deliberately leaves intent
-      // set: the detached respawn it dispatches can't confirm itself (it kills
-      // the caller mid-flight), so a real boot is the only thing allowed to clear
-      // it — otherwise a failed respawn would look identical to a successful one.
+      // session id, record our OS pid (the daemon's broker-liveness signal), and
+      // CONFIRM any pending refresh-yield. Reaching session_start proves a fresh
+      // engine actually booted, so it is now safe to clear intent='refresh' — a
+      // refresh shuts the broker down and the daemon relaunches it FRESH, which
+      // leaves intent='refresh' set until this boot clears it (the only proof the
+      // relaunch worked; otherwise a failed relaunch would look like a success).
       const existing = getNode(nodeId);
       // Identity (session id/file) → meta; runtime (pid, intent) → atomic row setters.
       updateNode(nodeId, {
@@ -494,57 +491,27 @@ export function registerCanvasStophook(pi: PiLike): void {
         //     transitions node.status → 'done' synchronously. Shut down cleanly.
         const node = getNode(nodeId);
         if (node?.status === 'done') {
-          // TRULY-DONE (pushed `final` this turn). If this node owns the user's
-          // viewport, its lifecycle successor takes the focus (§1.6):
-          // handFocusToManager hands the focus row to the manager (the node up
-          // the subscribes_to spine it reports to) and, when that manager's pi is
-          // LIVE in the backstage, synchronously swaps it into this now-frozen
-          // focus pane; a DORMANT manager is revived into the pane by the daemon
-          // on the `final` it just pushed — either way no new window, no taint.
-          // No manager (a root) or a manager already focused elsewhere → Q1-close
-          // this focus AND flip remain-on-exit OFF on %m's window so the pane
-          // closes when this pi exits (return-to-shell) instead of freezing into
-          // an orphan. We CANNOT closePane(%m) from inside %m (self-saw), but the
-          // pi is still alive mid-shutdown, so remain-on-exit-off is safe and
-          // makes tmux reap the pane on exit. An unfocused done node just shuts
-          // down (no pane anywhere, Invariant P). M is done → it owns no pane
-          // (Invariant P), so null its own presence in BOTH sub-branches before
-          // shutdown.
-          const f = focusOf(nodeId);
-          if (f !== null) {
-            const managerId = node.parent ?? subscribersOf(nodeId)[0]?.node_id ?? null;
-            if (!handFocusToManager(f.focus_id, managerId)) {
-              // Q1 return-to-shell, self-saw-safe: close the focus row + disarm the
-              // pane's freeze so it reaps on exit (we can't closePane our own pane).
-              closeFocusToShell(f.focus_id, nodeId);
-            }
-          }
-          setPresence(nodeId, { pane: null, tmux_session: null, window: null }); // M done → owns no pane
+          // TRULY-DONE (pushed `final` this turn). The engine is a detached
+          // broker, not a pane, so there is no engine to hand off — just close
+          // this node's VIEWER pane (if any) and shut the broker down. The daemon
+          // won't revive a done node. tearDownNode closes the viewer focus row +
+          // pane; ctx.shutdown() exits the broker process.
+          if (focusOf(nodeId) !== null) { try { tearDownNode(nodeId); } catch { /* best-effort */ } }
+          setPresence(nodeId, { pane: null, tmux_session: null, window: null });
           try { ctx?.shutdown?.(); } catch { /* ignore */ }
           return;
         }
 
         // (b') Refresh-yield: the node ran `crtr node yield` this turn, setting
-        //     intent='refresh'. Re-exec a FRESH pi IN PLACE in this same tmux
-        //     pane (respawn-pane -k) so the node re-reads its roadmap without
-        //     churning its window — critically, an interactive/foreground root
-        //     is never dropped to a shell, and no daemon round-trip is needed
-        //     (the old window-death detection silently failed whenever pi
-        //     exited into a persistent shell pane). Falls back to a clean
-        //     shutdown (daemon revives in a new window) only when we're not in
-        //     a tmux pane.
+        //     intent='refresh'. Just shut the broker down — the daemon sees the
+        //     dead pid + intent='refresh' and reviveNode's relaunches the broker
+        //     FRESH (no resume) so the node re-reads its roadmap. (The daemon
+        //     also force-recycles a stuck refresh whose engine never exits, so a
+        //     stale in-process stophook can't strand the yield — see crtrd.)
         if (node?.intent === 'refresh') {
           // A yield is SILENT to subscribers: the node keeps its identity and
-          // subscription edges across the revive and reports only through its
-          // own explicit `crtr push` calls, so there is no checkpoint push here
-          // — just re-exec a fresh pi in place against the roadmap.
-          const pane = process.env['TMUX_PANE'];
-          if (pane !== undefined && pane.trim() !== '') {
-            try {
-              reviveInPlace(nodeId, pane);
-              return; // respawn-pane -k tears down this pi and starts the fresh one
-            } catch { /* fall through to plain shutdown */ }
-          }
+          // subscription edges across the revive and reports only through its own
+          // explicit `crtr push` calls, so there is no checkpoint push here.
           try { ctx?.shutdown?.(); } catch { /* ignore */ }
           return;
         }

@@ -124,9 +124,9 @@ export function registerCanvasDocSubstrate(pi: PiLike): void {
   // cycle. A resume reuses the same .jsonl transcript in a NEW pi process, so
   // the set is REHYDRATED from disk at process start (not started empty) and is
   // NOT cleared on session_start — a resume continues the transcript, so the
-  // dedup must carry forward. The launch paths that begin a FRESH transcript
-  // (revive resume=false, reviveInPlace, relaunchRootInPane) delete the file, so
-  // a new conversation rehydrates empty here. See core/substrate/injected-store.ts.
+  // dedup must carry forward. The one launch path that begins a FRESH transcript
+  // (reviveNode with resume=false) deletes the file, so a new conversation
+  // rehydrates empty here. See core/substrate/injected-store.ts.
   const injectedDocs = loadInjectedDocs(nodeId);
   pi.on('session_start', () => {
     // Only the per-session substrate PARSE cache resets each session (so the

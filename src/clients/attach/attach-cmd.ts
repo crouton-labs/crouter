@@ -592,10 +592,17 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
   };
 
   // The handshake the viewer sends on connect AND on every successful redial.
+  // After a broker refresh / crash-revive the fresh process has no controller and
+  // no memory of us, so re-`hello` reclaims our role and the `welcome` snapshot
+  // repaints full scrollback/state. Sends the CURRENT `role`, not the constructor
+  // `observer` flag: if we were preempted to observer at runtime (a
+  // `control_changed` demoted us), re-hello'ing as 'controller' would let us
+  // reclaim control from the new controller after a refresh — so the demotion
+  // must survive the reconnect.
   const sendHello = (): void => {
     socket.send({
       type: 'hello',
-      role: observer ? 'observer' : 'controller',
+      role,
       client_id: clientId,
       term: { cols: process.stdout.columns ?? 80, rows: process.stdout.rows ?? 24 },
     });

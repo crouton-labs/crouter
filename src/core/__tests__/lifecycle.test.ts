@@ -158,29 +158,10 @@ test('revive: any status → active + intent cleared', () => {
 });
 
 // ---------------------------------------------------------------------------
-// boot → active, intent UNCHANGED (reviveInPlace keeps the refresh safety net),
-// legal only from active|idle
-// ---------------------------------------------------------------------------
-test('boot: active|idle → active, intent preserved (refresh net survives)', () => {
-  for (const from of LIVE) {
-    mk(`n_${from}`, from, 'refresh');
-    const m = transition(`n_${from}`, 'boot');
-    assert.equal(m.status, 'active', `boot from ${from}`);
-    assert.equal(m.intent, 'refresh', `boot from ${from} keeps intent (proof-of-boot net)`);
-  }
-});
-test('boot: illegal from done|dead|canceled → throws', () => {
-  for (const from of TERMINAL) {
-    mk(`n_${from}`, from);
-    assert.throws(() => transition(`n_${from}`, 'boot'), /illegal lifecycle transition/);
-  }
-});
-
-// ---------------------------------------------------------------------------
 // unknown node → throws for every event
 // ---------------------------------------------------------------------------
 test('transition on an unknown node throws', () => {
-  for (const ev of ['finalize', 'cancel', 'crash', 'yield', 'release', 'revive', 'boot'] as const) {
+  for (const ev of ['finalize', 'cancel', 'crash', 'yield', 'release', 'revive'] as const) {
     assert.throws(() => transition('ghost', ev), /unknown node/);
   }
 });
