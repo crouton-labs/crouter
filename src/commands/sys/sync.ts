@@ -9,7 +9,7 @@ import { defineLeaf } from '../../core/command.js';
 import { usage } from '../../core/errors.js';
 import { emit, isJsonOutput } from '../../core/io.js';
 import { ExitCode } from '../../types.js';
-import { readLayeredManifest } from '../../core/skill-sync/manifest.js';
+import { readLayeredManifest, type Endpoint, type Pair } from '../../core/skill-sync/manifest.js';
 import { resolveProfile } from '../../core/skill-sync/profile.js';
 import { reconcilePair, type PairResult } from '../../core/skill-sync/engine.js';
 
@@ -58,6 +58,53 @@ function renderSync(results: PairResult[], summary: SyncSummary, dryRun: boolean
   return parts.join('\n\n');
 }
 
+/** Drift label for the read-only `--status` view, derived from a dry-run
+ *  reconcile: `noop` = already in agreement, `synced` = a clean merge the engine
+ *  WOULD write, `conflict` = diverged and blocked. These are the only three
+ *  statuses `reconcilePair` returns. */
+const DRIFT: Record<PairResult['status'], string> = {
+  noop: 'in-sync',
+  synced: 'would-write',
+  conflict: 'conflict',
+};
+
+/** Render one endpoint as `scope/name` (or `plugin:<plugin>/<name>` for a
+ *  plugin-scoped side) so a reader sees where each half of the pair lives. */
+function endpointLabel(ep: Endpoint): string {
+  return ep.scope === 'plugin'
+    ? `plugin:${ep.plugin}/${ep.name}`
+    : `${ep.scope}/${ep.name}`;
+}
+
+/** Render the read-only `--status` inventory: every selected pair with its
+ *  crtr↔Claude endpoints and drift state, computed via a dry-run reconcile so
+ *  nothing is written. `results` is keyed back to `pairs` by id. */
+function renderStatus(pairs: Pair[], results: PairResult[]): string {
+  const parts: string[] = [];
+  parts.push('crtr ↔ Claude skill-sync pairs (read-only; nothing written):');
+
+  if (pairs.length === 0) {
+    parts.push('No enrolled pairs.');
+    return parts.join('\n\n');
+  }
+
+  const byId = new Map(results.map((r) => [r.id, r]));
+  const rows = pairs
+    .map((p) => {
+      const drift = DRIFT[byId.get(p.id)!.status];
+      return `| ${p.id} | ${endpointLabel(p.crtr)} | ${endpointLabel(p.claude)} | ${drift} |`;
+    })
+    .join('\n');
+  parts.push(`| pair | crtr | claude | drift |\n| --- | --- | --- | --- |\n${rows}`);
+
+  const inSync = results.filter((r) => r.status === 'noop').length;
+  const wouldWrite = results.filter((r) => r.status === 'synced').length;
+  const conflict = results.filter((r) => r.status === 'conflict').length;
+  parts.push(`in-sync: ${inSync} · would-write: ${wouldWrite} · conflict: ${conflict}`);
+
+  return parts.join('\n\n');
+}
+
 export const sysSyncLeaf = defineLeaf({
   name: 'sync',
   description: 'reconcile crtr ↔ Claude skill pairs (bidirectional)',
@@ -81,6 +128,13 @@ export const sysSyncLeaf = defineLeaf({
         required: false,
         constraint: 'Compute every merge and report the would-be status, but write nothing — no endpoint, snapshot, or conflict report touched.',
       },
+      {
+        kind: 'flag',
+        name: 'status',
+        type: 'bool',
+        required: false,
+        constraint: 'Read-only inventory mode: instead of reconciling, list every enrolled pair (honoring --pair) with its crtr↔Claude endpoints and drift state (in-sync / would-write / conflict), computed via a dry-run reconcile. Writes nothing and never exits non-zero on drift; a malformed manifest or unknown --pair id still aborts hard.',
+      },
     ],
     output: [
       { name: 'synced', type: 'string[]', required: true, constraint: 'Pair ids written through cleanly to both endpoints + the merge base.' },
@@ -94,11 +148,13 @@ export const sysSyncLeaf = defineLeaf({
       'For each conflicting pair: writes NOTHING to the endpoints; writes a git-style conflict report to ~/.crouter/skill-sync/conflicts/<id>.md.',
       'Exits non-zero iff any pair conflicted. A malformed manifest or an unknown --pair id aborts hard (non-zero) before any reconcile and writes nothing.',
       'With --dry-run: read-only — computes every merge and the would-be summary, touches no endpoint, snapshot, or report.',
+      'With --status: read-only — emits the pair inventory + drift table (in-sync / would-write / conflict) instead of reconciling; writes nothing and exits zero regardless of drift.',
     ],
   },
   run: async (input) => {
     const pairFilter = input['pair'] as string | undefined;
     const dryRun = (input['dryRun'] as boolean) ?? false;
+    const statusMode = (input['status'] as boolean) ?? false;
 
     // Malformed manifest throws here (R-U7) → dispatcher's handle() → non-zero.
     const { pairs } = readLayeredManifest();
@@ -115,6 +171,27 @@ export const sysSyncLeaf = defineLeaf({
           next: `Valid pair ids: ${valid.length > 0 ? valid.join(', ') : '(none)'}. Run \`crtr sys sync -h\`.`,
         });
       }
+    }
+
+    // --status: read-only inventory. Run the same engine in dry-run mode and
+    // render endpoints + drift; never write, never exit non-zero on drift.
+    if (statusMode) {
+      const results = selected.map((p) =>
+        reconcilePair(p, resolveProfile(p.frontmatter), { dryRun: true }),
+      );
+      if (isJsonOutput()) {
+        emit({
+          pairs: selected.map((p, i) => ({
+            id: p.id,
+            crtr: p.crtr,
+            claude: p.claude,
+            drift: DRIFT[results[i].status],
+          })),
+        } as unknown as Record<string, unknown>);
+      } else {
+        process.stdout.write(renderStatus(selected, results) + '\n');
+      }
+      process.exit(ExitCode.SUCCESS);
     }
 
     // One conflict must NOT abort the loop (R-X3): collect every pair's result,
