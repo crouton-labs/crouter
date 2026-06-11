@@ -52,7 +52,7 @@ import { buildCanvasPanelLines } from './canvas-panels.js';
 import { GraphOverlay } from './graph-overlay.js';
 import { slashCommandList } from './slash-commands.js';
 import { applyTheme, attachPalette, createKeybindingsManager } from './config-load.js';
-import { TitledEditor, thinkingBorderColor } from './titled-editor.js';
+import { TitledEditor, thinkingBorderColor, thinkingTitleStyle, defaultTitleStyle } from './titled-editor.js';
 import { fetchGitInfo, type GitInfo } from './git-info.js';
 import { BrokerUnavailableError, ViewSocketClient, reconnectShouldGiveUp } from './view-socket.js';
 
@@ -320,6 +320,9 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
     // color tracks the agent's thinking level. Both follow live state.
     editor.title = state.sessionName ? `⬢ ${state.sessionName}` : '';
     editor.borderColor = thinkingBorderColor(state.thinkingLevel, pal.border);
+    // Title chip background = the same thinking-level color (bold white text), so
+    // the name chip and the border rule read as one hue.
+    editor.titleStyle = thinkingTitleStyle(state.thinkingLevel, defaultTitleStyle);
     renderFooter();
     // Panel liveness rides the relayed event stream (agent_start/agent_end/
     // queue_update/session_info_changed all patch state through here) plus the

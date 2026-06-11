@@ -12,18 +12,25 @@ import { truncateToWidth, visibleWidth } from '@earendil-works/pi-tui';
 /** Thinking levels pi cycles through (shift+tab), lowest → highest budget. */
 export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
 
-/** Per-level border SGR codes — a cool→warm ramp as the budget climbs. pi paints
- *  these from dedicated `thinking*` theme colors that are NOT on its public
- *  palette surface, so we map to standard ANSI hues; `off` falls back to the
- *  caller's default border color. The point is a visible, distinct per-level cue. */
-const THINKING_SGR: Record<ThinkingLevel, number | undefined> = {
+/** Per-level border color as a 24-bit RGB triple — ONE hue family that climbs in
+ *  saturation + brightness as the budget grows: a dull blue-gray at `minimal`
+ *  through violet/purple to a vivid magenta at `xhigh`. (pi paints its own
+ *  `thinking*` theme colors, off its public palette surface, so we own this ramp
+ *  directly — truecolor, not the 16-color ANSI hues, so the saturation climb
+ *  actually reads.) `off` falls back to the caller's default border color. */
+const THINKING_RGB: Record<ThinkingLevel, [number, number, number] | undefined> = {
   off: undefined, // default border color
-  minimal: 34, // blue
-  low: 36, // cyan
-  medium: 32, // green
-  high: 33, // yellow
-  xhigh: 35, // magenta
+  minimal: [106, 116, 142], // dull blue-gray
+  low: [118, 114, 150], // muted slate
+  medium: [134, 114, 160], // soft violet-gray
+  high: [152, 114, 168], // muted mauve
+  xhigh: [170, 116, 176], // soft orchid (gently saturated, not vivid)
 };
+
+/** The default (thinking `off`) title chip: reverse video + a space of padding
+ *  each side, so the name reads as a label sitting on the border rule. Used as
+ *  the fallback when no thinking color applies. */
+export const defaultTitleStyle = (s: string): string => `\x1b[7m ${s} \x1b[27m`;
 
 /** Resolve the editor border colorizer for a thinking level. Unknown / `off` →
  *  the supplied `fallback` (the theme's default border color). */
@@ -31,9 +38,47 @@ export function thinkingBorderColor(
   level: string | undefined,
   fallback: (s: string) => string,
 ): (s: string) => string {
-  const sgr = level === undefined ? undefined : THINKING_SGR[level as ThinkingLevel];
-  if (sgr === undefined) return fallback;
-  return (s: string) => `\x1b[${sgr}m${s}\x1b[39m`;
+  const rgb = level === undefined ? undefined : THINKING_RGB[level as ThinkingLevel];
+  if (rgb === undefined) return fallback;
+  const [r, g, b] = rgb;
+  return (s: string) => `\x1b[38;2;${r};${g};${b}m${s}\x1b[39m`;
+}
+
+/** Resolve the title-chip styler for a thinking level: the level's color as the
+ *  chip BACKGROUND with bold white text (a space of padding each side), so the
+ *  session name reads as a solid label in the same hue as the border. Unknown /
+ *  `off` → the supplied `fallback` (the reverse-video default chip). */
+export function thinkingTitleStyle(
+  level: string | undefined,
+  fallback: (s: string) => string,
+): (s: string) => string {
+  const rgb = level === undefined ? undefined : THINKING_RGB[level as ThinkingLevel];
+  if (rgb === undefined) return fallback;
+  const [r, g, b] = rgb;
+  return (s: string) => `\x1b[48;2;${r};${g};${b}m\x1b[97m\x1b[1m ${s} \x1b[0m`;
+}
+
+/** Compose the replacement top-border line: solid title chip + border rule +
+ *  info chip, never wider than `width` (pi-tui hard-crashes on an over-wide
+ *  line). The info chip yields entirely when the chip leaves it almost no room,
+ *  and truncates when it only partially fits. Exported pure for the overflow
+ *  regression test. */
+export function composeTopBorder(
+  width: number,
+  title: string,
+  info: string,
+  titleStyle: (s: string) => string,
+  borderColor: (s: string) => string,
+): string {
+  const chip = title ? titleStyle(truncateToWidth(title, Math.max(1, width - 4), '…')) : '';
+  const chipW = visibleWidth(chip);
+  const avail = width - chipW;
+  let infoChip = '';
+  if (info && avail > 4) {
+    infoChip = visibleWidth(info) <= avail ? info : truncateToWidth(info, avail, '…');
+  }
+  const fill = Math.max(0, width - chipW - visibleWidth(infoChip));
+  return chip + borderColor('─'.repeat(fill)) + infoChip;
 }
 
 export class TitledEditor extends CustomEditor {
@@ -42,22 +87,19 @@ export class TitledEditor extends CustomEditor {
   /** Pre-styled context string painted into the RIGHT of the top border (cwd /
    *  branch / git status). Already colorized by the caller; empty → omitted. */
   info = '';
-  /** Paint the chip solid (reverse video + a space of padding each side) so the
-   *  name reads as a label sitting on the border rule. Override-able for tests. */
-  titleStyle: (s: string) => string = (s) => `\x1b[7m ${s} \x1b[27m`;
+  /** Paint the chip solid so the name reads as a label sitting on the border
+   *  rule. Defaults to the reverse-video chip; attach-cmd swaps in a
+   *  thinking-colored background (bold white text) on each state update. */
+  titleStyle: (s: string) => string = defaultTitleStyle;
 
   render(width: number): string[] {
     const lines = super.render(width);
     if ((this.title || this.info) && lines.length > 0) {
-      const chip = this.title ? this.titleStyle(truncateToWidth(this.title, Math.max(1, width - 4), '…')) : '';
-      const chipW = visibleWidth(chip);
-      // The info chip yields to the name chip when the rule is narrow.
-      const info = this.info && chipW + 4 < width ? this.info : '';
-      const infoW = visibleWidth(info);
-      const fill = Math.max(0, width - chipW - infoW);
-      // Replace the stock top border with: solid chip + border rule + info, all
-      // dashes in the current (thinking-aware) border color.
-      lines[0] = chip + this.borderColor('─'.repeat(fill)) + info;
+      // Replace the stock top border; dashes in the current (thinking-aware)
+      // border color.
+      lines[0] = composeTopBorder(width, this.title, this.info, this.titleStyle, (s) =>
+        this.borderColor(s),
+      );
     }
     return lines;
   }
