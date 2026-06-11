@@ -30,3 +30,5 @@ First principles for where crtr TUI content belongs and why. The crtr attach vie
 9. **Match the host idiom (pi parity) where it serves muscle memory** — reuse pi's components and mirror pi's interactive layout so familiarity transfers, but bend it to these placement rules (notably: inline, not pi's centered defaults) when they conflict.
 
 10. **Restraint — terse by default, reveal on demand.** Monospace rows are scarce. Default compact; expose detail through expand/collapse (ctrl+o context, tool-output collapse) rather than always-on verbosity.
+
+11. **An earned popup must read as a distinct surface — give it a different background.** When a takeover IS earned (rule 3), the overlay/popup must use a background color distinct from the normal surface background. Matching backgrounds make the popup's edges invisible and the user can't tell where the float begins — defeating the point of taking over the screen. The contrast IS the signal that you've entered "a different place."
