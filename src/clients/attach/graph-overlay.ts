@@ -2,7 +2,8 @@
 //
 // Native reimplementation of canvas-nav.ts's GRAPH modal as a pi-tui OVERLAY
 // (the viewer has no pi extension host). `tui.showOverlay(this, …)` mounts this
-// Component full-screen and CAPTURES keyboard focus (mirrors extension-dialogs.ts);
+// Component as a BOUNDED, centered modal (~72% of the terminal, themed frame) and
+// CAPTURES keyboard focus (mirrors extension-dialogs.ts);
 // `OverlayHandle.hide()` tears it down and restores focus to the editor. While
 // shown, every key routes to handleInput() — a fold-aware NERDTree of the local
 // subscription graph with the canvas-nav keymap:
@@ -17,8 +18,9 @@
 // runs inside a tmux pane, so `crtr node focus --pane` swaps the chosen node in.
 
 import { execFile } from 'node:child_process';
-import { matchesKey, type Component, type OverlayHandle, type TUI } from '@earendil-works/pi-tui';
+import { matchesKey, truncateToWidth, type Component, type OverlayHandle, type TUI } from '@earendil-works/pi-tui';
 import { fullName } from '../../core/canvas/index.js';
+import type { AttachPalette } from './config-load.js';
 import {
   beginFrame, cNode, managerOf, sortedChildIds, climbRoot, computeSubtreeActivity,
   buildGraphModel, renderGraphRow, focusedNodeIds, shortId, visibleWidth,
@@ -27,20 +29,18 @@ import {
 } from '../../core/canvas/nav-model.js';
 import type { FoldState } from '../../core/canvas/nav-model.js';
 
-const OVERLAY_OPTIONS = { anchor: 'top-left', width: '100%', maxHeight: '100%' } as const;
+// A BOUNDED, centered modal (CTO ruling: not full-bleed). Width/height are capped
+// at ~72% of the terminal; the overlay clips our lines to maxHeight, and render()
+// budgets the panel to the SAME fraction (HEIGHT_PCT) so the framed box is never
+// clipped. margin keeps it off the screen edges.
+const HEIGHT_PCT = 0.72;
+const OVERLAY_OPTIONS = { anchor: 'center', width: '72%', minWidth: 48, maxHeight: '72%', margin: 1 } as const;
 
 // Viewer-specific hint: nav-model's shared GRAPH_HINT advertises "e expand",
 // but that key is the tmux pane-expand prefix-bind canvas-nav installs in its
 // host pane — the attach overlay has no such bind and swallows `e`, so the key
 // would do nothing here. Drop it.
 const GRAPH_HINT = `${DIM}jk move · hl fold · ↵ focus · x kill · m mgr · esc${RESET}`;
-
-/** Pad `s` out to `width` VISIBLE columns so the overlay line is opaque (no base
- *  content bleeds through the right edge). Lines already wider are left as-is. */
-function padTo(s: string, width: number): string {
-  const pad = width - visibleWidth(s);
-  return pad > 0 ? s + ' '.repeat(pad) : s;
-}
 
 export class GraphOverlay implements Component {
   private handle: OverlayHandle | undefined;
@@ -62,6 +62,7 @@ export class GraphOverlay implements Component {
     private readonly tui: TUI,
     private readonly self: string,
     private readonly getAsks: () => Record<string, number>,
+    private readonly palette: AttachPalette,
   ) {}
 
   isOpen(): boolean {
@@ -116,9 +117,15 @@ export class GraphOverlay implements Component {
     }
     this.cursorId = rows[cursorIdx]?.id ?? this.self;
 
-    // Full-screen budget: 1 title line + 1 footer hint, the rest for tree rows.
-    const totalH = Math.max(6, process.stdout.rows ?? VIEWPORT_FALLBACK_ROWS);
-    const treeArea = Math.max(2, totalH - 2);
+    // Bounded panel budget (centered modal, not full-bleed): the box height
+    // shrinks to content but is capped at HEIGHT_PCT of the terminal — matching
+    // the overlay's maxHeight so our framed lines are never clipped. 2 rows go to
+    // the top/bottom border, the rest to tree rows.
+    const term = process.stdout.rows ?? VIEWPORT_FALLBACK_ROWS;
+    // Never exceed the overlay's own maxHeight (term-2 after the margin), so the
+    // bottom border is never slice-clipped even on a very short terminal.
+    const maxPanelH = Math.max(3, Math.min(Math.floor(term * HEIGHT_PCT), term - 2));
+    const treeArea = Math.max(2, Math.min(rows.length, maxPanelH - 2));
 
     // Track the cursor within treeArea, reserving ↑/↓ "more" indicators. Up to
     // 4 passes converge the mutual dependency between window size and indicators
@@ -149,7 +156,30 @@ export class GraphOverlay implements Component {
       ? `${YELLOW}${this.pendingConfirm.label} ${BOLD}y/n${RESET}`
       : GRAPH_HINT;
 
-    return [title, ...body, hint].map((line) => padTo(line, width));
+    // Frame the panel: title in the top border, hint in the bottom border, tree
+    // rows boxed with themed side bars (truncate/pad to the inner width so the
+    // right edge stays flush and opaque).
+    const B = this.palette.border;
+    const innerW = Math.max(1, width - 4); // "│ " + content + " │"
+    // Hard-cut (empty ellipsis) + pad to innerW: ANSI-aware, so the cursor fill
+    // bar reaches the right border flush with no stray "…" and the box edge is
+    // opaque.
+    const boxed = body.map(
+      (line) => `${B('│')} ${truncateToWidth(line, innerW, '', true)} ${B('│')}`,
+    );
+    return [this.borderRow('╭', '╮', title, width), ...boxed, this.borderRow('╰', '╯', hint, width)];
+  }
+
+  /** A top/bottom border row: `<lc>─ <label> ────<rc>`, frame in the theme border
+   *  color, the label keeping its own styling. The label is visible-truncated to
+   *  the available span so a long label (a narrow pane, or a long `kill <name>?`
+   *  confirm) never spills past the corner. */
+  private borderRow(lc: string, rc: string, label: string, width: number): string {
+    const B = this.palette.border;
+    const span = Math.max(1, width - 5); // lc ─ _ <span> _ ─… rc
+    const lbl = truncateToWidth(label, span, '…');
+    const fill = Math.max(0, width - 5 - visibleWidth(lbl));
+    return `${B(`${lc}─`)} ${lbl} ${B('─'.repeat(fill) + rc)}`;
   }
 
   // -------------------------------------------------------------------------

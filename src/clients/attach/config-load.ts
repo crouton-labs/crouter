@@ -26,7 +26,7 @@ import {
   type KeybindingDefinitions,
   type KeybindingsConfig,
 } from '@earendil-works/pi-tui';
-import { initTheme } from '@earendil-works/pi-coding-agent';
+import { initTheme, getMarkdownTheme, getSelectListTheme } from '@earendil-works/pi-coding-agent';
 
 /** pi's user config dir: `~/.pi/agent/`. */
 export function defaultAgentDir(): string {
@@ -121,4 +121,64 @@ export function loadThemeName(opts?: { agentDir?: string; cwd?: string }): strin
  *  editor, select-list themes) render at parity with the user's pi. */
 export function applyTheme(opts?: { agentDir?: string; cwd?: string }): void {
   initTheme(loadThemeName(opts));
+}
+
+/**
+ * The named styling roles the attach chrome paints with, all theme-derived so the
+ * viewer matches whatever theme the user configured for pi. Each is a
+ * `str => str` colorizer applied to a whole token.
+ */
+export interface AttachPalette {
+  /** Headings / badges / panel titles — the theme accent (gold in the default). */
+  accent: (s: string) => string;
+  /** Live/active markers + the working spinner — the theme's bright accent (teal). */
+  active: (s: string) => string;
+  /** Informational values (model name, counts) — the theme link color (blue). */
+  info: (s: string) => string;
+  /** Secondary text — the theme muted gray. */
+  muted: (s: string) => string;
+  /** Least-important text — SGR faint (a style, not a hue). */
+  faint: (s: string) => string;
+  /** Border rules / frames — the theme border color. */
+  border: (s: string) => string;
+  /** Emphasis. */
+  bold: (s: string) => string;
+  /** Error text. pi's public theme API does NOT surface the `error` ThemeColor
+   *  (only markdown/select-list/settings-list derived colors are re-exported), so
+   *  this is the semantically-correct ANSI red — NOT an ad-hoc hardcode. */
+  error: (s: string) => string;
+  /** Warning / transient notices. Same constraint as `error` → ANSI yellow. */
+  warning: (s: string) => string;
+}
+
+const FAINT = (s: string): string => `\x1b[2m${s}\x1b[22m`;
+const RED = (s: string): string => `\x1b[31m${s}\x1b[39m`;
+const YELLOW = (s: string): string => `\x1b[33m${s}\x1b[39m`;
+
+/**
+ * Build the attach chrome's color palette from the LIVE theme. Call AFTER
+ * `applyTheme()` — the colors are pulled from pi's `getMarkdownTheme()` /
+ * `getSelectListTheme()`, which read the active theme singleton at call time.
+ *
+ * pi does not re-export the raw `Theme` instance (its `.` export map omits the
+ * `theme` const and `getEditorTheme`/`getTheme`), so the accent/border/muted hues
+ * are sourced from the markdown + select-list theme colorizers, which ARE
+ * re-exported and are themselves backed by `theme.fg(...)`. The two semantic
+ * colors pi never exposes through that surface — `error`/`warning` — fall back to
+ * standard ANSI red/yellow.
+ */
+export function attachPalette(): AttachPalette {
+  const md = getMarkdownTheme();
+  const sel = getSelectListTheme();
+  return {
+    accent: md.heading,
+    active: md.code,
+    info: md.link,
+    muted: sel.description,
+    faint: FAINT,
+    border: md.hr,
+    bold: md.bold,
+    error: RED,
+    warning: YELLOW,
+  };
 }

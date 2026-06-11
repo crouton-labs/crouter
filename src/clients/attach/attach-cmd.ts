@@ -24,10 +24,12 @@ import {
   Text,
   TUI,
   matchesKey,
+  truncateToWidth,
   type EditorTheme,
 } from '@earendil-works/pi-tui';
 import {
   CustomEditor,
+  DynamicBorder,
   getSelectListTheme,
   type AgentSessionEvent,
 } from '@earendil-works/pi-coding-agent';
@@ -43,13 +45,13 @@ import type {
   BrokerToClient,
   ClientRole,
 } from '../../core/runtime/broker-protocol.js';
-import { climbRoot } from '../../core/canvas/nav-model.js';
+import { climbRoot, visibleWidth } from '../../core/canvas/nav-model.js';
 import { ChatView } from './chat-view.js';
 import { InputController } from './input-controller.js';
 import { buildCanvasPanelLines } from './canvas-panels.js';
 import { GraphOverlay } from './graph-overlay.js';
 import { slashCommandList } from './slash-commands.js';
-import { applyTheme, createKeybindingsManager } from './config-load.js';
+import { applyTheme, attachPalette, createKeybindingsManager } from './config-load.js';
 import { BrokerUnavailableError, ViewSocketClient, reconnectShouldGiveUp } from './view-socket.js';
 
 /** Async per-node ask-map fetch (NON-blocking — the viewer must never block its
@@ -151,11 +153,14 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
   // 1. Theme + keybindings FIRST — pi's components throw "Theme not initialized"
   //    otherwise (T5 contract). One KeybindingsManager feeds BOTH editor + input.
   applyTheme({ cwd: meta.cwd });
+  const pal = attachPalette();
   const km = createKeybindingsManager();
 
   // 2. TUI + layout containers + editor. Top-to-bottom render order (set at
-  //    step 8): chat · badge · managers (↑ subscriber) · editor · reports
-  //    (↓ subscriptions) · footer. The badge sits in the BOTTOM-anchored chrome
+  //    step 8): chat · rule · badge · managers (↑ subscriber) · editor (themed
+  //    border) · reports (↓ subscriptions) · status bar. A themed DynamicBorder
+  //    rule divides the scrolling chat from the fixed chrome below it. The badge
+  //    sits in the BOTTOM-anchored chrome
   //    stack (directly above managers), NOT as the topmost child: pi-tui anchors
   //    the viewport to the cursor at the bottom, so a topmost badge scrolls off
   //    into scrollback the instant the chat exceeds one screen. The badge + the
@@ -163,10 +168,12 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
   const tui = new TUI(new ProcessTerminal());
   const badge = new Container();
   const chatContainer = new Container();
+  const chrome = new Container(); // a themed rule dividing scrolling chat from the fixed chrome below
   const managers = new Container();
   const reports = new Container();
   const footer = new Container();
-  const editorTheme: EditorTheme = { borderColor: (s) => s, selectList: getSelectListTheme() };
+  chrome.addChild(new DynamicBorder(pal.border));
+  const editorTheme: EditorTheme = { borderColor: pal.border, selectList: getSelectListTheme() };
   const editor = new CustomEditor(tui, editorTheme, km as unknown as EditorKeybindings, { paddingX: 1 });
   // Slash-command autocomplete: builtins + native canvas commands now; enriched
   // with the broker's engine/extension/skill commands on the get_commands ack.
@@ -178,20 +185,35 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
   // 3. Render layer (T5). ChatView owns the chat scroll + activity spinner; the
   //    footer/status line below is ours, so onFooterEvent is left unset (footer
   //    updates flow through handleBrokerFrame's single update path instead).
-  const chatView = new ChatView(tui, chatContainer, { cwd: meta.cwd });
+  const chatView = new ChatView(tui, chatContainer, { cwd: meta.cwd, palette: pal });
 
   // 4. Footer/status line — surfaces role + live state + transient notices.
   const clientId = randomUUID();
   let role: ClientRole = observer ? 'observer' : 'controller';
   let liveState: BrokerSnapshot['state'] | undefined;
   let notice = '';
+  // A themed, aligned status bar: live state on the LEFT (role · model · streaming
+  // · queued), the transient notice pushed to the RIGHT edge — not jammed inline.
   const renderFooter = (): void => {
-    const bits: string[] = [role === 'controller' ? 'drive' : 'read-only'];
-    if (liveState?.model) bits.push(liveState.model);
-    if (liveState?.isStreaming) bits.push('streaming');
-    if (liveState && liveState.pendingMessageCount > 0) bits.push(`queued ${liveState.pendingMessageCount}`);
-    let line = `\x1b[2m${bits.join(' · ')}\x1b[22m`;
-    if (notice) line += `   \x1b[33m${notice}\x1b[39m`;
+    const segs: string[] = [
+      role === 'controller' ? pal.active('● drive') : pal.muted('○ read-only'),
+    ];
+    if (liveState?.model) segs.push(pal.info(liveState.model));
+    if (liveState?.isStreaming) segs.push(pal.active('streaming'));
+    if (liveState && liveState.pendingMessageCount > 0) {
+      segs.push(pal.muted(`queued ${liveState.pendingMessageCount}`));
+    }
+    const left = segs.join(pal.muted(' · '));
+    const right = notice ? pal.warning(`⚠ ${notice}`) : '';
+    // Text(_, 1, 0) pads 1 col each side, so the usable span is columns - 2.
+    const span = Math.max(1, (process.stdout.columns ?? 80) - 2);
+    const rightW = visibleWidth(right);
+    // Truncate the left segment (ANSI-aware) so a long model/notice never wraps;
+    // the right-aligned notice keeps its slot.
+    const maxLeft = right ? Math.max(0, span - rightW - 1) : span;
+    const leftFit = visibleWidth(left) > maxLeft ? truncateToWidth(left, maxLeft, '…') : left;
+    const gap = Math.max(right ? 1 : 0, span - visibleWidth(leftFit) - rightW);
+    const line = right ? leftFit + ' '.repeat(gap) + right : leftFit;
     footer.clear();
     footer.addChild(new Text(line, 1, 0));
     tui.requestRender();
@@ -206,7 +228,11 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
   // above the managers line in the bottom chrome so it stays in-viewport.
   const renderBadge = (): void => {
     badge.clear();
-    if (liveState?.sessionName) badge.addChild(new Text(`\x1b[1m${liveState.sessionName}\x1b[22m`, 1, 0));
+    if (liveState?.sessionName) {
+      const span = Math.max(1, (process.stdout.columns ?? 80) - 2);
+      const label = truncateToWidth(`⬢ ${liveState.sessionName}`, span, '…');
+      badge.addChild(new Text(pal.accent(pal.bold(label)), 1, 0));
+    }
     tui.requestRender();
   };
 
@@ -216,7 +242,7 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
   // the db reads for each rebuild.
   let asksMap: Record<string, number> = {};
   const renderPanels = (): void => {
-    const { managers: mLines, reports: rLines } = buildCanvasPanelLines(nodeId, asksMap);
+    const { managers: mLines, reports: rLines } = buildCanvasPanelLines(nodeId, asksMap, pal);
     managers.clear();
     for (const l of mLines) managers.addChild(new Text(l, 1, 0));
     reports.clear();
@@ -224,9 +250,9 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
     tui.requestRender();
   };
 
-  // The alt+g GRAPH overlay (Feature 3) — a full-screen navigator over the same
-  // nav-model graph, reading the live asksMap.
-  const graphOverlay = new GraphOverlay(tui, nodeId, () => asksMap);
+  // The alt+g GRAPH overlay (Feature 3) — a bounded, centered modal navigator
+  // over the same nav-model graph, reading the live asksMap.
+  const graphOverlay = new GraphOverlay(tui, nodeId, () => asksMap, pal);
 
   // Refresh all canvas chrome (panels + overlay if open) from canvas.db.
   const refreshChrome = (): void => {
@@ -466,6 +492,7 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
   // 8. Lay out, focus the editor, start, then handshake. Starting before the
   //    handshake means the welcome's applySnapshot renders into a live TUI.
   tui.addChild(chatContainer);
+  tui.addChild(chrome);
   tui.addChild(badge);
   tui.addChild(managers);
   tui.addChild(editor);

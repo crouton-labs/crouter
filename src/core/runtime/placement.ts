@@ -920,24 +920,30 @@ attempt();
  *        isPidAlive(pi_pid)); reviveNode's double-revive guard makes this
  *        idempotent: already-alive → no-op, dead → launch ONE detached broker —
  *        never a second engine. The VIEWER never does this; placement does.
- *    (b) OPEN THE VIEWER PANE — after a bounded view.sock readiness wait (closes
- *        the cold-start race against attach's single connect), split a pane
- *        beside the caller running exactly the VIEWER command `crtr attach to
- *        <id>`, which connects to view.sock and renders/drives the live engine.
+ *    (b) OPEN/REPOINT THE VIEWER PANE — after a bounded view.sock readiness wait
+ *        (closes the cold-start race against attach's single connect), put the
+ *        VIEWER command `crtr attach to <id>` on screen. By DEFAULT this SWAPS
+ *        IN PLACE: re-exec the caller pane (respawn-pane -k, DETACHED) to attach
+ *        to the new broker, so focusing a node REPLACES what this pane shows
+ *        rather than stacking a second viewer beside it. A new pane is split
+ *        beside the caller ONLY when `--new-pane` is asked (deliberate
+ *        two-on-screen, F4) or when the caller pane is a LIVE ENGINE pane of a
+ *        tmux-host node — respawning that would clobber a running engine.
  *
  *  No FOCUS ROW is registered: a broker viewer pane is NOT an engine pane (the
  *  engine lives in the detached broker; pi_pid is the broker's), so it stays out
  *  of the focuses table / reconcile / retargetFocus, which track engine-in-pane
- *  swap semantics. (Repeated focus thus stacks viewers — accepted for the Phase-4
- *  opt-in; the Phase-5 default-swap owns any viewer dedup.) Reaches no engine
- *  launcher directly (placement must not import revive.ts/host.ts — a cycle):
- *  step (a) goes through the injected `revive`, step (b) through the existing
- *  splitWindow driver verb. `--new-pane` is moot — a broker focus is ALWAYS a
- *  fresh viewer pane — so the flag is ignored. */
+ *  swap semantics. The in-place respawn is safe across brokers: a `-k` kills the
+ *  caller pane's viewer (and the `crtr node focus` child invoking us), but the
+ *  detached dispatch (own process group) still reaches the tmux server, and the
+ *  OLD broker keeps running (a viewer's signal-teardown never sends `bye`).
+ *  Reaches no engine launcher directly (placement must not import
+ *  revive.ts/host.ts — a cycle): step (a) goes through the injected `revive`,
+ *  step (b) through the existing respawnPaneDetached / splitWindow driver verbs. */
 function focusBroker(
   nodeId: string,
   meta: NodeMeta,
-  opts: { pane?: string; revive: Reviver },
+  opts: { pane?: string; newPane?: boolean; revive: Reviver },
 ): FocusResult {
   const callerPane = opts.pane ?? process.env['TMUX_PANE'] ?? currentTmux()?.pane;
   if (callerPane === undefined || callerPane === '') {
@@ -953,14 +959,35 @@ function focusBroker(
 
   // Close the cold-start race: a freshly launched broker records pid during
   // extension bind, then opens view.sock later; attach connects once and exits
-  // "no broker" if we split before listen(). Probe for an ACCEPTING socket (not
-  // mere path existence) before opening the viewer pane.
+  // "no broker" if we open the viewer before listen(). Probe for an ACCEPTING
+  // socket (not mere path existence) before opening it.
   if (!waitForBrokerViewSocket(nodeId)) {
     return { focused: false, session: null, inPlace: false, revived };
   }
 
   // Node ids are shell-safe identifiers (base36-ts + hex); no quoting needed.
-  const pane = splitWindow(callerPane, { cwd: meta.cwd, env: viewerSplitEnv(), command: `crtr attach to ${nodeId}` });
+  const command = `crtr attach to ${nodeId}`;
+
+  // Protect a live ENGINE pane: if the caller pane is the durable pane of an
+  // active|idle tmux-host node, respawning it in place would clobber that
+  // running engine — split beside instead. A viewer/shell pane has no such row
+  // (a broker's pane field is null), so it is safe to take over in place.
+  const occupant = getRowByPane(callerPane);
+  const callerIsLiveEngine =
+    occupant !== null && occupant.pane === callerPane && paneExists(callerPane) &&
+    (occupant.status === 'active' || occupant.status === 'idle');
+
+  if (opts.newPane !== true && !callerIsLiveEngine) {
+    // SWAP IN PLACE — respawn-pane -k DETACHED (the `crtr node focus` invoking us
+    // is a child of the caller pane's viewer process, so a -k tears down its own
+    // awaiter; the detached dispatch still reaches the tmux server).
+    const ok = respawnPaneDetached({ pane: callerPane, cwd: meta.cwd, env: viewerSplitEnv(), command });
+    if (!ok) return { focused: false, session: null, inPlace: false, revived };
+    return { focused: true, session: paneLocation(callerPane)?.session ?? null, inPlace: true, revived };
+  }
+
+  // --new-pane (or protecting a live engine pane): split a fresh viewer beside.
+  const pane = splitWindow(callerPane, { cwd: meta.cwd, env: viewerSplitEnv(), command });
   if (pane === null) return { focused: false, session: null, inPlace: false, revived };
   return { focused: true, session: paneLocation(pane)?.session ?? null, inPlace: false, revived };
 }

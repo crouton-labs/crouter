@@ -19,6 +19,7 @@
 // a clean error+exit, not a crash.
 
 import { EventEmitter } from 'node:events';
+import { randomUUID } from 'node:crypto';
 import { createConnection, type Socket } from 'node:net';
 import { join } from 'node:path';
 import { nodeDir } from '../../core/canvas/paths.js';
@@ -28,9 +29,33 @@ import {
   encodeFrame,
   FrameDecoder,
   FrameOverflowError,
+  type BrokerDataFrame,
   type BrokerToClient,
   type ClientToBroker,
+  type DequeueFrame,
+  type GetSettingsFrame,
+  type GetTreeFrame,
+  type ListModelsFrame,
+  type ListScopedModelsFrame,
+  type ListSessionsFrame,
 } from '../../core/runtime/broker-protocol.js';
+
+/** A correlated read-op (or `dequeue`) request MINUS the client-chosen `id` —
+ *  {@link ViewSocketClient.request} mints the `id`, sends the frame, and resolves
+ *  with the matching `data` reply. The picker/operator code builds these; the
+ *  socket owns the correlation token so callers never hand-roll one. */
+export type ReadOpRequest =
+  | Omit<ListModelsFrame, 'id'>
+  | Omit<ListSessionsFrame, 'id'>
+  | Omit<GetTreeFrame, 'id'>
+  | Omit<GetSettingsFrame, 'id'>
+  | Omit<ListScopedModelsFrame, 'id'>
+  | Omit<DequeueFrame, 'id'>;
+
+/** How long {@link ViewSocketClient.request} waits for the correlated reply before
+ *  rejecting — bounds a pending picker fetch if the broker drops the request
+ *  (it should always reply with `data` or a correlated `error`). */
+const REQUEST_TIMEOUT_MS = 10_000;
 
 /** Surfaced when the node has no reachable broker at connect time (no socket
  *  file, or a stale socket with nothing listening). The command catches this to
@@ -74,9 +99,43 @@ export class ViewSocketClient extends EventEmitter {
   private socket: Socket | undefined;
   private decoder = new FrameDecoder(CLIENT_READ_CAPS);
   private closeEmitted = false;
+  /** In-flight correlated read-ops, keyed by the `id` minted in {@link request}.
+   *  Resolved by the matching `data` frame / rejected by the matching `error`
+   *  frame in {@link onData}, the request's timeout, or socket teardown. */
+  private pending = new Map<
+    string,
+    { resolve: (frame: BrokerDataFrame) => void; reject: (err: Error) => void; timer: ReturnType<typeof setTimeout> }
+  >();
 
   constructor(private readonly nodeId: string) {
     super();
+  }
+
+  /** Issue a correlated read-op and resolve with the broker's `data` reply (or
+   *  reject on the correlated `error`, a timeout, or socket teardown). Mints the
+   *  `id`, sends `{...frame, id}`, and parks a resolver consumed by {@link onData}.
+   *  The reply is narrowed by the caller on its `kind`. */
+  request(frame: ReadOpRequest): Promise<BrokerDataFrame> {
+    const id = randomUUID();
+    return new Promise<BrokerDataFrame>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`request '${frame.type}' timed out after ${REQUEST_TIMEOUT_MS}ms`));
+      }, REQUEST_TIMEOUT_MS);
+      if (typeof timer.unref === 'function') timer.unref();
+      this.pending.set(id, { resolve, reject, timer });
+      this.send({ ...frame, id } as ClientToBroker);
+    });
+  }
+
+  /** Reject + clear every in-flight request (socket gone / decode error) so a
+   *  picker fetch never hangs past the connection it rode on. */
+  private rejectAllPending(reason: string): void {
+    for (const { reject, timer } of this.pending.values()) {
+      clearTimeout(timer);
+      reject(new Error(reason));
+    }
+    this.pending.clear();
   }
 
   /** The broker binds `join(nodeDir(id), 'view.sock')` — resolve it the same way. */
@@ -163,12 +222,31 @@ export class ViewSocketClient extends EventEmitter {
         err instanceof FrameOverflowError
           ? `broker sent an oversized frame (${err.message}) — disconnecting`
           : `failed to decode a broker frame: ${String(err)}`;
+      this.rejectAllPending(msg);
       this.emitError(new Error(msg));
       this.destroy();
       return;
     }
     for (const raw of frames) {
-      this.emit('frame', raw as BrokerToClient);
+      const frame = raw as BrokerToClient;
+      // Correlated replies (read-ops + dequeue) are consumed by the pending-by-id
+      // resolver, NOT re-emitted as a generic 'frame' (the attach frame router
+      // would otherwise treat a `data` frame as an AgentSessionEvent). A `data`
+      // frame is ALWAYS a reply; an `error` is correlated only when its `id`
+      // matches an in-flight request — an uncorrelated error still flows through.
+      if (
+        (frame.type === 'data' || frame.type === 'error') &&
+        typeof frame.id === 'string' &&
+        this.pending.has(frame.id)
+      ) {
+        const entry = this.pending.get(frame.id)!;
+        this.pending.delete(frame.id);
+        clearTimeout(entry.timer);
+        if (frame.type === 'data') entry.resolve(frame);
+        else entry.reject(new Error(frame.message || `request failed: ${frame.code}`));
+        continue;
+      }
+      this.emit('frame', frame);
     }
   }
 
@@ -184,6 +262,7 @@ export class ViewSocketClient extends EventEmitter {
   private onClose(): void {
     if (this.closeEmitted) return;
     this.closeEmitted = true;
+    this.rejectAllPending('broker connection closed');
     this.emit('close');
   }
 

@@ -124,6 +124,7 @@ test('C2 — zero-viewer UI context resolves dialogs to deny/cancel immediately 
       throw new Error('C2: must NOT forward a dialog when no controller is attached');
     },
     pending: new Map(),
+    broadcast: () => {},
   });
 
   // confirm() WITH a large timeout: the fix must resolve at once (deny), NOT after
@@ -164,6 +165,7 @@ test('M2 — a forwarded dialog stays pending on controller detach, resolving on
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     pending: pending as any,
+    broadcast: () => {},
   });
 
   // Controller attached → confirm() forwards + registers a pending dialog (with the

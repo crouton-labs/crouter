@@ -26,9 +26,12 @@
 import type {
   AgentSession,
   AgentSessionEvent,
+  SessionEntry,
+  SessionInfo,
+  SettingsConfig,
   SessionStats,
 } from '@earendil-works/pi-coding-agent';
-import type { ImageContent } from '@earendil-works/pi-ai';
+import type { Api, ImageContent, Model } from '@earendil-works/pi-ai';
 import { StringDecoder } from 'node:string_decoder';
 
 /** Emitted when an extension needs user input (mirror of pi rpc-types.d.ts). */
@@ -156,14 +159,31 @@ export interface SetModelFrame {
   type: 'set_model';
   model: string;
 }
-/** `cycleModel()`. */
+/** `cycleModel(direction)` — ctrl+p (forward) / shift+ctrl+p (backward). `direction`
+ *  defaults to `'forward'` when absent (back-compat with the original frame). */
 export interface CycleModelFrame {
   type: 'cycle_model';
+  direction?: 'forward' | 'backward';
 }
-/** `setThinkingLevel(level)` — `/settings` thinking. */
+/** `cycleThinkingLevel()` — shift+tab. Cycles to the next thinking level; the new
+ *  level reaches viewers via the relayed `thinking_level_changed` event, so the
+ *  broker replies a plain `ack` (no payload). Distinct from `set_thinking_level`,
+ *  which jumps to a specific level chosen in the thinking picker. */
+export interface CycleThinkingFrame {
+  type: 'cycle_thinking';
+}
+/** `setThinkingLevel(level)` — `/settings` thinking / thinking picker. */
 export interface SetThinkingLevelFrame {
   type: 'set_thinking_level';
   level: AgentSession['thinkingLevel'];
+}
+/** `clearQueue()` — alt+up (dequeue). Removes ALL queued steering + follow-up
+ *  messages and returns them so the viewer can restore them to the editor. A
+ *  read-AND-mutate op: carries a correlation `id` and the broker replies with a
+ *  `data{ kind:'dequeue' }` frame carrying the cleared messages. */
+export interface DequeueFrame {
+  type: 'dequeue';
+  id: string;
 }
 /** `setAutoRetryEnabled(enabled)`. */
 export interface SetAutoRetryFrame {
@@ -226,6 +246,48 @@ export interface ExportFrame {
   format: 'html' | 'jsonl';
 }
 
+// ---------------------------------------------------------------------------
+// Read-op request frames (operator-view picker data, design §5 Unit A)
+// ---------------------------------------------------------------------------
+// Each fetches the engine-side state a native pi picker's constructor needs and
+// is answered by a correlated `data` frame (below), keyed by `id`. These are NOT
+// controller-gated (read-only, like `get_commands`): any client — controller or
+// observer — may request them, so the web bridge's observer connection can
+// populate pickers too. `id` is a client-chosen correlation token echoed in the
+// reply (mirrors the extension-dialog `id` convention).
+
+/** Model-selector data (`/model`, ctrl+l): the full registry, the current model,
+ *  which models have auth, the `--models` scoped set, and the enabled-model set. */
+export interface ListModelsFrame {
+  type: 'list_models';
+  id: string;
+}
+/** Session-resume data (`/resume`): the session list. `scope` selects the
+ *  cwd-local list (default) or the cross-project list — `SessionSelectorComponent`
+ *  uses BOTH loaders, so the viewer issues one request per scope. */
+export interface ListSessionsFrame {
+  type: 'list_sessions';
+  id: string;
+  scope?: 'cwd' | 'all';
+}
+/** Session-tree + fork data (`/tree` nav AND `/fork` selector): the full tree,
+ *  the current leaf, and the prior user messages the fork picker lists. */
+export interface GetTreeFrame {
+  type: 'get_tree';
+  id: string;
+}
+/** Interactive settings-menu data (`/settings`): the full `SettingsConfig` toggle
+ *  set plus auto-retry + current model (design §5 Unit A). */
+export interface GetSettingsFrame {
+  type: 'get_settings';
+  id: string;
+}
+/** Scoped-models picker data (`/scoped-models`): every model + the enabled set. */
+export interface ListScopedModelsFrame {
+  type: 'list_scoped_models';
+  id: string;
+}
+
 /** Answer a blocking extension dialog — pi's public RPC response type. */
 export type ExtensionUIResponseFrame = RpcExtensionUIResponse;
 
@@ -241,7 +303,9 @@ export type ClientToBroker =
   | ShutdownFrame
   | SetModelFrame
   | CycleModelFrame
+  | CycleThinkingFrame
   | SetThinkingLevelFrame
+  | DequeueFrame
   | SetAutoRetryFrame
   | SetAutoCompactionFrame
   | CompactFrame
@@ -253,6 +317,11 @@ export type ClientToBroker =
   | NavigateTreeFrame
   | ReloadFrame
   | ExportFrame
+  | ListModelsFrame
+  | ListSessionsFrame
+  | GetTreeFrame
+  | GetSettingsFrame
+  | ListScopedModelsFrame
   | ExtensionUIResponseFrame;
 
 // ---------------------------------------------------------------------------
@@ -279,6 +348,12 @@ export interface ErrorFrame {
   type: 'error';
   code: string;
   message: string;
+  /** Correlation token, echoed from the request that failed. Present ONLY on the
+   *  failure of a correlated request (a read-op or `dequeue`, which carry an `id`
+   *  and otherwise resolve via a `data` frame) so the viewer can reject the exact
+   *  pending-by-id promise instead of hanging it. Absent on uncorrelated errors
+   *  (engine drive errors, command-op failures, frame_overflow). */
+  id?: string;
 }
 
 /** Result of a controller command op (§1.3): `for` echoes the op name, `ok` the
@@ -288,6 +363,174 @@ export interface AckFrame {
   for: string;
   ok: boolean;
   detail?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Read-op DATA frames (operator-view picker payloads, design §5 Unit A)
+// ---------------------------------------------------------------------------
+// The typed replies to the read-op request frames, plus the dequeue result. All
+// share `type:'data'` + a `kind` discriminant + the request's correlation `id`,
+// so a viewer can both narrow the payload by `kind` AND match it to the request
+// it issued. Built by pure getter reads against the live engine session (broker.ts).
+//
+// SERIALIZATION NOTES (design R1):
+//  - `Model<Api>` is pure data (no methods) — relayed verbatim; the viewer can
+//    feed it to a `SelectList` directly or repopulate a client-side ModelRegistry.
+//  - pi's `*SelectorComponent`s take LIVE `ModelRegistry`/`SettingsManager`/session-
+//    loader OBJECTS that cannot cross a socket. The viewer (Unit B) reconstructs
+//    those from these payloads (both classes are publicly constructible) or renders
+//    a SelectList — see the report's R1 caveat.
+
+/** `provider/id` model reference — the wire form of a current/selected model. */
+export interface WireModelRef {
+  provider: string;
+  id: string;
+}
+
+/** A `--models` scoped cycle entry (mirror of `AgentSession.scopedModels[n]`). */
+export interface WireScopedModel {
+  model: Model<Api>;
+  thinkingLevel?: AgentSession['thinkingLevel'];
+}
+
+/** Wire form of pi's `SessionInfo`: identical EXCEPT `created`/`modified` are ISO
+ *  strings (pi's are `Date`, which JSON cannot round-trip) — the viewer revives
+ *  them with `new Date(...)` before handing them to `SessionSelectorComponent`. */
+export interface WireSessionInfo extends Omit<SessionInfo, 'created' | 'modified'> {
+  created: string;
+  modified: string;
+}
+
+/** Wire form of pi's `SessionTreeNode` (NOT re-exported from the pi package root,
+ *  so mirrored structurally here). Byte-compatible with `SessionManager.getTree()`'s
+ *  return; `SessionEntry` IS re-exported, so it is referenced directly. */
+export interface WireSessionTreeNode {
+  entry: SessionEntry;
+  children: WireSessionTreeNode[];
+  label?: string;
+  labelTimestamp?: string;
+}
+
+/** A prior user message for the `/fork` selector (`UserMessageSelectorComponent`
+ *  consumes `{ id, text, timestamp? }`). `id` is the session entry id. */
+export interface WireForkPoint {
+  id: string;
+  text: string;
+  timestamp?: string;
+}
+
+/** The interactive settings-menu state. The full pi `SettingsConfig` (every toggle
+ *  the `/settings` menu shows) PLUS auto-retry and the current model, which the
+ *  menu reflects but `SettingsConfig` omits. Build-time `extends` enforces that the
+ *  broker populates every `SettingsConfig` field (no thin payload — design R1). */
+export interface WireSettings extends SettingsConfig {
+  /** `AgentSession.autoRetryEnabled`. */
+  autoRetry: boolean;
+  /** `AgentSession.model`, as a `provider/id` ref (null if none selected). */
+  model: WireModelRef | null;
+}
+
+export interface ListModelsData {
+  type: 'data';
+  id: string;
+  kind: 'list_models';
+  /** Every registered model (`ModelRegistry.getAll()`). */
+  models: Model<Api>[];
+  /** The currently selected model, or null. */
+  current: WireModelRef | null;
+  /** `provider/id` of every model that has auth configured (`getAvailable()`). */
+  availableIds: string[];
+  /** The `--models` scoped cycle set (may be empty). */
+  scopedModels: WireScopedModel[];
+  /** The enabled-model patterns (`SettingsManager.getEnabledModels()`), or null. */
+  enabledModelIds: string[] | null;
+}
+
+export interface ListSessionsData {
+  type: 'data';
+  id: string;
+  kind: 'list_sessions';
+  scope: 'cwd' | 'all';
+  sessions: WireSessionInfo[];
+  /** The live session's file path, so the picker can mark the current entry. */
+  currentSessionFile: string | undefined;
+}
+
+export interface GetTreeData {
+  type: 'data';
+  id: string;
+  kind: 'get_tree';
+  tree: WireSessionTreeNode[];
+  currentLeafId: string | null;
+  /** Prior user messages for the `/fork` selector. */
+  forkPoints: WireForkPoint[];
+}
+
+export interface GetSettingsData {
+  type: 'data';
+  id: string;
+  kind: 'get_settings';
+  settings: WireSettings;
+}
+
+export interface ListScopedModelsData {
+  type: 'data';
+  id: string;
+  kind: 'list_scoped_models';
+  /** Every registered model (`ModelRegistry.getAll()`), to enable/disable. */
+  allModels: Model<Api>[];
+  enabledModelIds: string[] | null;
+}
+
+/** The `dequeue` result: the steering + follow-up messages just cleared, for the
+ *  viewer to restore to the editor. */
+export interface DequeueData {
+  type: 'data';
+  id: string;
+  kind: 'dequeue';
+  steering: string[];
+  followUp: string[];
+}
+
+/** All correlated data replies (read-ops + dequeue). Discriminate on `kind`. */
+export type BrokerDataFrame =
+  | ListModelsData
+  | ListSessionsData
+  | GetTreeData
+  | GetSettingsData
+  | ListScopedModelsData
+  | DequeueData;
+
+// ---------------------------------------------------------------------------
+// Non-blocking extension-UI display frames (design §5 Unit A task 3)
+// ---------------------------------------------------------------------------
+// Broadcast to ALL viewers when an extension calls the matching `ctx.ui.*` method
+// (relayed by makeBrokerUiContext instead of being no-op'd). These are
+// fire-and-forget DISPLAY state — no response, no correlation id. The viewer
+// (Unit E) owns the slots that render them. NOTE: pi's non-blocking surface also
+// includes `notify` and the working-indicator setters; only the three named in
+// scope (setStatus/setWidget/setTitle) are relayed here.
+
+/** `ctx.ui.setStatus(key, text)` — a keyed footer/status entry; `text===undefined`
+ *  clears that key. */
+export interface DisplayStatusFrame {
+  type: 'display_status';
+  key: string;
+  text: string | undefined;
+}
+/** `ctx.ui.setWidget(key, lines, {placement})` — persistent lines above/below the
+ *  editor; `lines===undefined` clears that key. The component-factory overload of
+ *  setWidget cannot cross the socket and is dropped broker-side (R1 caveat). */
+export interface DisplayWidgetFrame {
+  type: 'display_widget';
+  key: string;
+  lines: string[] | undefined;
+  placement: 'aboveEditor' | 'belowEditor';
+}
+/** `ctx.ui.setTitle(title)` — the terminal window/tab title. */
+export interface DisplayTitleFrame {
+  type: 'display_title';
+  title: string;
 }
 
 /** A blocking dialog routed to the controller — pi's public RPC request type. */
@@ -301,6 +544,10 @@ export type BrokerToClient =
   | ControlChangedFrame
   | ErrorFrame
   | AckFrame
+  | BrokerDataFrame
+  | DisplayStatusFrame
+  | DisplayWidgetFrame
+  | DisplayTitleFrame
   | ExtensionUIRequestFrame
   | AgentSessionEvent;
 

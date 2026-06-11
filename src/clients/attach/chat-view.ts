@@ -36,6 +36,7 @@ import {
   type AgentSessionEvent,
 } from '@earendil-works/pi-coding-agent';
 import type { BrokerSnapshot } from '../../core/runtime/broker-protocol.js';
+import type { AttachPalette } from './config-load.js';
 
 /** One message from the catch-up snapshot — pi's `AgentMessage` union. */
 type ChatMessage = BrokerSnapshot['messages'][number];
@@ -44,12 +45,15 @@ type ChatMessage = BrokerSnapshot['messages'][number];
  *  the tool-call shape; everything else falls through. */
 type ToolCallContent = { type: 'toolCall'; id: string; name: string; arguments: unknown };
 
-/** `theme` (the live instance) is NOT re-exported by pi's strict `.` map, so the
- *  loaders use small local ANSI styling rather than `theme.fg(...)`. Theme parity
- *  for activity spinners is cosmetic; the message components themselves still use
- *  `getMarkdownTheme()` for full-fidelity rendering. */
-const spinnerStyle = (s: string): string => `\x1b[36m${s}\x1b[39m`; // cyan
-const dimStyle = (s: string): string => `\x1b[2m${s}\x1b[22m`; // dim
+/** Theme-derived chrome colors (spinner / dim / error) are supplied by the
+ *  attach command via `ChatViewOptions.palette` (built from the live theme in
+ *  config-load.ts). pi does not re-export the raw `theme` instance, so when no
+ *  palette is passed (ChatView used standalone) these defaults stand in: a faint
+ *  dim and ANSI red, matching the palette's own fallbacks. The message components
+ *  themselves still use `getMarkdownTheme()` for full-fidelity rendering. */
+const defaultSpinnerStyle = (s: string): string => `\x1b[2m${s}\x1b[22m`;
+const defaultDimStyle = (s: string): string => `\x1b[2m${s}\x1b[22m`;
+const defaultErrorStyle = (s: string): string => `\x1b[31m${s}\x1b[39m`;
 
 export interface ChatViewOptions {
   /** Working dir used by `ToolExecutionComponent` for path/diff display. Defaults
@@ -69,6 +73,9 @@ export interface ChatViewOptions {
    *  (queue_update, session_info_changed, thinking_level_changed). The attach
    *  command (T7) wires a footer here; absent → these events are no-ops. */
   onFooterEvent?: (event: AgentSessionEvent) => void;
+  /** Theme palette for the activity spinner / dim status / error lines. Absent →
+   *  the module defaults (faint + ANSI red) are used. */
+  palette?: AttachPalette;
 }
 
 export class ChatView {
@@ -87,6 +94,10 @@ export class ChatView {
   private readonly hiddenThinkingLabel: string;
   private readonly toolOutputExpanded: boolean;
   private readonly onFooterEvent: ((event: AgentSessionEvent) => void) | undefined;
+  /** Theme-derived colorizers for the activity/status area. */
+  private readonly spinnerStyle: (s: string) => string;
+  private readonly dimStyle: (s: string) => string;
+  private readonly errorStyle: (s: string) => string;
 
   /** The assistant message component currently being streamed (between
    *  message_start and message_end for an assistant turn). */
@@ -108,6 +119,9 @@ export class ChatView {
     this.hiddenThinkingLabel = opts.hiddenThinkingLabel ?? 'Thinking...';
     this.toolOutputExpanded = opts.toolOutputExpanded ?? false;
     this.onFooterEvent = opts.onFooterEvent;
+    this.spinnerStyle = opts.palette?.active ?? defaultSpinnerStyle;
+    this.dimStyle = opts.palette?.muted ?? defaultDimStyle;
+    this.errorStyle = opts.palette?.error ?? defaultErrorStyle;
     this.container.addChild(this.statusContainer);
   }
 
@@ -500,7 +514,7 @@ export class ChatView {
   }
 
   private makeLoader(message: string): Loader {
-    return new Loader(this.tui, spinnerStyle, dimStyle, message);
+    return new Loader(this.tui, this.spinnerStyle, this.dimStyle, message);
   }
 
   /** Swap the single active activity indicator (working/compaction/retry). */
@@ -513,12 +527,12 @@ export class ChatView {
 
   private showStatus(message: string): void {
     this.append(new Spacer(1));
-    this.append(new Text(dimStyle(message), 1, 0));
+    this.append(new Text(this.dimStyle(message), 1, 0));
   }
 
   private showError(message: string): void {
     this.append(new Spacer(1));
-    this.append(new Text(`\x1b[31m${message}\x1b[39m`, 1, 0));
+    this.append(new Text(this.errorStyle(message), 1, 0));
   }
 
   /** Extract the tool-call content items from an assistant message. */

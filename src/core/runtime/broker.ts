@@ -43,8 +43,17 @@ import {
   type BrokerToClient,
   type ClientRole,
   type ClientToBroker,
+  type GetSettingsData,
+  type GetTreeData,
+  type ListModelsData,
+  type ListScopedModelsData,
+  type ListSessionsData,
   type RpcExtensionUIRequest,
   type RpcExtensionUIResponse,
+  type WireForkPoint,
+  type WireModelRef,
+  type WireSessionInfo,
+  type WireSettings,
 } from './broker-protocol.js';
 
 // ---------------------------------------------------------------------------
@@ -482,6 +491,7 @@ export async function runBroker(nodeId: string): Promise<void> {
     controller: controllerClient,
     forward: (client, request) => sendFrame(client, request),
     pending: pendingDialogs,
+    broadcast,
   });
 
   // -------------------------------------------------------------------------
@@ -595,21 +605,32 @@ export async function runBroker(nodeId: string): Promise<void> {
   // -------------------------------------------------------------------------
   /** Reject a non-controller for a controller-only op. Returns true when rejected
    *  (the caller should `break`). */
-  const notController = (client: BrokerClient, what: string): boolean => {
+  const notController = (client: BrokerClient, what: string, id?: string): boolean => {
     if (client.id === controllerId) return false;
     sendFrame(client, {
       type: 'error',
       code: 'not_controller',
       message: `only the controlling client may ${what}`,
+      // M1: echo a correlated request's id so its pending-by-id promise rejects
+      // rather than hanging (e.g. a non-controller `dequeue`).
+      ...(id !== undefined ? { id } : {}),
     });
     return true;
   };
   const ackTo = (client: BrokerClient, op: string, ok = true, detail?: string): void =>
     sendFrame(client, { type: 'ack', for: op, ok, ...(detail !== undefined ? { detail } : {}) });
   const engineErrorTo =
-    (client: BrokerClient) =>
+    (client: BrokerClient, id?: string) =>
     (err: unknown): void =>
-      sendFrame(client, { type: 'error', code: 'engine_error', message: String(err) });
+      sendFrame(client, {
+        type: 'error',
+        code: 'engine_error',
+        message: String(err),
+        // M1: a correlated read-op / dequeue failure echoes its id so the viewer's
+        // pending-by-id promise rejects instead of hanging; uncorrelated callers
+        // pass no id (unchanged behavior).
+        ...(id !== undefined ? { id } : {}),
+      });
 
   /** Resolve a `provider/id` model spec against the LIVE services registry (which
    *  carries any extension-registered providers). Pure: returns undefined on a
@@ -647,6 +668,136 @@ export async function runBroker(nodeId: string): Promise<void> {
       /* ignore */
     }
     return out;
+  };
+
+  // -------------------------------------------------------------------------
+  // Read-op data builders (operator-view picker payloads, §5 Unit A). Each is a
+  // PURE getter read against the live engine session — the data a native pi
+  // picker's constructor needs, serialized for the viewer. Not controller-gated
+  // (read-only, like get_commands), so the web bridge's observer connection can
+  // populate pickers too.
+  // -------------------------------------------------------------------------
+  const toModelRef = (m: { provider: string; id: string } | undefined): WireModelRef | null =>
+    m === undefined ? null : { provider: m.provider, id: m.id };
+  const modelKey = (m: { provider: string; id: string }): string => `${m.provider}/${m.id}`;
+
+  const buildListModelsData = (id: string): ListModelsData => {
+    const reg = session.modelRegistry;
+    let availableIds: string[] = [];
+    try {
+      availableIds = reg.getAvailable().map(modelKey);
+    } catch {
+      /* getAvailable touches auth config; degrade to "none known available" */
+    }
+    return {
+      type: 'data',
+      id,
+      kind: 'list_models',
+      models: reg.getAll(),
+      current: toModelRef(session.model),
+      availableIds,
+      scopedModels: session.scopedModels.map((s) => ({
+        model: s.model,
+        thinkingLevel: s.thinkingLevel,
+      })),
+      enabledModelIds: session.settingsManager.getEnabledModels() ?? null,
+    };
+  };
+
+  const buildScopedModelsData = (id: string): ListScopedModelsData => ({
+    type: 'data',
+    id,
+    kind: 'list_scoped_models',
+    allModels: session.modelRegistry.getAll(),
+    enabledModelIds: session.settingsManager.getEnabledModels() ?? null,
+  });
+
+  const buildGetTreeData = (id: string): GetTreeData => {
+    const sm = session.sessionManager;
+    const forkPoints: WireForkPoint[] = session.getUserMessagesForForking().map((u) => ({
+      id: u.entryId,
+      text: u.text,
+      timestamp: sm.getEntry(u.entryId)?.timestamp,
+    }));
+    return {
+      type: 'data',
+      id,
+      kind: 'get_tree',
+      tree: sm.getTree(),
+      currentLeafId: sm.getLeafId(),
+      forkPoints,
+    };
+  };
+
+  const buildSettingsData = (id: string): GetSettingsData => {
+    const sm = session.settingsManager;
+    // Theme names are enumerable broker-side via the resource loader. The theme
+    // SUBMENU itself is viewer-local (theme is a viewer-only concern), but the
+    // settings menu still shows currentTheme/availableThemes, so include them.
+    let availableThemes: string[] = [];
+    try {
+      availableThemes = session.resourceLoader
+        .getThemes()
+        .themes.map((t) => t.name ?? '')
+        .filter((n) => n !== '');
+    } catch {
+      /* loader without themes — viewer falls back to its local theme registry */
+    }
+    const settings: WireSettings = {
+      autoCompact: session.autoCompactionEnabled,
+      showImages: sm.getShowImages(),
+      imageWidthCells: sm.getImageWidthCells(),
+      autoResizeImages: sm.getImageAutoResize(),
+      blockImages: sm.getBlockImages(),
+      enableSkillCommands: sm.getEnableSkillCommands(),
+      steeringMode: session.steeringMode,
+      followUpMode: session.followUpMode,
+      transport: sm.getTransport(),
+      httpIdleTimeoutMs: sm.getHttpIdleTimeoutMs(),
+      thinkingLevel: session.thinkingLevel,
+      availableThinkingLevels: session.getAvailableThinkingLevels(),
+      currentTheme: sm.getTheme() ?? '',
+      availableThemes,
+      hideThinkingBlock: sm.getHideThinkingBlock(),
+      collapseChangelog: sm.getCollapseChangelog(),
+      enableInstallTelemetry: sm.getEnableInstallTelemetry(),
+      doubleEscapeAction: sm.getDoubleEscapeAction(),
+      treeFilterMode: sm.getTreeFilterMode(),
+      showHardwareCursor: sm.getShowHardwareCursor(),
+      editorPaddingX: sm.getEditorPaddingX(),
+      autocompleteMaxVisible: sm.getAutocompleteMaxVisible(),
+      quietStartup: sm.getQuietStartup(),
+      clearOnShrink: sm.getClearOnShrink(),
+      showTerminalProgress: sm.getShowTerminalProgress(),
+      warnings: sm.getWarnings(),
+      autoRetry: session.autoRetryEnabled,
+      model: toModelRef(session.model),
+    };
+    return { type: 'data', id, kind: 'get_settings', settings };
+  };
+
+  const buildSessionsData = async (
+    id: string,
+    scope: 'cwd' | 'all',
+  ): Promise<ListSessionsData> => {
+    const sm = session.sessionManager;
+    const raw =
+      scope === 'all'
+        ? await engine.SessionManager.listAll()
+        : await engine.SessionManager.list(sm.getCwd(), sm.getSessionDir());
+    const sessions: WireSessionInfo[] = raw.map((s) => ({
+      ...s,
+      created: s.created.toISOString(),
+      modified: s.modified.toISOString(),
+    }));
+    return {
+      type: 'data',
+      id,
+      kind: 'list_sessions',
+      scope,
+      sessions,
+      currentSessionFile: session.sessionFile,
+    };
   };
 
   /** Run a session-replacing op (new_session/switch_session/fork). The runtime
@@ -761,7 +912,30 @@ export async function runBroker(nodeId: string): Promise<void> {
       }
       case 'cycle_model': {
         if (notController(client, 'cycle the model')) break;
-        void session.cycleModel().then(() => ackTo(client, 'cycle_model')).catch(engineErrorTo(client));
+        void session
+          .cycleModel(frame.direction)
+          .then(() => ackTo(client, 'cycle_model'))
+          .catch(engineErrorTo(client));
+        break;
+      }
+      case 'cycle_thinking': {
+        if (notController(client, 'cycle the thinking level')) break;
+        try {
+          session.cycleThinkingLevel();
+          ackTo(client, 'cycle_thinking');
+        } catch (err) {
+          engineErrorTo(client)(err);
+        }
+        break;
+      }
+      case 'dequeue': {
+        if (notController(client, 'dequeue messages', frame.id)) break;
+        try {
+          const { steering, followUp } = session.clearQueue();
+          sendFrame(client, { type: 'data', id: frame.id, kind: 'dequeue', steering, followUp });
+        } catch (err) {
+          engineErrorTo(client, frame.id)(err);
+        }
         break;
       }
       case 'set_thinking_level': {
@@ -825,6 +999,49 @@ export async function runBroker(nodeId: string): Promise<void> {
         } catch (err) {
           engineErrorTo(client)(err);
         }
+        break;
+      }
+      // --- read-op picker data (§5 Unit A) ----------------------------------
+      // NOT controller-gated: read-only, like get_commands. The web bridge's
+      // observer connection populates pickers through these too.
+      case 'list_models': {
+        try {
+          sendFrame(client, buildListModelsData(frame.id));
+        } catch (err) {
+          engineErrorTo(client, frame.id)(err);
+        }
+        break;
+      }
+      case 'list_scoped_models': {
+        try {
+          sendFrame(client, buildScopedModelsData(frame.id));
+        } catch (err) {
+          engineErrorTo(client, frame.id)(err);
+        }
+        break;
+      }
+      case 'get_tree': {
+        try {
+          sendFrame(client, buildGetTreeData(frame.id));
+        } catch (err) {
+          engineErrorTo(client, frame.id)(err);
+        }
+        break;
+      }
+      case 'get_settings': {
+        try {
+          sendFrame(client, buildSettingsData(frame.id));
+        } catch (err) {
+          engineErrorTo(client, frame.id)(err);
+        }
+        break;
+      }
+      case 'list_sessions': {
+        // Session listing reads the session dir off disk — async; reply when it
+        // resolves (or relay the error, correlated by id so the viewer doesn't hang).
+        void buildSessionsData(frame.id, frame.scope ?? 'cwd')
+          .then((d) => sendFrame(client, d))
+          .catch(engineErrorTo(client, frame.id));
         break;
       }
       case 'navigate_tree': {
@@ -1143,14 +1360,21 @@ export async function buildBrokerSession(
 }
 
 // ---------------------------------------------------------------------------
-// makeBrokerUiContext — the dialog router as an ExtensionUIContext.
+// makeBrokerUiContext — the dialog router + display relay as an ExtensionUIContext.
 //
-// Only the 4 blocking dialogs (select/confirm/input/editor) carry behavior; the
-// rest of the (TUI-only) surface is inert in print mode. The cast is deliberate:
-// pi's ExtensionUIContext is a large TUI interface and noOpUIContext is not
-// exported, so we implement the routed methods + harmless no-ops. With mode
-// 'print' the canvas Surface-chrome extensions self-gate off, so none of the
-// no-op'd methods are reached by a Model hook in Phase 3.
+// Two surfaces carry behavior: the 4 blocking dialogs (select/confirm/input/editor)
+// route to the controller, and the 3 non-blocking display methods
+// (setStatus/setWidget/setTitle) broadcast `display_*` frames to all viewers.
+// Everything else (the TUI-only surface — working indicator, footer/header,
+// custom overlays, editor swap, autocomplete) stays a harmless no-op. The cast is
+// deliberate: pi's ExtensionUIContext is a large TUI interface and noOpUIContext
+// is not exported, so we implement the routed/relayed methods + no-ops.
+//
+// NOTE: extensions bind in mode 'print', under which the canvas Surface-chrome
+// extensions self-gate off, so a *canvas* hook does not currently call the relayed
+// methods. The relay is correct forward-looking infra: any extension that DOES
+// call setStatus/setWidget/setTitle now reaches viewers (the viewer slots are
+// Unit E). Lighting up canvas chrome itself (a bind-mode change) is out of scope.
 // ---------------------------------------------------------------------------
 /** Broker-side hooks the UI context needs to route (or noOp) extension dialogs. */
 export interface BrokerDialogDeps {
@@ -1160,6 +1384,9 @@ export interface BrokerDialogDeps {
   forward: (client: BrokerClient, request: RpcExtensionUIRequest) => void;
   /** Pending-dialog registry, keyed by request id (answered via extension_ui_response). */
   pending: Map<string, PendingDialog>;
+  /** Broadcast a non-blocking display frame (setStatus/setWidget/setTitle) to ALL
+   *  viewers — the relay path for pi's fire-and-forget extension-UI surface. */
+  broadcast: (frame: BrokerToClient) => void;
 }
 
 export function makeBrokerUiContext(deps: BrokerDialogDeps): ExtensionUIContext {
@@ -1269,18 +1496,37 @@ export function makeBrokerUiContext(deps: BrokerDialogDeps): ExtensionUIContext 
         { type: 'extension_ui_request', id: randomUUID(), method: 'editor', title, prefill },
         (r) => ('cancelled' in r && r.cancelled ? undefined : 'value' in r ? r.value : undefined),
       ),
+    // Non-blocking extension-UI relay (§5 Unit A task 3): broadcast these to all
+    // viewers as display frames instead of dropping them. The viewer (Unit E) owns
+    // the slots that render them. The other non-blocking methods stay inert.
+    setStatus: (key: string, text: string | undefined): void =>
+      deps.broadcast({ type: 'display_status', key, text }),
+    setWidget: (
+      key: string,
+      content: string[] | ((...args: unknown[]) => unknown) | undefined,
+      options?: { placement?: 'aboveEditor' | 'belowEditor' },
+    ): void => {
+      // setWidget's component-factory overload cannot be serialized over the
+      // socket (R1 caveat) — drop it and relay only the string[] form, exactly as
+      // pi's own RPC setWidget carries only `widgetLines`.
+      if (typeof content === 'function') return;
+      deps.broadcast({
+        type: 'display_widget',
+        key,
+        lines: content,
+        placement: options?.placement ?? 'aboveEditor',
+      });
+    },
+    setTitle: (title: string): void => deps.broadcast({ type: 'display_title', title }),
     // Inert print-mode surface (never reached by a Model hook in Phase 3).
     notify: noop,
     onTerminalInput: () => noop,
-    setStatus: noop,
     setWorkingMessage: noop,
     setWorkingVisible: noop,
     setWorkingIndicator: noop,
     setHiddenThinkingLabel: noop,
-    setWidget: noop,
     setFooter: noop,
     setHeader: noop,
-    setTitle: noop,
     custom: () => Promise.resolve(undefined),
     pasteToEditor: noop,
     setEditorText: noop,
