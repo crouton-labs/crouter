@@ -344,6 +344,16 @@ export interface ControlChangedFrame {
   controller_id: string | null;
 }
 
+/** Broadcast to EVERY client after a successful `set_model`/`cycle_model`. pi
+ *  emits no AgentSessionEvent for a model switch, so without this the new model
+ *  reaches no viewer at all (the requester gets only a bare ack) and footers
+ *  show the stale model until the next unrelated event. `model` mirrors
+ *  `snapshot.state.model` (the model id); undefined when the engine has none. */
+export interface ModelChangedFrame {
+  type: 'model_changed';
+  model: string | undefined;
+}
+
 export interface ErrorFrame {
   type: 'error';
   code: string;
@@ -542,6 +552,7 @@ export type ExtensionUIRequestFrame = RpcExtensionUIRequest;
 export type BrokerToClient =
   | WelcomeFrame
   | ControlChangedFrame
+  | ModelChangedFrame
   | ErrorFrame
   | AckFrame
   | BrokerDataFrame

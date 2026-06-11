@@ -265,7 +265,15 @@ class FakeSession {
     return this.sm.getSessionFile();
   }
   get model(): { id: string } | undefined {
-    return undefined;
+    return this.currentModel;
+  }
+  // set_model regression surface: the broker resolves the spec via the services
+  // registry stub below, calls setModel, then broadcasts `model_changed` off
+  // this getter — store whatever it hands us.
+  private currentModel: { id: string } | undefined;
+  setModel(model: { id: string }): Promise<void> {
+    this.currentModel = model;
+    return Promise.resolve();
   }
   get isStreaming(): boolean {
     return this.streaming;
@@ -724,15 +732,16 @@ class FakeSession {
 // exactly the construction broker.ts did before C3 moved it into the services
 // path) and returns it as a services bundle; createAgentSessionFromServices wraps
 // it in a FakeSession. We do NOT register real model providers (these lifecycle
-// tests pass no custom-provider model), so modelRegistry.find always returns
-// undefined — the broker then uses the SDK default (no model), correct for the
-// fake. C3's actual provider-registration behavior is proven against the REAL SDK
-// in broker-sdk-wiring.test.ts.
+// tests pass no boot model, so modelRegistry is never consulted at boot);
+// `find` returns a minimal {provider,id} stub so the set_model regression test
+// can drive the broker's findModelSpec → session.setModel path. C3's actual
+// provider-registration behavior is proven against the REAL SDK in
+// broker-sdk-wiring.test.ts.
 // ---------------------------------------------------------------------------
 
 interface FakeServices {
   resourceLoader: ResourceLoader;
-  modelRegistry: { find: (provider: string, id: string) => undefined };
+  modelRegistry: { find: (provider: string, id: string) => { provider: string; id: string } | undefined };
 }
 
 export async function createAgentSessionServices(options: {
@@ -749,7 +758,10 @@ export async function createAgentSessionServices(options: {
   await loader.reload();
   return {
     resourceLoader: loader as unknown as ResourceLoader,
-    modelRegistry: { find: () => undefined },
+    // A minimal model stub for any spec: the lifecycle harness passes no boot
+    // model (so this is never hit at boot), but the set_model regression test
+    // drives the broker's findModelSpec → session.setModel path through it.
+    modelRegistry: { find: (provider: string, id: string) => ({ provider, id }) },
   };
 }
 

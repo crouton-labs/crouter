@@ -393,6 +393,14 @@ export async function runBroker(nodeId: string): Promise<void> {
     broadcast({ type: 'control_changed', controller_id: controllerId });
   };
 
+  // pi emits no AgentSessionEvent for a model switch, so after a successful
+  // set_model/cycle_model the broker announces it itself — otherwise the new
+  // model reaches no viewer (the requester gets only a bare ack) and every
+  // footer shows the stale model until the next unrelated event.
+  const broadcastModelChanged = (): void => {
+    broadcast({ type: 'model_changed', model: session.model?.id });
+  };
+
   const buildSnapshot = (): BrokerSnapshot => ({
     messages: snapshotMessages(session),
     stats: session.getSessionStats(),
@@ -908,14 +916,23 @@ export async function runBroker(nodeId: string): Promise<void> {
           });
           break;
         }
-        void session.setModel(model).then(() => ackTo(client, 'set_model')).catch(engineErrorTo(client));
+        void session
+          .setModel(model)
+          .then(() => {
+            ackTo(client, 'set_model');
+            broadcastModelChanged();
+          })
+          .catch(engineErrorTo(client));
         break;
       }
       case 'cycle_model': {
         if (notController(client, 'cycle the model')) break;
         void session
           .cycleModel(frame.direction)
-          .then(() => ackTo(client, 'cycle_model'))
+          .then(() => {
+            ackTo(client, 'cycle_model');
+            broadcastModelChanged();
+          })
           .catch(engineErrorTo(client));
         break;
       }

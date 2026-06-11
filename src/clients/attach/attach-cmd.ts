@@ -354,6 +354,12 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
         renderFooter();
         break;
       }
+      case 'model_changed': {
+        // The broker's own post-set_model/cycle_model announcement (pi emits no
+        // engine event for a model switch) — keeps the footer's model current.
+        patchState({ model: frame.model });
+        break;
+      }
       case 'error': {
         if (frame.code === 'not_controller') {
           setNotice('read-only — another viewer is the controller');
