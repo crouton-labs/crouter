@@ -59,7 +59,7 @@ test('worker bearings: base framing + <knowledge> block, NO across-cycles framin
   const block = buildContextIntro(meta.node_id);
   assert.match(block, new RegExp(`<crtr-context dir="${contextDir(meta.node_id)}">`));
   assert.match(block, /shared document store, not a task tracker/, 'base = shared docs, not tasks');
-  // Reference content renders ONLY as the <references> file-tree block.
+  // Knowledge content renders ONLY as the <knowledge> file-tree block.
   assert.doesNotMatch(block, /<memory>/, 'no <memory> block');
   // Per-store stanza headers (label · dir) never appear.
   assert.doesNotMatch(block, /user-global · /, 'no user-global label·dir stanza');
