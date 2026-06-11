@@ -19,7 +19,6 @@
 // bundle elsewhere is a mount/transport swap, nothing here is load-bearing.
 
 import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
@@ -118,9 +117,20 @@ export const viewServeLeaf: LeafDef = defineLeaf({
     const options: Record<string, string> = {};
     if (target !== undefined) options.target = target;
 
+    // React/Tailwind/JSX are owned by Vite; the core (.mjs) + web (.jsx) are
+    // bundled verbatim. The bundled deps (react, tailwindcss, the crtr web
+    // runtime) all live in crouter's OWN node_modules — and a builtin/user view
+    // can sit anywhere on disk — so the generated Vite root must be a place whose
+    // node_modules resolution walk REACHES that dir. A scratch dir under
+    // crouter/node_modules satisfies that for every bare specifier at once
+    // (tailwindcss's CSS @import, react, and the `@crouton-kit/crouter/web`
+    // self-subpath) — a sibling /tmp root resolves none of them.
+    const packageRoot = resolve(HERE, '../..');
+    const nodeModules = join(packageRoot, 'node_modules');
+
     // Scaffold a tiny Vite root: index.html + a generated entry that wires the
     // runtime to THIS view's core + web component, plus the Tailwind stylesheet.
-    const tmp = mkdtempSync(join(tmpdir(), 'crtr-view-serve-'));
+    const tmp = mkdtempSync(join(nodeModules, '.crtr-view-serve-'));
     const entryFile = join(tmp, 'entry.jsx');
     writeFileSync(join(tmp, 'styles.css'), '@import "tailwindcss";\n');
     writeFileSync(join(tmp, 'index.html'),
@@ -140,24 +150,53 @@ export const viewServeLeaf: LeafDef = defineLeaf({
     // from (a git-pr view inspects THIS repo). Same model as the TUI host.
     const transport = createLocalTransport({ cwd: process.cwd() });
 
-    // React/Tailwind/JSX are owned by Vite. The core (.mjs) + web (.jsx) are
-    // bundled verbatim. We pin react resolution to crouter's own node_modules
-    // so a view living outside the package tree still resolves a single React.
-    const packageRoot = resolve(HERE, '../..');
-    const nodeModules = join(packageRoot, 'node_modules');
-
     const { createServer } = await import('vite');
     const react = (await import('@vitejs/plugin-react')).default;
     const tailwindcss = (await import('@tailwindcss/vite')).default;
 
+    // The bridge: POST /__crtr/source → run the SourceRequest via the local
+    // transport. Registered through a plugin's configureServer PRE-hook (the
+    // returned thunk) so it runs BEFORE Vite's SPA/404 fallback — a plain
+    // post-createServer `middlewares.use` lands AFTER that fallback and never
+    // sees the POST (it 404s).
+    const bridgePlugin = {
+      name: 'crtr:source-bridge',
+      configureServer(s: { middlewares: { use: (fn: (req: IncomingMessage, res: ServerResponse, next: () => void) => void) => void } }) {
+        return () => {
+          s.middlewares.use((req: IncomingMessage, res: ServerResponse, next: () => void) => {
+            if (req.method === 'POST' && (req.url === '/__crtr/source' || req.url?.startsWith('/__crtr/source?'))) {
+              void readBody(req)
+                .then((body) => runSourceRequest(transport, body))
+                .then(({ status, body }) => {
+                  res.statusCode = status;
+                  res.setHeader('content-type', 'application/json');
+                  res.end(body);
+                })
+                .catch((e: unknown) => {
+                  res.statusCode = 500;
+                  res.setHeader('content-type', 'application/json');
+                  res.end(JSON.stringify({ ok: false, stdout: '', stderr: e instanceof Error ? e.message : String(e) }));
+                });
+              return;
+            }
+            next();
+          });
+        };
+      },
+    };
+
     const server = await createServer({
       configFile: false,
       root: tmp,
-      plugins: [react(), tailwindcss()],
+      plugins: [react(), tailwindcss(), bridgePlugin],
       resolve: {
         alias: {
           react: join(nodeModules, 'react'),
           'react-dom': join(nodeModules, 'react-dom'),
+          // The crtr web runtime is a self-subpath of crouter's own package;
+          // enhanced-resolve won't self-reference it from a generated root, so
+          // pin it to the built barrel explicitly (same idiom as react above).
+          '@crouton-kit/crouter/web': join(packageRoot, 'dist', 'web', 'index.js'),
         },
         dedupe: ['react', 'react-dom'],
       },
@@ -168,26 +207,6 @@ export const viewServeLeaf: LeafDef = defineLeaf({
       },
       // Quiet Vite's own banner; we print our URL.
       logLevel: 'warn',
-    });
-
-    // The bridge: POST /__crtr/source → run SourceRequest via local transport.
-    server.middlewares.use((req: IncomingMessage, res: ServerResponse, next: () => void) => {
-      if (req.method === 'POST' && (req.url === '/__crtr/source' || req.url?.startsWith('/__crtr/source?'))) {
-        void readBody(req)
-          .then((body) => runSourceRequest(transport, body))
-          .then(({ status, body }) => {
-            res.statusCode = status;
-            res.setHeader('content-type', 'application/json');
-            res.end(body);
-          })
-          .catch((e: unknown) => {
-            res.statusCode = 500;
-            res.setHeader('content-type', 'application/json');
-            res.end(JSON.stringify({ ok: false, stdout: '', stderr: e instanceof Error ? e.message : String(e) }));
-          });
-        return;
-      }
-      next();
     });
 
     await server.listen();

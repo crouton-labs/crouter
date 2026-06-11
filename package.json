@@ -17,6 +17,10 @@
     },
     "./cli": {
       "import": "./dist/cli.js"
+    },
+    "./web": {
+      "import": "./dist/web/index.js",
+      "types": "./dist/web/index.d.ts"
     }
   },
   "files": [
