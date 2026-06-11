@@ -37,6 +37,12 @@ import {
 } from '@earendil-works/pi-coding-agent';
 import type { BrokerSnapshot } from '../../core/runtime/broker-protocol.js';
 import type { AttachPalette } from './config-load.js';
+import { ContextMessageComponent } from './context-message.js';
+
+/** customType stamped on the injected `<crtr-context>` bearings block (mirrors
+ *  CONTEXT_INTRO_CUSTOM_TYPE in canvas-context-intro.ts — kept as a local literal
+ *  so the viewer never imports the in-process extension). */
+const CONTEXT_INTRO_CUSTOM_TYPE = 'crtr-context';
 
 /** One message from the catch-up snapshot — pi's `AgentMessage` union. */
 type ChatMessage = BrokerSnapshot['messages'][number];
@@ -112,6 +118,8 @@ export class ChatView {
   private readonly spinnerStyle: (s: string) => string;
   private readonly dimStyle: (s: string) => string;
   private readonly errorStyle: (s: string) => string;
+  /** Bold accent for the expanded crtr-context label. */
+  private readonly labelStyle: (s: string) => string = (s) => `\x1b[1m${s}\x1b[22m`;
 
   /** The assistant message component currently being streamed (between
    *  message_start and message_end for an assistant turn). */
@@ -458,6 +466,19 @@ export class ChatView {
       }
       case 'custom': {
         if (message.display) {
+          // The <crtr-context> bearings block folds to a one-liner under Ctrl+O
+          // (the broker runs its renderer extension, so reimplement it natively).
+          if ((message as { customType?: string }).customType === CONTEXT_INTRO_CUSTOM_TYPE) {
+            this.append(
+              new ContextMessageComponent(
+                this.userMessageText(message),
+                this.toolOutputExpanded,
+                this.dimStyle,
+                this.labelStyle,
+              ),
+            );
+            break;
+          }
           // No extension renderer in the viewer → default custom-message render.
           const component = new CustomMessageComponent(message, undefined, getMarkdownTheme());
           component.setExpanded(this.toolOutputExpanded);
