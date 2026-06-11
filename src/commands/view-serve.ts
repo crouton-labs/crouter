@@ -132,7 +132,20 @@ export const viewServeLeaf: LeafDef = defineLeaf({
     // runtime to THIS view's core + web component, plus the Tailwind stylesheet.
     const tmp = mkdtempSync(join(nodeModules, '.crtr-view-serve-'));
     const entryFile = join(tmp, 'entry.jsx');
-    writeFileSync(join(tmp, 'styles.css'), '@import "tailwindcss";\n');
+    // Tailwind v4 (@tailwindcss/vite) auto-content-detection scans from the CSS
+    // file's base, but EXCLUDES node_modules AND .gitignore'd paths. Our Vite
+    // root lives under node_modules (for dep resolution) and both the view's
+    // web.jsx (r.dir) and the crtr web runtime (dist/web) sit under gitignored
+    // dist/ — so auto-detection finds ZERO of the utility classes and emits a
+    // preflight-only stylesheet (the board renders unstyled). Explicit @source
+    // directives override both exclusions: they register the exact dirs whose
+    // JSX/JS carry the className literals, so the utilities are generated.
+    const webSources = [r.dir, join(packageRoot, 'dist', 'web')];
+    writeFileSync(
+      join(tmp, 'styles.css'),
+      '@import "tailwindcss";\n' +
+        webSources.map((d) => `@source ${JSON.stringify(d)};`).join('\n') + '\n',
+    );
     writeFileSync(join(tmp, 'index.html'),
       '<!doctype html>\n<html>\n<head>\n<meta charset="utf-8" />\n' +
       `<title>${r.id}</title>\n` +
