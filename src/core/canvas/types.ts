@@ -16,9 +16,14 @@ import type { SpawnChildOpts } from '../runtime/spawn.js';
 /** What a node is doing right now. `active` means the engine process is live on
  *  its host — a tmux pane OR a headless broker (`host_kind`) — NOT that it holds
  *  a window or that anyone is watching it (attachment is a separate axis: the
- *  `focuses` table for tmux, the broker's viewer set for headless). UI shows
- *  active+idle; `done` is hidden but revivable; `canceled` is a user-closed node
- *  (also hidden, also revivable — not a fault); only `dead` is a fault. */
+ *  `focuses` table for tmux, the broker's viewer set for headless). Crucially,
+ *  `active` does NOT mean the node is GENERATING right now: a live engine sits
+ *  dormant between turns (waiting on a child, a human, or just left open), so
+ *  `active` ≠ busy — it only means the process was never closed. To tell whether
+ *  an active node is actually working, check its pi session-file mtime or CPU,
+ *  not its status. UI shows active+idle; `done` is hidden but revivable;
+ *  `canceled` is a user-closed node (also hidden, also revivable — not a fault);
+ *  only `dead` is a fault. */
 export type NodeStatus = 'active' | 'idle' | 'done' | 'dead' | 'canceled';
 
 /** Does stopping finalize the node? terminal = worker (finalizes on push --final);

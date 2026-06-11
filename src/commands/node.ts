@@ -213,7 +213,7 @@ const nodeList = defineLeaf({
     name: 'node inspect list',
     summary: 'list nodes on the canvas, optionally by status',
     params: [
-      { kind: 'flag', name: 'status', type: 'string', required: false, constraint: 'Filter: active | idle | done | dead | canceled. Comma-separated for several.' },
+      { kind: 'flag', name: 'status', type: 'string', required: false, constraint: 'Filter: active | idle | done | dead | canceled. Comma-separated for several. NOTE: `active` means the engine process is live (never closed), NOT that the node is generating right now — an active node is usually dormant between turns. To tell working-vs-idle, check the pi session-file mtime or CPU, not status.' },
     ],
     output: [
       { name: 'nodes', type: 'object[]', required: true, constraint: 'Rows: {node_id, name, kind, mode, lifecycle, status, cwd, parent, created}.' },
