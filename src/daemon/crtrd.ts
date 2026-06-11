@@ -513,6 +513,17 @@ export async function superviseTick(now: number = Date.now()): Promise<void> {
     return;
   }
 
+  // kind:'human' rows are NOT broker-hosted agent nodes — they are bookkeeping
+  // rows for the `crtr human` bridge. The decision/review TUI runs in a detached
+  // `crtr human _run` pane (NOT a pi engine), and the row's lifecycle is driven
+  // entirely by that worker's `pushFinal` (or `human cancel`). They never record
+  // a `pi_pid` or `pi_session_id`, so the universal broker-liveness path would
+  // (after the boot grace) read every one as a never-booted broker and crash it
+  // with surfaceBootFailure — exactly the regression where a headless
+  // orchestrator's `human ask` nodes all died at boot. The daemon must never
+  // supervise them: drop them from ALL three passes here.
+  rows = rows.filter((r) => r.kind !== 'human');
+
   // Node-ids revived in pass 1 + pass 2 THIS tick — the third pass's bare branch
   // skips them so it never launches a second pi on the same .jsonl (Maj-4).
   const revivedThisTick = new Set<string>();
