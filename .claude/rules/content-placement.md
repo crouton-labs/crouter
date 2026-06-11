@@ -18,7 +18,7 @@ Four tiers can hold agent-facing content. Picking the wrong tier wastes effort a
 | **CLI prompts** | `src/prompts/`, `--help`, command output | Every crtr user | They run a command |
 | **Builtin skills** | `src/builtin-memory/` (kind: skill, surfaced via the memory substrate) | Crouter contributors — plugin/marketplace authors | They run `crtr memory read <name>` |
 | **Official-marketplace plugins** | `crouter-official-marketplace` repo | Anyone who installs the plugin | They run `crtr memory read <plugin>/<name>` |
-| **Scope-owned skills** | `~/.crouter/skills/`, `<project>/.crouter/skills/` | The user who wrote them | Same as above |
+| **Scope-owned docs** | `~/.crouter/memory/`, `<project>/.crouter/memory/` | The user who wrote them | Same as above |
 
 ## Decision rules
 
@@ -26,7 +26,7 @@ Four tiers can hold agent-facing content. Picking the wrong tier wastes effort a
 - Every user encounters this by running a normal command (`crtr memory write`, `crtr plugin install`, `crtr --help`).
 - The content describes *intrinsic CLI behavior* — exit codes, flag semantics, output format, scaffold conventions.
 - An agent should already know it after reading `crtr <thing> --help`.
-- Examples: SKILL.md format, template workflows, scope resolution, skill identifier syntax.
+- Examples: substrate frontmatter contract, routing/visibility rungs, scope resolution, doc identifier syntax.
 
 **Builtin skill** when:
 - The content guides *crouter contributors* (plugin authors, marketplace maintainers) — not every user.

@@ -7,18 +7,17 @@ short-form: How to author a crtr plugin — plugin.json manifest, directory
   packaging skills for distribution, or debugging install/resolution.
 system-prompt-visibility: name
 file-read-visibility: none
-needs-refinement: true
 ---
 
 # Authoring crtr plugins
 
-A **plugin** is a directory shipping skills (and, in future, other artifact types like commands and hooks). Plugins are how you package skills for sharing across machines, projects, and people.
+A **plugin** is a directory shipping substrate docs (skills, references, preferences) and other artifact types like `rules/` and `agents/`. Plugins are how you package that content for sharing across machines, projects, and people.
 
 Audience: LLM agents creating or maintaining a crtr plugin.
 
 ## When you need a plugin (vs scope-owned skills)
 
-Scope-owned skills live at `~/.crouter/skills/` (user) or `<project>/.crouter/skills/` (project). They're personal and per-machine/per-repo.
+Scope-owned docs live at `~/.crouter/memory/` (user) or `<project>/.crouter/memory/` (project). They're personal and per-machine/per-repo.
 
 Reach for a **plugin** when:
 - You want to share skills across multiple projects or with other people.
@@ -33,12 +32,14 @@ If it's a one-off note for yourself, scope-owned skills are simpler. Promote to 
 <plugin-name>/
 ├── .crouter-plugin/
 │   └── plugin.json                  # manifest — required
-└── skills/
-    └── <skill-name>/
-        └── SKILL.md
+└── memory/
+    ├── <name>.md                    # a kind:skill (or reference/preference) doc
+    └── <area>/
+        ├── INDEX.md                 # optional — a dir surfaces as one entry at its INDEX rung
+        └── <name>.md
 ```
 
-The `<plugin-name>` directory IS the plugin. The manifest's `name` field must match the directory name (install renames if needed). Future artifact types (`commands/`, `hooks/`, etc.) will be sibling dirs to `skills/`.
+The `<plugin-name>` directory IS the plugin. The manifest's `name` field must match the directory name (install renames if needed). Sibling dirs (`rules/`, `agents/`, and future `commands/`, `hooks/`) hold the other artifact types.
 
 ## The manifest
 
@@ -97,20 +98,21 @@ Three ways a plugin lands in a scope:
 ## Local development loop
 
 ```bash
-# Scaffold dir + manifest + first skill
-mkdir -p my-plugin/.crouter-plugin my-plugin/skills
+# Scaffold dir + manifest + first doc
+mkdir -p my-plugin/.crouter-plugin my-plugin/memory
 $EDITOR my-plugin/.crouter-plugin/plugin.json      # write the manifest
 cd my-plugin
-$EDITOR my-plugin/skills/my-first-skill/SKILL.md   # author the skill — `crtr memory write -h` is the frontmatter + routing guide
+$EDITOR my-plugin/memory/my-first-skill.md         # author the doc — `crtr memory write -h` is the frontmatter + routing guide
 
 # Symlink for fast iteration — no clone, edits land immediately
 ln -s $(pwd) ~/.crouter/plugins/my-plugin
 
 # Verify
 crtr pkg plugin inspect list                       # my-plugin appears
-crtr pkg plugin inspect show my-plugin             # lists its skills
-crtr memory list --plugin my-plugin            # just my-plugin's skills
-crtr sys doctor                                    # validates manifest + every skill
+crtr pkg plugin inspect show my-plugin             # lists its docs
+crtr memory read my-plugin/my-first-skill          # resolve it under the plugin namespace
+crtr sys doctor                                    # validates the manifest
+crtr memory lint                                    # validates doc frontmatter
 ```
 
 When ready to share: push to a git remote; anyone can `crtr pkg plugin manage install <url> --scope user`.
@@ -150,11 +152,11 @@ If your skill conceptually depends on another plugin's skill, link via `## Relat
 
 ## Validation
 
-`crtr sys doctor` checks every plugin:
+`crtr sys doctor` checks each plugin's manifest:
 - Manifest exists and is valid JSON.
 - Manifest `name` matches the directory name.
-- Every skill under `skills/` passes the substrate contract (frontmatter parses, valid `kind`, both visibility rungs set). Run `crtr memory write -h` for the authoring + routing guide, and `crtr memory lint` to validate.
-- Sibling artifact dirs (`commands/`, `hooks/`, etc.) — validated by their respective specs as those land.
+
+`crtr memory lint` checks the docs under `memory/`: frontmatter parses, valid `kind`, both visibility rungs set. Run `crtr memory write -h` for the authoring + routing guide. Sibling artifact dirs (`rules/`, `agents/`, `commands/`, `hooks/`) are validated by their respective specs as those land.
 
 ## Cross-publishing with Claude Code
 

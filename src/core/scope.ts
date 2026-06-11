@@ -98,11 +98,6 @@ export function marketplacesDir(scope: Scope): string | null {
   return root ? join(root, 'marketplaces') : null;
 }
 
-export function scopeSkillsDir(scope: Scope): string | null {
-  const root = scopeRoot(scope);
-  return root ? join(root, 'skills') : null;
-}
-
 /** Where substrate memory documents live per scope. Builtin memory is the
  *  special case — its own package dir (builtinMemoryRoot), since the builtin
  *  scope has no scopeRoot — mirroring viewsDir's builtin handling. User and

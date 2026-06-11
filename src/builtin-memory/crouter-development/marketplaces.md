@@ -36,7 +36,7 @@ If you have one plugin, ship it standalone. Promote to a marketplace later.
 └── plugins/
     ├── plugin-a/
     │   ├── .crouter-plugin/plugin.json
-    │   └── skills/...
+    │   └── memory/...
     └── plugin-b/
         └── ...
 ```
@@ -108,18 +108,19 @@ The crouter-official-marketplace repo's `.github/workflows/auto-bump.yml` is the
 cd <marketplace-repo>
 
 # Create the plugin (see [[crouter-development/plugins]] for plugin layout)
-mkdir -p plugins/my-new-plugin/.crouter-plugin plugins/my-new-plugin/skills
+mkdir -p plugins/my-new-plugin/.crouter-plugin plugins/my-new-plugin/memory
 $EDITOR plugins/my-new-plugin/.crouter-plugin/plugin.json
 
-# Add at least one skill (`crtr memory write -h` is the authoring + routing guide)
-$EDITOR plugins/my-new-plugin/skills/first-skill/SKILL.md
+# Add at least one doc (`crtr memory write -h` is the authoring + routing guide)
+$EDITOR plugins/my-new-plugin/memory/first-skill.md
 
 # Add the plugin to the marketplace index
 $EDITOR .crouter-marketplace/marketplace.json
 # (append to plugins[] with name, initial version, source, description)
 
 # Validate
-crtr sys doctor
+crtr sys doctor                                    # manifest + structure
+crtr memory lint                                   # doc frontmatter
 
 # Commit — CI bumps versions if you've wired up auto-bump
 git add -A
