@@ -60,6 +60,10 @@ type Notify = (message: string) => void;
  *  `SessionTreeNode` / its scoped item types) — pulled off the real ctors. */
 type TreeArg = ConstructorParameters<typeof TreeSelectorComponent>[0];
 type SessionInfoLike = Awaited<ReturnType<ConstructorParameters<typeof SessionSelectorComponent>[0]>>[number];
+/** pi's CORE KeybindingsManager (a subclass of pi-tui's) that
+ *  `SessionSelectorComponent`'s options expect — widened from the ctor so we
+ *  needn't import the type-only core class (mirrors extension-dialogs.ts). */
+type SessionKeybindings = NonNullable<ConstructorParameters<typeof SessionSelectorComponent>[6]>['keybindings'];
 
 /** A minimal `ModelRegistry` for `ModelSelectorComponent`: the component calls
  *  only `refresh()`, `getError()`, `getAvailable()`, and `find()` (verified
@@ -143,7 +147,7 @@ export function buildSessionPicker(
     () => close(),
     () => close(),
     () => tui.requestRender(),
-    { showRenameHint: false, keybindings },
+    { showRenameHint: false, keybindings: keybindings as unknown as SessionKeybindings },
     prefetchedCwd.currentSessionFile,
   );
 }
@@ -210,6 +214,7 @@ export function buildSettingsPicker(data: GetSettingsData, send: Send, close: Cl
     onClearOnShrinkChange: out,
     onShowTerminalProgressChange: out,
     onWarningsChange: out,
+    onDefaultProjectTrustChange: out,
   };
   return new SettingsSelectorComponent(data.settings as SettingsConfig, callbacks);
 }

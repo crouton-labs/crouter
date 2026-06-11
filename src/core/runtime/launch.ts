@@ -72,19 +72,28 @@ export const CANVAS_EXTENSIONS = [
  *  resolve to the latest opus/sonnet/haiku; `ultra` to the frontier model. */
 export const MODEL_TIERS: Record<string, string> = {
   ultra: 'anthropic/claude-fable-5',
-  strong: 'anthropic/opus',
-  medium: 'anthropic/sonnet',
-  light: 'anthropic/haiku',
+  strong: 'anthropic/claude-opus-4-8',
+  medium: 'anthropic/claude-sonnet-4-6',
+  light: 'anthropic/claude-haiku-4-5',
+};
+
+/** Bare family aliases → the same concrete versioned ids as the tiers. These
+ *  MUST be real registry ids (see `pi --list-models`): an unversioned spec like
+ *  `anthropic/sonnet` is NOT in the registry and silently falls back to the SDK
+ *  default (opus), so it can never be the resolution target. */
+const BARE_ALIASES: Record<string, string> = {
+  opus: 'anthropic/claude-opus-4-8',
+  sonnet: 'anthropic/claude-sonnet-4-6',
+  haiku: 'anthropic/claude-haiku-4-5',
 };
 
 /** Resolve a model token to the spec pi gets via `--model`. A named tier
- *  (ultra/strong/medium/light) maps to its concrete spec; a bare alias
- *  (sonnet/opus/haiku) resolves to the anthropic provider under pi (avoids the
- *  bedrock default); anything with a `/` or an unknown name passes through. */
+ *  (ultra/strong/medium/light) maps to its concrete spec; a bare family alias
+ *  (sonnet/opus/haiku) maps to that family's current versioned id; anything
+ *  with a `/` or an unknown name passes through. */
 export function normalizeModel(model: string): string {
   if (model in MODEL_TIERS) return MODEL_TIERS[model];
-  const bare = new Set(['sonnet', 'opus', 'haiku']);
-  if (bare.has(model)) return `anthropic/${model}`;
+  if (model in BARE_ALIASES) return BARE_ALIASES[model];
   return model;
 }
 

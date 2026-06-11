@@ -770,6 +770,7 @@ export async function runBroker(nodeId: string): Promise<void> {
       clearOnShrink: sm.getClearOnShrink(),
       showTerminalProgress: sm.getShowTerminalProgress(),
       warnings: sm.getWarnings(),
+      defaultProjectTrust: sm.getDefaultProjectTrust(),
       autoRetry: session.autoRetryEnabled,
       model: toModelRef(session.model),
     };
