@@ -17,6 +17,8 @@
 
 import { createServer, type Server, type Socket } from 'node:net';
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import {
@@ -435,6 +437,7 @@ export async function runBroker(nodeId: string): Promise<void> {
         role: client.role,
         controller_id: controllerId,
         pending_dialog: first !== undefined ? first.request : null,
+        agentDir: getAgentDir(),
       },
       true, // F1: a large catch-up snapshot must not trip the HWM on a fresh client
     );
@@ -649,6 +652,56 @@ export async function runBroker(nodeId: string): Promise<void> {
     const slash = spec.indexOf('/');
     if (slash <= 0) return undefined;
     return services.modelRegistry.find(spec.slice(0, slash), spec.slice(slash + 1));
+  };
+
+  /** Resolve a model from a free-text query — `/model opus`, `/model fable`. Tries
+   *  the exact `provider/id` spec first; failing that, searches the registry the
+   *  way the picker's search box does (case-insensitive substring on the model id
+   *  and the `provider/id` key) and returns the BEST match, preferring authed/
+   *  available models. Returns undefined only when nothing matches. */
+  const resolveModelQuery = (
+    query: string,
+  ): ReturnType<AgentSessionServices['modelRegistry']['find']> => {
+    const exact = findModelSpec(query);
+    if (exact) return exact;
+    const q = query.trim().toLowerCase();
+    if (q === '') return undefined;
+    let all: ReturnType<typeof services.modelRegistry.getAll>;
+    try {
+      all = services.modelRegistry.getAll();
+    } catch {
+      return undefined;
+    }
+    let availableKeys: Set<string>;
+    try {
+      availableKeys = new Set(services.modelRegistry.getAvailable().map(modelKey));
+    } catch {
+      availableKeys = new Set();
+    }
+    // Rank: exact id (100) > exact provider/id (90) > id prefix (80) > id
+    // substring (60) > provider/id substring (40); +5 if the model is available.
+    const rank = (m: { provider: string; id: string }): number => {
+      const id = m.id.toLowerCase();
+      const key = modelKey(m).toLowerCase();
+      let base = -1;
+      if (id === q) base = 100;
+      else if (key === q) base = 90;
+      else if (id.startsWith(q)) base = 80;
+      else if (id.includes(q)) base = 60;
+      else if (key.includes(q)) base = 40;
+      else return -1;
+      return base + (availableKeys.has(modelKey(m)) ? 5 : 0);
+    };
+    let best: (typeof all)[number] | undefined;
+    let bestRank = 0;
+    for (const m of all) {
+      const r = rank(m);
+      if (r > bestRank) {
+        bestRank = r;
+        best = m;
+      }
+    }
+    return best;
   };
 
   /** The merged command list for `get_commands` (C6/M9): the engine's registered
@@ -899,9 +952,11 @@ export async function runBroker(nodeId: string): Promise<void> {
       // --- extended engine-command ops (T3, §1.2 floor set) ------------------
       case 'set_model': {
         if (notController(client, 'set the model')) break;
-        let model: ReturnType<typeof findModelSpec>;
+        let model: ReturnType<typeof resolveModelQuery>;
         try {
-          model = findModelSpec(frame.model);
+          // Accept both an exact `provider/id` (from the picker) and a free-text
+          // query (`/model opus`) — resolveModelQuery falls back to a search match.
+          model = resolveModelQuery(frame.model);
         } catch (err) {
           // N2: registry.find should never throw on the real SDK, but a degenerate
           // engine must still get a reply rather than a silently-dropped frame.
@@ -912,7 +967,7 @@ export async function runBroker(nodeId: string): Promise<void> {
           sendFrame(client, {
             type: 'error',
             code: 'engine_error',
-            message: `model '${frame.model}' not found in the registry`,
+            message: `no model matching '${frame.model}' in the registry`,
           });
           break;
         }
@@ -1113,6 +1168,67 @@ export async function runBroker(nodeId: string): Promise<void> {
       case 'fork': {
         if (notController(client, 'fork the session')) break;
         runReplacement(client, 'fork', (rt) => rt.fork(frame.entryId));
+        break;
+      }
+      case 'clone': {
+        if (notController(client, 'clone the session')) break;
+        const sm = session.sessionManager;
+        const leafId = sm.getLeafId();
+        if (leafId === null) {
+          ackTo(client, 'clone', false, 'no current leaf to clone from');
+          break;
+        }
+        let newPath: string | undefined;
+        try {
+          newPath = sm.createBranchedSession(leafId);
+        } catch (err) {
+          engineErrorTo(client)(err);
+          break;
+        }
+        if (newPath === undefined) {
+          ackTo(client, 'clone', false, 'createBranchedSession returned no path');
+          break;
+        }
+        runReplacement(client, 'clone', (rt) => rt.switchSession(newPath as string));
+        break;
+      }
+      case 'share': {
+        if (notController(client, 'share the session')) break;
+        const tmpPath = join(tmpdir(), `pi-share-${Date.now()}.html`);
+        void session.exportToHtml(tmpPath)
+          .then(() => new Promise<string>((resolve, reject) => {
+            execFile('gh', ['gist', 'create', '--secret', tmpPath], { timeout: 30_000, maxBuffer: 1024 * 1024 }, (err, stdout) => {
+              try { if (existsSync(tmpPath)) unlinkSync(tmpPath); } catch { /* cleanup */ }
+              if (err) { reject(err); return; }
+              resolve(stdout.trim());
+            });
+          }))
+          .then((url) => {
+            ackTo(client, 'share', true, url);
+          })
+          .catch((err: unknown) => {
+            const msg = String((err as Error)?.message ?? err);
+            ackTo(
+              client,
+              'share',
+              false,
+              msg.includes('not found') || msg.includes('gh: command not found') || msg.includes('ENOENT')
+                ? '`gh` CLI not found — install GitHub CLI and authenticate with `gh auth login`'
+                : `share failed: ${msg}`,
+            );
+          });
+        break;
+      }
+      case 'reload_auth': {
+        if (notController(client, 'reload auth')) break;
+        try {
+          services.authStorage.reload();
+          services.modelRegistry.refresh();
+          ackTo(client, 'reload_auth');
+          broadcastModelChanged();
+        } catch (err) {
+          engineErrorTo(client)(err);
+        }
         break;
       }
       case 'bye':

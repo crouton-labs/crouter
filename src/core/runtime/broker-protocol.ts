@@ -291,6 +291,26 @@ export interface ListScopedModelsFrame {
 /** Answer a blocking extension dialog — pi's public RPC response type. */
 export type ExtensionUIResponseFrame = RpcExtensionUIResponse;
 
+/** Clone the current session to a new branch (`/clone`). Controller-only.
+ *  Broker handler: reads current leaf from sessionManager, creates a branched
+ *  session file, switches to it via runReplacement. */
+export interface CloneFrame {
+  type: 'clone';
+}
+
+/** Share the session as a secret GitHub gist (`/share`). Controller-only.
+ *  Broker handler: exports session to a temp HTML file, shells `gh gist create --secret`,
+ *  returns the URL in ack.detail. */
+export interface ShareFrame {
+  type: 'share';
+}
+
+/** Reload credentials + refresh model registry after a viewer-side auth change.
+ *  Controller-only. Broker handler: services.authStorage.reload() + services.modelRegistry.refresh(). */
+export interface ReloadAuthFrame {
+  type: 'reload_auth';
+}
+
 export type ClientToBroker =
   | HelloFrame
   | PromptFrame
@@ -322,7 +342,10 @@ export type ClientToBroker =
   | GetTreeFrame
   | GetSettingsFrame
   | ListScopedModelsFrame
-  | ExtensionUIResponseFrame;
+  | ExtensionUIResponseFrame
+  | CloneFrame
+  | ShareFrame
+  | ReloadAuthFrame;
 
 // ---------------------------------------------------------------------------
 // Broker → client frames
@@ -337,6 +360,10 @@ export interface WelcomeFrame {
    *  attach-mid-dialog). The field exists now; it is only ever populated in
    *  Phase 4 — Phase 3 always sends it absent/null. */
   pending_dialog?: RpcExtensionUIRequest | null;
+  /** The pi agent dir (`~/.pi/agent`) from the broker's process — so the viewer
+   *  can construct an AuthStorage/ModelRegistry pointing at the SAME auth.json.
+   *  crtr attach is tmux-local only: broker + viewer share a filesystem. */
+  agentDir?: string;
 }
 
 export interface ControlChangedFrame {
