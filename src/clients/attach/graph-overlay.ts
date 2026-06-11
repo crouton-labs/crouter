@@ -169,7 +169,15 @@ export class GraphOverlay implements Component {
     const boxed = body.map(
       (line) => `${B('│')} ${truncateToWidth(line, innerW, '', true)} ${B('│')}`,
     );
-    return [this.borderRow('╭', '╮', title, width), ...boxed, this.borderRow('╰', '╯', hint, width)];
+    // Paint the WHOLE modal — border rows + boxed body + opaque space-fill — on
+    // the theme's distinct-surface background (selectedBg) so the float reads as
+    // a separate surface, not a hole in the viewer behind it (CTO ruling).
+    const S = this.palette.surface;
+    return [
+      this.borderRow('╭', '╮', title, width),
+      ...boxed,
+      this.borderRow('╰', '╯', hint, width),
+    ].map(S);
   }
 
   /** A top/bottom border row: `<lc>─ <label> ────<rc>`, frame in the theme border

@@ -27,6 +27,7 @@ import {
   type KeybindingsConfig,
 } from '@earendil-works/pi-tui';
 import { initTheme, getMarkdownTheme, getSelectListTheme } from '@earendil-works/pi-coding-agent';
+import { surfaceBgAnsi } from '../../core/runtime/surface-bg.js';
 
 /** pi's user config dir: `~/.pi/agent/`. */
 export function defaultAgentDir(): string {
@@ -159,6 +160,12 @@ export interface AttachPalette {
   faint: (s: string) => string;
   /** Border rules / frames — the theme border color. */
   border: (s: string) => string;
+  /** Distinct-surface paint for a modal/overlay: wraps a WHOLE rendered line so
+   *  it sits on the theme's `selectedBg` background, edge to edge, re-asserting
+   *  the bg after every embedded full-reset so an inner `\x1b[0m` (a status dot,
+   *  the cursor bar) can't punch a hole in the surface. Closes with a bg-only
+   *  reset so the surface never bleeds past the line. */
+  surface: (s: string) => string;
   /** Emphasis. */
   bold: (s: string) => string;
   /** Error text. pi's public theme API does NOT surface the `error` ThemeColor
@@ -188,6 +195,11 @@ const YELLOW = (s: string): string => `\x1b[33m${s}\x1b[39m`;
 export function attachPalette(): AttachPalette {
   const md = getMarkdownTheme();
   const sel = getSelectListTheme();
+  // The distinct-surface bg-on SGR, captured once. Re-asserted after every
+  // embedded `\x1b[0m` (full reset) inside a line so a coloured cell can't drop
+  // back to the default background mid-row; the line ends with `\x1b[49m` (reset
+  // background only) so the surface never bleeds onto the next line.
+  const bgOn = surfaceBgAnsi();
   return {
     accent: md.heading,
     active: md.code,
@@ -198,5 +210,6 @@ export function attachPalette(): AttachPalette {
     bold: md.bold,
     error: RED,
     warning: YELLOW,
+    surface: (line) => `${bgOn}${line.replace(/\x1b\[0m/g, `\x1b[0m${bgOn}`)}\x1b[49m`,
   };
 }

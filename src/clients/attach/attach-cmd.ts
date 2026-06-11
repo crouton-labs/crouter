@@ -40,6 +40,7 @@ import { getNode, getRow } from '../../core/canvas/index.js';
 // tmux driver verbs only through placement (the §5.1 model-over-driver seam) —
 // never `core/runtime/tmux.js` directly.
 import { setPaneOption, currentTmux } from '../../core/runtime/placement.js';
+import { inTmux, installMenuBinding } from '../../core/runtime/tmux.js';
 import type {
   BrokerSnapshot,
   BrokerToClient,
@@ -159,6 +160,11 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
   applyTheme({ cwd: meta.cwd });
   const pal = attachPalette();
   const km = createKeybindingsManager();
+  // The front door installs the Alt+C menu binding before it ever loads a theme,
+  // so it lands unstyled. Now that this viewer process HAS themed (applyTheme
+  // above populated the live-theme global), re-install it so the menu picks up
+  // the distinct-surface background. Idempotent re-bind; tmux-only, best-effort.
+  if (inTmux()) { try { installMenuBinding(); } catch { /* best-effort */ } }
 
   // 2. TUI + layout containers + editor. Top-to-bottom render order (set at
   //    step 8): chat · rule · badge · managers (↑ subscriber) · editor (themed

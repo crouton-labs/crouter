@@ -25,6 +25,7 @@
 import { execFile } from 'node:child_process';
 import type { AutocompleteItem, SlashCommand } from '@earendil-works/pi-tui';
 import { BUILTIN_SLASH_COMMANDS } from '../../core/runtime/pi-vendored.js';
+import { surfaceTmuxStyleArgs } from '../../core/runtime/surface-bg.js';
 import type {
   BrokerSnapshot,
   ClientToBroker,
@@ -417,7 +418,7 @@ function openView(arg: string, ctx: SlashContext): true {
  *  screen and closes itself when the command exits, dropping back to this pane. */
 function popup(cmd: string): void {
   try {
-    execFile('tmux', ['display-popup', '-E', '-w', '90%', '-h', '85%', cmd], () => {
+    execFile('tmux', ['display-popup', '-E', '-w', '90%', '-h', '85%', ...surfaceTmuxStyleArgs(), cmd], () => {
       /* best-effort: popup is self-contained */
     });
   } catch {

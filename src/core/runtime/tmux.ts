@@ -11,6 +11,7 @@
 import { spawnSync } from 'node:child_process';
 import { readConfig } from '../config.js';
 import { nodeSession } from './nodes.js';
+import { surfaceTmuxStyleArgs } from './surface-bg.js';
 
 // ---------------------------------------------------------------------------
 // Shell quoting + tmux invocation
@@ -475,6 +476,11 @@ export function installMenuBinding(): boolean {
   const args = [
     'bind-key', '-n', 'M-c', 'display-menu',
     '-T', `#[align=centre]${title}`,
+    // Frame the menu on the theme's distinct-surface background so it doesn't
+    // blend into the pane behind it (CTO ruling). Empty in the front door (theme
+    // not loaded there); the attach viewer re-installs this with the style once
+    // it has themed — see attach-cmd.ts.
+    ...surfaceTmuxStyleArgs(),
     '-x', `#{e|-:#{pane_right},${boxW + nudgeX}}`,
     '-y', `#{e|+:#{pane_top},${nudgeY}}`,
   ];

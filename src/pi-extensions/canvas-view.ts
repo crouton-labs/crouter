@@ -22,6 +22,7 @@
 // canvas-resume.ts / canvas-nav.ts / canvas-commands.ts).
 
 import { execFile } from 'node:child_process';
+import { surfaceTmuxStyleArgs } from '../core/runtime/surface-bg.js';
 
 // ---------------------------------------------------------------------------
 // Minimal Pi interface (avoids a hard dep on @earendil-works/*). Signatures
@@ -84,7 +85,7 @@ export function registerCanvasView(pi: PiLike): void {
         try {
           execFile(
             'tmux',
-            ['display-popup', '-E', '-w', '90%', '-h', '85%', cmd],
+            ['display-popup', '-E', '-w', '90%', '-h', '85%', ...surfaceTmuxStyleArgs(), cmd],
             (): void => { /* best-effort: popup is self-contained */ },
           );
         } catch { /* best-effort */ }
