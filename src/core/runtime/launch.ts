@@ -34,6 +34,7 @@ function resolveExtension(name: string): string {
 export const CANVAS_STOPHOOK_PATH = resolveExtension('canvas-stophook');
 export const CANVAS_INBOX_WATCHER_PATH = resolveExtension('canvas-inbox-watcher');
 export const CANVAS_NAV_PATH = resolveExtension('canvas-nav');
+export const CANVAS_RECAP_PATH = resolveExtension('canvas-recap');
 export const CANVAS_GOAL_CAPTURE_PATH = resolveExtension('canvas-goal-capture');
 export const CANVAS_PASSIVE_CONTEXT_PATH = resolveExtension('canvas-passive-context');
 export const CANVAS_CONTEXT_INTRO_PATH = resolveExtension('canvas-context-intro');
@@ -44,7 +45,9 @@ export const CANVAS_VIEW_PATH = resolveExtension('canvas-view');
 
 /** The canvas extensions every node loads, in order: stophook (routing +
  *  telemetry + session-id capture), inbox-watcher (wake), nav (in-editor
- *  graph chrome), goal-capture (persist the first user message as the goal),
+ *  graph chrome), recap (the per-node inactivity recap card — Haiku over the
+ *  conversation, shown above the manager line after 300s of no message),
+ *  goal-capture (persist the first user message as the goal),
  *  passive-context (drain passive backlog as pre-text on the next message),
  *  context-intro (inject the <crtr-context> bearings block as its own session
  *  message, once per brand-new chat), doc-substrate (the unified document
@@ -58,6 +61,7 @@ export const CANVAS_EXTENSIONS = [
   CANVAS_STOPHOOK_PATH,
   CANVAS_INBOX_WATCHER_PATH,
   CANVAS_NAV_PATH,
+  CANVAS_RECAP_PATH,
   CANVAS_GOAL_CAPTURE_PATH,
   CANVAS_PASSIVE_CONTEXT_PATH,
   CANVAS_CONTEXT_INTRO_PATH,

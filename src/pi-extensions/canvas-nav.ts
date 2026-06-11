@@ -59,6 +59,7 @@ import {
 } from '../core/canvas/nav-model.js';
 import type { FoldState } from '../core/canvas/nav-model.js';
 import { readConfig } from '../core/config.js';
+import { onNavRerender } from './widget-order-bus.js';
 import type { CanvasNavConfig, CanvasBind } from '../types.js';
 
 // ---------------------------------------------------------------------------
@@ -397,6 +398,11 @@ export function registerCanvasNav(pi: PiLike): void {
       render();
     }, RENDER_DEBOUNCE_MS);
   };
+
+  // Let canvas-recap ask us to re-assert the manager line so its recap card
+  // stays the topmost aboveEditor chrome (pi's widget store is insertion-
+  // ordered; re-setting crtr-managers drops it below crtr-recap).
+  onNavRerender(scheduleRender);
 
   // -------------------------------------------------------------------------
   // Actions (all shell out; the extension stays tmux/revive-free)
