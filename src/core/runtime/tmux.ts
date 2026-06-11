@@ -465,6 +465,18 @@ export function installMenuBinding(): boolean {
     });
   }
 
+  // Alt+C TOGGLE: re-pressing Alt+C while the menu is open should DISMISS it.
+  // display-menu is modal, so the root `M-c` binding is shadowed while the menu
+  // is up; tmux instead assembles the re-pressed Esc+c into the meta key `M-c`
+  // and delivers it to the menu's own key handler. An unhandled key is ignored
+  // (the menu just stays open) and the trailing `c` never leaks to the editor
+  // (verified empirically in tmux 3.6b: no native ESC-cancel + c-leak occurs for
+  // an atomic keypress). We catch that `M-c` with a menu item keyed to it whose
+  // command is empty — selecting it runs nothing and closes the menu. The row
+  // doubles as the menu's self-documenting dismiss hint. Placed last so it reads
+  // as chrome below the actions; `M-c` collides with no mnemonic above.
+  items.push({ name: 'close menu', key: 'M-c', cmd: '' });
+
   // tmux's -x sets the menu's LEFT edge. To sit the box INSIDE the pane's
   // top-right corner, shift x left by the box width (longest line + tmux chrome:
   // borders + padding + the right-aligned mnemonic-key column) via format math.
