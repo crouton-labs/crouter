@@ -53,7 +53,10 @@ const APP_KEYBINDINGS = {
   'app.tools.expand': { defaultKeys: 'ctrl+o', description: 'Toggle tool output' },
   'app.thinking.toggle': { defaultKeys: 'ctrl+t', description: 'Toggle thinking blocks' },
   'app.editor.external': { defaultKeys: 'ctrl+g', description: 'Open external editor' },
-  'app.message.followUp': { defaultKeys: 'alt+enter', description: 'Queue follow-up message' },
+  // Alt+Enter inserts a newline in the attach editor (shift+enter is unreliable
+  // across terminals), so the follow-up-queue action drops its alt+enter default
+  // to free the chord — see ATTACH_KEYBINDING_OVERRIDES below.
+  'app.message.followUp': { defaultKeys: [], description: 'Queue follow-up message' },
   'app.message.dequeue': { defaultKeys: 'alt+up', description: 'Restore queued messages' },
   'app.clipboard.pasteImage': { defaultKeys: ['alt+v', 'ctrl+v'], description: 'Paste image from clipboard' },
   'app.session.new': { defaultKeys: [], description: 'Start a new session' },
@@ -88,8 +91,23 @@ export function loadUserKeybindings(agentDir = defaultAgentDir()): KeybindingsCo
  * (`as unknown as` bridges the readonly `TUI_KEYBINDINGS`/string-literal defs to
  * the mutable `KeybindingDefinitions` param — vendoring cast, no behavior change.)
  */
+/**
+ * Attach-specific default overrides applied OVER pi's TUI defaults. Alt+Enter
+ * inserts a newline here (the follow-up-queue action gives up its alt+enter
+ * default above), because shift+enter — pi's stock newline chord — does not
+ * transmit a distinct sequence in many terminals. User `keybindings.json` still
+ * wins on top of these (applied as the manager's override config).
+ */
+const ATTACH_KEYBINDING_OVERRIDES = {
+  'tui.input.newLine': { defaultKeys: ['shift+enter', 'alt+enter'], description: 'Insert new line' },
+} satisfies Record<string, { defaultKeys: string | string[]; description: string }>;
+
 export function createKeybindingsManager(agentDir = defaultAgentDir()): KeybindingsManager {
-  const definitions = { ...TUI_KEYBINDINGS, ...APP_KEYBINDINGS } as unknown as KeybindingDefinitions;
+  const definitions = {
+    ...TUI_KEYBINDINGS,
+    ...APP_KEYBINDINGS,
+    ...ATTACH_KEYBINDING_OVERRIDES,
+  } as unknown as KeybindingDefinitions;
   const km = new KeybindingsManager(definitions, loadUserKeybindings(agentDir));
   setKeybindings(km);
   return km;

@@ -52,6 +52,8 @@ import { buildCanvasPanelLines } from './canvas-panels.js';
 import { GraphOverlay } from './graph-overlay.js';
 import { slashCommandList } from './slash-commands.js';
 import { applyTheme, attachPalette, createKeybindingsManager } from './config-load.js';
+import { TitledEditor, thinkingBorderColor } from './titled-editor.js';
+import { fetchGitInfo, type GitInfo } from './git-info.js';
 import { BrokerUnavailableError, ViewSocketClient, reconnectShouldGiveUp } from './view-socket.js';
 
 /** Async per-node ask-map fetch (NON-blocking — the viewer must never block its
@@ -166,15 +168,17 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
   //    into scrollback the instant the chat exceeds one screen. The badge + the
   //    two canvas panels reproduce the pi-extension chrome natively (Unit Q).
   const tui = new TUI(new ProcessTerminal());
-  const badge = new Container();
   const chatContainer = new Container();
   const chrome = new Container(); // a themed rule dividing scrolling chat from the fixed chrome below
   const managers = new Container();
   const reports = new Container();
+  const queued = new Container(); // pending steering/follow-up messages, above the editor
   const footer = new Container();
   chrome.addChild(new DynamicBorder(pal.border));
   const editorTheme: EditorTheme = { borderColor: pal.border, selectList: getSelectListTheme() };
-  const editor = new CustomEditor(tui, editorTheme, km as unknown as EditorKeybindings, { paddingX: 1 });
+  // TitledEditor paints the session name into its top border (solid-background
+  // chip) and tracks a thinking-level border color, both set from live state below.
+  const editor = new TitledEditor(tui, editorTheme, km as unknown as EditorKeybindings, { paddingX: 1 });
   // Slash-command autocomplete: builtins + native canvas commands now; enriched
   // with the broker's engine/extension/skill commands on the get_commands ack.
   const setCommands = (commands?: ReadonlyArray<{ name: string; description?: string }>): void => {
@@ -223,18 +227,6 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
     renderFooter();
   };
 
-  // Name badge — the session name (= the canvas editor label `kind (mode)
-  // name`), relayed over the socket and patched live (Feature 1). Rendered just
-  // above the managers line in the bottom chrome so it stays in-viewport.
-  const renderBadge = (): void => {
-    badge.clear();
-    if (liveState?.sessionName) {
-      const span = Math.max(1, (process.stdout.columns ?? 80) - 2);
-      const label = truncateToWidth(`⬢ ${liveState.sessionName}`, span, '…');
-      badge.addChild(new Text(pal.accent(pal.bold(label)), 1, 0));
-    }
-    tui.requestRender();
-  };
 
   // Subscribed-node panel — manager line above the editor, live reports below,
   // read straight from canvas.db via nav-model (Feature 2). asksMap is refreshed
@@ -258,6 +250,40 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
   const refreshChrome = (): void => {
     renderPanels();
     graphOverlay.refresh();
+  };
+
+  // Git context painted into the RIGHT of the editor's top border: cwd leaf ·
+  // branch · status symbols (● dirty, ⇡ ahead, ⇣ behind). Refreshed by the poll.
+  const renderGitInfo = (info: GitInfo): void => {
+    const parts: string[] = [pal.muted(info.dir)];
+    if (info.branch) parts.push(pal.info(`⎇ ${info.branch}`));
+    const sym: string[] = [];
+    if (info.dirty) sym.push(pal.warning('●'));
+    if (info.ahead > 0) sym.push(pal.active(`⇡${info.ahead}`));
+    if (info.behind > 0) sym.push(pal.active(`⇣${info.behind}`));
+    if (sym.length > 0) parts.push(sym.join(''));
+    // A trailing space keeps the symbols off the very last border cell.
+    editor.info = ` ${parts.join(pal.muted(' · '))} `;
+    tui.requestRender();
+  };
+  const pollGitInfo = (): void => fetchGitInfo(meta.cwd, renderGitInfo);
+
+  // Queued steering/follow-up messages, shown above the editor so you can SEE
+  // what is waiting (not just the footer count). Texts arrive on `queue_update`;
+  // the welcome snapshot carries only a count, so the panel fills from the first
+  // queue change after attach.
+  let queuedMessages: string[] = [];
+  const renderQueued = (): void => {
+    queued.clear();
+    if (queuedMessages.length > 0) {
+      const span = Math.max(1, (process.stdout.columns ?? 80) - 4);
+      queued.addChild(new Text(pal.muted(`queued (${queuedMessages.length}):`), 1, 0));
+      for (const msg of queuedMessages) {
+        const oneLine = msg.replace(/\s+/g, ' ').trim();
+        queued.addChild(new Text(pal.faint(`  ⋯ ${truncateToWidth(oneLine, span, '…')}`), 1, 0));
+      }
+    }
+    tui.requestRender();
   };
 
   // 5. Input layer (T6). onCommand/onDialogResponse → socket; onNotice → footer;
@@ -290,8 +316,11 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
   const setLiveState = (state: BrokerSnapshot['state']): void => {
     liveState = state;
     input.setState(state);
+    // The session name lives in the editor's top border (solid chip); the border
+    // color tracks the agent's thinking level. Both follow live state.
+    editor.title = state.sessionName ? `⬢ ${state.sessionName}` : '';
+    editor.borderColor = thinkingBorderColor(state.thinkingLevel, pal.border);
     renderFooter();
-    renderBadge();
     // Panel liveness rides the relayed event stream (agent_start/agent_end/
     // queue_update/session_info_changed all patch state through here) plus the
     // low-rate poll below for changes that emit no event (child status flips).
@@ -359,9 +388,14 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
         if (event.type === 'agent_start') patchState({ isStreaming: true });
         else if (event.type === 'agent_end') patchState({ isStreaming: false });
         else if (event.type === 'session_info_changed') patchState({ sessionName: event.name });
-        else if (event.type === 'thinking_level_changed') patchState({ thinkingLevel: event.level });
+        else if (event.type === 'thinking_level_changed') {
+          patchState({ thinkingLevel: event.level });
+          setNotice(`Thinking level: ${event.level}`);
+        }
         else if (event.type === 'queue_update') {
-          patchState({ pendingMessageCount: event.steering.length + event.followUp.length });
+          queuedMessages = [...event.steering, ...event.followUp];
+          renderQueued();
+          patchState({ pendingMessageCount: queuedMessages.length });
         }
         break;
       }
@@ -505,15 +539,16 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
   //    handshake means the welcome's applySnapshot renders into a live TUI.
   tui.addChild(chatContainer);
   tui.addChild(chrome);
-  tui.addChild(badge);
   tui.addChild(managers);
+  tui.addChild(queued);
   tui.addChild(editor);
   tui.addChild(reports);
   tui.addChild(footer);
   tui.setFocus(editor);
   renderFooter();
-  renderBadge();
   renderPanels();
+  renderQueued();
+  pollGitInfo();
   tui.start();
 
   sendHello();
@@ -523,6 +558,7 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
   const ASKS_POLL_MS = 5_000;
   const pollChrome = (): void => {
     refreshChrome();
+    pollGitInfo();
     fetchAsksAsync(climbRoot(nodeId), (counts) => {
       if (JSON.stringify(counts) !== JSON.stringify(asksMap)) {
         asksMap = counts;
