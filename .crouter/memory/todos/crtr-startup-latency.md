@@ -1,5 +1,5 @@
 ---
-kind: reference
+kind: knowledge
 when-and-why-to-read: When picking up crtr boot/startup-latency work or scoping
   a Go/Rust/Zig rewrite, this reference should be read because it records the
   open optimization TODOs and the native-rewrite analysis.

@@ -1,5 +1,5 @@
 ---
-kind: reference
+kind: knowledge
 when-and-why-to-read: When a child node has been "active" implausibly long with
   no report and its wave is not advancing, this reference should be read because
   the child may be wedged mid-turn on a runaway bash command — it shows how to

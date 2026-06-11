@@ -1,5 +1,5 @@
 ---
-kind: skill
+kind: knowledge
 when-and-why-to-read: When creating a crtr plugin, packaging skills for
   distribution, or debugging install/resolution, this skill should be read.
 short-form: How to author a crtr plugin — plugin.json manifest, directory
@@ -11,7 +11,7 @@ file-read-visibility: none
 
 # Authoring crtr plugins
 
-A **plugin** is a directory shipping substrate docs (skills, references, preferences) and other artifact types like `rules/` and `agents/`. Plugins are how you package that content for sharing across machines, projects, and people.
+A **plugin** is a directory shipping substrate docs (knowledge and preferences) and other artifact types like `rules/` and `agents/`. Plugins are how you package that content for sharing across machines, projects, and people.
 
 Audience: LLM agents creating or maintaining a crtr plugin.
 
@@ -33,7 +33,7 @@ If it's a one-off note for yourself, scope-owned skills are simpler. Promote to 
 ├── .crouter-plugin/
 │   └── plugin.json                  # manifest — required
 └── memory/
-    ├── <name>.md                    # a kind:skill (or reference/preference) doc
+    ├── <name>.md                    # a kind:knowledge or kind:preference doc
     └── <area>/
         ├── INDEX.md                 # optional — a dir surfaces as one entry at its INDEX rung
         └── <name>.md

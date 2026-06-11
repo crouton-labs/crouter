@@ -9,13 +9,13 @@
 // It owns the substrate's two new pi hooks:
 //
 //   1. before_agent_start — the BOOT system-prompt half. Splices the rendered
-//      `<skills>` + `<preferences>` + `<memory-guidance>` blocks into
-//      `event.systemPrompt`, right after pi's native "Available tools" list
-//      (before the `\n\nGuidelines:`
-//      anchor), so the substrate's skills/preferences sit in the tool-selection
-//      frame the agent reads while choosing a capability — mirroring the
-//      personal crouter-help.ts anchor logic. Falls back to appending when the
-//      anchor is absent.
+//      `<preferences>` + `<memory-guidance>` blocks into `event.systemPrompt`,
+//      right after pi's native "Available tools" list (before the
+//      `\n\nGuidelines:` anchor), so the substrate's standing directives sit in
+//      the tool-selection frame the agent reads while choosing a capability —
+//      mirroring the personal crouter-help.ts anchor logic. Falls back to
+//      appending when the anchor is absent. (Knowledge rides the `<crtr-context>`
+//      bearings message instead — see core/substrate/render.ts.)
 //
 //   2. tool_result (gated on `read`) — the ON-READ half. For each non-error
 //      `read`, surfaces the substrate docs that should appear alongside the file
@@ -39,7 +39,6 @@ import {
   renderMemoryGuidance,
   renderOnReadDocs,
   renderPreferencesSection,
-  renderSkillsSection,
 } from '../core/substrate/index.js';
 import { clearSessionCache } from '../core/substrate/session-cache.js';
 import { loadInjectedDocs, saveInjectedDocs } from '../core/substrate/injected-store.js';
@@ -135,14 +134,14 @@ export function registerCanvasDocSubstrate(pi: PiLike): void {
     clearSessionCache();
   });
 
-  // 1. BOOT system-prompt half — splice `<skills>` + `<preferences>` +
-  //    `<memory-guidance>`. The guidance block is always present for a canvas
-  //    node (the memory system always exists), so the splice is never empty even
-  //    when both trees are.
+  // 1. BOOT system-prompt half — splice `<preferences>` + `<memory-guidance>`.
+  //    The guidance block is always present for a canvas node (the memory system
+  //    always exists), so the splice is never empty even when the preferences
+  //    tree is. (Knowledge no longer enters the system prompt — it rides the
+  //    `<crtr-context>` bearings message via renderKnowledgeBlock.)
   pi.on('before_agent_start', (event) => {
     try {
       const sections = [
-        renderSkillsSection(nodeId),
         renderPreferencesSection(nodeId),
         renderMemoryGuidance(),
       ].filter((s) => s !== '');

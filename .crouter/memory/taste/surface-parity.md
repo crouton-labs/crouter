@@ -1,5 +1,5 @@
 ---
-kind: reference
+kind: knowledge
 when-and-why-to-read: When you add, change, or remove anything a node renders
   into its live attached TUI — chrome, a widget, a picker, a status signal, a
   recap card — this reference should be read because the CTO expects that change

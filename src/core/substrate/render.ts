@@ -6,12 +6,13 @@
 // line; content → the full body indented beneath the entry); hidden (`none`-rung)
 // docs leak only a `[+N more]` count under their dir, never a name.
 //
-//   • the SYSTEM-PROMPT half — `<skills>` (renderSkillsSection) + `<preferences>`
-//     (renderPreferencesSection) + `<memory-guidance>` (renderMemoryGuidance) —
-//     strings the canvas-doc-substrate `before_agent_start` extension splices
-//     into the system prompt before the `\n\nGuidelines:` anchor;
-//   • the `<crtr-context>` half — `<references>` (renderReferencesBlock) — the
-//     string bearings.ts embeds in the session_start message.
+//   • the SYSTEM-PROMPT half — `<preferences>` (renderPreferencesSection) +
+//     `<memory-guidance>` (renderMemoryGuidance) — strings the
+//     canvas-doc-substrate `before_agent_start` extension splices into the
+//     system prompt before the `\n\nGuidelines:` anchor;
+//   • the `<crtr-context>` half — `<knowledge>` (renderKnowledgeBlock) — the
+//     consultable catalog (every `kind: knowledge` doc ∪ node-local) the string
+//     bearings.ts embeds in the session_start message.
 //
 // Every doc flows through the same pipeline: MemoryDoc → parseSubstrateDoc →
 // (null-filter non-substrate) → ceiling-capped effective rung → gatePasses →
@@ -93,11 +94,11 @@ function scopeRank(scope: Scope): number {
  *  parseSubstrateFrontmatter (mirroring the resolver pipeline), then gate-passed.
  *  Non-substrate files (those with no `kind`) parse to null and drop out.
  *  Returned across ALL kinds — node-local is the catch-all this-node store and
- *  rides into the references block.
+ *  rides into the knowledge block.
  *
  *  IMPORTANT: node-local docs are NOT filtered or capped by rung. Their contract
- *  is "node-local rides into references" without qualification, so a `none`-rung
- *  node-local reference must still surface — the caller floors it to `name` so it
+ *  is "node-local rides into knowledge" without qualification, so a `none`-rung
+ *  node-local doc must still surface — the caller floors it to `name` so it
  *  renders its name (never collapsing into a hidden count). Only gate evaluation
  *  removes a node-local doc from the block. */
 function nodeLocalDocs(nodeId: string, subject: NodeConfigSubject): SubstrateDoc[] {
@@ -125,7 +126,7 @@ function nodeLocalDocs(nodeId: string, subject: NodeConfigSubject): SubstrateDoc
 }
 
 // ---------------------------------------------------------------------------
-// The shared tree builder — ONE renderer for all three kinds.
+// The shared tree builder — ONE renderer for both kinds.
 // ---------------------------------------------------------------------------
 
 /** A directory in the render tree. `path` is the full slash-joined dir path
@@ -329,13 +330,6 @@ const READ_LEGEND =
   'Each %s below shows either its full content (indented beneath its name), a ' +
   '`# read when:` line telling you when to read the full document, or simply its name.';
 
-const SKILLS_INTRO =
-  'Skills contain procedural knowledge — playbooks and techniques for how to do things. ' +
-  'To read a skill, run `crtr memory read <name>`. Reach for a matching skill before ' +
-  'improvising. ' +
-  READ_LEGEND.replace('%s', 'skill');
-const SKILLS_OUTRO = 'If you learn a better way to do something a skill covers, update the skill.';
-
 const PREFERENCES_INTRO =
   'Preferences are how the user wants you to behave — standing directives and corrections. ' +
   'To read a preference, run `crtr memory read <name>`. ' +
@@ -343,13 +337,15 @@ const PREFERENCES_INTRO =
 const PREFERENCES_OUTRO =
   'If the user corrects you in a way that contradicts a preference, update the preference.';
 
-const REFERENCES_INTRO =
-  'References contain documentation and knowledge relating to the user, projects, and this node. ' +
-  'To read a reference, run `crtr memory read <name>`. Read them when they seem relevant to the ' +
+const KNOWLEDGE_INTRO =
+  'Knowledge documents are what you consult — playbooks and techniques for how to do things, and ' +
+  'references on the user, projects, and this node. To read one, run `crtr memory read <name>`. ' +
+  'Reach for a matching document before improvising, and read one when it seems relevant to the ' +
   'task at hand. ' +
-  READ_LEGEND.replace('%s', 'reference');
-const REFERENCES_OUTRO =
-  'If you gain information that directly contradicts a reference, update the reference.';
+  READ_LEGEND.replace('%s', 'document');
+const KNOWLEDGE_OUTRO =
+  'If you learn a better way to do something a document covers, or gain information that ' +
+  'contradicts one, update that document.';
 
 /** Wrap an intro + tree + outro in a kind-named block, or '' when the tree is
  *  empty (the whole block is dropped). */
@@ -359,21 +355,7 @@ function wrapBlock(tag: string, intro: string, tree: string, outro: string): str
 }
 
 // ---------------------------------------------------------------------------
-// 1. Skills — `<skills>` (system prompt).
-// ---------------------------------------------------------------------------
-
-/** The `<skills>` system-prompt block: every eligible `kind: skill` doc placed
- *  in one tree at its effective rung. Plugin skills (`<plugin>/…` names) fall out
- *  naturally as dirs. Returns '' when nothing is eligible. */
-export function renderSkillsSection(nodeId: string): string {
-  const subject = cachedNodeSubject(nodeId, assembleNodeSubject);
-  if (subject === null) return '';
-  const tree = buildTree(effectiveDocs(subject, 'skill'), 'skills');
-  return wrapBlock('skills', SKILLS_INTRO, tree, SKILLS_OUTRO);
-}
-
-// ---------------------------------------------------------------------------
-// 2. Preferences — `<preferences>` (system prompt).
+// 1. Preferences — `<preferences>` (system prompt).
 // ---------------------------------------------------------------------------
 
 /** The `<preferences>` system-prompt block: every eligible `kind: preference`
@@ -387,18 +369,19 @@ export function renderPreferencesSection(nodeId: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// 3. References — `<references>` (inside the <crtr-context> message).
+// 2. Knowledge — `<knowledge>` (inside the <crtr-context> message).
 // ---------------------------------------------------------------------------
 
-/** The `<references>` block embedded INSIDE the `<crtr-context>` session_start
+/** The `<knowledge>` block embedded INSIDE the `<crtr-context>` session_start
  *  message (bearings.ts pushes the returned string into the block, or drops it
- *  when ''). Holds every eligible `kind: reference` resolver doc at its effective
- *  rung (reference boot default is `none`, so resolver references usually surface
- *  only as `[+N more]` counts unless author-promoted) PLUS the node-local memory
- *  docs (any kind), the latter floored to `name` so a `none`-rung node-local doc
- *  still shows its name rather than collapsing into a count. Returns '' when
+ *  when ''). The consultable catalog: every eligible `kind: knowledge` resolver
+ *  doc at its effective rung (most surface only as `[+N more]` counts unless
+ *  author-promoted) PLUS the node-local memory docs (any kind), the latter
+ *  floored to `name` so a `none`-rung node-local doc still shows its name rather
+ *  than collapsing into a count. Procedural skills and factual references both
+ *  live here now — they merged into the one `knowledge` kind. Returns '' when
  *  nothing is eligible. */
-export function renderReferencesBlock(nodeId: string): string {
+export function renderKnowledgeBlock(nodeId: string): string {
   const subject = cachedNodeSubject(nodeId, assembleNodeSubject);
   if (subject === null) return '';
   const nodeLocal = nodeLocalDocs(nodeId, subject).map((d) =>
@@ -406,12 +389,12 @@ export function renderReferencesBlock(nodeId: string): string {
       ? d
       : { ...d, systemPromptVisibility: 'name' as Rung },
   );
-  const tree = buildTree([...effectiveDocs(subject, 'reference'), ...nodeLocal], 'references');
-  return wrapBlock('references', REFERENCES_INTRO, tree, REFERENCES_OUTRO);
+  const tree = buildTree([...effectiveDocs(subject, 'knowledge'), ...nodeLocal], 'knowledge');
+  return wrapBlock('knowledge', KNOWLEDGE_INTRO, tree, KNOWLEDGE_OUTRO);
 }
 
 // ---------------------------------------------------------------------------
-// 4. Memory-saving hygiene guidance — `<memory-guidance>` (system prompt).
+// 3. Memory-saving hygiene guidance — `<memory-guidance>` (system prompt).
 // ---------------------------------------------------------------------------
 
 /** The memory-hygiene directive spliced into the system prompt after the

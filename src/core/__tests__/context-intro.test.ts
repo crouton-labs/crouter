@@ -1,6 +1,6 @@
 // Tests for the <crtr-context> bearings preamble:
-//   1. Worker and orchestrator bearings carry the `<references>` block
-//      (substrate reference docs + node-local docs as a file tree).
+//   1. Worker and orchestrator bearings carry the `<knowledge>` block
+//      (substrate knowledge docs + node-local docs as a file tree).
 //      Orchestrators add the across-cycles framing; promotion delivers that
 //      same orchestrator context-dir framing to a node that spawned base.
 //   2. canvas-context-intro injects the block as its own session message at
@@ -44,17 +44,17 @@ after(() => {
   delete process.env['CRTR_NODE_ID'];
 });
 
-test('worker bearings: base framing + <references> block, NO across-cycles framing', () => {
+test('worker bearings: base framing + <knowledge> block, NO across-cycles framing', () => {
   // Bug-regression: review finding M1 — buildContextBearings renders the
-  // <references> block (renderReferencesBlock): a kind-wrapped file tree of
-  // reference docs. This test locks in that contract.
+  // <knowledge> block (renderKnowledgeBlock): a kind-wrapped file tree of
+  // knowledge docs. This test locks in that contract.
   const meta = spawnNode({ kind: 'general', cwd: '/tmp/work', parent: null });
-  // Seed a node-local substrate doc so the ## References block is non-empty.
+  // Seed a node-local substrate doc so the knowledge block is non-empty.
   const dir = memoryDir(meta.node_id);
   mkdirSync(dir, { recursive: true });
   writeFileSync(
     join(dir, 'test-ref.md'),
-    '---\nkind: reference\nwhen-and-why-to-read: When testing, this reference should be read because it is a regression fixture\nsystem-prompt-visibility: preview\n---\nTest body.\n',
+    '---\nkind: knowledge\nwhen-and-why-to-read: When testing, this reference should be read because it is a regression fixture\nsystem-prompt-visibility: preview\n---\nTest body.\n',
   );
   const block = buildContextIntro(meta.node_id);
   assert.match(block, new RegExp(`<crtr-context dir="${contextDir(meta.node_id)}">`));
@@ -66,8 +66,8 @@ test('worker bearings: base framing + <references> block, NO across-cycles frami
   assert.doesNotMatch(block, /node-local · /, 'no node-local label·dir stanza');
   // No (empty) placeholder marker.
   assert.doesNotMatch(block, /\(empty\)/, 'no (empty) placeholder');
-  assert.match(block, /<references>/, '<references> block present');
-  assert.match(block, /\nreferences\n/, 'tree headed by the `references` root label');
+  assert.match(block, /<knowledge>/, '<knowledge> block present');
+  assert.match(block, /\nknowledge\n/, 'tree headed by the `knowledge` root label');
   // The node-local preview-rung doc renders as a tree entry with a `# read when:`
   // routing line (verbatim previewLine output).
   assert.match(
@@ -80,8 +80,8 @@ test('worker bearings: base framing + <references> block, NO across-cycles frami
   assert.match(block, /<\/crtr-context>/);
 });
 
-test('orchestrator bearings: across-cycles framing + node-local substrate docs ride into <references>; a non-substrate .md file is never inlined', () => {
-  // Bug-regression: review finding M1 — buildContextBearings renders <references>.
+test('orchestrator bearings: across-cycles framing + node-local substrate docs ride into <knowledge>; a non-substrate .md file is never inlined', () => {
+  // Bug-regression: review finding M1 — buildContextBearings renders <knowledge>.
   // Node-local substrate docs render as tree entries at their rung; a
   // non-substrate .md file (no frontmatter `kind`) never surfaces.
   const meta = spawnNode({ kind: 'general', cwd: '/tmp/work', parent: null });
@@ -94,17 +94,17 @@ test('orchestrator bearings: across-cycles framing + node-local substrate docs r
     legacyIndexPath,
     '# memory index — one pointer line per memory; how-to in "Your long-term memory".\n\n- [Flaky build](flaky-build.md) — first run fails\n',
   );
-  // A node-local substrate doc DOES ride into ## References at its rung.
+  // A node-local substrate doc DOES ride into the knowledge block at its rung.
   writeFileSync(
     join(dir, 'flaky-build.md'),
-    '---\nkind: reference\nwhen-and-why-to-read: When the build flakes, this reference should be read because the first run fails\nsystem-prompt-visibility: preview\n---\nFirst run always fails; rerun once.\n',
+    '---\nkind: knowledge\nwhen-and-why-to-read: When the build flakes, this reference should be read because the first run fails\nsystem-prompt-visibility: preview\n---\nFirst run always fails; rerun once.\n',
   );
 
   const block = buildContextIntro(meta.node_id);
   assert.match(block, /shared document store, not a task tracker/, 'still carries the base framing');
   assert.match(block, /refresh cycles/, 'orchestrator gets the across-cycles framing');
   assert.doesNotMatch(block, /<memory>/, 'no <memory> block');
-  assert.match(block, /<references>/, 'references block present');
+  assert.match(block, /<knowledge>/, 'knowledge block present');
   assert.match(
     block,
     /flaky-build {2}# read when: When the build flakes, this reference should be read because the first run fails\./,
@@ -119,10 +119,10 @@ test('orchestrator bearings: across-cycles framing + node-local substrate docs r
 });
 
 test('orchestrator bearings: no per-store stanzas or (empty) markers; a rung-none node-local doc still surfaces as a bare-name tree entry', () => {
-  // Bug-regression: review findings M1 + M6 — the <references> block carries no
+  // Bug-regression: review findings M1 + M6 — the <knowledge> block carries no
   // per-store `label · dir` stanzas or (empty) markers, and node-local docs are
-  // NOT filtered on rung: a migrated node-local reference defaults
-  // system-prompt-visibility: none and must still ride into <references> as
+  // NOT filtered on rung: a migrated node-local doc defaults
+  // system-prompt-visibility: none and must still ride into <knowledge> as
   // its bare name (floored to the `name` rung; never its body).
   const meta = spawnNode({ kind: 'general', cwd: '/tmp/work', parent: null });
   promote(meta.node_id); // flip to orchestrator mode
@@ -130,7 +130,7 @@ test('orchestrator bearings: no per-store stanzas or (empty) markers; a rung-non
   mkdirSync(dir, { recursive: true });
   writeFileSync(
     join(dir, 'rung-none-fact.md'),
-    '---\nkind: reference\n---\nbody that must not render at the none rung\n',
+    '---\nkind: knowledge\n---\nbody that must not render at the none rung\n',
   );
 
   const block = buildContextIntro(meta.node_id);

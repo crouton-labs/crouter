@@ -37,9 +37,8 @@ export {
 export type { Surface } from './ceiling.js';
 
 export {
-  renderSkillsSection,
   renderPreferencesSection,
-  renderReferencesBlock,
+  renderKnowledgeBlock,
   renderMemoryGuidance,
 } from './render.js';
 export { renderOnReadDocs } from './on-read.js';

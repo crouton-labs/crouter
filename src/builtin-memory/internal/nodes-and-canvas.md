@@ -1,5 +1,5 @@
 ---
-kind: reference
+kind: knowledge
 when-and-why-to-read: When you are operating the canvas — spawning or steering nodes, deciding how work reports up, recovering a dormant or crashed node, or reasoning about the daemon — this reference should be read because it is the operational model of nodes, the spine, lifecycle, and revive, so you drive the runtime correctly instead of inferring it from scattered command help.
 short-form: Operational model of the agent runtime — nodes on the canvas graph, spawn/delegate, the push/feed spine, lifecycle states, and revive (manual + daemon auto-revive).
 system-prompt-visibility: name

@@ -1,5 +1,5 @@
 ---
-kind: reference
+kind: knowledge
 when-and-why-to-read: When authoring or reviewing substrate frontmatter, help
   text, or prompting guidance for memory documents, this reference should be
   read because the CTO ruled the routing line's purpose is read-routing, not

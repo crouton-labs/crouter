@@ -14,26 +14,26 @@ const ROUTING = 'When you are X, this reference should be read because Y';
 const RUNGS = { 'system-prompt-visibility': 'name', 'file-read-visibility': 'none' };
 
 test('lint rejects a doc still carrying the retired `when` key', () => {
-  const err = lintSubstrateSchema({ kind: 'reference', when: 'when X' });
+  const err = lintSubstrateSchema({ kind: 'knowledge', when: 'when X' });
   assert.ok(err !== null, 'old-shape `when` must produce a finding');
   assert.match(err, /when-and-why-to-read/, 'the message points at the new field');
 });
 
 test('lint rejects a doc still carrying the retired `why` key', () => {
-  const err = lintSubstrateSchema({ kind: 'reference', why: 'because Y' });
+  const err = lintSubstrateSchema({ kind: 'knowledge', why: 'because Y' });
   assert.ok(err !== null, 'old-shape `why` must produce a finding');
   assert.match(err, /when-and-why-to-read/, 'the message points at the new field');
 });
 
 test('lint rejects a substrate doc missing the merged routing field', () => {
-  const err = lintSubstrateSchema({ kind: 'reference' });
+  const err = lintSubstrateSchema({ kind: 'knowledge' });
   assert.ok(err !== null, 'a substrate doc must carry when-and-why-to-read');
   assert.match(err, /when-and-why-to-read/);
 });
 
 test('lint accepts the merged new-shape frontmatter', () => {
   assert.equal(
-    lintSubstrateSchema({ kind: 'reference', 'when-and-why-to-read': ROUTING, ...RUNGS }),
+    lintSubstrateSchema({ kind: 'knowledge', 'when-and-why-to-read': ROUTING, ...RUNGS }),
     null,
   );
 });
@@ -44,7 +44,7 @@ test('lint accepts the merged new-shape frontmatter', () => {
 // gate exists to catch at authoring time).
 test('lint rejects a substrate doc missing system-prompt-visibility', () => {
   const err = lintSubstrateSchema({
-    kind: 'reference',
+    kind: 'knowledge',
     'when-and-why-to-read': ROUTING,
     'file-read-visibility': 'none',
   });
@@ -54,7 +54,7 @@ test('lint rejects a substrate doc missing system-prompt-visibility', () => {
 
 test('lint rejects a substrate doc missing file-read-visibility', () => {
   const err = lintSubstrateSchema({
-    kind: 'reference',
+    kind: 'knowledge',
     'when-and-why-to-read': ROUTING,
     'system-prompt-visibility': 'name',
   });

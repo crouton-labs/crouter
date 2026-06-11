@@ -1,5 +1,5 @@
 ---
-kind: skill
+kind: knowledge
 when-and-why-to-read: When writing or revising an orchestrator persona prompt (a
   <kind>/orchestrator.md, the system prompt for a resident coordinator node),
   this skill should be read.

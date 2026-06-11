@@ -1,5 +1,5 @@
 ---
-kind: skill
+kind: knowledge
 when-and-why-to-read: When shaping a planning roadmap, deciding plan structure,
   or fanning out plan-review specialists before declaring a plan ready, this
   skill should be read.

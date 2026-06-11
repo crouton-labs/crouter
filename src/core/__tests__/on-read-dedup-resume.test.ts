@@ -73,7 +73,7 @@ test('on-read doc surfaces once, stays deduped across a revive(resume), re-surfa
   mkdirSync(memDir, { recursive: true });
   writeFileSync(
     join(memDir, 'onread-fixture.md'),
-    '---\nkind: reference\n' +
+    '---\nkind: knowledge\n' +
       'when-and-why-to-read: When reading work files, this reference should be read because it is the on-read regression fixture\n' +
       'file-read-visibility: content\n---\n' +
       `${FIXTURE_BODY}\n`,

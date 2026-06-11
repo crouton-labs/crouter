@@ -1,5 +1,5 @@
 ---
-kind: skill
+kind: knowledge
 when-and-why-to-read: When shaping a design roadmap or producing an
   architecture/interface design, this skill should be read.
 short-form: Use when shaping a design roadmap or producing an

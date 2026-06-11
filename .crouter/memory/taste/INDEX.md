@@ -1,5 +1,5 @@
 ---
-kind: reference
+kind: knowledge
 when-and-why-to-read: When you are about to design, defend, or change anything about how crouter's document substrate behaves — what loads when, the frontmatter contract, the disclosure rungs, or how agents store knowledge — this index should be read because it tells you the taste/ dir holds the CTO's standing rulings on those calls, so you make the decision the way it was already decided rather than re-litigating it.
 short-form: taste/ holds the durable design rulings (the "why") behind crouter's document substrate — open it before changing substrate behavior so a past decision isn't re-made differently.
 system-prompt-visibility: preview
@@ -14,7 +14,7 @@ Open this dir when a task touches **how agent knowledge loads or is authored**: 
 
 Contents:
 
-- **document-substrate** — the foundational ruling: all agent guidance is one substrate of markdown files whose frontmatter dictates when/where/how much loads; three kinds, two hooks, four rungs, per-directory scope, and the content-bar for boot rungs.
+- **document-substrate** — the foundational ruling: all agent guidance is one substrate of markdown files whose frontmatter dictates when/where/how much loads; two kinds, two hooks, four rungs, per-directory scope, and the content-bar for boot rungs.
 - **why-field-means-why-to-read** — the ruling that the routing line's `when-and-why-to-read` is for *read-routing* (the payoff of opening), never for justifying the content.
 - **surface-parity** — the ruling that a change in a node's attached TUI owes the crouter-web operator view too (near-parity), and often a friendlier studio-view treatment, because all three are views of the one broker host.
 - **broker-is-the-host** — the headless broker is the one host; tmux panes and the web UI are all just attached views of it. Shipped as a hard cut (the in-pane path is deleted; `--headless` flag gone) — carries the load-bearing one-writer-per-`.jsonl` invariant.

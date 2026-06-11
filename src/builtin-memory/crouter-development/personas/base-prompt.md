@@ -1,5 +1,5 @@
 ---
-kind: skill
+kind: knowledge
 when-and-why-to-read: When writing or revising a base persona prompt (a
   <kind>/PERSONA.md, the system prompt for a single-window worker node), this
   skill should be read.

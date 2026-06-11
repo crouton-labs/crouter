@@ -1,5 +1,5 @@
 ---
-kind: skill
+kind: knowledge
 when-and-why-to-read: When creating a crtr marketplace or contributing plugins
   to one, this skill should be read.
 short-form: How to author a crtr marketplace — marketplace.json index, plugin

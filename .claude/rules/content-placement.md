@@ -16,7 +16,7 @@ Four tiers can hold agent-facing content. Picking the wrong tier wastes effort a
 | Tier | Path | Audience | Loaded when |
 |---|---|---|---|
 | **CLI prompts** | `src/prompts/`, `--help`, command output | Every crtr user | They run a command |
-| **Builtin skills** | `src/builtin-memory/` (kind: skill, surfaced via the memory substrate) | Crouter contributors — plugin/marketplace authors | They run `crtr memory read <name>` |
+| **Builtin skills** | `src/builtin-memory/` (kind: knowledge, surfaced via the memory substrate) | Crouter contributors — plugin/marketplace authors | They run `crtr memory read <name>` |
 | **Official-marketplace plugins** | `crouter-official-marketplace` repo | Anyone who installs the plugin | They run `crtr memory read <plugin>/<name>` |
 | **Scope-owned docs** | `~/.crouter/memory/`, `<project>/.crouter/memory/` | The user who wrote them | Same as above |
 

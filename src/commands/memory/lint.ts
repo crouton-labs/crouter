@@ -32,9 +32,9 @@ const RUNG_FIELDS = ['system-prompt-visibility', 'file-read-visibility'] as cons
  *  silently falls back to the neutral floor / inert gates, which is exactly the
  *  silent tolerance this lint exists to catch at authoring time. */
 export function lintSubstrateSchema(fm: Record<string, unknown> | null): string | null {
-  if (fm === null) return 'missing frontmatter: a memory store doc requires `kind: skill|reference|preference`';
+  if (fm === null) return 'missing frontmatter: a memory store doc requires `kind: knowledge|preference`';
   if (!isDocKind(fm.kind)) {
-    return `invalid kind: ${JSON.stringify(fm.kind)} (expected skill|reference|preference)`;
+    return `invalid kind: ${JSON.stringify(fm.kind)} (expected knowledge|preference)`;
   }
   // The retired `when`/`why` pair was merged into one read-routing field. The
   // hard cut is enforced HERE: an old-shape doc must fail, never be silently
@@ -65,6 +65,18 @@ export function lintSubstrateSchema(fm: Record<string, unknown> | null): string 
     !(Array.isArray(appliesTo) && appliesTo.every((g) => typeof g === 'string'))
   ) {
     return `invalid applies-to: ${JSON.stringify(appliesTo)} (expected a glob or glob list)`;
+  }
+  // read-when (Stream A on-read frontmatter trigger): same well-formed-object
+  // contract as gate — a non-object is inert (never fires), so catch it here.
+  const readWhen = fm['read-when'];
+  if (readWhen !== undefined && (readWhen === null || typeof readWhen !== 'object' || Array.isArray(readWhen))) {
+    return `invalid read-when: ${JSON.stringify(readWhen)} (expected a field→matcher object)`;
+  }
+  // A dead on-read trigger: an explicit applies-to/read-when with nothing to
+  // surface (file-read-visibility none) can never fire — flag it loudly rather
+  // than store a silent no-op.
+  if (fm['file-read-visibility'] === 'none' && (appliesTo !== undefined || readWhen !== undefined)) {
+    return 'dead on-read trigger: applies-to/read-when is set but file-read-visibility is `none` — raise the rung or drop the trigger';
   }
   return null;
 }

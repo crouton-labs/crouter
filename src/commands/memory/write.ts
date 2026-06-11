@@ -10,6 +10,7 @@ import {
   memoryFilePath,
   coerceGate,
   coerceAppliesTo,
+  coerceReadWhen,
   serializeMemoryDoc,
 } from './shared.js';
 
@@ -17,15 +18,15 @@ export const writeLeaf = defineLeaf({
   name: 'write',
   description: 'create or update a memory document',
   whenToUse:
-    'you are recording a new skill, reference, or preference — or revising one that already exists. Writes memory/<name>.md at the resolved scope from the frontmatter flags plus a body piped on stdin. Identity is path-derived: if <name> already exists at the scope it is updated in place, otherwise it is created.',
+    'you are recording a new knowledge document or preference — or revising one that already exists. Writes memory/<name>.md at the resolved scope from the frontmatter flags plus a body piped on stdin. Identity is path-derived: if <name> already exists at the scope it is updated in place, otherwise it is created.',
   help: {
     name: 'memory write',
     summary: 'create or update memory/<name>.md at the resolved scope from frontmatter flags + a stdin body',
     guide:
       'The body is the easy part; the craft is ROUTING — every frontmatter flag decides who sees this doc, when, and at what context cost. Each rung up is paid by every future agent at every boot or read, forever, so default each rung DOWN.\n\n' +
-      'Pick the kind. skill = how to DO something (a repeatable procedure/playbook); reference = what is TRUE or how something WORKS (a fact about the user, a system\u2019s behavior, code docs); preference = how to BEHAVE (a directive, a standing correction). The test that splits the close pair: does it DIRECT behavior ("always lint after authoring" \u2192 preference) or INFORM the world-model ("Silas likes chicken", "the daemon never reloads dist/" \u2192 reference)? A correction yields a preference, a learned fact a reference, a repeatable procedure a skill.\n\n' +
+      'Pick the kind. knowledge = anything you CONSULT \u2014 how to DO something (a repeatable procedure/playbook) OR what is TRUE / how something WORKS (a fact about the user, a system\u2019s behavior, code docs); preference = how to BEHAVE (a directive, a standing correction). The test that splits them: does it DIRECT behavior ("always lint after authoring" \u2192 preference) or INFORM what you know ("Silas likes chicken", "the daemon never reloads dist/" \u2192 knowledge)? A correction yields a preference; a learned fact or a repeatable procedure yields knowledge.\n\n' +
       'Set the rungs \u2014 BOTH --system-prompt-visibility (boot) and --file-read-visibility (on-read) are REQUIRED on create. There is no default: the right rung is a case-by-case call, never a function of kind. The ladder, lowest to highest: `none` for niche docs almost nothing should pull into context; `name` for the common case \u2014 references and skills that are relatively uncommon but an agent (or the user, by name) may reach for; `preview` for docs important enough that their routing line is worth its token cost every session (preferences usually land here); `content` (full body injected) for a doc that would be `preview` except its body is already so short you may as well inline it whole. `content` is rare \u2014 when a `content` doc grows past a bullet or two, downgrade it to `preview`. Each axis is independent: usually one carries a real rung and the other is `none` (see the hook paragraph next).\n\n' +
-      'Choose the hook \u2014 boot vs file-read. There are exactly two moments a doc can surface. Behavior and procedure (preferences, skills) are relevant whatever file is open \u2192 surface at boot. Knowledge about code (references) belongs NEXT TO the code: put the file in that directory\u2019s .crouter/memory/ and it fires positionally when files there are read, costing nothing at boot. The exception that matters: a reference about a PERSON or PROCESS has no code directory to anchor to, so on-read triggering is meaningless \u2014 set --system-prompt-visibility preview so its routing line surfaces at boot instead.\n\n' +
+      'Choose the hook \u2014 boot vs file-read. There are exactly two moments a doc can surface. Behavior (preferences) and how-to procedure are relevant whatever file is open \u2192 surface at boot. Knowledge about code belongs NEXT TO the code: put the file in that directory\u2019s .crouter/memory/ and it fires positionally when files there are read, costing nothing at boot. The exception that matters: a knowledge doc about a PERSON or PROCESS has no code directory to anchor to, so on-read triggering is meaningless \u2014 set --system-prompt-visibility preview so its routing line surfaces at boot instead.\n\n' +
       'Write the routing line (--when-and-why-to-read) FIRST, before storing anything: "When <circumstance the agent is in>, this <kind> should be read because <what the read buys>." The test: can a stranger mid-task decide from that one line alone whether to spend the read? If you cannot name the concrete situation that triggers it, you do not yet understand the memory \u2014 ask the user ONE sharp question instead of improvising. ("Remember I like chicken" routes cleanly \u2192 food/meal decisions; "be careful with the API" does not \u2192 which API, careful how, against what failure?) And NEVER paraphrase the advice in the routing line \u2014 a preview that gives away the gist makes every future agent skip the real read. BAD: "\u2026because it carries the placement policy \u2014 -h first, memory only for dev-mode material." GOOD: "\u2026because it carries the standing placement policy."\n\n' +
       'Find before write. `crtr memory find <topic>` first; grow ONE doc per recurring circumstance rather than minting near-duplicates \u2014 extend `food-preferences`, do not create `likes-chicken`. Group related docs with path names (area/topic). Do not store what is already recorded (code structure, git history, CLAUDE.md) or what only matters to this conversation.\n\n' +
       'Body: write for a STRANGER \u2014 a future session that shares none of this conversation. State current truth, not the history of getting there (no "as discussed"). Keep the reasoning behind a rule and cut everything else; dense beats complete, since every line costs a mid-task reader.\n\n' +
@@ -39,6 +40,7 @@ export const writeLeaf = defineLeaf({
       { kind: 'flag', name: 'file-read-visibility', type: 'enum', choices: [...VISIBILITY_RUNGS], required: false, constraint: 'Rung controlling how much of this document surfaces when it is read off disk. Required when creating — there is no kind default; pick a rung explicitly.' },
       { kind: 'flag', name: 'gate', type: 'string', required: false, constraint: 'Frontmatter gate — expression/condition that determines when this document applies.' },
       { kind: 'flag', name: 'applies-to', type: 'string', required: false, constraint: 'Frontmatter applies-to — glob/path scope the document applies to.' },
+      { kind: 'flag', name: 'read-when', type: 'string', required: false, constraint: 'Frontmatter read-when — a condition (field→matcher object) over a READ FILE’s own frontmatter that surfaces this doc on-read (a native rule). Same predicate vocabulary as --gate. Example: \'{tags: {contains: security}}\'.' },
       { kind: 'flag', name: 'scope', type: 'enum', choices: [...MEMORY_SCOPES], required: false, constraint: 'Target scope. Default: project when inside a project, else user.' },
       { kind: 'stdin', name: 'body', required: true, constraint: 'Document body (markdown, no frontmatter). Piped on stdin, or passed as the bare positional after <name>.' },
     ],
@@ -106,6 +108,9 @@ export const writeLeaf = defineLeaf({
     if (input['gate'] !== undefined) frontmatter['gate'] = coerceGate(input['gate'] as string);
     if (input['appliesTo'] !== undefined) {
       frontmatter['applies-to'] = coerceAppliesTo(input['appliesTo'] as string);
+    }
+    if (input['readWhen'] !== undefined) {
+      frontmatter['read-when'] = coerceReadWhen(input['readWhen'] as string);
     }
 
     writeText(path, serializeMemoryDoc(frontmatter, body));

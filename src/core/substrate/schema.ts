@@ -16,13 +16,15 @@ import type { Scope } from '../../types.js';
 import type { MemoryDoc } from '../memory-resolver.js';
 
 // ---------------------------------------------------------------------------
-// Kinds — the three semantic kinds (design §3). `kind` is data, not a fork.
+// Kinds — the two semantic kinds (design §3): `knowledge` (consult — procedural
+// playbooks + factual references merged) vs `preference` (behave — standing
+// directives). `kind` is a load-bearing binary, not a content taxonomy.
 // ---------------------------------------------------------------------------
 
-export const KINDS = ['skill', 'reference', 'preference'] as const;
+export const KINDS = ['knowledge', 'preference'] as const;
 export type DocKind = (typeof KINDS)[number];
 
-/** Is `v` one of the three valid document kinds? */
+/** Is `v` one of the two valid document kinds? */
 export function isDocKind(v: unknown): v is DocKind {
   return typeof v === 'string' && (KINDS as readonly string[]).includes(v);
 }
@@ -70,7 +72,7 @@ export type GatePredicate = Record<string, unknown>;
  *  defaults applied. Required fields (`kind`/`when-and-why-to-read`) and
  *  optionals all resolved to concrete typed values. */
 export interface SubstrateSchema {
-  /** Which of the three semantic kinds. */
+  /** Which of the two semantic kinds (knowledge | preference). */
   kind: DocKind;
   /** The read-routing line — a single sentence answering WHEN to read this doc
    *  and WHY it is worth the read: "When <circumstance>, this <kind> should be
@@ -92,6 +94,13 @@ export interface SubstrateSchema {
   /** Optional glob list narrowing the on-read trigger to matching read files.
    *  Absent ⇒ positional trigger only. A single glob is normalized to a 1-list. */
   appliesTo?: string[];
+  /** Optional condition over the READ FILE's own frontmatter — the on-read
+   *  frontmatter trigger (Stream A native rules). Same coercion + predicate
+   *  vocabulary as `gate` (non-null non-array object carried; empty `{}` inert),
+   *  but evaluated by `evalCondition` against the read file's parsed YAML rather
+   *  than the node subject. Absent ⇒ no frontmatter trigger. Frontmatter key
+   *  `read-when`. */
+  readWhen?: GatePredicate;
 }
 
 /** A fully-resolved substrate document: the parsed schema PLUS the resolver's
@@ -134,6 +143,7 @@ export function parseSubstrateFrontmatter(
     fileReadVisibility: parseRung(fm['file-read-visibility'], FALLBACK_RUNG),
     gate: parseGate(fm.gate),
     appliesTo: parseAppliesTo(fm['applies-to']),
+    readWhen: parseGate(fm['read-when']),
   };
 }
 

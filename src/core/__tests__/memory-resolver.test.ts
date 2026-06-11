@@ -40,7 +40,7 @@ let prevCwd: string;
 const PLUGIN = 'fixplug';
 
 function doc(name: string): string {
-  return `---\nkind: skill\nwhen-and-why-to-read: fixture doc ${name}\n---\n\n# ${name}\n`;
+  return `---\nkind: knowledge\nwhen-and-why-to-read: fixture doc ${name}\n---\n\n# ${name}\n`;
 }
 
 before(() => {

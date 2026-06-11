@@ -14,9 +14,10 @@ import {
   ensureProjectScopeRoot,
 } from '../../core/scope.js';
 
-// The three memory kinds — procedural (skill), referential (reference),
-// preferential (preference). Used as the `--kind` enum choices everywhere.
-export const MEMORY_KINDS = ['skill', 'reference', 'preference'] as const;
+// The two memory kinds — knowledge (consult: procedural playbooks + factual
+// references merged) vs preference (behave: standing directives). Used as the
+// `--kind` enum choices everywhere.
+export const MEMORY_KINDS = ['knowledge', 'preference'] as const;
 
 // Visibility rungs — how much of a document surfaces (none → name → preview →
 // content). Shared by --system-prompt-visibility and --file-read-visibility.
@@ -93,6 +94,22 @@ export function coerceGate(raw: string): Record<string, unknown> {
   return result;
 }
 
+/** Coerce a `--read-when` string into a predicate tree. Like `--gate`, the
+ *  read-when field MUST be a YAML/JSON object (the field→matcher map the schema
+ *  expects, evaluated against a read file's own frontmatter). A scalar/array
+ *  read-when is inert (never matches), so passing one is always a mistake and is
+ *  caught at authoring time rather than stored. */
+export function coerceReadWhen(raw: string): Record<string, unknown> {
+  const result = parseYamlObject(raw);
+  if (typeof result === 'string') {
+    throw usage(
+      `--read-when must be a YAML/JSON object (field→matcher map over a read file's frontmatter): ${result}. ` +
+        `Example: --read-when '{tags: {contains: security}}'`,
+    );
+  }
+  return result;
+}
+
 /** Coerce a `--applies-to` string to the schema's glob form: a comma-separated
  *  list becomes an array, a single glob stays a string. */
 export function coerceAppliesTo(raw: string): unknown {
@@ -114,6 +131,7 @@ const FRONTMATTER_ORDER = [
   'file-read-visibility',
   'gate',
   'applies-to',
+  'read-when',
 ];
 
 /** Serialize a substrate frontmatter record + body into a complete `.md`

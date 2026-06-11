@@ -1,5 +1,5 @@
 ---
-kind: reference
+kind: knowledge
 when-and-why-to-read: When you need to know where a piece of crtr state lives on disk — or you are adding a new kind of file and must decide where it belongs — this reference should be read because it names the three storage tiers and their durability/ownership contracts, so you put (or find) the file in the right place instead of scattering state.
 short-form: The three crtr storage tiers — scope root (durable user/repo content), per-cwd crouter root (per-project working artifacts), and canvas home (node-graph runtime state).
 system-prompt-visibility: name

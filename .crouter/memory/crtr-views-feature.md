@@ -1,5 +1,5 @@
 ---
-kind: reference
+kind: knowledge
 when-and-why-to-read: When you are building, changing, or launching a crtr view,
   this reference should be read because views carry easy-to-violate load-bearing
   constraints — plain .mjs modules, sessionless launch, the tmux-import lint.

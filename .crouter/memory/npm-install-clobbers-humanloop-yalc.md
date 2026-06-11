@@ -1,5 +1,5 @@
 ---
-kind: reference
+kind: knowledge
 when-and-why-to-read: When you are about to run an install in crouter, or crtr
   suddenly breaks everywhere with a missing-approveDeck / module-not-found error,
   this reference should be read because installs clobber the humanloop yalc link

@@ -1,7 +1,7 @@
 ---
-kind: reference
+kind: knowledge
 when-and-why-to-read: When designing how agents load context — what belongs in a system prompt vs on-demand, how knowledge is stored, scoped, or auto-injected, or when adding any new kind of agent-facing document — this reference should be read because it records the decision and reasoning behind crouter's unified document-substrate, the taste that should govern any change to how agents store and load knowledge.
-short-form: Agent guidance — skills, preferences, references — is one substrate of markdown files whose frontmatter dictates when, where, and how much loads. Three semantic-memory kinds, two injection hooks, a four-rung disclosure ladder, per-directory scope.
+short-form: Agent guidance — knowledge and preferences — is one substrate of markdown files whose frontmatter dictates when, where, and how much loads. Two semantic-memory kinds, two injection hooks, a four-rung disclosure ladder, per-directory scope.
 system-prompt-visibility: name
 file-read-visibility: none
 ---
@@ -18,13 +18,12 @@ All agent guidance — what we used to call memories, skills, directives, docs, 
 
 Knowledge splits first into **episodic** (the record of what happened — the conversation, and any summarization of it) and **semantic** (knowledge held independent of any one episode). Episodic memory belongs to the *system*: it owns conversation storage and any automatic summarization, and an agent does not hand-curate it. This substrate is **semantic memory only**.
 
-Semantic memory has exactly three kinds, and every old type maps cleanly onto one:
+Semantic memory has exactly **two** kinds, split on how an agent *uses* the document:
 
-- **skill** — procedural: how to *do* something (a playbook, a sales motion). [was: skills]
-- **reference** — referential: how something *works* or what is *true* (code docs, an org chart, a factual matter, a CLAUDE.md). [was: docs, notes, factual memories]
-- **preference** — preferential: how the agent should *behave* (a directive, a rule, feedback). [was: directives, rules, behavioral memories]
+- **knowledge** — anything the agent *consults*: how to do something, how something works, what is true. [was: skills, docs, notes, factual memories — and the procedural/referential line between them, which proved to be about content, not use, and forked no behavior]
+- **preference** — how the agent should *behave*: a standing directive, a rule, a correction the agent embodies rather than looks up. [was: directives, rules, behavioral memories]
 
-Three kinds is not a simplification we settled for — it is the actual decomposition of semantic memory, and the fact that all six prior types fall onto it without remainder is the evidence it is right.
+The load-bearing distinction is **consult vs behave** — it is the only one that changes a default rung, an injection point, or an update rule. The earlier procedural/referential split (skill vs reference) was a distinction in a document's *content*, not in how it is used, so it cost a taxonomy decision and bought nothing; it is folded into `knowledge`.
 
 ## Loading is two hooks and a four-rung dial
 
@@ -32,7 +31,7 @@ There are exactly two moments a document can surface into an agent, because ther
 
 `none` (invisible; found only by search) → `name` (just its title) → `preview` (the routing line) → `content` (the full body).
 
-Each document sets both rungs **explicitly** — there is no kind-based default, and authoring requires both (enforced by `crtr memory write` on create and by `crtr memory lint`). A default keyed on kind was tried and removed: the right rung is a case-by-case call, never a function of kind, and a default just trains the author to stop thinking. The four rungs read, lowest to highest: `none` for niche docs almost nothing should pull into context; `name` for the common case (uncommon references/skills an agent or the user may reach for by name); `preview` for docs important enough that their routing line earns its boot-time token cost every session (preferences usually); `content` for a doc that would be `preview` except its body is already a bullet's worth, so you may as well inline it — rare, and downgraded back to `preview` as it grows.
+Each document sets both rungs **explicitly** — there is no kind-based default, and authoring requires both (enforced by `crtr memory write` on create and by `crtr memory lint`). A default keyed on kind was tried and removed: the right rung is a case-by-case call, never a function of kind, and a default just trains the author to stop thinking. The four rungs read, lowest to highest: `none` for niche docs almost nothing should pull into context; `name` for the common case (uncommon knowledge docs an agent or the user may reach for by name); `preview` for docs important enough that their routing line earns its boot-time token cost every session (preferences usually); `content` for a doc that would be `preview` except its body is already a bullet's worth, so you may as well inline it — rare, and downgraded back to `preview` as it grows.
 
 The **preview** is the document's `when-and-why-to-read` line — one routing sentence, *"When {circumstance}, this {kind} should be read because {payoff}."* — rendered verbatim, never a content paraphrase. That single line is the heart of progressive disclosure: it costs almost nothing in context and tells the agent precisely whether to spend the read.
 
@@ -60,6 +59,6 @@ And the routing line only works if `when-and-why-to-read` is a **routing stateme
 
 ## The payoff, and the stance
 
-The point of all of this is that an agent can write skills, references, and preferences **freely** — as often as a thought is worth keeping — without fear of bloating its context, because it also declares when and how much each should surface. Context stays clean by construction, not by restraint. This is self-improving prompting and progressive disclosure made into storage: the agent keeps learning, and the cost of what it learns is paid only when it is relevant.
+The point of all of this is that an agent can write knowledge and preferences **freely** — as often as a thought is worth keeping — without fear of bloating its context, because it also declares when and how much each should surface. Context stays clean by construction, not by restraint. This is self-improving prompting and progressive disclosure made into storage: the agent keeps learning, and the cost of what it learns is paid only when it is relevant.
 
 This replaces the prior systems outright — a clean cutover, not a back-compatible layer beside them. The old shapes do not survive next to the new one; carrying both would bloat the system and hide which is real. One substrate, one resolver, one CLI.

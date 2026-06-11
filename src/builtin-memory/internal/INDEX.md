@@ -1,5 +1,5 @@
 ---
-kind: reference
+kind: knowledge
 when-and-why-to-read: When you hit a question about how the crtr runtime itself works — how nodes and the canvas behave, where state lives on disk, or how the primitives compose into real systems — this index should be read because it routes you to the runtime's own operational documentation, so you act from the canonical model instead of inferring it from command help.
 short-form: internal/ is the runtime's self-documentation — operational guides to nodes/canvas and the storage tiers, plus worked example compositions. Open it when you need to understand how crtr works.
 system-prompt-visibility: preview

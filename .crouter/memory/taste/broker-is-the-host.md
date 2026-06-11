@@ -1,5 +1,5 @@
 ---
-kind: reference
+kind: knowledge
 when-and-why-to-read: When you are designing or building any surface that shows
   or drives a crouter node's live session — tmux, web, or otherwise — or are
   changing node lifecycle, rendering, or anything that touches tmux, this

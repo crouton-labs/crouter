@@ -1,5 +1,5 @@
 ---
-kind: reference
+kind: knowledge
 when-and-why-to-read: When you wonder whether the crtr help-gate will block a
   command because its heredoc body or quoted prompt mentions other crtr
   commands, this reference should be read because the gate strips heredoc bodies

@@ -1,6 +1,6 @@
 # Progressive disclosure — a document declares how much of itself enters context
 
-Every piece of knowledge an agent can draw on — a skill, a reference, a preference — is one document, and that document decides how much of itself an agent sees, and when. This doc is the philosophy behind that decision: all agent knowledge lives in a single substrate, and each document chooses the smallest amount of itself that enters an agent's context to do its job, disclosing more only when the work reaches for it. Progressive disclosure is the organizing principle — context is the scarce resource, and every document pays its own way into it.
+Every piece of knowledge an agent can draw on — something it consults or a preference it embodies — is one document, and that document decides how much of itself an agent sees, and when. This doc is the philosophy behind that decision: all agent knowledge lives in a single substrate, and each document chooses the smallest amount of itself that enters an agent's context to do its job, disclosing more only when the work reaches for it. Progressive disclosure is the organizing principle — context is the scarce resource, and every document pays its own way into it.
 
 ## The core principle
 
@@ -12,9 +12,9 @@ A document that costs nothing until it is needed can be written down the moment 
 
 There is one kind of thing here: a document — markdown carrying a small declaration of how it loads. What were once six separate notions — a memory, a skill, a doc, a directive, a rule, a note — are one substrate with a kind and a loading policy. They were never six subsystems with six stores, six loaders, and six commands; they are one configurable system, and collapsing them is the deletion-positive heart of this design. Fewer concepts, one mental model, one authoring flow, one path that resolves them all.
 
-Knowledge that is the agent's to keep — held independent of any one conversation — falls into exactly three kinds: a skill is procedural (how to *do* something), a reference is referential (how something *works*, or what is *true*), a preference is preferential (how the agent should *behave*). Three is not a simplification settled for; it is the real decomposition of that knowledge, and the proof it is right is that every prior notion lands on it without remainder.
+Knowledge that is the agent's to keep — held independent of any one conversation — falls into exactly two kinds, split on how an agent *uses* it: **knowledge** is anything the agent *consults* (how to do something, how something works, what is true), and a **preference** is how the agent should *behave* (a standing directive it embodies rather than looks up). The load-bearing split is consult-vs-behave — the one distinction that changes a default rung, an injection point, or an update rule; the older procedural/referential line inside "consult" was about a document's content, not its use, so it forked no behavior and folds into knowledge.
 
-> **Invariant A — One substrate, one schema, one resolution path.** All agent knowledge is one kind of document, distinguished only by which of the three kinds it is — data, not a fork in the machine. There is one way to author it, one way to resolve it, one way to read it; no knowledge type carries its own parallel subsystem.
+> **Invariant A — One substrate, one schema, one resolution path.** All agent knowledge is one kind of document, distinguished only by which of the two kinds it is — data, not a fork in the machine. There is one way to author it, one way to resolve it, one way to read it; no knowledge type carries its own parallel subsystem.
 
 ## The visibility ladder
 

@@ -19,8 +19,8 @@
 // one place other nodes on the canvas can read from, so it is for documents
 // worth a shared reference, NOT a task tracker, and NOT a "future memory-wiped
 // you" stash (a terminal worker has no future cycle — that framing only makes
-// sense once a node is a resident orchestrator). The `<references>` block
-// (substrate reference docs + node-local docs) rides into the context message.
+// sense once a node is a resident orchestrator). The `<knowledge>` block
+// (substrate knowledge docs + node-local docs) rides into the context message.
 //
 // Orchestrator addendum (gated on orchestrator MODE): the dir ALSO survives
 // refresh cycles, so it is where a future cycle of the orchestrator resumes.
@@ -28,7 +28,7 @@
 
 import { contextDir, getNode, fullName, type WakeKind, type Wakeup } from '../canvas/index.js';
 import { cadenceDisplay } from '../wake.js';
-import { renderReferencesBlock } from '../substrate/index.js';
+import { renderKnowledgeBlock } from '../substrate/index.js';
 
 /** Base framing — present for every node. No path baked in: the caller carries
  *  the dir in the `<crtr-context dir="…">` attribute. */
@@ -181,7 +181,7 @@ export function buildWakeBearings(origin: WakeOrigin): string {
  *  any copied-in persona) followed by the `<crtr-context>` bearings block. Base
  *  framing rides for EVERY node; the across-cycles context-dir note is added
  *  ONLY for an orchestrator (by mode) — the one node whose dir a future cycle
- *  resumes from. The `<references>` block carries the substrate reference docs
+ *  resumes from. The `<knowledge>` block carries the substrate knowledge docs
  *  + node-local docs. */
 export function buildContextBearings(nodeId: string): string {
   const identity = buildIdentityAssertion(nodeId);
@@ -190,10 +190,10 @@ export function buildContextBearings(nodeId: string): string {
   const parts = [BASE_CONTEXT_NOTE];
   // Orchestrator-only: the across-cycles framing (a terminal has no future cycle).
   if (node?.mode === 'orchestrator') parts.push(orchestratorContextNote(nodeId));
-  // The substrate references block: eligible `reference` docs at their
+  // The substrate knowledge block: eligible `knowledge` docs at their
   // system-prompt rung + node-local memory docs; dropped (returns '') when
   // nothing is eligible.
-  const references = renderReferencesBlock(nodeId);
-  if (references !== '') parts.push(references);
+  const knowledge = renderKnowledgeBlock(nodeId);
+  if (knowledge !== '') parts.push(knowledge);
   return `${identity}\n<crtr-context dir="${dir}">\n${parts.join('\n')}\n</crtr-context>`;
 }

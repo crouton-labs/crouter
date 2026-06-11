@@ -1,5 +1,5 @@
 ---
-kind: reference
+kind: knowledge
 when-and-why-to-read: When you want a worked end-to-end composition of crouter primitives — not what one command does but how several combine into a real standing system — open this dir because it holds complete example builds, each verified against the actual runtime and OS mechanics.
 short-form: Worked examples composing crouter primitives into complete systems (like pi's examples/ dir). Currently — the iMessage assistant node.
 system-prompt-visibility: name

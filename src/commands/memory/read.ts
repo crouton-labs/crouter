@@ -21,7 +21,7 @@ export const readLeaf = defineLeaf({
     ],
     output: [
       { name: 'name', type: 'string', required: true, constraint: 'Resolved document name.' },
-      { name: 'kind', type: 'string', required: true, constraint: 'Resolved kind: skill, reference, or preference.' },
+      { name: 'kind', type: 'string', required: true, constraint: 'Resolved kind: knowledge or preference.' },
       { name: 'scope', type: 'string', required: true, constraint: 'Scope the document was resolved from: project, user, or builtin.' },
       { name: 'path', type: 'string', required: true, constraint: 'Absolute path to the document on disk.' },
       { name: 'content', type: 'string', required: true, constraint: 'Document body. Frontmatter stripped unless --frontmatter is set.' },
@@ -52,7 +52,7 @@ export const readLeaf = defineLeaf({
           ? sub.kind
           : typeof doc.frontmatter?.['kind'] === 'string'
             ? (doc.frontmatter['kind'] as string)
-            : 'reference';
+            : 'knowledge';
       // --kind asserts the resolved kind; a mismatch falls through to not-found.
       if (kindFilter === undefined || kind === kindFilter) {
         const content = includeFrontmatter ? readText(doc.path) : doc.body;

@@ -1,5 +1,5 @@
 ---
-kind: reference
+kind: knowledge
 when-and-why-to-read: When you are building a standing assistant node bridged to an external channel — iMessage, email, a chat service — this example should be read because it composes the crouter primitives (resident root node, custom persona, event-driven wake via node msg, project-scope memory) into a working OpenClaw-style design, with the macOS chat.db/osascript mechanics verified.
 short-form: Worked example — an always-on iMessage assistant built from crouter primitives. Resident root node + launchd watcher → node msg wakes + chat.db reads + osascript sends + substrate memory.
 system-prompt-visibility: name

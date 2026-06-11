@@ -3,16 +3,25 @@
 // When a `read` tool call returns, the canvas-doc-substrate pi extension calls
 // renderOnReadDocs() to surface the substrate docs that should appear ALONGSIDE
 // the file just read — each at its FILE-READ-VISIBILITY rung (NOT the
-// system-prompt rung the boot render uses). Two independent triggers decide
-// which docs surface (design §4/§6; plan-substrate.md track D1):
+// system-prompt rung the boot render uses). Three triggers decide which docs
+// surface (design §4/§6; Stream A native rules):
 //
 //   • POSITIONAL — walk the read file's ancestor dirs; any doc living in an
 //     ancestor's `.crouter/memory/` surfaces (a doc surfaces when a file
-//     beside/under its own scope dir is read). This mirrors nested-context's
-//     `.claude/rules` ancestor walk, but keyed on `.crouter/memory/`.
+//     beside/under its own scope dir is read), UNLESS it carries an explicit
+//     read-trigger (see D5 below). This mirrors nested-context's `.claude/rules`
+//     ancestor walk, but keyed on `.crouter/memory/`.
 //   • applies-to GLOB — any RESOLVED substrate doc (user/project/builtin scope)
 //     whose `appliesTo` glob matches the read file path surfaces, regardless of
 //     where the read file sits relative to the doc.
+//   • read-when FRONTMATTER (Stream A) — any RESOLVED doc whose `readWhen`
+//     condition matches the READ FILE's own parsed frontmatter (markdown only),
+//     via `evalCondition` against that YAML rather than the node subject.
+//
+// D5 — an EXPLICIT read-trigger (applies-to OR read-when) SUPPRESSES the
+// positional default for that doc: an author who declared a trigger meant it, so
+// the doc fires only on its trigger, never positionally on every read under its
+// scope. The two explicit triggers compose by OR.
 //
 // Each candidate runs the substrate pipeline at its fileReadVisibility rung:
 //   parse → gatePasses(doc, assembleNodeSubject(nodeId)) → render
@@ -36,6 +45,7 @@ import { basename, dirname, join, matchesGlob, parse, relative, sep } from 'node
 import { CRTR_DIR_NAME, type Scope } from '../../types.js';
 import { pathExists, readText, walkFiles } from '../fs-utils.js';
 import { parseFrontmatterGeneric } from '../frontmatter.js';
+import { evalCondition } from '../predicate.js';
 import { listAllMemoryDocs } from '../memory-resolver.js';
 import {
   assembleNodeSubject,
@@ -143,6 +153,13 @@ function safeWalkMd(dir: string): string[] {
   }
 }
 
+/** Does the doc declare an EXPLICIT read-trigger? (applies-to glob OR read-when
+ *  frontmatter condition). D5: an explicit trigger SUPPRESSES the positional
+ *  default — such a doc fires only on its declared trigger, never positionally. */
+function hasExplicitTrigger(doc: SubstrateDoc): boolean {
+  return (doc.appliesTo !== undefined && doc.appliesTo.length > 0) || doc.readWhen !== undefined;
+}
+
 /** POSITIONAL trigger: every substrate doc in an ancestor dir's
  *  `.crouter/memory/`, walking from the read file up to $HOME (or the
  *  filesystem root for a read outside $HOME), skipping junk ancestors. */
@@ -164,7 +181,9 @@ function positionalCandidates(absReadFile: string): Candidate[] {
           if (seenDocPaths.has(real)) continue;
           seenDocPaths.add(real);
           const doc = loadPositionalDoc(file, memDir, scope);
-          if (doc) out.push({ doc, realpath: real, order: depth });
+          // D5: a doc with an explicit read-trigger (applies-to/read-when) does
+          // NOT fire positionally — it surfaces only via that trigger.
+          if (doc && !hasExplicitTrigger(doc)) out.push({ doc, realpath: real, order: depth });
         }
       }
     }
@@ -218,6 +237,47 @@ function appliesToCandidates(absReadFile: string, taken: Set<string>): Candidate
     const real = realpathOrSelf(doc.path);
     if (taken.has(real)) continue;
     if (!globs.some((g) => globMatches(g, absReadFile, owningRootOf(doc)))) continue;
+    taken.add(real);
+    out.push({ doc, realpath: real, order: -1 });
+  }
+  return out;
+}
+
+/** Parse the READ FILE's own YAML frontmatter once (markdown only), the subject
+ *  a `read-when` condition is evaluated against. Non-markdown reads (and any
+ *  unreadable / frontmatter-less file) yield `{}` — no `read-when` rule can then
+ *  match (mirrors pi's frontmatter-rules, which only consider .md/.mdx/.markdown). */
+function readFileFrontmatter(absReadFile: string): Record<string, unknown> {
+  if (!/\.(md|mdx|markdown)$/i.test(absReadFile)) return {};
+  try {
+    return parseFrontmatterGeneric(readText(absReadFile)).data ?? {};
+  } catch {
+    return {};
+  }
+}
+
+/** read-when FRONTMATTER trigger (Stream A): every RESOLVED substrate doc whose
+ *  `readWhen` condition matches the read file's own frontmatter. `taken` carries
+ *  the realpaths already claimed by earlier passes so a doc is not double-counted.
+ *  Uses the per-session cache (same corpus the glob pass walks). Returns [] when
+ *  the read file has no frontmatter — no condition can match an empty subject. */
+function readWhenCandidates(
+  readFileFm: Record<string, unknown>,
+  taken: Set<string>,
+): Candidate[] {
+  if (Object.keys(readFileFm).length === 0) return [];
+  let docs: SubstrateDoc[];
+  try {
+    docs = cachedSubstrateDocs(listAllMemoryDocs, parseSubstrateDoc);
+  } catch {
+    return [];
+  }
+  const out: Candidate[] = [];
+  for (const doc of docs) {
+    if (doc.readWhen === undefined) continue;
+    const real = realpathOrSelf(doc.path);
+    if (taken.has(real)) continue;
+    if (!evalCondition(doc.readWhen, readFileFm)) continue;
     taken.add(real);
     out.push({ doc, realpath: real, order: -1 });
   }
@@ -281,7 +341,8 @@ export function renderOnReadDocs(
     const positional = positionalCandidates(absReadFile);
     const taken = new Set<string>(positional.map((c) => c.realpath));
     const byGlob = appliesToCandidates(absReadFile, taken);
-    candidates = [...positional, ...byGlob];
+    const byReadWhen = readWhenCandidates(readFileFrontmatter(absReadFile), taken);
+    candidates = [...positional, ...byGlob, ...byReadWhen];
   } catch {
     return '';
   }

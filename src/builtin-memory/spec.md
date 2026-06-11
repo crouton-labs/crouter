@@ -1,5 +1,5 @@
 ---
-kind: skill
+kind: knowledge
 when-and-why-to-read: When running a specification effort, shaping a spec
   roadmap, or deciding how to stage design and requirements work, this skill
   should be read.

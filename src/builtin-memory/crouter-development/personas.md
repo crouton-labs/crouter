@@ -1,5 +1,5 @@
 ---
-kind: skill
+kind: knowledge
 when-and-why-to-read: When adding a new `--kind`, overriding a builtin agent, or
   debugging persona resolution, this skill should be read.
 short-form: How to define a custom node kind (persona) for crtr — the
