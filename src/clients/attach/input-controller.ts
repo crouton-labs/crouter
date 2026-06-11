@@ -18,7 +18,7 @@ import { readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CustomEditor } from '@earendil-works/pi-coding-agent';
-import type { KeybindingsManager, OverlayHandle, TUI } from '@earendil-works/pi-tui';
+import type { Component, KeybindingsManager, OverlayHandle, TUI } from '@earendil-works/pi-tui';
 import type { ImageContent } from '@earendil-works/pi-ai';
 import {
   BROKER_READ_CAPS,
@@ -99,6 +99,12 @@ export interface InputControllerHooks {
    *  for the native pickers to work; when absent every picker degrades to a
    *  text-arg notice. */
   onRequest?: (frame: ReadOpRequest) => Promise<BrokerDataFrame>;
+  /** OPTIONAL pair: mount/unmount a native picker INLINE in the viewer's layout
+   *  (attach-cmd slots it directly under the editor). When BOTH are wired,
+   *  showPicker uses them instead of a centered overlay; absent → overlay
+   *  fallback. The controller stays layout-agnostic either way (T5/T7 own it). */
+  onMountPicker?: (component: Component) => void;
+  onUnmountPicker?: () => void;
 }
 
 export class InputController {
@@ -240,14 +246,17 @@ export class InputController {
     this.showPicker((close) => build(reply as T, close));
   }
 
-  /** Show a picker overlay built by `build` (given a `close` that tears it down).
-   *  Supersedes any picker already on screen. Routes focus to the builder's
-   *  declared focus target (an inner list for fork/settings) and ALWAYS restores
-   *  editor focus on close — `OverlayHandle.hide()` only auto-restores when the
-   *  OUTER component held focus, which is not the case once we focus an inner
-   *  child. A throwing builder is caught into a notice (m5). */
+  /** Show a picker built by `build` (given a `close` that tears it down).
+   *  Mounted INLINE under the editor when attach-cmd wires onMountPicker/
+   *  onUnmountPicker (the integrated chrome path); otherwise falls back to a
+   *  centered overlay. Supersedes any picker already on screen. Routes focus to
+   *  the builder's declared focus target (an inner list for fork/settings) and
+   *  ALWAYS restores editor focus on close — `OverlayHandle.hide()` only
+   *  auto-restores when the OUTER component held focus, which is not the case
+   *  once we focus an inner child. A throwing builder is caught into a notice (m5). */
   private showPicker(build: (close: () => void) => Picker): void {
     this.picker?.dismiss();
+    const inline = this.hooks.onMountPicker !== undefined && this.hooks.onUnmountPicker !== undefined;
     let handle: OverlayHandle | undefined;
     let built: Picker | undefined;
     let done = false;
@@ -258,7 +267,8 @@ export class InputController {
       } catch {
         /* ignore dispose errors during teardown */
       }
-      handle?.hide();
+      if (inline) this.hooks.onUnmountPicker?.();
+      else handle?.hide();
     };
     const close = (): void => {
       if (done) return;
@@ -274,7 +284,8 @@ export class InputController {
       this.notify(`Could not open picker: ${err instanceof Error ? err.message : String(err)}`);
       return;
     }
-    handle = this.tui.showOverlay(built.component, PICKER_OVERLAY_OPTIONS);
+    if (inline) this.hooks.onMountPicker!(built.component);
+    else handle = this.tui.showOverlay(built.component, PICKER_OVERLAY_OPTIONS);
     this.tui.setFocus(built.focus);
     this.picker = {
       // Supersede: tear down without restoring editor focus — the new picker

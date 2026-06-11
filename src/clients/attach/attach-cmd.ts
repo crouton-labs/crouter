@@ -173,6 +173,7 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
   const managers = new Container();
   const reports = new Container();
   const queued = new Container(); // pending steering/follow-up messages, above the editor
+  const pickerPanel = new Container(); // native pickers (/model etc.), inline directly under the editor
   const footer = new Container();
   chrome.addChild(new DynamicBorder(pal.border));
   const editorTheme: EditorTheme = { borderColor: pal.border, selectList: getSelectListTheme() };
@@ -307,6 +308,17 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
     // Without this every picker degrades to the "isn't available in this viewer"
     // notice (see slash-commands.ts + InputController.openPicker).
     onRequest: (frame) => socket.request(frame),
+    // Mount the native pickers inline in the chrome stack, directly under the
+    // editor (queued-panel pattern) — not as a floating centered modal — so a
+    // picker reads as part of the editor, like pi's own selectors.
+    onMountPicker: (component) => {
+      pickerPanel.addChild(component);
+      tui.requestRender();
+    },
+    onUnmountPicker: () => {
+      pickerPanel.clear();
+      tui.requestRender();
+    },
   });
 
   // Feed fresh state into the input controller AND the footer. Steer-vs-prompt
@@ -561,6 +573,7 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
   tui.addChild(managers);
   tui.addChild(queued);
   tui.addChild(editor);
+  tui.addChild(pickerPanel);
   tui.addChild(reports);
   tui.addChild(footer);
   tui.setFocus(editor);
