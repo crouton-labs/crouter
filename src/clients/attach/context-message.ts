@@ -51,9 +51,15 @@ export class ContextMessageComponent implements Component {
   render(width: number): string[] {
     const w = width > 0 ? width : 80;
     if (!this.expanded) {
-      // Truncate BEFORE painting so the ANSI wrapper never inflates the measured
-      // width (an over-wide line aborts the whole TUI render).
-      return [this.dim(truncateToWidth(`[${LABEL}] orienting bearings — ctrl+o to expand`, w, '…'))];
+      // Paint the [crtr context] label in the accent color and the rest dim, so
+      // the label reads distinctly in BOTH states. Truncate BEFORE painting so the
+      // ANSI wrappers never inflate the measured width (an over-wide line aborts
+      // the whole TUI render).
+      const labelText = `[${LABEL}]`;
+      const rest = ' orienting bearings — ctrl+o to expand';
+      const labelW = visibleWidth(labelText);
+      if (labelW >= w) return [this.label(truncateToWidth(labelText, w, '…'))];
+      return [this.label(labelText) + this.dim(truncateToWidth(rest, w - labelW, '…'))];
     }
     const lines = [this.label(truncateToWidth(`[${LABEL}]`, w, '…')), ''];
     for (const raw of this.body.split('\n')) {

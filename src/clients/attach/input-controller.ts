@@ -46,11 +46,15 @@ import {
   buildSettingsPicker,
   buildTreePicker,
   type Picker,
+  type PickerControls,
 } from './pickers.js';
 
 /** Overlay geometry for the native pickers — a touch wider/taller than the
  *  extension-dialog default since the model/session/tree lists are denser. */
 const PICKER_OVERLAY_OPTIONS = { anchor: 'center', width: '80%', maxHeight: '85%' } as const;
+
+/** Max gap between two Esc presses to count as a double-tap (pi uses 500ms). */
+const DOUBLE_ESCAPE_MS = 500;
 
 /** Aggregate budget for images held for the next message (review M2). A drained
  *  prompt/steer/follow_up frame inlines ALL pending images as base64 in a single
@@ -88,6 +92,12 @@ export interface InputControllerHooks {
   /** OPTIONAL: toggle the GRAPH overlay — forwarded to the slash context so
    *  `/graph` opens/closes it (Unit Q wires it from runAttach). */
   onGraph?: () => void;
+  /** OPTIONAL: detach the viewer — forwarded to the slash context so `/quit`
+   *  tears down the TUI/socket (the engine keeps running). Wired by attach-cmd. */
+  onQuit?: () => void;
+  /** OPTIONAL: copy the last assistant message to the clipboard — forwarded to
+   *  the slash context so `/copy` works. Wired by attach-cmd (it owns ChatView). */
+  onCopy?: () => void;
   /** OPTIONAL: Ctrl+O / app.tools.expand — flip global tool-output expansion in
    *  the render layer (ChatView owns the components). Absent → the key no-ops. */
   onToggleToolsExpand?: () => void;
@@ -105,6 +115,10 @@ export interface InputControllerHooks {
    *  fallback. The controller stays layout-agnostic either way (T5/T7 own it). */
   onMountPicker?: (component: Component) => void;
   onUnmountPicker?: () => void;
+  /** OPTIONAL: open the native /login provider picker (viewer-local auth flow). */
+  openLoginPicker?: () => void;
+  /** OPTIONAL: open the native /logout provider picker (viewer-local auth flow). */
+  openLogoutPicker?: () => void;
 }
 
 export class InputController {
@@ -121,6 +135,8 @@ export class InputController {
   private openSeq = 0;
   /** Latest engine state from `welcome`/`session_info_changed` (for `/session`). */
   private state: BrokerSnapshot['state'] | undefined;
+  /** Timestamp of the last lone Esc, for double-tap → tree detection (0 = none). */
+  private lastEscapeAt = 0;
 
   constructor(
     private readonly tui: TUI,
@@ -158,8 +174,26 @@ export class InputController {
 
   private wire(): void {
     this.editor.onSubmit = (text) => this.handleSubmit(text);
-    // Esc / app.interrupt → abort the running turn.
-    this.editor.onEscape = () => this.hooks.onCommand({ type: 'abort' });
+    // Esc — mirror pi's native interactive escape (interactive-mode
+    // setupKeyHandlers): while streaming, abort the turn; with an EMPTY editor
+    // and idle, a double-tap (≤500ms) opens the session-tree navigator to rewind
+    // to an earlier point (a lone tap just arms it); a non-empty editor swallows
+    // Esc (it never clears text). openTreePicker is the same get_tree →
+    // navigate_tree path that `/tree` and app.session.tree use.
+    this.editor.onEscape = () => {
+      if (this.state?.isStreaming) {
+        this.hooks.onCommand({ type: 'abort' });
+        return;
+      }
+      if (this.editor.getText().trim()) return;
+      const now = Date.now();
+      if (now - this.lastEscapeAt < DOUBLE_ESCAPE_MS) {
+        this.lastEscapeAt = 0;
+        void this.openTreePicker();
+      } else {
+        this.lastEscapeAt = now;
+      }
+    };
     // Ctrl+V / Alt+V → read clipboard image, hold it for the next message.
     this.editor.onPasteImage = () => {
       void this.handlePaste();
@@ -197,12 +231,16 @@ export class InputController {
       cwd: process.cwd(),
       nodeId: this.hooks.nodeId,
       onGraph: this.hooks.onGraph,
+      onQuit: this.hooks.onQuit,
+      onCopy: this.hooks.onCopy,
       openModelPicker: () => void this.openModelPicker(),
       openSessionPicker: () => void this.openSessionPicker(),
       openForkPicker: () => void this.openForkPicker(),
       openTreePicker: () => void this.openTreePicker(),
       openSettingsPicker: () => void this.openSettingsPicker(),
       openScopedModelsPicker: () => void this.openScopedModelsPicker(),
+      openLoginPicker: this.hooks.openLoginPicker ? () => this.hooks.openLoginPicker!() : undefined,
+      openLogoutPicker: this.hooks.openLogoutPicker ? () => this.hooks.openLogoutPicker!() : undefined,
     };
   }
 
@@ -243,7 +281,7 @@ export class InputController {
       this.notify(`Unexpected reply building the ${label} picker`);
       return;
     }
-    this.showPicker((close) => build(reply as T, close));
+    this.showPicker((controls) => build(reply as T, controls.close));
   }
 
   /** Show a picker built by `build` (given a `close` that tears it down).
@@ -254,46 +292,65 @@ export class InputController {
    *  ALWAYS restores editor focus on close — `OverlayHandle.hide()` only
    *  auto-restores when the OUTER component held focus, which is not the case
    *  once we focus an inner child. A throwing builder is caught into a notice (m5). */
-  private showPicker(build: (close: () => void) => Picker): void {
+  private showPicker(build: (controls: PickerControls) => Picker): void {
     this.picker?.dismiss();
     const inline = this.hooks.onMountPicker !== undefined && this.hooks.onUnmountPicker !== undefined;
     let handle: OverlayHandle | undefined;
-    let built: Picker | undefined;
+    let current: Picker | undefined;
     let done = false;
-    const teardown = (): void => {
-      const disposable = built?.component as { dispose?: () => void } | undefined;
+    const disposeCurrent = (): void => {
+      const disposable = current?.component as { dispose?: () => void } | undefined;
       try {
         disposable?.dispose?.();
       } catch {
         /* ignore dispose errors during teardown */
       }
+    };
+    const mount = (p: Picker): void => {
+      if (inline) this.hooks.onMountPicker!(p.component);
+      else handle = this.tui.showOverlay(p.component, PICKER_OVERLAY_OPTIONS);
+      this.tui.setFocus(p.focus);
+    };
+    const unmount = (): void => {
       if (inline) this.hooks.onUnmountPicker?.();
       else handle?.hide();
+    };
+    // Swap the mounted component IN PLACE (same inline slot) — multi-step flows
+    // like /login replace the provider selector with the login dialog without
+    // ever popping a centered overlay. Does NOT restore editor focus (only a
+    // genuine close does); focus moves to the new component.
+    const replace = (component: Component, focus: Component): void => {
+      if (done) return;
+      disposeCurrent();
+      unmount();
+      current = { component, focus };
+      mount(current);
+      this.tui.requestRender();
     };
     const close = (): void => {
       if (done) return;
       done = true;
-      teardown();
+      disposeCurrent();
+      unmount();
       this.picker = undefined;
       this.tui.setFocus(this.editor);
       this.tui.requestRender();
     };
     try {
-      built = build(close);
+      current = build({ close, replace });
     } catch (err) {
       this.notify(`Could not open picker: ${err instanceof Error ? err.message : String(err)}`);
       return;
     }
-    if (inline) this.hooks.onMountPicker!(built.component);
-    else handle = this.tui.showOverlay(built.component, PICKER_OVERLAY_OPTIONS);
-    this.tui.setFocus(built.focus);
+    mount(current);
     this.picker = {
       // Supersede: tear down without restoring editor focus — the new picker
       // grabs focus next. Genuine close restores the editor (above).
       dismiss: () => {
         if (done) return;
         done = true;
-        teardown();
+        disposeCurrent();
+        unmount();
       },
     };
     this.tui.requestRender();
@@ -340,6 +397,13 @@ export class InputController {
       'scoped-models',
       (data, close) => buildScopedModelsPicker(data, close, (m) => this.notify(m)),
     );
+  }
+
+  /** Open a viewer-local auth picker (login/logout) — uses the same showPicker
+   *  machinery as read-op pickers, but with a locally-built component (no read-op
+   *  request; auth operations are viewer-local in tmux-local attach). */
+  public openAuthPicker(build: (controls: PickerControls) => Picker): void {
+    this.showPicker(build);
   }
 
   private handleSubmit(text: string): void {

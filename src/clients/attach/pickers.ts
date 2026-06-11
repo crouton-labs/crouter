@@ -66,6 +66,16 @@ export interface Picker {
   focus: Component;
 }
 
+/** Controls handed to a picker builder by InputController.showPicker. `close`
+ *  tears the whole picker down + restores editor focus; `replace` swaps the
+ *  CURRENTLY-mounted component for a new one IN THE SAME inline slot (no centered
+ *  overlay), focusing it — used by multi-step flows like /login, where selecting
+ *  a provider replaces the selector with the login dialog right under the editor. */
+export interface PickerControls {
+  close: () => void;
+  replace: (component: Component, focus: Component) => void;
+}
+
 /** Send a command frame to the broker (= InputController hooks.onCommand). */
 type Send = (frame: ClientToBroker) => void;
 /** Issue a correlated read-op (lazy loaders need it after construction). */

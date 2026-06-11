@@ -2,9 +2,15 @@
 //
 // pi's `readClipboardImage` is NOT re-exported (it lives behind a native
 // clipboard binding + Photon worker the package gates off `.`-only exports), so
-// we reimplement the READ by shelling out to the platform clipboard tool
-// (pngpaste on macOS, wl-paste on Wayland, xclip on X11) — small + best-effort:
-// no tool / empty clipboard → `null` and the caller shows a brief notice.
+// we reimplement the READ by shelling out to the platform clipboard tool. macOS:
+// `pngpaste` is a faster path IF present, but it is NOT a built-in (`brew install
+// pngpaste`), so the authoritative read is the dependency-free `osascript` path
+// (`the clipboard as «class PNGf»` → temp PNG), which works on a stock Mac.
+// Linux: `wl-paste` on Wayland, `xclip` on X11. The reader DISTINGUISHES three
+// outcomes — got bytes, clipboard genuinely empty, or no clipboard tool / read
+// failure — so the caller's notice is accurate ("No image in the clipboard" vs a
+// precise "install xclip" / "osascript failed") instead of collapsing every
+// miss to "no image".
 //
 // The bytes are then resized AGGRESSIVELY through pi's exported `resizeImage`
 // (which is reusable, unlike the reader) so the base64 stays well within the
@@ -23,6 +29,9 @@
 // dropped, a `note`-only result and no image).
 
 import { spawnSync } from 'node:child_process';
+import { readFileSync, unlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   convertToPng,
   formatDimensionNote,
@@ -42,24 +51,35 @@ const MAX_BYTES = 3 * 1024 * 1024;
 const SPAWN_MAX_BUFFER = 64 * 1024 * 1024;
 const SPAWN_TIMEOUT_MS = 3000;
 
-/** A clipboard image ready to attach, plus an optional human-readable note about
- *  the resize (from pi's `formatDimensionNote`) for the controller to surface. */
+/** A clipboard image ready to attach, plus an optional note for the controller
+ *  to surface — either a resize note (from pi's `formatDimensionNote`) or, when
+ *  no image was attached, the reason (dropped over the cap, or no clipboard
+ *  tool / read failure). */
 export interface ClipboardImageResult {
   /** Ready to push into a `prompt`/`steer`/`follow_up` frame's `images?`. ABSENT
-   *  when the image was read but DROPPED (a fallback exceeded MAX_BYTES base64);
-   *  `note` then carries the drop reason and the caller attaches nothing. */
+   *  when the image was read but DROPPED (a fallback exceeded MAX_BYTES base64),
+   *  or when there was no image to read but a precise reason is worth surfacing;
+   *  `note` then carries that reason and the caller attaches nothing. */
   image?: ImageContent;
   /** Either a resize note ("Resized from 4032×3024 to 1568×1176", present only
-   *  when resized) or, when `image` is absent, the reason the image was dropped. */
+   *  when resized) or, when `image` is absent, the reason no image was attached. */
   note?: string;
 }
 
-/** Read + resize the current clipboard image. Returns `null` when there is no
- *  image, no clipboard tool, or the read fails (all best-effort — the caller
- *  shows a brief notice and carries on). */
+/** Read + resize the current clipboard image. Returns `null` ONLY when the
+ *  clipboard genuinely holds no image; a `note`-only result means there is a
+ *  precise reason to surface (no clipboard tool, read failure, or an over-cap
+ *  drop). All best-effort — the caller shows a brief notice and carries on. */
 export async function readClipboardImage(): Promise<ClipboardImageResult | null> {
-  const raw = readRawClipboardImage();
-  if (!raw) return null;
+  const outcome = readRawClipboardImage();
+  const raw = outcome.image;
+  if (!raw) {
+    // No bytes. A `note` means a precise reason worth surfacing (no clipboard
+    // tool, or a read failure) — return it so the caller shows it instead of the
+    // generic "No image in the clipboard". No note → the clipboard is genuinely
+    // empty → null (caller shows the generic notice).
+    return outcome.note ? { note: outcome.note } : null;
+  }
 
   // Primary path: resize aggressively. Handles format (PNG/JPEG) + size bound.
   const resized = await resizeImage(new Uint8Array(raw.bytes), raw.mimeType, {
@@ -98,44 +118,162 @@ function capped(image: ImageContent): ClipboardImageResult {
 }
 
 // ---------------------------------------------------------------------------
+// Raw clipboard read (platform shell-out).
+// ---------------------------------------------------------------------------
 
 interface RawImage {
   bytes: Buffer;
   mimeType: string;
 }
 
-/** Shell out to the platform clipboard tool for raw image bytes. */
-function readRawClipboardImage(): RawImage | null {
-  if (process.platform === 'darwin') {
-    const out = run('pngpaste', ['-']);
-    return out ? { bytes: out, mimeType: 'image/png' } : null;
-  }
+/** Outcome of the raw clipboard read, distinguishing the three cases the caller
+ *  must tell apart: `image` present → got bytes; `note` present → no image AND a
+ *  precise reason to surface (no clipboard tool / read failure); both absent →
+ *  the clipboard genuinely holds no image. */
+export interface RawReadOutcome {
+  image?: RawImage;
+  note?: string;
+}
 
-  // Linux: Wayland first (wl-paste), then X11 (xclip). Try PNG then JPEG.
-  if (isWayland()) {
-    const out = run('wl-paste', ['--type', 'image/png', '--no-newline']);
-    if (out) return { bytes: out, mimeType: 'image/png' };
+/** Result of probing one clipboard tool, distinguishing a MISSING binary (so the
+ *  caller can say "no clipboard tool") from a tool that ran but produced no image
+ *  (`bytes` absent, `missing` false → genuinely empty). */
+export interface RunResult {
+  /** Tool stdout when it produced non-empty output. */
+  bytes?: Buffer;
+  /** The binary was not found on PATH (ENOENT). */
+  missing?: boolean;
+}
+
+/** Shell out to the platform clipboard tool for raw image bytes. */
+function readRawClipboardImage(): RawReadOutcome {
+  if (process.platform === 'darwin') {
+    return selectMacOutcome(run, readMacClipboardViaOsascript);
+  }
+  return selectLinuxOutcome(run, isWayland());
+}
+
+/** Pure macOS dispatch (the regression-test seam): try `pngpaste` if present,
+ *  else fall through to the native osascript read — a missing `pngpaste` must
+ *  NOT collapse to "no image", which was the stock-Mac bug. */
+export function selectMacOutcome(
+  runTool: (command: string, args: string[]) => RunResult,
+  readNative: () => RawReadOutcome,
+): RawReadOutcome {
+  const fast = runTool('pngpaste', ['-']);
+  if (fast.bytes) return { image: { bytes: fast.bytes, mimeType: 'image/png' } };
+  // pngpaste missing OR clipboard empty → osascript is authoritative.
+  return readNative();
+}
+
+/** Pure Linux dispatch (the regression-test seam): Wayland (`wl-paste`) first,
+ *  then X11 (`xclip`), PNG then JPEG. If NO tool binary was found, surface a
+ *  precise "install …" note; if a tool ran but found no image, report empty. */
+export function selectLinuxOutcome(
+  runTool: (command: string, args: string[]) => RunResult,
+  wayland: boolean,
+): RawReadOutcome {
+  let anyToolPresent = false;
+  if (wayland) {
+    const out = runTool('wl-paste', ['--type', 'image/png', '--no-newline']);
+    if (out.bytes) return { image: { bytes: out.bytes, mimeType: 'image/png' } };
+    if (!out.missing) anyToolPresent = true;
   }
   for (const mimeType of ['image/png', 'image/jpeg']) {
-    const out = run('xclip', ['-selection', 'clipboard', '-t', mimeType, '-o']);
-    if (out) return { bytes: out, mimeType };
+    const out = runTool('xclip', ['-selection', 'clipboard', '-t', mimeType, '-o']);
+    if (out.bytes) return { image: { bytes: out.bytes, mimeType } };
+    if (!out.missing) anyToolPresent = true;
   }
-  return null;
+  if (!anyToolPresent) {
+    return {
+      note: wayland
+        ? 'No clipboard tool found — install wl-clipboard (wl-paste) to paste images'
+        : 'No clipboard tool found — install xclip to paste images',
+    };
+  }
+  return {}; // a tool ran but the clipboard holds no image
+}
+
+/** AppleScript that writes the clipboard's PNG representation to the temp path
+ *  in `argv`. `the clipboard as «class PNGf»` THROWS when the clipboard has no
+ *  PNG-convertible image — caught → "NO_IMAGE" (a clean empty signal, distinct
+ *  from a failure). A write failure (after `set eof` already truncated the file)
+ *  closes the handle and returns "WRITE_FAILED" rather than swallowing the error
+ *  and reporting a false "OK" over a 0-byte/partial file — so "OK" reliably means
+ *  the full bytes are in the temp file, preserving the empty-vs-failure split. */
+const MAC_PNG_SCRIPT = `on run argv
+  set outPath to item 1 of argv
+  try
+    set pngData to (the clipboard as «class PNGf»)
+  on error
+    return "NO_IMAGE"
+  end try
+  set fh to open for access (POSIX file outPath) with write permission
+  try
+    set eof fh to 0
+    write pngData to fh
+    close access fh
+  on error
+    try
+      close access fh
+    end try
+    return "WRITE_FAILED"
+  end try
+  return "OK"
+end run`;
+
+/** Native, dependency-free macOS read: osascript (always present) writes the
+ *  clipboard PNG to a temp file we then read. Distinguishes empty ("NO_IMAGE")
+ *  from a genuine read failure so the caller's notice is accurate. */
+function readMacClipboardViaOsascript(): RawReadOutcome {
+  const tmpFile = join(tmpdir(), `crtr-clip-${process.pid}-${Date.now()}.png`);
+  try {
+    const result = spawnSync('osascript', ['-e', MAC_PNG_SCRIPT, tmpFile], {
+      timeout: SPAWN_TIMEOUT_MS,
+      maxBuffer: SPAWN_MAX_BUFFER,
+      encoding: 'utf-8',
+    });
+    if (result.error || result.status !== 0) {
+      return { note: 'Could not read the clipboard (osascript failed)' };
+    }
+    const signal = (result.stdout ?? '').trim();
+    if (signal === 'NO_IMAGE') return {}; // clipboard genuinely holds no image
+    if (signal !== 'OK') return { note: 'Could not read the clipboard image' };
+    let bytes: Buffer;
+    try {
+      bytes = readFileSync(tmpFile);
+    } catch {
+      return { note: 'Could not read the clipboard image' };
+    }
+    return bytes.length > 0 ? { image: { bytes, mimeType: 'image/png' } } : {};
+  } finally {
+    try {
+      unlinkSync(tmpFile);
+    } catch {
+      /* ignore temp-file cleanup errors (NO_IMAGE never created it) */
+    }
+  }
 }
 
 function isWayland(): boolean {
   return Boolean(process.env.WAYLAND_DISPLAY) || process.env.XDG_SESSION_TYPE === 'wayland';
 }
 
-/** Run a clipboard tool; return its stdout Buffer, or `null` on any failure
- *  (missing binary, non-zero exit, timeout, empty output). */
-function run(command: string, args: string[]): Buffer | null {
+/** Run a clipboard tool; return its stdout bytes, or a `missing` flag when the
+ *  binary isn't on PATH (so the caller can distinguish "no tool" from "no
+ *  image"). Any other failure (non-zero exit, timeout, empty output) → an empty
+ *  result ({}), i.e. the tool ran but yielded no image. */
+function run(command: string, args: string[]): RunResult {
   const result = spawnSync(command, args, {
     timeout: SPAWN_TIMEOUT_MS,
     maxBuffer: SPAWN_MAX_BUFFER,
   });
-  if (result.error || result.status !== 0) return null;
+  if (result.error) {
+    const missing = (result.error as NodeJS.ErrnoException).code === 'ENOENT';
+    return { missing };
+  }
+  if (result.status !== 0) return {};
   const stdout = result.stdout;
-  if (!stdout || stdout.length === 0) return null;
-  return Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout);
+  if (!stdout || stdout.length === 0) return {};
+  return { bytes: Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout) };
 }

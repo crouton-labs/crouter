@@ -130,6 +130,10 @@ export class ChatView {
   private activityLoader: Loader | undefined;
   /** While true, `append` skips re-pinning the status container (bulk rebuild). */
   private bulkMode = false;
+  /** Text of the most recent assistant message, kept current from the welcome
+   *  snapshot AND the live event stream so `/copy` (getLastAssistantText) works
+   *  whether the message arrived before or after attach. */
+  private lastAssistantText: string | undefined;
 
   constructor(tui: TUI, container: Container, opts: ChatViewOptions = {}) {
     this.tui = tui;
@@ -171,6 +175,10 @@ export class ChatView {
       for (let i = 0; i < messages.length; i++) {
         const message = messages[i];
         if (message.role === 'assistant') {
+          // Keep the `/copy` source current from the catch-up transcript too, not
+          // only the live stream (you usually attach AFTER the last reply landed).
+          const text = this.userMessageText(message);
+          if (text.trim()) this.lastAssistantText = text;
           // If the snapshot caught an IN-FLIGHT assistant turn (state.isStreaming
           // and this is the trailing, non-terminal assistant message), bind it as
           // the live streaming component so the relayed message_update/message_end
@@ -326,6 +334,12 @@ export class ChatView {
 
       case 'message_end': {
         if (event.message.role !== 'assistant') break;
+        // Stash the completed reply's text for `/copy` (skip aborted/error turns,
+        // whose text is partial or absent).
+        if (event.message.stopReason !== 'aborted' && event.message.stopReason !== 'error') {
+          const text = this.userMessageText(event.message);
+          if (text.trim()) this.lastAssistantText = text;
+        }
         if (this.streamingComponent) {
           const stopReason = event.message.stopReason;
           let errorMessage = event.message.errorMessage;
@@ -474,7 +488,9 @@ export class ChatView {
                 this.userMessageText(message),
                 this.toolOutputExpanded,
                 this.dimStyle,
-                this.labelStyle,
+                // Bold + active accent, so the [crtr context] label reads as a
+                // distinct color against the dim rest of the line.
+                (s) => this.spinnerStyle(this.labelStyle(s)),
               ),
             );
             break;
@@ -574,6 +590,7 @@ export class ChatView {
     this.setActivity(undefined);
     this.streamingComponent = undefined;
     this.pendingTools.clear();
+    this.lastAssistantText = undefined;
     this.container.clear();
     this.container.addChild(this.statusContainer);
   }
@@ -608,6 +625,13 @@ export class ChatView {
       (c): c is ToolCallContent =>
         typeof c === 'object' && c !== null && (c as { type?: unknown }).type === 'toolCall',
     );
+  }
+
+  /** The text of the most recent assistant message, for `/copy`. Undefined when
+   *  no assistant message has been seen (or it had no text content). */
+  getLastAssistantText(): string | undefined {
+    const t = this.lastAssistantText?.trim();
+    return t ? t : undefined;
   }
 
   /** Concatenate the text blocks of a user message (string or content array). */

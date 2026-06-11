@@ -62,7 +62,6 @@ export function buildCanvasPanelLines(
   // panels still build for a non-attach caller / a test).
   const muted = palette?.muted ?? ((s: string) => s);
   const faint = palette?.faint ?? ((s: string) => s);
-  const header = (s: string): string => (palette ? palette.accent(s) : s);
 
   // One subtree-activity pass (rooted at the ancestry root) feeds the ⇣N
   // live-work-below badge on both the manager line and every report row.
@@ -89,14 +88,12 @@ export function buildCanvasPanelLines(
   // --- managers panel (↑) ---
   const managers: string[] = [];
   if (mgr !== undefined) {
-    managers.push(header('↑ manager'));
     managers.push(row(mgr));
   }
 
   // --- reports panel (↓) ---
   const reports: string[] = [];
   if (live.length > 0) {
-    reports.push(header('↓ reports') + muted(` · ${live.length}`));
     for (const id of live) reports.push(row(id));
   }
   // Self's own pending asks (no self row in BASE) → a trailing inline line.

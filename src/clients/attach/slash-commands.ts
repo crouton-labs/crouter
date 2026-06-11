@@ -52,6 +52,15 @@ export interface SlashContext {
    *  registers `/graph` as a stub that calls this hook. Unit C/Q owns the overlay
    *  itself and populates this; when absent `/graph` notifies it isn't wired yet. */
   onGraph?: () => void;
+  /** Detach this viewer (`/quit`). A viewer quit DETACHES — it tears down the
+   *  local TUI/socket and leaves the shared engine running. Wired by attach-cmd to
+   *  `teardown('detach')`; without it `/quit` cannot actually exit (just sending
+   *  `bye` makes the broker drop the socket, which the viewer treats as a dropped
+   *  connection and reconnects). */
+  onQuit?: () => void;
+  /** Copy the last assistant message to the clipboard (`/copy`). Wired by
+   *  attach-cmd (it owns the ChatView that holds the text + the clipboard writer). */
+  onCopy?: () => void;
   /** OPTIONAL native-picker openers — the InputController fills these from its
    *  read-op request channel. When absent (channel unwired) the value-picker
    *  builtins fall back to the text-arg notice. */
@@ -61,6 +70,10 @@ export interface SlashContext {
   openTreePicker?: () => void;
   openSettingsPicker?: () => void;
   openScopedModelsPicker?: () => void;
+  /** Open the native /login provider selector. */
+  openLoginPicker?: () => void;
+  /** Open the native /logout provider selector. */
+  openLogoutPicker?: () => void;
 }
 
 /** Canvas slash-commands — reimplemented NATIVE in the viewer (the canvas chrome
@@ -80,7 +93,7 @@ export const CANVAS_SLASH_COMMANDS: ReadonlyArray<{ name: string; description: s
 const CANVAS_NAMES = new Set(CANVAS_SLASH_COMMANDS.map((c) => c.name));
 
 /** Builtins with no Phase-4 engine method — scoped out (review m2). */
-const SCOPED_OUT = new Set(['login', 'logout', 'share', 'trust']);
+const SCOPED_OUT = new Set(['trust']);
 
 /** Valid `/settings thinking` levels — the `SetThinkingLevelFrame['level']`
  *  union (= AgentSession['thinkingLevel'], pi-agent-core ThinkingLevel),
@@ -141,6 +154,13 @@ export function dispatchSlashCommand(text: string, ctx: SlashContext): boolean {
       return true;
     case 'quit':
       // A viewer "quit" DETACHES — the shared engine keeps running (one-writer).
+      // onQuit tears the viewer down locally (which sends `bye` itself). Falling
+      // back to a bare `bye` would just make the broker close the socket, which
+      // the viewer reconnects to — so the detach MUST go through onQuit.
+      if (ctx.onQuit) {
+        ctx.onQuit();
+        return true;
+      }
       ctx.send({ type: 'bye' });
       ctx.notify('Detaching — the engine keeps running');
       return true;
@@ -195,12 +215,41 @@ export function dispatchSlashCommand(text: string, ctx: SlashContext): boolean {
     case 'session':
       ctx.notify(describeSession(ctx.state));
       return true;
+    case 'copy':
+      // Copy the last assistant message to the clipboard — viewer-owned (the text
+      // is in the ChatView; no engine round-trip). attach-cmd does the actual copy.
+      if (ctx.onCopy) {
+        ctx.onCopy();
+        return true;
+      }
+      ctx.notify('/copy is not available in this viewer');
+      return true;
+
+    // --- auth commands — viewer-local OAuth/API-key flows ------------------
+    case 'login':
+      if (ctx.openLoginPicker) { ctx.openLoginPicker(); return true; }
+      ctx.notify('/login is not available in this viewer');
+      return true;
+    case 'logout':
+      if (ctx.openLogoutPicker) { ctx.openLogoutPicker(); return true; }
+      ctx.notify('/logout is not available in this viewer');
+      return true;
+
+    // --- share / clone / changelog -----------------------------------------
+    case 'share':
+      ctx.send({ type: 'share' });
+      ctx.notify('Sharing session…');
+      return true;
+    case 'clone':
+      ctx.send({ type: 'clone' });
+      ctx.notify('Cloning session…');
+      return true;
+    case 'changelog':
+      ctx.notify('/changelog: see https://github.com/earendil-works/pi for release notes (no bundled changelog in this build)');
+      return true;
 
     // --- recognized builtins with no Phase-4 wire path --------------------
-    case 'copy':
-    case 'changelog':
     case 'hotkeys':
-    case 'clone':
       ctx.notify(`/${name} is not available in attach (Phase 4)`);
       return true;
 

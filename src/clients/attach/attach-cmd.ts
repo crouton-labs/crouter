@@ -48,10 +48,12 @@ import type {
 import { climbRoot, visibleWidth } from '../../core/canvas/nav-model.js';
 import { ChatView } from './chat-view.js';
 import { InputController } from './input-controller.js';
+import { writeClipboardText } from './clipboard-text.js';
 import { buildCanvasPanelLines } from './canvas-panels.js';
 import { GraphOverlay } from './graph-overlay.js';
 import { slashCommandList } from './slash-commands.js';
-import { applyTheme, attachPalette, createKeybindingsManager } from './config-load.js';
+import { applyTheme, attachPalette, createKeybindingsManager, defaultAgentDir } from './config-load.js';
+import { buildLoginPicker, buildLogoutPicker } from './auth-pickers.js';
 import { TitledEditor, thinkingBorderColor, thinkingTitleStyle, defaultTitleStyle } from './titled-editor.js';
 import { fetchGitInfo, type GitInfo } from './git-info.js';
 import { BrokerUnavailableError, ViewSocketClient, reconnectShouldGiveUp } from './view-socket.js';
@@ -195,16 +197,32 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
   // 4. Footer/status line — surfaces role + live state + transient notices.
   const clientId = randomUUID();
   let role: ClientRole = observer ? 'observer' : 'controller';
+  let brokerAgentDir: string | undefined;
   let liveState: BrokerSnapshot['state'] | undefined;
   let notice = '';
+  // Live context occupancy for the footer: `contextTokens` is the prompt-token
+  // count of the most recent assistant turn (input + cacheRead + cacheWrite =
+  // everything sent to the model, since with prompt caching bare `input` is just
+  // the uncached slice and badly understates the context), read off the relayed
+  // message_end stream; `contextWindow` comes from the welcome snapshot's stats.
+  // Both ride data the viewer already receives, so the indicator needs no
+  // broker/protocol change.
+  let contextTokens: number | undefined;
+  let contextWindow: number | undefined;
+  const formatTokens = (n: number): string =>
+    n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : `${n}`;
   // A themed, aligned status bar: live state on the LEFT (role · model · streaming
-  // · queued), the transient notice pushed to the RIGHT edge — not jammed inline.
+  // · context · queued), the transient notice pushed to the RIGHT edge — not jammed inline.
   const renderFooter = (): void => {
     const segs: string[] = [
       role === 'controller' ? pal.active('● drive') : pal.muted('○ read-only'),
     ];
     if (liveState?.model) segs.push(pal.info(liveState.model));
     if (liveState?.isStreaming) segs.push(pal.active('streaming'));
+    if (contextTokens !== undefined) {
+      const pct = contextWindow ? ` ${Math.round((contextTokens / contextWindow) * 100)}%` : '';
+      segs.push(pal.muted(`${formatTokens(contextTokens)} ctx${pct}`));
+    }
     if (liveState && liveState.pendingMessageCount > 0) {
       segs.push(pal.muted(`queued ${liveState.pendingMessageCount}`));
     }
@@ -223,8 +241,25 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
     footer.addChild(new Text(line, 1, 0));
     tui.requestRender();
   };
-  const setNotice = (msg: string): void => {
+  // Transient notices (errors, command feedback) auto-clear after a few seconds so
+  // a stale "error: …" doesn't linger in the footer forever. `sticky` keeps a notice
+  // up until explicitly replaced (used by the reconnect indicator, which is cleared
+  // by hand once the socket redials).
+  const NOTICE_CLEAR_MS = 3_000;
+  let noticeTimer: ReturnType<typeof setTimeout> | undefined;
+  const setNotice = (msg: string, opts?: { sticky?: boolean }): void => {
     notice = msg;
+    if (noticeTimer !== undefined) {
+      clearTimeout(noticeTimer);
+      noticeTimer = undefined;
+    }
+    if (msg && !opts?.sticky) {
+      noticeTimer = setTimeout(() => {
+        noticeTimer = undefined;
+        notice = '';
+        renderFooter();
+      }, NOTICE_CLEAR_MS);
+    }
     renderFooter();
   };
 
@@ -297,6 +332,11 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
     onNotice: (msg) => setNotice(msg),
     nodeId,
     onGraph: () => graphOverlay.toggle(),
+    // `/quit` — detach this viewer (the engine keeps running). Must tear down
+    // locally; a bare `bye` would just trigger the reconnect loop.
+    onQuit: () => teardown('detach'),
+    // `/copy` — last assistant message → system clipboard.
+    onCopy: () => copyLastAssistant(),
     // Global display toggles (Ctrl+O tools / Ctrl+T thinking) — pure render state
     // owned by ChatView, surfaced as a footer notice mirroring pi's status line.
     onToggleToolsExpand: () =>
@@ -319,7 +359,45 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
       pickerPanel.clear();
       tui.requestRender();
     },
+    // Auth pickers — viewer-local OAuth/API-key flows. Auth operations target the
+    // SAME auth.json the broker uses (broker + viewer share a filesystem in the
+    // tmux-local attach model), so these run entirely in the viewer process and
+    // then notify the broker to reload via a reload_auth frame.
+    openLoginPicker: () => {
+      const dir = brokerAgentDir ?? defaultAgentDir();
+      input.openAuthPicker((controls) =>
+        buildLoginPicker(
+          tui,
+          dir,
+          () => socket.send({ type: 'reload_auth' }),
+          (m) => setNotice(m),
+          controls,
+        ),
+      );
+    },
+    openLogoutPicker: () => {
+      const dir = brokerAgentDir ?? defaultAgentDir();
+      input.openAuthPicker((controls) =>
+        buildLogoutPicker(
+          dir,
+          () => socket.send({ type: 'reload_auth' }),
+          (m) => setNotice(m),
+          controls.close,
+        ),
+      );
+    },
   });
+
+  // `/copy` — copy the last assistant message (held by ChatView, kept current
+  // from both the welcome snapshot and the live stream) to the system clipboard.
+  const copyLastAssistant = (): void => {
+    const text = chatView.getLastAssistantText();
+    if (!text) {
+      setNotice('Nothing to copy — no assistant message yet');
+      return;
+    }
+    setNotice(writeClipboardText(text) ? 'Copied last message to clipboard' : 'Copy failed — no clipboard tool found');
+  };
 
   // Feed fresh state into the input controller AND the footer. Steer-vs-prompt
   // routing (T6) reads `state.isStreaming`, so this must stay current — the
@@ -351,7 +429,14 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
     switch (frame.type) {
       case 'welcome': {
         role = frame.role;
+        brokerAgentDir = frame.agentDir;
         chatView.applySnapshot(frame.snapshot);
+        // Seed the footer's context indicator from the catch-up snapshot.
+        const cu = frame.snapshot.stats.contextUsage;
+        if (cu) {
+          contextWindow = cu.contextWindow;
+          if (cu.tokens != null) contextTokens = cu.tokens;
+        }
         setLiveState(frame.snapshot.state);
         // Ask the broker for its merged command list (engine/extension/skill
         // commands) to enrich slash autocomplete beyond the builtins+canvas set.
@@ -403,9 +488,26 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
           }
           break;
         }
+        if (frame.for === 'share') {
+          if (frame.ok && frame.detail) {
+            setNotice(`Shared: ${frame.detail}`);
+            writeClipboardText(frame.detail);
+          } else if (!frame.ok) {
+            setNotice(`share failed: ${frame.detail ?? 'unknown error'}`);
+          }
+          break;
+        }
+        if (frame.for === 'clone' && !frame.ok) {
+          setNotice(`clone failed: ${frame.detail ?? 'unknown error'}`);
+          break;
+        }
         if (!frame.ok) {
           setNotice(`command failed: ${frame.for}${frame.detail ? ` — ${frame.detail}` : ''}`);
+          break;
         }
+        // Confirm commands whose effect is otherwise invisible — without this a
+        // `/reload` looks like it did nothing (the engine reloads silently).
+        if (frame.for === 'reload') setNotice('Reloaded keybindings, extensions, skills, prompts, and themes');
         break;
       }
       case 'extension_ui_request': {
@@ -416,6 +518,13 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
         // A relayed AgentSessionEvent — render it, and keep local state fresh.
         const event = frame as AgentSessionEvent;
         chatView.handleEvent(event);
+        // The most recent assistant turn's prompt tokens ARE the live context
+        // size — read straight off the relayed message, no broker round-trip.
+        if (event.type === 'message_end' && event.message.role === 'assistant') {
+          const u = event.message.usage;
+          contextTokens = u.input + u.cacheRead + u.cacheWrite;
+          renderFooter();
+        }
         if (event.type === 'agent_start') patchState({ isStreaming: true });
         else if (event.type === 'agent_end') patchState({ isStreaming: false });
         else if (event.type === 'session_info_changed') patchState({ sessionName: event.name });
@@ -459,6 +568,7 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
     if (tornDown) return;
     tornDown = true;
     if (asksTimer !== undefined) clearInterval(asksTimer);
+    if (noticeTimer !== undefined) clearTimeout(noticeTimer);
     graphOverlay.close();
     clearPaneTag();
     removeKeyListener();
@@ -505,7 +615,7 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
   let reconnecting = false;
   const attemptReconnect = async (): Promise<void> => {
     reconnecting = true;
-    setNotice('↻ node refreshing — reconnecting…');
+    setNotice('↻ node refreshing — reconnecting…', { sticky: true });
     const deadline = Date.now() + RECONNECT_GIVEUP_MS;
     let delay = 200;
     while (!tornDown && Date.now() < deadline) {

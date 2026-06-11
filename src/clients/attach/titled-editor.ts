@@ -12,19 +12,20 @@ import { truncateToWidth, visibleWidth } from '@earendil-works/pi-tui';
 /** Thinking levels pi cycles through (shift+tab), lowest → highest budget. */
 export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
 
-/** Per-level border color as a 24-bit RGB triple — ONE hue family that climbs in
- *  saturation + brightness as the budget grows: a dull blue-gray at `minimal`
- *  through violet/purple to a vivid magenta at `xhigh`. (pi paints its own
- *  `thinking*` theme colors, off its public palette surface, so we own this ramp
- *  directly — truecolor, not the 16-color ANSI hues, so the saturation climb
- *  actually reads.) `off` falls back to the caller's default border color. */
+/** Per-level border/chip color as a 24-bit RGB triple — ONE blue-violet hue at
+ *  CONSTANT perceived lightness (luma ≈ 120) whose SATURATION alone climbs with
+ *  the budget: a near-gray blue at `minimal` deepening to a vivid violet at
+ *  `xhigh`, never getting lighter or darker — only more colorful. (pi paints its
+ *  own `thinking*` theme colors off its public palette surface, so we own this
+ *  ramp directly — truecolor, not the 16-color ANSI hues, so the saturation
+ *  climb actually reads.) `off` falls back to the caller's default border color. */
 const THINKING_RGB: Record<ThinkingLevel, [number, number, number] | undefined> = {
   off: undefined, // default border color
-  minimal: [106, 116, 142], // dull blue-gray
-  low: [118, 114, 150], // muted slate
-  medium: [134, 114, 160], // soft violet-gray
-  high: [152, 114, 168], // muted mauve
-  xhigh: [170, 116, 176], // soft orchid (gently saturated, not vivid)
+  minimal: [125, 115, 135], // near-gray blue-violet
+  low: [129, 109, 151], // muted blue-violet
+  medium: [134, 103, 168], // violet
+  high: [139, 98, 184], // deeper violet
+  xhigh: [144, 92, 200], // vivid violet
 };
 
 /** The default (thinking `off`) title chip: reverse video + a space of padding
