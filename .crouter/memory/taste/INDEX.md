@@ -16,5 +16,8 @@ Contents:
 
 - **document-substrate** — the foundational ruling: all agent guidance is one substrate of markdown files whose frontmatter dictates when/where/how much loads; three kinds, two hooks, four rungs, per-directory scope, and the content-bar for boot rungs.
 - **why-field-means-why-to-read** — the ruling that the routing line's `when-and-why-to-read` is for *read-routing* (the payoff of opening), never for justifying the content.
+- **surface-parity** — the ruling that a change in a node's attached TUI owes the crouter-web operator view too (near-parity), and often a friendlier studio-view treatment, because all three are views of the one broker host.
+- **broker-is-the-host** — the headless broker is the one host; tmux panes and the web UI are all just attached views of it, and the in-pane path is legacy to converge, not a parallel model.
+- **inline-ui-placement** — first principles for where crtr TUI content belongs (bottom is now / top is history, locality, inline-by-default, terse self-clearing feedback); the attach viewer is the reference surface governing web too.
 
 Individual taste files surface at `name` only — their titles route, and you open the one the situation calls for. This index surfaces at `preview` so the dir announces when to come looking.
