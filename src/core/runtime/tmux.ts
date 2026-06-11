@@ -132,6 +132,12 @@ export interface SplitWindowOpts {
   command: string;
   /** Stack the new pane below instead of beside (default: beside, `-h`). */
   vertical?: boolean;
+  /** Place the new pane BEFORE the target (left for `-h`, above for `-v`) via
+   *  `-b`, instead of after it (default: after — right/below). */
+  before?: boolean;
+  /** Fixed size of the new pane in the split axis' cells (columns for `-h`, rows
+   *  for `-v`) via `-l`. Omit ⇒ tmux's default even split. */
+  size?: number;
 }
 
 /** Split `targetPane`'s window, opening a NEW pane beside it running `command`,
@@ -149,6 +155,8 @@ export function splitWindow(targetPane: string, opts: SplitWindowOpts): string |
     'split-window',
     '-d',
     ...(opts.vertical === true ? [] : ['-h']),
+    ...(opts.before === true ? ['-b'] : []),
+    ...(opts.size !== undefined ? ['-l', String(opts.size)] : []),
     '-P',
     '-F',
     '#{pane_id}',
