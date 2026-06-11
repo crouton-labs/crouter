@@ -126,7 +126,7 @@ export const viewRunLeaf: LeafDef = defineLeaf({
     // --window / --split: open the view as a persistent monitor in a new pane.
     if (asWindow || asSplit) {
       // Placement is tmux-only. In a pipe (non-TTY) it is meaningless — degrade
-      // to the static dump (runView handles the non-TTY path internally).
+      // to the static dump (the host handles the non-TTY path internally).
       if (!process.stdin.isTTY) {
         await hostView();
         return;
@@ -179,7 +179,7 @@ export const viewRunLeaf: LeafDef = defineLeaf({
     }
 
     // The interactive path is tmux-only; the piped/non-TTY dump path works
-    // anywhere (runView handles it internally), so only guard when stdin is a
+    // anywhere (the host handles it internally), so only guard when stdin is a
     // TTY. Outside tmux with a TTY: notify + no-op — never a non-tmux fallback.
     if (process.stdin.isTTY && !inTmux()) {
       throw new InputError({
@@ -206,7 +206,7 @@ export const viewRunLeaf: LeafDef = defineLeaf({
     try {
       await hostView();
     } finally {
-      // On a clean quit (q) runView returns to the shell/pi that launched this
+      // On a clean quit (q) the host returns to the shell/pi that launched this
       // pane — clear the monitor tag so a stray Alt+V ]/[ can't respawn-pane -k
       // (and kill) whatever now owns the pane. When the cycle itself replaces
       // this view it SIGKILLs us mid-await (this finally never runs); cycle + the
