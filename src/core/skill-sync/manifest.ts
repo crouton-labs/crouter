@@ -45,9 +45,12 @@ export interface TranslationOverride {
   claudeOwned?: string[];
 }
 
-/** A single bidirectional sync pair (R-I1). */
+/** A single bidirectional sync pair (R-I1). `kind` is optional and, if present,
+ *  MUST be `"skill"` — the other endpoint kinds (`command`/`agent`/`plugin`) are
+ *  built-in export artifacts (skill-sync/builtins.ts), not manifest-enrollable. */
 export interface Pair {
   id: string;
+  kind?: 'skill';
   crtr: Endpoint;
   claude: Endpoint;
   frontmatter?: TranslationOverride;
@@ -122,6 +125,16 @@ function validateLayer(doc: unknown, path: string): Pair[] {
     throw usage(`malformed manifest ${path}: top level must be a JSON object`);
   }
 
+  // Strict-require `version: 2` — any existing manifest MUST declare it (no
+  // advisory hedge). v1 has zero on-disk instances, so this is a clean forward
+  // marker, not a migration.
+  const version = (doc as Record<string, unknown>).version;
+  if (version !== 2) {
+    throw usage(
+      `malformed manifest ${path}: "version" must be 2 (got ${JSON.stringify(version)})`,
+    );
+  }
+
   // `pairs` absent → empty manifest; present → must be an array.
   const rawPairs = (doc as Record<string, unknown>).pairs;
   if (rawPairs === undefined) return [];
@@ -157,6 +170,20 @@ function validatePair(entry: unknown, i: number, path: string): Pair {
   }
   const id = e.id;
 
+  // `kind` is optional; absent → "skill". Any value other than "skill" is a hard
+  // error — export kinds (command/agent/plugin) are built-in, not enrollable.
+  let kind: 'skill' | undefined;
+  if (e.kind !== undefined) {
+    if (e.kind !== 'skill') {
+      throw usage(
+        `malformed manifest ${path}: ${where}.kind must be "skill" or absent — ` +
+          `kinds like "command"/"agent"/"plugin" are built-in export artifacts, ` +
+          `not manifest-enrollable`,
+      );
+    }
+    kind = e.kind;
+  }
+
   const crtr = validateEndpoint(e.crtr, `${where}.crtr`, path);
   const claude = validateEndpoint(e.claude, `${where}.claude`, path);
 
@@ -168,7 +195,7 @@ function validatePair(entry: unknown, i: number, path: string): Pair {
     frontmatter = e.frontmatter as TranslationOverride;
   }
 
-  return { id, crtr, claude, frontmatter };
+  return { id, kind, crtr, claude, frontmatter };
 }
 
 function validateEndpoint(value: unknown, where: string, path: string): Endpoint {

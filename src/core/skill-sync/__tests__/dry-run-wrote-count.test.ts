@@ -44,7 +44,7 @@ before(() => {
   mkdirSync(crtrDir, { recursive: true });
   writeFileSync(
     join(crtrDir, 'SKILL.md'),
-    '---\nkind: skill\nwhen-and-why-to-read: "When the regression applies, this skill should be read."\n---\n# DR\nbody\n',
+    '---\nkind: knowledge\nwhen-and-why-to-read: "When the regression applies, this doc should be read."\n---\n# DR\nbody\n',
     'utf8',
   );
 });

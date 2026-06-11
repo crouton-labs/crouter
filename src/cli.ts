@@ -4,7 +4,8 @@ import { runCli } from './core/command.js';
 import { buildRoot } from './build-root.js';
 import { maybeBootRoot } from './core/runtime/front-door.js';
 import { maybeAutoUpdate } from './core/auto-update.js';
-import { ensureBootSkill, ensureOfficialMarketplace, ensureProjectScope, ensureSlashCommands } from './core/bootstrap.js';
+import { ensureOfficialMarketplace, ensureProjectScope } from './core/bootstrap.js';
+import { provisionExports } from './core/skill-sync/export.js';
 
 // The full command tree is assembled in build-root.ts (shared with the
 // listing-completeness test). Root owns only the tagline; every subtree
@@ -19,8 +20,7 @@ if (maybeBootRoot(root, process.argv)) {
 }
 
 ensureOfficialMarketplace(process.argv);
-ensureBootSkill(process.argv);
-ensureSlashCommands(root, process.argv);
+provisionExports(root);
 ensureProjectScope(process.argv);
 maybeAutoUpdate(process.argv);
 

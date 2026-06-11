@@ -656,10 +656,11 @@ function frontmatterInner(
 
 /** Reconstruct the crtr frontmatter record with the resolved translatable
  *  fields set, preserving every existing (owned/other) field. A freshly
- *  materialized bundle defaults `kind: skill`. */
+ *  materialized bundle defaults `kind: knowledge` — the valid substrate kind a
+ *  crtr-side doc must carry (the merged skill+reference kind). */
 function buildCrtrFrontmatter(side: Side, fm: CrtrFm): string {
   const rec: Record<string, unknown> = side.frontmatter ? { ...side.frontmatter } : {};
-  if (!side.exists && rec.kind === undefined) rec.kind = 'skill';
+  if (!side.exists && rec.kind === undefined) rec.kind = 'knowledge';
   setOrDelete(rec, CRTR_WHENWHY, fm.whenAndWhy);
   setOrDelete(rec, CRTR_SHORTFORM, fm.shortForm);
   return serializeInner(rec);

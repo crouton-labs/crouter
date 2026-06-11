@@ -104,8 +104,7 @@ function cleanBaseEnv(): Record<string, string> {
   // ~/.crouter / ~/.claude / ~/.pi, NOT under CRTR_HOME — HOME is contained too).
   e['CRTR_NO_BOOTSTRAP'] = '1';
   e['CRTR_NO_AUTO_UPDATE'] = '1';
-  e['CRTR_NO_BOOT_SKILL'] = '1';
-  e['CRTR_NO_MODE_CMDS'] = '1';
+  e['CRTR_NO_EXPORTS'] = '1';
   e['CRTR_NO_AUTO_INIT'] = '1';
   return e;
 }
