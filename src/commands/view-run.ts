@@ -19,8 +19,16 @@
 import { defineLeaf } from '../core/command.js';
 import type { LeafDef } from '../core/command.js';
 import { InputError } from '../core/io.js';
-import { runView } from '../core/tui/host.js';
-import { resolveView, loadView, listViews } from '../core/tui/loader.js';
+import { runView, runCoreView } from '../core/tui/host.js';
+import { resolveView as resolveLegacyView, loadView, listViews as listLegacyViews } from '../core/tui/loader.js';
+import {
+  resolveView as resolveCoreView,
+  loadCore,
+  loadTui,
+  loadText,
+  requireTui,
+  listViews as listCoreViews,
+} from '../core/view/loader.js';
 // Commands reach the tmux driver through placement.ts (the sanctioned
 // model-over-driver seam, §5.1) — never `./tmux.js` directly.
 import {
@@ -76,9 +84,15 @@ export const viewRunLeaf: LeafDef = defineLeaf({
       });
     }
 
-    const r = resolveView(name);
-    if (r === null) {
-      const avail = listViews().map((v) => v.id);
+    // Dual-load: prefer a NEW dual-target `core.mjs` view; fall back to the
+    // legacy single-file `view.mjs` so today's builtins keep working untouched.
+    const coreR = resolveCoreView(name);
+    const legacyR = coreR ? null : resolveLegacyView(name);
+    if (coreR === null && legacyR === null) {
+      const avail = Array.from(new Set([
+        ...listCoreViews().map((v) => v.id),
+        ...listLegacyViews().map((v) => v.id),
+      ])).sort();
       throw new InputError({
         error: 'view_not_found',
         message: `no view: ${name}`,
@@ -93,13 +107,28 @@ export const viewRunLeaf: LeafDef = defineLeaf({
     if (port !== undefined) options.port = String(port);
     if (target !== undefined) options.target = target;
 
+    // Load + host the resolved view via the matching path (works for both the
+    // non-TTY dump and the interactive alt-screen — each host handles the TTY
+    // gate internally).
+    const hostView = async (): Promise<void> => {
+      if (coreR) {
+        requireTui(coreR);
+        const core = await loadCore(coreR);
+        const tui = await loadTui(coreR);
+        const txt = await loadText(coreR);
+        await runCoreView(core, tui, txt, { options });
+      } else {
+        const v = await loadView(legacyR!);
+        await runView(v, { options });
+      }
+    };
+
     // --window / --split: open the view as a persistent monitor in a new pane.
     if (asWindow || asSplit) {
       // Placement is tmux-only. In a pipe (non-TTY) it is meaningless — degrade
       // to the static dump (runView handles the non-TTY path internally).
       if (!process.stdin.isTTY) {
-        const v = await loadView(r);
-        await runView(v, { options });
+        await hostView();
         return;
       }
       if (!inTmux()) {
@@ -149,8 +178,6 @@ export const viewRunLeaf: LeafDef = defineLeaf({
       return { hosted: 'split', view: name, pane };
     }
 
-    const v = await loadView(r);
-
     // The interactive path is tmux-only; the piped/non-TTY dump path works
     // anywhere (runView handles it internally), so only guard when stdin is a
     // TTY. Outside tmux with a TTY: notify + no-op — never a non-tmux fallback.
@@ -177,7 +204,7 @@ export const viewRunLeaf: LeafDef = defineLeaf({
     }
 
     try {
-      await runView(v, { options });
+      await hostView();
     } finally {
       // On a clean quit (q) runView returns to the shell/pi that launched this
       // pane — clear the monitor tag so a stray Alt+V ]/[ can't respawn-pane -k

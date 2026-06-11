@@ -21,9 +21,23 @@ import {
   restoreTerminal,
   getTerminalSize,
   parseKeypress,
+  type Key,
 } from './terminal.js';
 import { createDraw, detectColorCaps, type ColorCaps, type Draw, type Span, type Style, type Rect, type Size } from './draw.js';
 import type { ViewModule, ViewHost, ViewAction, ViewManifest, KeyHint, BannerLevel } from './contract.js';
+import type {
+  ViewCore,
+  TuiPresenter,
+  TextPresenter,
+  KeyBinding,
+  ChromeState,
+  HostSignals,
+  IntentCtx,
+  Source,
+  Command,
+} from '../view/contract.js';
+import { initialChrome } from '../view/chrome.js';
+import { createLocalTransport } from '../view/transport-local.js';
 
 export interface RunViewOptions {
   /** CLI flags forwarded verbatim to the view via host.options. */
@@ -377,6 +391,291 @@ export async function runView<S>(view: ViewModule<S>, opts: RunViewOptions = {})
     // Resize → repaint from current state (never re-enter the in-flight hook).
     process.stdout.on('resize', () => { if (!done) render(); });
   });
+}
+
+// ── Dual-target core host (runCoreView) ─────────────────────────────────────
+//
+// Hosts a ViewCore + TuiPresenter under the dual-target contract
+// (src/core/view/contract.ts). Same alt-screen loop, drawChrome, single-flight
+// busy lane, refreshMs poll, and non-TTY dump branch as runView — but the model
+// is the immutable-state + intents thunk runtime, not mutate-in-place +
+// ViewAction. runView (above) stays for the legacy single-file builtins during
+// the dual-load migration; this is the path a migrated `<view>/core.mjs` takes.
+
+/** Tokens a keystroke can match a keymap binding's `keys` against. Arrows →
+ *  up/down/left/right, return → return|enter, escape → escape|esc, a printable
+ *  char → the char itself (+ 'space' for ' '), ctrl+x → ctrl+x|c-x. */
+function keyTokens(input: string, key: Key): string[] {
+  const t: string[] = [];
+  if (key.upArrow) t.push('up');
+  if (key.downArrow) t.push('down');
+  if (key.leftArrow) t.push('left');
+  if (key.rightArrow) t.push('right');
+  if (key.return) t.push('return', 'enter');
+  if (key.escape) t.push('escape', 'esc');
+  if (key.tab) t.push('tab');
+  if (key.shiftTab) t.push('shifttab');
+  if (key.backspace) t.push('backspace');
+  if (key.ctrl && input) t.push(`ctrl+${input}`, `c-${input}`);
+  if (!key.ctrl && !key.escape && input.length === 1) t.push(input);
+  if (input === ' ') t.push('space');
+  return t;
+}
+
+/** A printable text edit (for the capture line-editor): a non-empty input with
+ *  no special-key flag set. */
+function isPrintable(input: string, key: Key): boolean {
+  if (key.ctrl || key.meta || key.escape || key.return || key.tab || key.backspace
+    || key.upArrow || key.downArrow || key.leftArrow || key.rightArrow || key.shiftTab) return false;
+  return input.length >= 1;
+}
+
+/** Strip control chars so a paste can't smuggle ANSI into the draft buffer. */
+function sanitizePrintable(s: string): string {
+  return Array.from(s).filter((ch) => ch.charCodeAt(0) >= 32).join('');
+}
+
+/** The first non-capture binding whose key matches and whose `when` (if any)
+ *  passes — returns the intent name + resolved payload. */
+function matchBinding<S>(keymap: KeyBinding<S>[], input: string, key: Key, state: S): { intent: string; payload: unknown } | null {
+  const tokens = keyTokens(input, key);
+  for (const b of keymap) {
+    if ('capture' in b) continue;
+    if (b.when && !b.when(state)) continue;
+    if (b.keys.some((k) => tokens.includes(k))) {
+      return { intent: b.intent, payload: b.payload ? b.payload(state) : undefined };
+    }
+  }
+  return null;
+}
+
+/** The active text-capture binding for this state, if any (compose-mode entry). */
+function activeCapture<S>(keymap: KeyBinding<S>[], state: S): Extract<KeyBinding<S>, { capture: string }> | null {
+  for (const b of keymap) {
+    if ('capture' in b && b.when(state)) return b as Extract<KeyBinding<S>, { capture: string }>;
+  }
+  return null;
+}
+
+/** Synthesize a one-line dump for a view that ships no text.mjs: `<title>` plus
+ *  ` — <n> items` if state has an obvious top-level list. */
+function synthDump(title: string, state: unknown): string {
+  if (state && typeof state === 'object') {
+    for (const v of Object.values(state as Record<string, unknown>)) {
+      if (Array.isArray(v)) return `${title} — ${v.length} items`;
+    }
+  }
+  return title;
+}
+
+/** Run a READ source / WRITE command through a transport → typed Result. */
+async function runRequest<T, A>(
+  transport: ReturnType<typeof createLocalTransport>,
+  src: Source<T, A> | Command<T, A>,
+  args: A,
+): Promise<ReturnType<typeof src.parse>> {
+  const raw = await transport.send(src.request(args));
+  return src.parse(raw);
+}
+
+/** Host a dual-target ViewCore + TuiPresenter in the alt screen until it quits
+ *  (or Ctrl-C). `text` is the optional text presenter for the piped path. */
+export async function runCoreView<S>(
+  core: ViewCore<S>,
+  tui: TuiPresenter<S>,
+  text: TextPresenter<S> | null,
+  opts: RunViewOptions = {},
+): Promise<void> {
+  const options = Object.freeze({ ...(opts.options ?? {}) });
+  const transport = createLocalTransport({ cwd: process.cwd() });
+
+  // ── Non-TTY / piped path: init, best-effort refresh, dump, exit 0. ──
+  if (!process.stdin.isTTY) {
+    let dstate = core.init(options);
+    const dchrome = initialChrome();
+    const dsignal: HostSignals = {
+      setStatus() {}, setBanner(m, l) { dchrome.banner = { msg: m, level: l }; }, clearBanner() { dchrome.banner = null; },
+      setSubtitle() {}, setMode() {}, quit() {},
+    };
+    const dctx: IntentCtx<S> = {
+      get state() { return dstate; },
+      set(next) { dstate = typeof next === 'function' ? (next as (p: S) => S)(dstate) : next; },
+      resolve: (s, a) => runRequest(transport, s, a as never),
+      execute: (c, a) => runRequest(transport, c, a as never),
+      signal: dsignal,
+      dispatch: async (name, payload) => { const it = core.intents[name]; if (it) await it(dctx, payload); },
+    };
+    const refresh = core.intents['refresh'];
+    if (refresh) { try { await refresh(dctx, undefined); } catch { /* dump current state regardless */ } }
+    let out = text ? text.dump(dstate, { banner: dchrome.banner }) : synthDump(core.manifest.title, dstate);
+    if (!out.endsWith('\n')) out += '\n';
+    process.stdout.write(out);
+    return;
+  }
+
+  const caps: ColorCaps = detectColorCaps();
+  let state: S = core.init(options);
+  const chrome: ChromeState = initialChrome();
+  let tick = 0;
+
+  // Footer hints come from the keymap bindings' `hint` field (single source of
+  // truth) — adapt to the legacy drawChrome's (manifest.keymap, Chrome) shape.
+  const hints: KeyHint[] = [];
+  for (const b of tui.keymap) { if (b.hint) hints.push(b.hint); }
+
+  // Restore the terminal exactly once, however we leave.
+  let restored = false;
+  const cleanup = (): void => {
+    if (restored) return;
+    restored = true;
+    try { restoreTerminal(); } catch { /* best-effort */ }
+  };
+  process.once('exit', cleanup);
+
+  const render = (): void => {
+    const size = getTerminalSize();
+    const { draw, frame } = createDraw(size, caps);
+    const legacyManifest = { ...core.manifest, keymap: hints };
+    const legacyChrome: Chrome = { ...chrome, tick };
+    const content = drawChrome(draw, size, legacyManifest, legacyChrome);
+    try {
+      tui.render(state, draw, content);
+    } catch (e) {
+      chrome.banner = { msg: `render error: ${errText(e)}`, level: 'error' };
+    }
+    process.stdout.write(frame());
+  };
+
+  // Busy-tick repaint: advance the spinner + repaint while an async intent runs
+  // so live setStatus narration shows. Render-only — never re-enters an intent.
+  let tickTimer: ReturnType<typeof setInterval> | undefined;
+  const startBusyTick = (): void => {
+    if (tickTimer) return;
+    tickTimer = setInterval(() => { tick++; render(); }, 120);
+  };
+  const stopBusyTick = (): void => {
+    if (tickTimer) { clearInterval(tickTimer); tickTimer = undefined; }
+  };
+
+  // Loop control hoisted so signal.quit() can finish from inside an intent.
+  let done = false;
+  let resolveLoop: () => void = () => {};
+  const loopDone = new Promise<void>((res) => { resolveLoop = res; });
+  let loopTimer: ReturnType<typeof setInterval> | undefined;
+  const finish = (): void => {
+    if (done) return;
+    done = true;
+    if (loopTimer) clearInterval(loopTimer);
+    stopBusyTick();
+    cleanup();
+    resolveLoop();
+  };
+
+  const signal: HostSignals = {
+    setStatus(msg) { chrome.status = msg; },
+    setBanner(msg, level) { chrome.banner = msg == null ? null : { msg, level }; },
+    clearBanner() { chrome.banner = null; },
+    setSubtitle(s) { chrome.subtitle = s; },
+    setMode(mode) { chrome.mode = mode; },
+    quit() { finish(); },
+  };
+
+  // The single-flight busy lane lives in dispatch. The INPUT layer drops
+  // keystrokes while busy (paces fetches); a chained ctx.dispatch from inside an
+  // intent runs inline without re-toggling the lane.
+  let busy = false;
+  const markRefreshed = (name: string): void => {
+    if (name === 'refresh') { chrome.loaded = true; chrome.lastRefresh = Date.now(); }
+  };
+  const makeCtx = (): IntentCtx<S> => ({
+    get state() { return state; },
+    set(next) { state = typeof next === 'function' ? (next as (p: S) => S)(state) : next; render(); },
+    resolve: (s, a) => runRequest(transport, s, a as never),
+    execute: (c, a) => runRequest(transport, c, a as never),
+    signal,
+    dispatch: (name, payload) => dispatch(name, payload),
+  });
+  const dispatch = async (intentName: string, payload?: unknown): Promise<void> => {
+    if (done) return;
+    const intent = core.intents[intentName];
+    if (!intent) {
+      chrome.banner = { msg: `unknown intent: ${intentName}`, level: 'error' };
+      render();
+      return;
+    }
+    const ctx = makeCtx();
+    let res: void | Promise<void>;
+    try {
+      res = intent(ctx, payload);
+    } catch (e) {
+      chrome.banner = { msg: errText(e), level: 'error' };
+      markRefreshed(intentName);
+      render();
+      return;
+    }
+    if (res instanceof Promise) {
+      const wasBusy = busy;
+      if (!wasBusy) { busy = true; chrome.busy = true; render(); startBusyTick(); }
+      try {
+        await res;
+      } catch (e) {
+        chrome.banner = { msg: errText(e), level: 'error' };
+      } finally {
+        if (!wasBusy) { busy = false; chrome.busy = false; stopBusyTick(); }
+        markRefreshed(intentName);
+        render();
+      }
+    } else {
+      markRefreshed(intentName);
+      render();
+    }
+  };
+
+  // ── Mount: init → loading frame → first refresh (if the view has one). ──
+  setupTerminal();
+  render();
+  if (core.intents['refresh']) await dispatch('refresh');
+
+  // Capture-mode buffer: the host's line-editor draft while a `capture` binding's
+  // when(state) is true; reset to '' whenever no capture binding is active.
+  let captureBuf = '';
+
+  if (typeof core.manifest.refreshMs === 'number' && core.manifest.refreshMs > 0) {
+    loopTimer = setInterval(() => { if (!busy) void dispatch('refresh'); }, core.manifest.refreshMs);
+  }
+
+  const onData = async (data: Buffer): Promise<void> => {
+    if (done) return;
+    let parsed: { input: string; key: Key };
+    try { parsed = parseKeypress(data); } catch { return; }
+    const { input, key } = parsed;
+
+    // Ctrl-C is the universal escape hatch — works even mid-flight.
+    if (key.ctrl && input === 'c') { finish(); return; }
+
+    // Drop keystrokes while an async intent is in flight (paces fetch/send).
+    if (busy) return;
+
+    // Text-capture: while a capture binding is active, printable/backspace edit
+    // the host buffer and dispatch capture(nextDraft); other keys (return/escape)
+    // fall through to the keymap so submit/cancel can be bound.
+    const cap = activeCapture(tui.keymap, state);
+    if (cap) {
+      if (isPrintable(input, key)) { captureBuf += sanitizePrintable(input); await dispatch(cap.capture, captureBuf); return; }
+      if (key.backspace) { captureBuf = captureBuf.slice(0, -1); await dispatch(cap.capture, captureBuf); return; }
+    } else {
+      captureBuf = '';
+    }
+
+    const m = matchBinding(tui.keymap, input, key, state);
+    if (m) await dispatch(m.intent, m.payload);
+  };
+
+  process.stdin.on('data', (d: Buffer) => { void onData(d); });
+  // Resize → repaint from current state (never re-enter an in-flight intent).
+  process.stdout.on('resize', () => { if (!done) render(); });
+
+  await loopDone;
 }
 
 function errText(e: unknown): string {
