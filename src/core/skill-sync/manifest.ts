@@ -24,12 +24,16 @@ import { usage } from '../errors.js';
 
 // ── Shared types (consumed by P5/P6/P7) ──────────────────────────────────────
 
-/** The scope a sync endpoint resolves within. */
-export type EndpointScope = 'user' | 'project' | 'plugin';
+/** The scope a sync endpoint resolves within. `plugin` is crtr-side only (a
+ *  skill bundle inside a crtr-registry plugin); `claude-plugin` is Claude-side
+ *  only (a skill IN PLACE inside its Claude plugin's install path). */
+export type EndpointScope = 'user' | 'project' | 'plugin' | 'claude-plugin';
 
 /** One side of a sync pair — a single SKILL.md bundle on either the crtr or the
  *  Claude side. Resolves to `<dir>/<name>/SKILL.md` (R-I2, resolved by P6).
- *  `plugin` is required iff `scope === 'plugin'`. */
+ *  `plugin` is required iff `scope` is `plugin` (crtr) or `claude-plugin`
+ *  (Claude) — it names the owning plugin (a `claude-plugin` value is the
+ *  marketplace-qualified key `<plugin>@<marketplace>`). */
 export interface Endpoint {
   scope: EndpointScope;
   name: string;
@@ -64,7 +68,7 @@ export interface LayeredManifest {
 // ── Public API ───────────────────────────────────────────────────────────────
 
 const MANIFEST_FILE = 'skill-sync.json';
-const VALID_SCOPES: readonly EndpointScope[] = ['user', 'project', 'plugin'];
+const VALID_SCOPES: readonly EndpointScope[] = ['user', 'project', 'plugin', 'claude-plugin'];
 
 /**
  * Read, validate, and merge the user- and project-layer manifests.
@@ -184,8 +188,8 @@ function validatePair(entry: unknown, i: number, path: string): Pair {
     kind = e.kind;
   }
 
-  const crtr = validateEndpoint(e.crtr, `${where}.crtr`, path);
-  const claude = validateEndpoint(e.claude, `${where}.claude`, path);
+  const crtr = validateEndpoint(e.crtr, `${where}.crtr`, path, 'crtr');
+  const claude = validateEndpoint(e.claude, `${where}.claude`, path, 'claude');
 
   let frontmatter: TranslationOverride | undefined;
   if (e.frontmatter !== undefined) {
@@ -198,7 +202,12 @@ function validatePair(entry: unknown, i: number, path: string): Pair {
   return { id, kind, crtr, claude, frontmatter };
 }
 
-function validateEndpoint(value: unknown, where: string, path: string): Endpoint {
+function validateEndpoint(
+  value: unknown,
+  where: string,
+  path: string,
+  side: 'crtr' | 'claude',
+): Endpoint {
   if (!isObject(value)) {
     throw usage(`malformed manifest ${path}: ${where} is missing or not an object`);
   }
@@ -211,23 +220,39 @@ function validateEndpoint(value: unknown, where: string, path: string): Endpoint
   }
   const scope = ep.scope;
 
+  // Scopes are side-specific: `plugin` resolves a crtr-registry plugin, so it is
+  // only legal on the crtr side; `claude-plugin` resolves a Claude install path,
+  // so it is only legal on the Claude side (R-I1).
+  if (scope === 'plugin' && side !== 'crtr') {
+    throw usage(
+      `malformed manifest ${path}: ${where}.scope "plugin" is only valid for a crtr ` +
+        `endpoint — for a Claude plugin skill use "claude-plugin"`,
+    );
+  }
+  if (scope === 'claude-plugin' && side !== 'claude') {
+    throw usage(
+      `malformed manifest ${path}: ${where}.scope "claude-plugin" is only valid for a ` +
+        `Claude endpoint`,
+    );
+  }
+
   if (typeof ep.name !== 'string' || ep.name.length === 0) {
     throw usage(`malformed manifest ${path}: ${where}.name must be a non-empty string`);
   }
   const name = ep.name;
 
-  // `plugin` required iff scope === 'plugin' (R-I1).
-  if (scope === 'plugin') {
+  // `plugin` required iff scope names a plugin (`plugin` or `claude-plugin`).
+  if (scope === 'plugin' || scope === 'claude-plugin') {
     if (typeof ep.plugin !== 'string' || ep.plugin.length === 0) {
       throw usage(
-        `malformed manifest ${path}: ${where} has scope "plugin" but no non-empty "plugin" name`,
+        `malformed manifest ${path}: ${where} has scope "${scope}" but no non-empty "plugin" name`,
       );
     }
     return { scope, name, plugin: ep.plugin };
   }
   if (ep.plugin !== undefined) {
     throw usage(
-      `malformed manifest ${path}: ${where}.plugin is only valid when scope is "plugin"`,
+      `malformed manifest ${path}: ${where}.plugin is only valid when scope is "plugin" or "claude-plugin"`,
     );
   }
   return { scope, name };

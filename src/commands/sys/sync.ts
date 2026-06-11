@@ -68,11 +68,11 @@ const DRIFT: Record<PairResult['status'], string> = {
   conflict: 'conflict',
 };
 
-/** Render one endpoint as `scope/name` (or `plugin:<plugin>/<name>` for a
+/** Render one endpoint as `scope/name` (or `<scope>:<plugin>/<name>` for a
  *  plugin-scoped side) so a reader sees where each half of the pair lives. */
 function endpointLabel(ep: Endpoint): string {
-  return ep.scope === 'plugin'
-    ? `plugin:${ep.plugin}/${ep.name}`
+  return ep.scope === 'plugin' || ep.scope === 'claude-plugin'
+    ? `${ep.scope}:${ep.plugin}/${ep.name}`
     : `${ep.scope}/${ep.name}`;
 }
 

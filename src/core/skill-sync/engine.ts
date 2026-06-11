@@ -36,6 +36,7 @@ import { stringify as stringifyYaml } from 'yaml';
 import { usage } from '../errors.js';
 import { parseFrontmatterGeneric } from '../frontmatter.js';
 import { findPluginByName } from '../resolver.js';
+import { resolveClaudePluginInstallPath } from './claude-plugins.js';
 import {
   findProjectScopeRoot,
   pluginMemoryDir,
@@ -113,8 +114,13 @@ function resolveCrtrBundleDir(ep: Endpoint): string {
       throw usage(`skill-sync: crtr plugin "${ep.plugin}" not installed`);
     }
     memoryDir = pluginMemoryDir(plugin);
-  } else {
+  } else if (ep.scope === 'user' || ep.scope === 'project') {
     memoryDir = scopeMemoryDir(ep.scope);
+  } else {
+    throw usage(
+      `skill-sync: scope "${ep.scope}" is not valid for a crtr endpoint ` +
+        `(use user, project, or plugin)`,
+    );
   }
   if (!memoryDir) {
     throw usage(`skill-sync: no crtr ${ep.scope} memory dir available for "${ep.name}"`);
@@ -123,8 +129,10 @@ function resolveCrtrBundleDir(ep: Endpoint): string {
 }
 
 /** Claude endpoint → its bundle dir `<skillsRoot>/<name>/`. The per-scope Claude
- *  skills roots derive from scope.ts primitives: user `~/.claude/skills`,
- *  project `<proj>/.claude/skills`, plugin `<installPath>/skills`. */
+ *  skills roots: user `~/.claude/skills`, project `<proj>/.claude/skills`, and
+ *  `claude-plugin` the owning plugin's actual install path
+ *  `<installPath>/skills` (resolved from Claude's own registry, in place — no
+ *  user-scope copy). */
 function resolveClaudeBundleDir(ep: Endpoint): string {
   let skillsRoot: string;
   if (ep.scope === 'user') {
@@ -137,12 +145,13 @@ function resolveClaudeBundleDir(ep: Endpoint): string {
     // `<proj>/.crouter` → the project dir is its parent; Claude skills sit at
     // `<proj>/.claude/skills`.
     skillsRoot = join(dirname(projScopeRoot), '.claude', SKILLS_DIR);
+  } else if (ep.scope === 'claude-plugin') {
+    skillsRoot = join(resolveClaudePluginInstallPath(ep.plugin!), SKILLS_DIR);
   } else {
-    const plugin = findPluginByName(ep.plugin!);
-    if (!plugin) {
-      throw usage(`skill-sync: Claude plugin "${ep.plugin}" not installed`);
-    }
-    skillsRoot = join(plugin.root, SKILLS_DIR);
+    throw usage(
+      `skill-sync: scope "${ep.scope}" is not valid for a Claude endpoint ` +
+        `(use user, project, or claude-plugin)`,
+    );
   }
   return join(skillsRoot, ep.name);
 }
