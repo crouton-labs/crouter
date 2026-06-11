@@ -1,11 +1,12 @@
 // broker.ts — the headless node broker (design §4, §5; plan T4).
 //
-// One broker process per `--headless` node. It hosts ONE pi engine IN-PROCESS
+// One broker process per node — the SOLE host. It hosts ONE pi engine IN-PROCESS
 // via the SDK (createAgentSession), is the SOLE writer of the node's session
 // `.jsonl`, listens on `nodeDir(id)/view.sock`, fans the single engine event
 // stream out to N viewers, serializes a single controller's drive commands, and
-// routes blocking extension dialogs. It is the headless analog of pi-in-a-pane:
-// it runs one turn-cycle and, when the engine settles (the stophook calls
+// routes blocking extension dialogs. The engine has no terminal of its own; a
+// tmux pane (or web tab) is only a viewer of this socket. It
+// runs one turn-cycle and, when the engine settles (the stophook calls
 // ctx.shutdown(), or the engine goes idle), disposes the engine and exits 0 —
 // the daemon then routes revival per the intent the bound stophook set.
 //
