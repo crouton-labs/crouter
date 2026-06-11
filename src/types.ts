@@ -24,7 +24,6 @@ export interface PluginManifest {
   source?: string;
   owner?: OwnerRef;
   kinds?: string[];
-  generator?: 'claude-bridge';
 }
 
 export interface MarketplacePluginEntry {

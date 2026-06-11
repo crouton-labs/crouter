@@ -1,4 +1,5 @@
 import { join, relative, sep } from 'node:path';
+import { readdirSync } from 'node:fs';
 import type { InstalledPlugin, Scope } from '../types.js';
 import { pathExists, readText, walkFiles } from './fs-utils.js';
 import { parseFrontmatterGeneric } from './frontmatter.js';
@@ -64,17 +65,44 @@ export function listMemoryDocs(scope: Scope): MemoryDoc[] {
   const dir = scopeMemoryDir(scope);
   if (!dir || !pathExists(dir)) return [];
   const docs: MemoryDoc[] = [];
-  for (const file of walkFiles(dir, (n) => n.endsWith('.md'))) {
-    const name = relative(dir, file).replace(/\.md$/i, '').split(sep).join('/');
-    if (!name) continue;
+  // Walk: a dir containing SKILL.md is a single substrate bundle — emit ONE doc
+  // named by the dir's relative path, sourced from its SKILL.md, and STOP
+  // descending (deeper files are bundle assets, not docs). Every other dir
+  // yields its flat *.md files (topical subdirs / INDEX.md) as before.
+  const found: { path: string; name: string }[] = [];
+  const stack: string[] = [dir];
+  while (stack.length) {
+    const d = stack.pop()!;
+    let entries;
+    try {
+      entries = readdirSync(d, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    const hasSkill = entries.some((e) => e.isFile() && e.name === 'SKILL.md');
+    if (hasSkill) {
+      const name = relative(dir, d).split(sep).join('/');
+      if (name) found.push({ path: join(d, 'SKILL.md'), name });
+      continue; // stop descent — deeper dirs are assets
+    }
+    for (const e of entries) {
+      if (e.isDirectory()) stack.push(join(d, e.name));
+      else if (e.isFile() && e.name.endsWith('.md')) {
+        const file = join(d, e.name);
+        const name = relative(dir, file).replace(/\.md$/i, '').split(sep).join('/');
+        if (name) found.push({ path: file, name });
+      }
+    }
+  }
+  for (const { path, name } of found) {
     // COLLECTION layer: the strict frontmatter parser throws on invalid YAML.
     // Isolate one malformed doc with a clear scoped notice + skip, so a single
     // bad file can't brick `memory list`/`find` or the substrate boot render.
     try {
-      docs.push(loadMemoryDoc(name, scope, file));
+      docs.push(loadMemoryDoc(name, scope, path));
     } catch (e) {
       const msg = (e instanceof Error ? e.message : String(e)).split('\n')[0];
-      warn(`invalid frontmatter in ${file}: ${msg}`);
+      warn(`invalid frontmatter in ${path}: ${msg}`);
     }
   }
   return docs.sort((a, b) => a.name.localeCompare(b.name));
@@ -132,6 +160,13 @@ function findMemoryMatches(name: string, scope: Scope | undefined): MemoryDoc[] 
       const path = join(dir, ...name.split('/')) + '.md';
       if (pathExists(path)) {
         matches.push(loadMemoryDoc(name, s, path));
+        continue;
+      }
+      // Bundle marker is authoritative: a `<name>/SKILL.md` resolves the bare
+      // dir name to its bundle doc, and wins over INDEX.md if both exist.
+      const skillPath = join(dir, ...name.split('/'), 'SKILL.md');
+      if (pathExists(skillPath)) {
+        matches.push(loadMemoryDoc(name, s, skillPath));
         continue;
       }
       const indexPath = join(dir, ...name.split('/'), 'INDEX.md');
