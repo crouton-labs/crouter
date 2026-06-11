@@ -2,6 +2,7 @@
   "compilerOptions": {
     "target": "ES2022",
     "module": "Node16",
+    "jsx": "react-jsx",
     "moduleResolution": "Node16",
     "outDir": "dist",
     "rootDir": "src",

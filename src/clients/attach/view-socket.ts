@@ -118,6 +118,14 @@ export class ViewSocketClient extends EventEmitter {
   request(frame: ReadOpRequest): Promise<BrokerDataFrame> {
     const id = randomUUID();
     return new Promise<BrokerDataFrame>((resolve, reject) => {
+      // Fail fast on a dead/absent socket rather than parking a promise that the
+      // reply will never reach (it would otherwise hang the full timeout). A
+      // post-`close` request lands here too — `rejectAllPending` already ran.
+      const sock = this.socket;
+      if (sock === undefined || sock.destroyed) {
+        reject(new Error(`cannot issue '${frame.type}': no live broker connection`));
+        return;
+      }
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`request '${frame.type}' timed out after ${REQUEST_TIMEOUT_MS}ms`));
@@ -232,18 +240,24 @@ export class ViewSocketClient extends EventEmitter {
       // Correlated replies (read-ops + dequeue) are consumed by the pending-by-id
       // resolver, NOT re-emitted as a generic 'frame' (the attach frame router
       // would otherwise treat a `data` frame as an AgentSessionEvent). A `data`
-      // frame is ALWAYS a reply; an `error` is correlated only when its `id`
-      // matches an in-flight request — an uncorrelated error still flows through.
-      if (
-        (frame.type === 'data' || frame.type === 'error') &&
-        typeof frame.id === 'string' &&
-        this.pending.has(frame.id)
-      ) {
+      // frame is ALWAYS a reply, so it is swallowed unconditionally — even a late
+      // post-timeout one (no pending entry) is dropped, never leaked to the
+      // router. An `error` is correlated only when its `id` matches an in-flight
+      // request; an uncorrelated error still flows through.
+      if (frame.type === 'data') {
+        const entry = typeof frame.id === 'string' ? this.pending.get(frame.id) : undefined;
+        if (entry) {
+          this.pending.delete(frame.id);
+          clearTimeout(entry.timer);
+          entry.resolve(frame);
+        }
+        continue;
+      }
+      if (frame.type === 'error' && typeof frame.id === 'string' && this.pending.has(frame.id)) {
         const entry = this.pending.get(frame.id)!;
         this.pending.delete(frame.id);
         clearTimeout(entry.timer);
-        if (frame.type === 'data') entry.resolve(frame);
-        else entry.reject(new Error(frame.message || `request failed: ${frame.code}`));
+        entry.reject(new Error(frame.message || `request failed: ${frame.code}`));
         continue;
       }
       this.emit('frame', frame);

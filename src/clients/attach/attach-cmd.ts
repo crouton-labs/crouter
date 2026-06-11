@@ -262,13 +262,19 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
 
   // 5. Input layer (T6). onCommand/onDialogResponse → socket; onNotice → footer;
   //    nodeId/onGraph feed the slash context (/promote targets this node, /graph
-  //    toggles the overlay).
+  //    toggles the overlay); onRequest is the correlated read-op channel the
+  //    native pickers ride on.
   const input = new InputController(tui, editor, km, {
     onCommand: (frame) => socket.send(frame),
     onDialogResponse: (resp) => socket.send(resp),
     onNotice: (msg) => setNotice(msg),
     nodeId,
     onGraph: () => graphOverlay.toggle(),
+    // Wire the correlated read-op channel so the native pickers (/model,
+    // /resume, /fork, /tree, /settings, /scoped-models) can fetch their payloads.
+    // Without this every picker degrades to the "isn't available in this viewer"
+    // notice (see slash-commands.ts + InputController.openPicker).
+    onRequest: (frame) => socket.request(frame),
   });
 
   // Feed fresh state into the input controller AND the footer. Steer-vs-prompt

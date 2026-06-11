@@ -7,18 +7,17 @@
 // doesn't recognize) fall through to be sent as a `prompt` for the engine's
 // extension runner to handle.
 //
-// SELECTORS — the Phase-4 reality. The plan called for `/model`, `/resume`,
-// `/fork`, `/tree`, `/settings` to open pi's exported `*SelectorComponent`s. The
-// authoritative 0.78.1 .d.ts shows those components require ENGINE-side state a
-// socket-only viewer does not have (`ModelSelectorComponent` needs the
-// `ModelRegistry` + `SettingsManager`; `SessionSelectorComponent` needs session
-// loaders; `TreeSelectorComponent` needs the `SessionTreeNode[]` tree), and the
-// §1.2 command-frame floor set exposes NO read op to fetch any of it. So in
-// Phase 4 these resolve via a TEXT ARGUMENT — `/model <id>`, `/resume <path>`,
-// `/fork <entryId>`, `/tree <entryId>` — which sends the SAME resolved value the
-// selector would have, i.e. zero engine capability is lost; only the interactive
-// picker UI waits for a future read op. A no-arg invocation shows a one-line
-// notice with the arg form. (This protocol gap is reported up to the parent.)
+// SELECTORS — native interactive pickers. `/model`, `/resume`, `/fork`, `/tree`,
+// `/settings`, `/scoped-models` open pi's real `*SelectorComponent`s as overlays,
+// fed by the operator-view read-op `data` frames (broker-protocol) over the
+// socket. With no arg they open the picker (via the `openXPicker` SlashContext
+// callbacks the InputController exposes, fed by its read-op request channel —
+// which attach-cmd MUST wire via `onRequest: (f) => socket.request(f)`). With an
+// arg the same resolved value is sent directly (`/model <provider/id>`, `/resume
+// <path>`, `/fork <entryId>`, `/tree <entryId>`) without the UI. If the request
+// channel is unwired the picker degrades to the arg-form notice. (Verified
+// against pi 0.79.1 — `ScopedModelsSelectorComponent` is the one selector pi does
+// not re-export, so /scoped-models renders read-only via a SelectList.)
 //
 // SCOPED OUT (review m2 — no engine method): `/login`, `/logout`, `/share`,
 // `/trust` — a brief "not supported in attach" notice, never a frame.
@@ -53,6 +52,15 @@ export interface SlashContext {
    *  registers `/graph` as a stub that calls this hook. Unit C/Q owns the overlay
    *  itself and populates this; when absent `/graph` notifies it isn't wired yet. */
   onGraph?: () => void;
+  /** OPTIONAL native-picker openers — the InputController fills these from its
+   *  read-op request channel. When absent (channel unwired) the value-picker
+   *  builtins fall back to the text-arg notice. */
+  openModelPicker?: () => void;
+  openSessionPicker?: () => void;
+  openForkPicker?: () => void;
+  openTreePicker?: () => void;
+  openSettingsPicker?: () => void;
+  openScopedModelsPicker?: () => void;
 }
 
 /** Canvas slash-commands — reimplemented NATIVE in the viewer (the canvas chrome
@@ -154,22 +162,29 @@ export function dispatchSlashCommand(text: string, ctx: SlashContext): boolean {
       ctx.send({ type: 'switch_session', path: arg });
       return true;
 
-    // --- value-picker builtins: arg form (selector deferred, see header) ---
+    // --- value-picker builtins: native picker (no arg) OR direct value (arg) ---
     case 'model':
-      if (!arg) return pickerHint(ctx, 'model', '/model <id>');
+      if (!arg) return openOrHint(ctx.openModelPicker, ctx, 'model', '/model <provider/id>');
       ctx.send({ type: 'set_model', model: arg });
       return true;
     case 'resume':
-      if (!arg) return pickerHint(ctx, 'session', '/resume <session-path>');
+      if (!arg) return openOrHint(ctx.openSessionPicker, ctx, 'session', '/resume <session-path>');
       ctx.send({ type: 'switch_session', path: arg });
       return true;
     case 'fork':
-      if (!arg) return pickerHint(ctx, 'fork point', '/fork <entryId>');
+      if (!arg) return openOrHint(ctx.openForkPicker, ctx, 'fork point', '/fork <entryId>');
       ctx.send({ type: 'fork', entryId: arg });
       return true;
     case 'tree':
-      if (!arg) return pickerHint(ctx, 'tree', '/tree <entryId>');
+      if (!arg) return openOrHint(ctx.openTreePicker, ctx, 'tree', '/tree <entryId>');
       ctx.send({ type: 'navigate_tree', targetId: arg });
+      return true;
+    case 'scoped-models':
+      if (ctx.openScopedModelsPicker) {
+        ctx.openScopedModelsPicker();
+        return true;
+      }
+      ctx.notify('The scoped-models view needs the read-op channel, which this viewer has not wired');
       return true;
 
     // --- settings (sub-command form; interactive menu needs read ops) ------
@@ -185,7 +200,6 @@ export function dispatchSlashCommand(text: string, ctx: SlashContext): boolean {
     case 'copy':
     case 'changelog':
     case 'hotkeys':
-    case 'scoped-models':
     case 'clone':
       ctx.notify(`/${name} is not available in attach (Phase 4)`);
       return true;
@@ -379,6 +393,22 @@ function pickerHint(ctx: SlashContext, what: string, form: string): true {
   return true;
 }
 
+/** Open a native picker if its opener is wired; otherwise fall back to the
+ *  text-arg hint. Keeps every value-picker builtin working even when the
+ *  read-op request channel is absent. */
+function openOrHint(
+  open: (() => void) | undefined,
+  ctx: SlashContext,
+  what: string,
+  form: string,
+): true {
+  if (open) {
+    open();
+    return true;
+  }
+  return pickerHint(ctx, what, form);
+}
+
 function handleSettings(arg: string, ctx: SlashContext): true {
   const [sub, ...rest] = arg.split(/\s+/);
   const value = rest.join(' ').trim();
@@ -397,13 +427,22 @@ function handleSettings(arg: string, ctx: SlashContext): true {
     case 'auto-compaction':
       ctx.send({ type: 'set_auto_compaction', enabled: parseBool(value) });
       return true;
+    case '':
+      // Bare `/settings` opens the native settings menu (falls back to the
+      // sub-command summary when the picker channel is unwired).
+      if (ctx.openSettingsPicker) {
+        ctx.openSettingsPicker();
+        return true;
+      }
+      return settingsSummary(ctx);
     default:
-      ctx.notify(
-        'Settings: /settings thinking <level> | auto-retry on|off | auto-compaction on|off ' +
-          '(the interactive settings menu needs data not exposed over view.sock in Phase 4)',
-      );
-      return true;
+      return settingsSummary(ctx);
   }
+}
+
+function settingsSummary(ctx: SlashContext): true {
+  ctx.notify('Settings: /settings thinking <level> | auto-retry on|off | auto-compaction on|off');
+  return true;
 }
 
 function parseBool(value: string): boolean {

@@ -3,17 +3,29 @@
 // a serialized picker payload into the REAL pi `*SelectorComponent`, wired so a
 // selection dispatches the SAME command frame the text-arg slash path sends and
 // `close()` tears the overlay down. InputController owns the overlay lifecycle
-// (showOverlay/dismiss) and the async data fetch; these are pure builders.
+// (showOverlay/dismiss/focus) and the async data fetch; these are pure builders.
+//
+// FOCUS (load-bearing): some selectors put `handleInput` on an INNER list, not
+// the outer Container (UserMessageSelectorComponent → getMessageList(),
+// SettingsSelectorComponent → getSettingsList()). pi-tui drops every keystroke
+// when the focused component has no `handleInput`, so each builder returns BOTH
+// the overlay `component` AND the `focus` target the caller must focus — exactly
+// as pi's own interactive-mode does (`{ component, focus }`).
 //
 // R1 (contract): the tree/fork/settings payloads are PURE DATA — their selectors
 // build verbatim, no reconstruction. The MODEL picker's `ModelSelectorComponent`
 // needs a live `ModelRegistry`/`SettingsManager`: we feed the REAL component a
 // minimal in-memory `SettingsManager` plus a tiny `ModelRegistry` adapter (the
-// component calls only refresh/getError/getAvailable/find), preserving its full
-// search + scope-toggle UI without crossing engine state over the socket. The
-// SESSION picker reconstructs faithfully from async loaders (no shim). The
-// SCOPED-MODELS component is NOT re-exported by pi 0.79.0 AND has no mutation
-// frame in the contract, so it renders read-only via a pi-tui SelectList.
+// component calls only refresh/getError/getAvailable/find — verified against
+// model-selector.js), preserving its full search + scope-toggle UI without
+// crossing engine state over the socket. The SESSION picker reconstructs
+// faithfully from async loaders (no shim). The SCOPED-MODELS component is NOT
+// re-exported by pi (through 0.79.1) AND has no mutation frame in the contract,
+// so it renders read-only via a pi-tui SelectList.
+//
+// pi pin is `^0.79.1` (a RANGE): the duck-typed registry adapter relies on the
+// component's current 4-method registry surface — a future 0.79.x adding a
+// registry call would surface at runtime (caught by live verification).
 
 import type { Api, Model } from '@earendil-works/pi-ai';
 import {
@@ -29,7 +41,6 @@ import {
   ModelSelectorComponent,
   SessionSelectorComponent,
   SettingsSelectorComponent,
-  ThinkingSelectorComponent,
   TreeSelectorComponent,
   UserMessageSelectorComponent,
   SettingsManager,
@@ -46,6 +57,14 @@ import type {
   ListSessionsData,
 } from '../../core/runtime/broker-protocol.js';
 import type { ReadOpRequest } from './view-socket.js';
+
+/** A built picker overlay: the `component` to show, and the `focus` target the
+ *  caller must `setFocus` (the component itself, or the inner list that owns
+ *  `handleInput`). */
+export interface Picker {
+  component: Component;
+  focus: Component;
+}
 
 /** Send a command frame to the broker (= InputController hooks.onCommand). */
 type Send = (frame: ClientToBroker) => void;
@@ -67,10 +86,9 @@ type SessionKeybindings = NonNullable<ConstructorParameters<typeof SessionSelect
 
 /** A minimal `ModelRegistry` for `ModelSelectorComponent`: the component calls
  *  only `refresh()`, `getError()`, `getAvailable()`, and `find()` (verified
- *  against pi 0.79.0 `model-selector.js`). We satisfy exactly those from the
- *  wire payload — no auth/registry state crosses the socket — and cast to the
- *  nominal class the ctor wants. (Pin is exact at 0.79.0; if a future pi calls
- *  another method this fails fast at runtime, surfaced by live verification.) */
+ *  against pi `model-selector.js`). We satisfy exactly those from the wire
+ *  payload — no auth/registry state crosses the socket — and cast to the nominal
+ *  class the ctor wants. */
 function modelRegistryAdapter(all: Model<Api>[], available: Model<Api>[]): ModelRegistry {
   const adapter = {
     refresh(): void {},
@@ -90,14 +108,14 @@ function modelRegistryAdapter(all: Model<Api>[], available: Model<Api>[]): Model
 /** `/model` (and ctrl+l) — the real model selector with search + scope toggle.
  *  Select → `set_model` with the resolved `provider/id` (the broker's
  *  `findModelSpec` requires that form). */
-export function buildModelPicker(tui: TUI, data: ListModelsData, send: Send, close: Close): Component {
+export function buildModelPicker(tui: TUI, data: ListModelsData, send: Send, close: Close): Picker {
   const all = data.models;
   const availableSet = new Set(data.availableIds);
   const available = all.filter((m) => availableSet.has(`${m.provider}/${m.id}`));
   const current = data.current
     ? all.find((m) => m.provider === data.current!.provider && m.id === data.current!.id)
     : undefined;
-  return new ModelSelectorComponent(
+  const component = new ModelSelectorComponent(
     tui,
     current,
     SettingsManager.inMemory(),
@@ -109,6 +127,7 @@ export function buildModelPicker(tui: TUI, data: ListModelsData, send: Send, clo
     },
     () => close(),
   );
+  return { component, focus: component };
 }
 
 /** `/resume` — the real session selector. Reconstructs from async loaders that
@@ -122,7 +141,7 @@ export function buildSessionPicker(
   keybindings: KeybindingsManager,
   send: Send,
   close: Close,
-): Component {
+): Picker {
   const revive = (d: ListSessionsData): SessionInfoLike[] =>
     d.sessions.map(
       (s) => ({ ...s, created: new Date(s.created), modified: new Date(s.modified) }) as unknown as SessionInfoLike,
@@ -137,7 +156,7 @@ export function buildSessionPicker(
   };
   const allLoader = async (): Promise<SessionInfoLike[]> =>
     revive((await request({ type: 'list_sessions', scope: 'all' })) as ListSessionsData);
-  return new SessionSelectorComponent(
+  const component = new SessionSelectorComponent(
     currentLoader,
     allLoader,
     (path) => {
@@ -150,13 +169,14 @@ export function buildSessionPicker(
     { showRenameHint: false, keybindings: keybindings as unknown as SessionKeybindings },
     prefetchedCwd.currentSessionFile,
   );
+  return { component, focus: component };
 }
 
 /** `/tree` — the real tree navigator (pure data). Select → `navigate_tree`.
  *  Label-edit is out of scope (no command frame) → no `onLabelChange`. */
-export function buildTreePicker(tui: TUI, data: GetTreeData, send: Send, close: Close): Component {
+export function buildTreePicker(tui: TUI, data: GetTreeData, send: Send, close: Close): Picker {
   const terminalHeight = process.stdout.rows ?? 24;
-  return new TreeSelectorComponent(
+  const component = new TreeSelectorComponent(
     data.tree as unknown as TreeArg,
     data.currentLeafId,
     terminalHeight,
@@ -166,12 +186,14 @@ export function buildTreePicker(tui: TUI, data: GetTreeData, send: Send, close: 
     },
     () => close(),
   );
+  return { component, focus: component };
 }
 
 /** `/fork` — the real prior-user-message selector (pure data, from
- *  `get_tree.forkPoints`). Select → `fork`. */
-export function buildForkPicker(data: GetTreeData, send: Send, close: Close): Component {
-  return new UserMessageSelectorComponent(
+ *  `get_tree.forkPoints`). Select → `fork`. The outer component has no
+ *  `handleInput`; the inner `getMessageList()` does (focus target). */
+export function buildForkPicker(data: GetTreeData, send: Send, close: Close): Picker {
+  const component = new UserMessageSelectorComponent(
     data.forkPoints,
     (entryId) => {
       send({ type: 'fork', entryId });
@@ -179,14 +201,17 @@ export function buildForkPicker(data: GetTreeData, send: Send, close: Close): Co
     },
     () => close(),
   );
+  return { component, focus: component.getMessageList() };
 }
 
 /** `/settings` — the real settings menu (the wire `settings` IS a SettingsConfig
  *  superset). Only the contract-enumerated mutations are wired: thinking level →
  *  `set_thinking_level`, auto-compact → `set_auto_compaction`. Every other toggle
  *  has no command frame (out of scope), so its callback notifies rather than
- *  silently lying that the change took. The theme submenu is viewer-local (CTO). */
-export function buildSettingsPicker(data: GetSettingsData, send: Send, close: Close, notify: Notify): Component {
+ *  silently lying that the change took. The theme submenu is viewer-local (CTO).
+ *  The outer component has no `handleInput`; `getSettingsList()` is the focus
+ *  target. */
+export function buildSettingsPicker(data: GetSettingsData, send: Send, close: Close, notify: Notify): Picker {
   const out = (): void => notify('Only thinking level + auto-compaction are adjustable over view.sock');
   const callbacks: SettingsCallbacks = {
     onThinkingLevelChange: (level) => send({ type: 'set_thinking_level', level }),
@@ -211,35 +236,21 @@ export function buildSettingsPicker(data: GetSettingsData, send: Send, close: Cl
     onEditorPaddingXChange: out,
     onAutocompleteMaxVisibleChange: out,
     onQuietStartupChange: out,
+    onDefaultProjectTrustChange: out,
     onClearOnShrinkChange: out,
     onShowTerminalProgressChange: out,
     onWarningsChange: out,
-    onDefaultProjectTrustChange: out,
   };
-  return new SettingsSelectorComponent(data.settings as SettingsConfig, callbacks);
+  const component = new SettingsSelectorComponent(data.settings as SettingsConfig, callbacks);
+  return { component, focus: component.getSettingsList() };
 }
 
-/** Standalone thinking-level picker (pure data, from `get_settings`). Not bound
- *  to a slash command itself, but available for a keybinding/caller that wants
- *  just the level menu. Select → `set_thinking_level`. */
-export function buildThinkingPicker(data: GetSettingsData, send: Send, close: Close): Component {
-  return new ThinkingSelectorComponent(
-    data.settings.thinkingLevel,
-    data.settings.availableThinkingLevels,
-    (level) => {
-      send({ type: 'set_thinking_level', level });
-      close();
-    },
-    () => close(),
-  );
-}
-
-/** `/scoped-models` — READ-ONLY via a pi-tui SelectList. CONTRACT GAP: pi 0.79.0
- *  does not re-export `ScopedModelsSelectorComponent`, and the contract exposes no
- *  command frame for its enable/disable/persist mutations, so a faithful editable
- *  picker is not buildable in scope. This shows the registry with the enabled set
- *  marked; select notifies that toggling is unsupported. */
-export function buildScopedModelsPicker(data: ListScopedModelsData, close: Close, notify: Notify): Component {
+/** `/scoped-models` — READ-ONLY via a pi-tui SelectList. CONTRACT GAP: pi (through
+ *  0.79.1) does not re-export `ScopedModelsSelectorComponent`, and the contract
+ *  exposes no command frame for its enable/disable/persist mutations, so a
+ *  faithful editable picker is not buildable in scope. This shows the registry
+ *  with the enabled set marked; select notifies that toggling is unsupported. */
+export function buildScopedModelsPicker(data: ListScopedModelsData, close: Close, notify: Notify): Picker {
   const enabled = data.enabledModelIds;
   const isEnabled = (m: Model<Api>): boolean => {
     if (enabled === null) return true; // null = no scoping, every model cycles
@@ -255,5 +266,5 @@ export function buildScopedModelsPicker(data: ListScopedModelsData, close: Close
   const list = new SelectList(items, 12, theme);
   list.onSelect = () => notify("Enabling/disabling scoped models isn't supported over view.sock yet");
   list.onCancel = () => close();
-  return list;
+  return { component: list, focus: list };
 }
