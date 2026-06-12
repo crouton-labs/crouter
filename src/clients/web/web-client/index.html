@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>crouter web</title>
+    <style>
+      body { font: 14px/1.6 ui-monospace, monospace; max-width: 44rem; margin: 4rem auto; padding: 0 1.5rem; color: #ddd; background: #111; }
+      code { background: #222; padding: 0.1rem 0.35rem; border-radius: 0.25rem; }
+      h1 { font-size: 1.1rem; }
+      .muted { color: #888; }
+    </style>
+  </head>
+  <body>
+    <h1>crouter web — shell placeholder</h1>
+    <p>
+      The unified <code>crtr web serve</code> server is running. This static
+      placeholder stands in for the React shell SPA, which a later build step
+      (<code>vite build → dist/web-client/</code>) will emit here.
+    </p>
+    <p class="muted">Live server surfaces:</p>
+    <ul class="muted">
+      <li><code>POST /__crtr/source</code> — the source + command bridge</li>
+      <li><code>GET /__crtr/events</code> — the SSE change-invalidation lane</li>
+      <li><code>WS /node/&lt;id&gt;</code> — verbatim broker-protocol relay</li>
+    </ul>
+    <p class="muted">Run with <code>--dev</code> for Vite middleware mode (HMR).</p>
+  </body>
+</html>

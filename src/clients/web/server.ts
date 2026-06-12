@@ -1,20 +1,27 @@
-// server.ts — the `crtr web` multiplexing socket↔WS bridge (Phase 4, T10).
+// server.ts — the unified `crtr web serve` host: the crouter web UI server.
 //
-// ONE long-running server process that multiplexes ALL nodes (NOT a
-// bridge-per-node). It binds 127.0.0.1, serves the static browser bundle (built
-// by T11 under src/clients/web/client/, copied to dist at build), and on a
-// browser `ws://127.0.0.1:PORT/node/<id>` connection it opens that node's
-// ALREADY-running broker `view.sock` on demand and relays frames VERBATIM both
-// directions (socket bytes ↔ WS messages). The bridge adds NOTHING — it is a
-// transparent relay, so the browser is the SAME protocol peer as `crtr attach`;
-// controller arbitration, dialogs, and backpressure all ride the existing
-// broker-protocol frames over the wire.
+// ONE long-running server process on 127.0.0.1 that serves THREE concerns on one
+// origin (the §2 unified server):
+//   • GET  /*               → the shell SPA (static dist/web-client/, or Vite
+//                             middleware in --dev) + SPA fallback.
+//   • POST /__crtr/source   → the source + command bridge: decode a SourceRequest
+//                             and run it through the LOCAL transport (exec/file/
+//                             http in this cwd). This serves views' READS and the
+//                             command WRITES (`crtr …` subprocesses). Lifted here
+//                             from the deleted `view serve`.
+//   • GET  /__crtr/events   → the SSE change-invalidation lane (events.ts).
+//   • WS   /node/<id>       → open that node's ALREADY-running broker `view.sock`
+//                             and relay frames VERBATIM both directions. The relay
+//                             adds NOTHING — the browser is the SAME protocol peer
+//                             as `crtr attach`.
 //
-// §0 ONE-WRITER INVARIANT: this directory contains ONLY a socket relay. It NEVER
-// calls reviveNode, NEVER spawns `pi --session`, NEVER touches SessionManager,
-// and NEVER opens/writes a `.jsonl`. It opens a `node:net` connection to an
+// §0 ONE-WRITER INVARIANT: the WS relay is ONLY a socket relay. It NEVER calls
+// reviveNode, NEVER spawns `pi --session`, NEVER touches SessionManager, and
+// NEVER opens/writes a `.jsonl`. It opens a `node:net` connection to an
 // ALREADY-running broker's `view.sock`; if the broker is not running the WS is
-// closed with a clear reason. The bridge NEVER launches an engine.
+// closed with a clear reason. The relay NEVER launches an engine. ALL writes go
+// through the bridge running `crtr` SUBPROCESSES — this process is never the
+// sanctioned writer; the CLI it shells out to is.
 //
 // One `view.sock` connection per browser-WS (N browsers of one node = N broker
 // clients) — the broker fans out natively, so there is no bridge-side fan-out.
@@ -24,6 +31,7 @@ import { createConnection, type Socket } from 'node:net';
 import { createReadStream, existsSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, extname, join, normalize, resolve } from 'node:path';
+import type { ViteDevServer } from 'vite';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { nodeDir } from '../../core/canvas/paths.js';
 import { getNode } from '../../core/canvas/index.js';
@@ -33,26 +41,30 @@ import {
   FrameDecoder,
   FrameOverflowError,
 } from '../../core/runtime/broker-protocol.js';
+import { createLocalTransport } from '../../core/view/transport-local.js';
+import { runSourceRequest } from '../../core/view/bridge.js';
+import { startEventHub } from './events.js';
+import { createDevServer } from './dev-server.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
-/** Candidate dirs to serve the browser bundle from, in priority order:
- *  an explicit override, the compiled-module-relative `client/` (dist at
- *  runtime), and the source tree (dev under tsx). The first that exists wins —
- *  T11 emits its browser-ready assets into `src/clients/web/client/`, which the
- *  build copies to `dist/clients/web/client/` (what we serve in production). */
+/** Candidate dirs to serve the shell SPA bundle from, in priority order: an
+ *  explicit override, the compiled-module-relative `dist/web-client/` (what
+ *  `vite build` emits and what we serve in production), and the placeholder
+ *  copied from source. The first that exists wins. (--dev bypasses this entirely
+ *  — Vite middleware owns asset serving in that mode.) */
 function resolveClientDir(): string {
   const candidates = [
     process.env['CRTR_WEB_CLIENT_DIR'],
-    join(HERE, 'client'),
-    resolve(HERE, '../../../src/clients/web/client'),
+    join(HERE, '../../web-client'),
+    resolve(HERE, '../../../dist/web-client'),
   ].filter((p): p is string => p !== undefined && p !== '');
   for (const dir of candidates) {
     if (existsSync(dir)) return dir;
   }
   // Fall back to the module-relative path even if absent; missing-file handling
-  // below returns a clear 404/503 so a not-yet-built client is diagnosable.
-  return join(HERE, 'client');
+  // below returns a clear 503 so a not-yet-built shell is diagnosable.
+  return join(HERE, '../../web-client');
 }
 
 const CONTENT_TYPES: Record<string, string> = {
@@ -104,9 +116,27 @@ function clampReason(reason: string): string {
   return buf.byteLength <= 123 ? reason : buf.subarray(0, 123).toString('utf8');
 }
 
+/** Read a request body fully into a string. Buffer.concat before decoding so a
+ *  multibyte char split across chunks (UTF-8 in a write command's stdin) is
+ *  never corrupted. */
+function readBody(req: IncomingMessage): Promise<string> {
+  return new Promise((res, rej) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (c: Buffer) => {
+      chunks.push(c);
+    });
+    req.on('end', () => res(Buffer.concat(chunks).toString('utf8')));
+    req.on('error', rej);
+  });
+}
+
 export interface WebServerOptions {
   port: number;
   host?: string;
+  /** --dev: mount a Vite dev server (middleware mode, HMR) for asset serving
+   *  instead of the static dist/web-client/ bundle. The bridge + SSE + WS relay
+   *  are identical in both modes. */
+  dev?: boolean;
 }
 
 export interface RunningWebServer {
@@ -151,8 +181,8 @@ function serveStatic(clientDir: string, req: IncomingMessage, res: ServerRespons
   if (!existsSync(filePath)) {
     res.writeHead(503, { 'content-type': 'text/plain; charset=utf-8' });
     res.end(
-      'crtr web client bundle not found — build the web client (T11) into ' +
-        `${clientDir}\n`,
+      'crtr web shell bundle not found — run `npm run build` to emit it into ' +
+        `${clientDir} (or pass --dev for Vite middleware)\n`,
     );
     return;
   }
@@ -263,16 +293,26 @@ function bridgeConnection(ws: WebSocket, nodeId: string): void {
   ws.on('error', () => teardown(1011, 'browser ws error'));
 }
 
-/** Build + start the multiplexing web bridge. Binds 127.0.0.1 only (remote
- *  access is out of scope). Resolves once the server is listening. */
-export function startWebServer(opts: WebServerOptions): Promise<RunningWebServer> {
+/** Build + start the unified web server. Binds 127.0.0.1 only (remote access is
+ *  out of scope — §9). Resolves once the server is listening. Async because
+ *  --dev awaits a Vite middleware server before listening. */
+export async function startWebServer(opts: WebServerOptions): Promise<RunningWebServer> {
   const host = opts.host ?? '127.0.0.1';
+  const dev = opts.dev ?? false;
   const clientDir = resolveClientDir();
 
-  // Same-origin allowlist for WS upgrades (M1): a browser bypasses same-origin
-  // policy on WebSockets, so any web page the user visits could otherwise open
-  // ws://127.0.0.1:PORT/node/<id> and DRIVE their agents. Populated once we know
-  // the bound port. A request with NO Origin (a CLI/test client, not a browser)
+  // The bridge runs view sources + command verbs locally, in the cwd crtr was
+  // invoked from (a git-pr view inspects THIS repo; a `crtr node new` lands here).
+  const transport = createLocalTransport({ cwd: process.cwd() });
+  // The SSE change lane — one hub, fanned to every connected EventSource.
+  const eventHub = startEventHub();
+
+  // Same-origin allowlist (M1): a browser bypasses same-origin policy on both
+  // WebSockets AND cross-origin POSTs, so any web page the user visits could
+  // otherwise open ws://127.0.0.1:PORT/node/<id> and DRIVE their agents, OR POST
+  // /__crtr/source to run ARBITRARY exec. The same gate guards all three write/
+  // drive surfaces (WS upgrade, bridge POST, SSE GET). Populated once we know the
+  // bound port. A request with NO Origin (a CLI/curl/test client, not a browser)
   // is allowed — the threat model is foreign browser pages, which always send it.
   let allowedOrigins = new Set<string>();
   const originAllowed = (origin: string | undefined): boolean => {
@@ -280,8 +320,69 @@ export function startWebServer(opts: WebServerOptions): Promise<RunningWebServer
     return allowedOrigins.has(origin);
   };
 
+  // Assigned before listen() when --dev; the request handler closes over it.
+  let vite: ViteDevServer | undefined;
+
   const httpServer: HttpServer = createHttpServer((req, res) => {
     try {
+      const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+      const pathname = url.pathname;
+
+      // The source + command bridge: POST /__crtr/source → run the SourceRequest
+      // through the local transport. Origin-gated (same M1 gate as the WS relay):
+      // arbitrary exec from a foreign browser page is exactly what M1 prevents.
+      if (pathname === '/__crtr/source') {
+        if (req.method !== 'POST') {
+          res.writeHead(405, { 'content-type': 'text/plain; charset=utf-8', allow: 'POST' });
+          res.end('method not allowed\n');
+          return;
+        }
+        if (!originAllowed(req.headers.origin)) {
+          res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' });
+          res.end('forbidden\n');
+          return;
+        }
+        void readBody(req)
+          .then((body) => runSourceRequest(transport, body))
+          .then(({ status, body }) => {
+            res.writeHead(status, { 'content-type': 'application/json' });
+            res.end(body);
+          })
+          .catch((e: unknown) => {
+            res.writeHead(500, { 'content-type': 'application/json' });
+            res.end(
+              JSON.stringify({ ok: false, stdout: '', stderr: e instanceof Error ? e.message : String(e) }),
+            );
+          });
+        return;
+      }
+
+      // The SSE change-invalidation lane: GET /__crtr/events. Origin-gated too —
+      // a foreign page should not even learn the user's graph is mutating.
+      if (pathname === '/__crtr/events') {
+        if (req.method !== 'GET') {
+          res.writeHead(405, { 'content-type': 'text/plain; charset=utf-8', allow: 'GET' });
+          res.end('method not allowed\n');
+          return;
+        }
+        if (!originAllowed(req.headers.origin)) {
+          res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' });
+          res.end('forbidden\n');
+          return;
+        }
+        eventHub.addClient(res);
+        return;
+      }
+
+      // --dev: Vite middleware owns all remaining asset/HTML serving (incl. its
+      // own SPA fallback). It is mounted AFTER the bridge + SSE checks above, so
+      // those never fall through to Vite (mirrors the old view-serve pre-hook).
+      if (vite !== undefined) {
+        vite.middlewares(req, res);
+        return;
+      }
+
+      // Shipped: static shell bundle + SPA fallback.
       if (req.method !== 'GET' && req.method !== 'HEAD') {
         res.writeHead(405, { 'content-type': 'text/plain; charset=utf-8', allow: 'GET, HEAD' });
         res.end('method not allowed\n');
@@ -289,7 +390,7 @@ export function startWebServer(opts: WebServerOptions): Promise<RunningWebServer
       }
       serveStatic(clientDir, req, res);
     } catch {
-      // Belt-and-suspenders: nothing in serveStatic should throw now (C1), but a
+      // Belt-and-suspenders: nothing in the handler should throw now (C1), but a
       // request listener that throws crashes the whole daemon — never allow it.
       if (!res.headersSent) res.writeHead(500, { 'content-type': 'text/plain; charset=utf-8' });
       res.end('internal error\n');
@@ -313,6 +414,10 @@ export function startWebServer(opts: WebServerOptions): Promise<RunningWebServer
       const url = new URL(req.url ?? '/', 'http://127.0.0.1');
       const nodeId = nodeIdFromPath(url.pathname);
       if (nodeId === null) {
+        // --dev: Vite's HMR WebSocket shares this HTTP server. Vite registers its
+        // OWN 'upgrade' listener (via server.hmr.server); leave every non-`/node/`
+        // upgrade for it instead of destroying the socket.
+        if (vite !== undefined) return;
         socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
         socket.destroy();
         return;
@@ -333,6 +438,14 @@ export function startWebServer(opts: WebServerOptions): Promise<RunningWebServer
     }
   });
 
+  // --dev: create the Vite middleware server BEFORE listen so the request
+  // handler's `vite` is set and Vite's HMR upgrade listener is attached (ours
+  // was added first, so a vite-hmr upgrade hits ours → nodeId null → returns →
+  // Vite's listener handles it).
+  if (dev) {
+    vite = await createDevServer(httpServer);
+  }
+
   return new Promise((resolveListening, reject) => {
     httpServer.once('error', reject);
     httpServer.listen(opts.port, host, () => {
@@ -352,6 +465,10 @@ export function startWebServer(opts: WebServerOptions): Promise<RunningWebServer
       ]);
       const close = (): Promise<void> =>
         new Promise((done) => {
+          eventHub.close();
+          void vite?.close().catch(() => {
+            /* best-effort */
+          });
           wss.clients.forEach((c) => {
             try {
               c.terminate();

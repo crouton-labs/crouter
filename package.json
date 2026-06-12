@@ -28,7 +28,7 @@
     "bin"
   ],
   "scripts": {
-    "build": "rm -rf dist && tsc && cp -R src/builtin-personas dist/builtin-personas && cp -R src/builtin-views dist/builtin-views && cp -R src/builtin-memory dist/builtin-memory && ( mkdir -p dist/clients/web/client && cp -R src/clients/web/client/. dist/clients/web/client/ 2>/dev/null || true )",
+    "build": "rm -rf dist && tsc && cp -R src/builtin-personas dist/builtin-personas && cp -R src/builtin-views dist/builtin-views && cp -R src/builtin-memory dist/builtin-memory && ( mkdir -p dist/web-client && cp -R src/clients/web/web-client/. dist/web-client/ )",
     "dev": "tsx src/cli.ts",
     "link": "npm link",
     "prepublishOnly": "npm run build",
