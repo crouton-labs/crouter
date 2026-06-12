@@ -561,9 +561,23 @@ const core = {
     cursorDown: (ctx) => ctx.set((s) => ({ ...s, cursor: s.rows.length ? Math.min(s.rows.length - 1, s.cursor + 1) : 0 })),
     /** @param {Ctx} ctx */
     cursorUp: (ctx) => ctx.set((s) => ({ ...s, cursor: Math.max(0, s.cursor - 1) })),
-    /** @param {Ctx} ctx @param {number} [i] */
-    select: (ctx, i) =>
-      ctx.set((s) => ({ ...s, cursor: typeof i === 'number' ? Math.max(0, Math.min(s.rows.length - 1, i)) : s.cursor })),
+    /**
+     * Activate (open) a node. STANDALONE this just sets the read cursor to the
+     * node's row — the view stays a read-only monitor. In the WEB SHELL the
+     * `{nodeId}` payload is what the host's intent TAP observes to open that
+     * node's conversation pane (§5): the core never imports the shell and never
+     * knows whether anyone is listening; it always emits the intent, and the
+     * payload carries the referent. Unknown/missing id ⇒ no-op.
+     * @param {Ctx} ctx @param {{nodeId?: string}} [payload]
+     */
+    activate: (ctx, payload) => {
+      const id = payload && payload.nodeId;
+      if (!id) return;
+      ctx.set((s) => {
+        const i = s.rows.findIndex((r) => r.nodeId === id);
+        return i >= 0 ? { ...s, cursor: i } : s;
+      });
+    },
     /** @param {Ctx} ctx */
     quit: (ctx) => ctx.signal.quit(),
   },

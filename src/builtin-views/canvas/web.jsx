@@ -112,7 +112,7 @@ export default function Canvas({ state, dispatch }) {
     >
       <ul>
         {state.rows.map((row, i) => (
-          <TreeRowItem key={row.nodeId || i} row={row} selected={i === state.cursor} onClick={() => dispatch('select', i)} />
+          <TreeRowItem key={row.nodeId || i} row={row} selected={i === state.cursor} onClick={() => dispatch('activate', { nodeId: row.nodeId })} />
         ))}
       </ul>
     </div>
