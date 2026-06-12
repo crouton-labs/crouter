@@ -10,7 +10,8 @@
 // reaps a node on pane/window state. All node liveness routes through
 // handleNodeLiveness:
 //   • Poll every intervalMs (default 2000ms).
-//   • pid alive → leave; but enforce a stuck refresh-yield (§H, see below).
+//   • pid alive → leave; but enforce a stuck refresh-yield (§H) and a
+//     wedged-engine error-stall (§I, see below).
 //   • pid null + pi_session_id set → relaunch in flight; leave.
 //   • pid null + pi_session_id null → after a boot grace, crash + surface boot
 //     failure (the broker exited before session_start).
@@ -27,6 +28,17 @@
 // grace, it force-kills the engine itself (handleYieldStall) so the dead-pid
 // refresh path then revives it fresh.
 //
+// §I error-stall: an engine whose turn ends with stopReason 'error' (e.g. a
+// provider outage exhausted the SDK retry budget) is left PARKED by the
+// stophook ("stay alive for re-steering") — but a headless node has no human to
+// re-steer it, so the broker stays alive, status stays 'active', and the pid-only
+// liveness check reads it healthy FOREVER (gh issue #4: a 9h zombie). The daemon
+// is the authority here too: when a live, not-busy node with no pending intent
+// has a session file that is QUIET past a grace AND whose last assistant message
+// stopped with 'error', it kills the engine (handleErrorStall) so the ordinary
+// dead-pid crash path grace-revives RESUME on the saved session — the exact
+// manual recovery (kill broker + canvas revive) that fixes these by hand.
+//
 // Single-instance guarantee
 //   A PID file at crtrHome()/crtrd.pid prevents double-runs. On start, if the
 //   file exists and the recorded pid is alive, we refuse to start (exit 0).
@@ -39,6 +51,9 @@ import {
   existsSync,
   mkdirSync,
   statSync,
+  openSync,
+  readSync,
+  closeSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import { crtrHome, nodeDir, jobDir } from '../core/canvas/paths.js';
@@ -205,6 +220,149 @@ function handleYieldStall(row: NodeRow, pid: number, now: number): void {
   }
 }
 
+// §I error-stall grace: how long a node's session .jsonl must have been QUIET
+// (no append — mtime is the clock, so it survives daemon restarts) before a
+// trailing-error engine is declared wedged and killed. Generous enough that an
+// in-flight recovery (the human re-steering, a parent's message waking a new
+// turn via the live inbox-watcher — both of which append and reset the clock)
+// always wins, while a true zombie recovers in minutes instead of never.
+export const ERROR_STALL_QUIET_MS = 5 * 60_000;
+
+// Per-node SIGTERM timestamps for §I kill escalation, mirroring yieldTermAt.
+const errorTermAt = new Map<string, number>();
+
+// Memoized tail inspection per node, keyed on the session file's mtime so the
+// (rare) 64KB tail read happens once per file change, not once per 2s tick.
+const errorTailMemo = new Map<string, { mtimeMs: number; error: string | null }>();
+
+const TAIL_BYTES = 64 * 1024;
+
+/** Read the last TAIL_BYTES of a file. null on any failure (absent file reads
+ *  as "nothing to inspect", never as evidence of a wedge). */
+function readTail(path: string): string | null {
+  try {
+    const size = statSync(path).size;
+    const len = Math.min(TAIL_BYTES, size);
+    if (len === 0) return null;
+    const fd = openSync(path, 'r');
+    try {
+      const buf = Buffer.alloc(len);
+      readSync(fd, buf, 0, len, size - len);
+      return buf.toString('utf8');
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return null;
+  }
+}
+
+/** The §I wedge signature, from a session-jsonl tail: the LAST assistant
+ *  message stopped with 'error' (retry budget exhausted — pi appends the error
+ *  turn and parks). Returns its errorMessage for the daemon log (the "why it
+ *  wedged" trace), or null when the last assistant turn ended any other way —
+ *  'stop'/'length' is a healthy park, 'aborted' is a human Esc, and trailing
+ *  non-assistant lines (toolResults, an injected user message) are walked past.
+ *  The first line of a mid-file tail cut fails JSON.parse and is skipped. */
+export function trailingEngineError(tail: string | null): string | null {
+  if (tail === null) return null;
+  const lines = tail.split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!.trim();
+    if (line === '') continue;
+    let msg: any;
+    try {
+      msg = (JSON.parse(line) as { message?: unknown })?.message;
+    } catch {
+      continue; // a cut fragment (tail boundary) or non-JSON line
+    }
+    if (msg?.role !== 'assistant') continue;
+    if (msg.stopReason !== 'error') return null;
+    return typeof msg.errorMessage === 'string' && msg.errorMessage !== ''
+      ? msg.errorMessage
+      : 'engine error (no errorMessage recorded)';
+  }
+  return null;
+}
+
+/** Error-stall decision (§I; gh issue #4 — node mqaeqzdu-0746b3b7, a 9h zombie
+ *  after an Anthropic outage). Pure, mirroring yieldStallVerdict; the kill side
+ *  effects live in handleErrorStall.
+ *
+ *  'kill' ONLY when ALL of: engine alive, NO pending intent (refresh is §H's
+ *  domain; idle-release chose dormancy), the turn is over (busy absent — a node
+ *  wedged mid-bash must be recovered by killing the subprocess, never the node),
+ *  the session file has been quiet past ERROR_STALL_QUIET_MS, and its last
+ *  assistant message stopped with 'error'. */
+export function errorStallVerdict(
+  piPidAlive: boolean | null,
+  intent: NodeRow['intent'],
+  busy: boolean,
+  quietForMs: number | null,
+  trailingError: boolean,
+): 'leave' | 'kill' {
+  if (piPidAlive !== true) return 'leave';
+  if (intent !== null) return 'leave';
+  if (busy) return 'leave';
+  if (quietForMs === null || quietForMs < ERROR_STALL_QUIET_MS) return 'leave';
+  if (!trailingError) return 'leave';
+  return 'kill';
+}
+
+/** Enact an error-stall (§I): when the verdict is 'kill', SIGTERM the parked
+ *  engine (escalating to SIGKILL after KILL_ESCALATE_MS, like §H — a broker
+ *  wedged after an outage may not run graceful handlers). intent is null, so
+ *  once the pid dies the ordinary crash branch in handleNodeLiveness grace-
+ *  revives RESUME on the saved session — the conversation is preserved and the
+ *  revive kickoff prompts the node to continue. No grace clock of our own: the
+ *  session file's mtime IS the clock (any append — a re-steer, an inbox-watcher
+ *  wake, a new turn — resets it). */
+function handleErrorStall(row: NodeRow, pid: number, now: number): void {
+  const id = row.node_id;
+  if (row.intent !== null || isBusy(id)) {
+    errorTermAt.delete(id);
+    return;
+  }
+  const file = getNode(id)?.pi_session_file;
+  if (file == null) return;
+  let mtimeMs: number;
+  try {
+    mtimeMs = statSync(file).mtimeMs;
+  } catch {
+    return; // session file unreadable — no evidence, never kill on "can't tell"
+  }
+  const quietFor = now - mtimeMs;
+  if (quietFor < ERROR_STALL_QUIET_MS) {
+    errorTermAt.delete(id);
+    return;
+  }
+  let memo = errorTailMemo.get(id);
+  if (memo === undefined || memo.mtimeMs !== mtimeMs) {
+    memo = { mtimeMs, error: trailingEngineError(readTail(file)) };
+    errorTailMemo.set(id, memo);
+  }
+  if (errorStallVerdict(true, row.intent, false, quietFor, memo.error !== null) !== 'kill') return;
+  const termed = errorTermAt.get(id);
+  if (termed === undefined) {
+    process.stderr.write(
+      `[crtrd] kill ${id} (error-stall: engine parked on a trailing error turn, session quiet ${Math.round(quietFor / 1000)}s — SIGTERM; last error: ${String(memo.error).slice(0, 200)})\n`,
+    );
+    try {
+      process.kill(pid, 'SIGTERM');
+    } catch {
+      /* already gone */
+    }
+    errorTermAt.set(id, now);
+  } else if (now - termed >= KILL_ESCALATE_MS) {
+    process.stderr.write(`[crtrd] kill ${id} (error-stall: pi ${pid} survived SIGTERM — SIGKILL)\n`);
+    try {
+      process.kill(pid, 'SIGKILL');
+    } catch {
+      /* already gone */
+    }
+  }
+}
+
 export type LivenessVerdict = 'leave' | 'pending' | 'revive';
 
 /** Decide what to do with a node whose engine pid is DEAD, from how long it's
@@ -230,7 +388,10 @@ export function livenessVerdict(piPidAlive: boolean | null, deadFor: number | nu
  *      with the turn over) and, once the engine has sat alive past the grace,
  *      kills it — so the daemon, not the (possibly stale) in-process stophook, is
  *      the authority on refresh, and the dead-pid refresh branch below then
- *      revives it fresh.
+ *      revives it fresh. AND enforce §I: handleErrorStall self-guards (no-op
+ *      unless intent is null with the turn over) and kills an engine parked on a
+ *      trailing-error turn whose session has been quiet past the grace, so the
+ *      crash branch below grace-revives it RESUME.
  *    • pid null + pi_session_id set (a relaunch in flight — reviveNode clears
  *      pi_pid right after launch) → leave; the fresh engine re-records its pid.
  *    • pid null + pi_session_id null (NEVER booted) → normally the sub-second SDK
@@ -258,6 +419,7 @@ async function handleNodeLiveness(
   if (pid != null && isPidAlive(pid)) {
     unhealthySince.delete(id);
     handleYieldStall(row, pid, now);
+    handleErrorStall(row, pid, now);
     return;
   }
 
@@ -300,10 +462,12 @@ async function handleNodeLiveness(
     return;
   }
 
-  // The engine pid is DEAD — any pending refresh-stall clock is moot (the dead-
-  // pid paths below own recovery now). Branch on intent.
+  // The engine pid is DEAD — any pending refresh/error-stall clock is moot (the
+  // dead-pid paths below own recovery now). Branch on intent.
   yieldStallSince.delete(id);
   yieldTermAt.delete(id);
+  errorTermAt.delete(id);
+  errorTailMemo.delete(id);
 
   if (row.intent === 'refresh') {
     // Clean yield — or the §H force-kill above just landed — → respawn FRESH,

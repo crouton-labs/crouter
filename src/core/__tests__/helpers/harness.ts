@@ -194,6 +194,7 @@ export interface FabricateOpts {
   intent?: ExitIntent;
   pi_pid?: number | null;
   pi_session_id?: string | null;
+  pi_session_file?: string | null;
   id?: string;
 }
 
@@ -475,6 +476,7 @@ export async function createHarness(opts: HarnessOpts = {}): Promise<Harness> {
         lifecycle: o.lifecycle ?? 'terminal',
         parent: o.parent ?? null,
         pi_session_id: o.pi_session_id ?? null,
+        pi_session_file: o.pi_session_file ?? null,
         status: o.status ?? 'active',
         intent: o.intent ?? null,
         pi_pid: o.pi_pid ?? null,
