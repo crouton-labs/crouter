@@ -8,6 +8,7 @@ import { defineLeaf } from '../core/command.js';
 import type { LeafDef } from '../core/command.js';
 import { InputError } from '../core/io.js';
 import { reviveNode } from '../core/runtime/revive.js';
+import { waitForBrokerViewSocket } from '../core/runtime/placement.js';
 import { getNode } from '../core/canvas/index.js';
 
 // ---------------------------------------------------------------------------
@@ -41,11 +42,13 @@ export const reviveLeaf: LeafDef = defineLeaf({
       { name: 'window', type: 'string', required: false, constraint: 'New tmux window id.' },
       { name: 'session', type: 'string', required: true, constraint: 'Tmux session the node was placed in.' },
       { name: 'resumed', type: 'boolean', required: true, constraint: 'True when pi was told to --session the saved conversation.' },
+      { name: 'ready', type: 'boolean', required: true, constraint: 'True when the revived broker\'s view.sock accepted a connection before return — the node is immediately attachable/drivable.' },
     ],
     outputKind: 'object',
     effects: [
       'Opens a background (non-focus-stealing) tmux window running pi.',
       'Updates the node\'s canvas record: status=active, intent=null, window=<new>.',
+      'Blocks until the broker\'s view.sock accepts a connection (up to ~30s), so a caller can attach/dial immediately on return.',
     ],
   },
   run: async (input) => {
@@ -63,10 +66,15 @@ export const reviveLeaf: LeafDef = defineLeaf({
     }
 
     const result = reviveNode(nodeId, { resume: !fresh });
+    // Revive returns once the broker process is launched, which can be seconds
+    // before its view.sock listens. Callers (attach, the web shell's Wake) dial
+    // immediately on return, so block here until the socket accepts.
+    const ready = waitForBrokerViewSocket(nodeId);
     return {
       window: result.window ?? undefined,
       session: result.session,
       resumed: result.resumed,
+      ready,
     };
   },
 });
