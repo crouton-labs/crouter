@@ -376,7 +376,7 @@ export async function startWebServer(opts: WebServerOptions): Promise<RunningWeb
 
       // --dev: Vite middleware owns all remaining asset/HTML serving (incl. its
       // own SPA fallback). It is mounted AFTER the bridge + SSE checks above, so
-      // those never fall through to Vite (mirrors the old view-serve pre-hook).
+      // those never fall through to Vite.
       if (vite !== undefined) {
         vite.middlewares(req, res);
         return;
