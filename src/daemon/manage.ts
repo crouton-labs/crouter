@@ -9,6 +9,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdirSync } from 'node:fs';
 import { crtrHome } from '../core/canvas/paths.js';
+import { hostExecPath } from '../core/runtime/branded-host.js';
 import { isDaemonRunning, readPidfile } from './crtrd.js';
 
 // ---------------------------------------------------------------------------
@@ -49,8 +50,12 @@ export function spawnDaemon(): SpawnDaemonResult {
   // Ensure the canvas home directory exists so the daemon can write its pidfile.
   mkdirSync(crtrHome(), { recursive: true });
 
+  // Launch from the crouter-branded host binary so the daemon shows "crouter"
+  // in macOS Full Disk Access, not "node" (see branded-host). NOTE: when crtrd
+  // is launchd-owned, the plist's ProgramArguments must point at the branded
+  // binary too — this path only covers a manual `crtr canvas daemon start`.
   const entry = resolveCrtrdEntry();
-  const child = spawn(process.execPath, [entry], {
+  const child = spawn(hostExecPath(), [entry], {
     detached: true,
     stdio: 'ignore',
   });

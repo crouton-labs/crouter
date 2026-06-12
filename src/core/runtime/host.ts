@@ -20,6 +20,7 @@ import { getNode, type NodeRow } from '../canvas/index.js';
 import { nodeDir, jobDir } from '../canvas/paths.js';
 import { encodeFrame } from './broker-protocol.js';
 import { FRONT_DOOR_ENV } from './front-door.js';
+import { hostExecPath } from './branded-host.js';
 import { isPidAlive } from '../canvas/pid.js';
 import type { PiInvocation } from './launch.js';
 
@@ -93,7 +94,10 @@ export const headlessBrokerHost: Host = {
     const logDir = jobDir(nodeId);
     mkdirSync(logDir, { recursive: true });
     const logFd = openSync(join(logDir, 'broker.log'), 'a');
-    const child = spawn(process.execPath, [resolveBrokerEntry(), nodeId], {
+    // Launch from the crouter-branded host binary (a copy of node) so the
+    // broker shows "crouter" in macOS Full Disk Access, not "node". On
+    // non-darwin / dev / tests this is just process.execPath (see branded-host).
+    const child = spawn(hostExecPath(), [resolveBrokerEntry(), nodeId], {
       cwd: opts.cwd,
       detached: true,
       stdio: ['ignore', logFd, logFd],
