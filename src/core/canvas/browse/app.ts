@@ -12,7 +12,8 @@ import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 
 import { dashboardRowsAll, renderForest } from '../render.js';
-import { listNodes, subscriptionsOf } from '../canvas.js';
+import { listNodes, subscriptionsOf, getNode } from '../canvas.js';
+import { closeNode } from '../../runtime/close.js';
 import {
   setupTerminal,
   restoreTerminal,
@@ -39,6 +40,9 @@ interface BrowseState {
   /** Lifecycle filter: when true, hide `terminal` (one-shot worker) nodes so only
    *  persistent `resident` agents show. Defaults ON for the resume picker; `r` toggles. */
   residentsOnly: boolean;
+  /** When a close-out (`x`) targets a node whose subtree is actively streaming, the
+   *  node id is parked here awaiting a y/n confirm; null = no pending confirm. */
+  pendingClose: string | null;
 }
 
 /** Viewport (body) height = total rows minus the header renderFrame draws (see
@@ -86,6 +90,7 @@ export async function runBrowse(opts: { returnPane?: string; cwd?: string } = {}
     sort: 'tree',
     preview: true,       // default ON (decision)
     residentsOnly: true, // default ON: hide one-shot workers (decision)
+    pendingClose: null,
   };
 
   let visible: VisibleRow[] = [];
@@ -147,7 +152,7 @@ export async function runBrowse(opts: { returnPane?: string; cwd?: string } = {}
         tree, visible, tab: state.tab, cursor: state.cursor, scrollOffset: state.scrollOffset,
         query: state.query, search: state.search, totalNodes,
         cwdScope: state.cwdScope, sort: state.sort, preview: state.preview,
-        residentsOnly: state.residentsOnly,
+        residentsOnly: state.residentsOnly, pendingClose: state.pendingClose,
       },
       size,
       caps,
@@ -162,6 +167,48 @@ export async function runBrowse(opts: { returnPane?: string; cwd?: string } = {}
 
   const curRow = (): VisibleRow | undefined => visible[state.cursor];
   const isExpanded = (id: string): boolean => !state.collapsed.has(id);
+
+  // Every node in the snapshot subtree rooted at `id` (the node + all its tree
+  // descendants), used by the close-out streaming check.
+  const subtreeIds = (id: string): string[] => {
+    const out: string[] = [];
+    const stack = [id];
+    const seen = new Set<string>();
+    while (stack.length > 0) {
+      const cur = stack.pop()!;
+      if (seen.has(cur)) continue;
+      seen.add(cur);
+      out.push(cur);
+      for (const c of tree.nodes.get(cur)?.childIds ?? []) stack.push(c);
+    }
+    return out;
+  };
+  // Is the node, or any descendant, GENUINELY mid-turn right now (from the snapshot)?
+  const anyStreaming = (id: string): boolean =>
+    subtreeIds(id).some((x) => tree.nodes.get(x)?.row.streaming === true);
+
+  // Close-out (`x`): finalize the node to `done`, cascade-cancel its exclusive
+  // subtree, tear down each engine, and detach every attached viewer. Then reflect
+  // the new terminal statuses back into the live snapshot so the row updates in
+  // place (no re-snapshot). Best-effort: a teardown failure never wedges the picker.
+  const doClose = (id: string): void => {
+    state.pendingClose = null;
+    let closed: string[] = [];
+    try {
+      closed = closeNode(id, { rootEvent: 'finalize' }).closed;
+    } catch {
+      return; // unknown/already-gone node — nothing to reflect
+    }
+    for (const cid of closed) {
+      const n = tree.nodes.get(cid);
+      if (n === undefined) continue;
+      const m = getNode(cid);
+      if (m !== null) n.row.status = m.status; // real post-close status (done / canceled)
+      n.row.streaming = false;
+      n.row.viewed = false;
+    }
+    recompute(id);
+  };
 
   const cycleTab = (dir: 1 | -1): void => {
     const i = TABS.indexOf(state.tab);
@@ -242,6 +289,16 @@ export async function runBrowse(opts: { returnPane?: string; cwd?: string } = {}
       return;
     }
 
+    // Close-out confirm sub-state: a streaming node is awaiting y/n. Swallow every
+    // other key so the confirm is modal.
+    if (state.pendingClose !== null) {
+      if (input === 'y' || input === 'Y') { doClose(state.pendingClose); flush(); return; }
+      // n / Esc / anything else cancels the close.
+      state.pendingClose = null;
+      flush();
+      return;
+    }
+
     const row = curRow();
 
     // Quit.
@@ -300,6 +357,17 @@ export async function runBrowse(opts: { returnPane?: string; cwd?: string } = {}
     if (input >= '1' && input <= '4') {
       const idx = Number(input) - 1;
       if (idx < TABS.length) { state.tab = TABS[idx]!; state.cursor = 0; state.scrollOffset = 0; recompute(); }
+      flush();
+      return;
+    }
+
+    // Close-out the selected node (+ its exclusive subtree). If anything in that
+    // subtree is actively streaming, confirm first (y/n); otherwise close at once.
+    if (input === 'x') {
+      if (row !== undefined) {
+        if (anyStreaming(row.id)) state.pendingClose = row.id;
+        else doClose(row.id);
+      }
       flush();
       return;
     }

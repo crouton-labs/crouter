@@ -26,8 +26,10 @@ export type { ColorCaps };
 // Fixed chrome heights, shared with app.ts so its viewport math never drifts
 // from what renderFrame actually draws.
 //   header = title + tab bar + status line + separator (+ search input when searching)
-//   preview = separator + meta line + PREVIEW_BODY prompt lines
-export const PREVIEW_BODY = 5;
+//   preview = separator + meta line + PROMPT_LINES (spawn/match) + REPLY_LINES (last reply)
+export const PROMPT_LINES = 3;
+export const REPLY_LINES = 3;
+export const PREVIEW_BODY = PROMPT_LINES + REPLY_LINES;
 export const PREVIEW_HEIGHT = PREVIEW_BODY + 2;
 export function headerHeight(search: boolean): number {
   return 4 + (search ? 1 : 0);
@@ -48,6 +50,7 @@ const FG_RED = '31';
 const FG_CYAN = '36';
 const FG_GRAY = '90'; // bright-black
 const FG_BRIGHT_YELLOW = '93';
+const FG_BRIGHT_GREEN = '92'; // streaming pulse (brighter than the active-status green)
 const FG_BRIGHT_CYAN = '96'; // query-match highlight (ties to the cyan search accent)
 
 const STATUS_GLYPH: Record<NodeStatus, string> = {
@@ -90,6 +93,10 @@ export interface RenderState {
   /** Lifecycle filter: when true, `terminal` (one-shot worker) nodes are hidden
    *  — surfaced as a status-line cue. */
   residentsOnly: boolean;
+  /** When set, a close-out (`x`) is awaiting y/n confirmation because the node (or
+   *  a descendant) is actively streaming. Holds the node id being confirmed; the
+   *  footer becomes the y/n prompt. null/undefined = no pending confirm. */
+  pendingClose?: string | null;
 }
 
 function fmtCtx(tokens: number): string {
@@ -228,6 +235,8 @@ function rowLine(
   ];
   if (age !== '') spans.push({ text: ` ${age}`, style: { dim: true } }); // recency cue
   if (showCwd) spans.push({ text: ` ~${baseDir(r.cwd)}`, style: { fg: FG_GRAY } }); // project cue (All dirs)
+  if (r.streaming === true) spans.push({ text: ' ⟳', style: { fg: FG_BRIGHT_GREEN, bold: true } }); // generating right now
+  if (r.viewed === true) spans.push({ text: ' ◉', style: { fg: FG_CYAN } }); // a viewer is attached
   if (r.asks > 0) spans.push({ text: ` ⚑${r.asks}`, style: { fg: FG_BRIGHT_YELLOW, bold: true } }); // attention
 
   // Row base: cursor → subtle bg (256) or reverse fallback (also covers !color);
@@ -278,11 +287,13 @@ function snippetLine(ln: SnippetLine, width: number, caps: ColorCaps): string {
 }
 
 /** The bottom preview panel — exactly PREVIEW_HEIGHT lines: a separator, a meta
- *  line (status · kind/mode · project · age · ctx · asks), then the selected node's
- *  prompt wrapped to PREVIEW_BODY lines. Under a live query the body is WINDOWED to
- *  the matching prompt (anywhere in the conversation) with the match highlighted;
- *  with no query it shows the spawn prompt from the start. The "which one was this?"
- *  answer — paired with super-search. Always full height so viewport math holds. */
+ *  line (status · kind/mode · project · age · ctx · asks · streaming/viewing), then
+ *  TWO blocks — the spawn prompt / query-match (PROMPT_LINES) and the node's LAST
+ *  assistant reply (REPLY_LINES, prefixed `↩`). Under a live query the prompt block
+ *  is WINDOWED to the matching prompt (anywhere in the conversation) with the match
+ *  highlighted; with no query it shows the spawn prompt from the start. Seeing both
+ *  ends — what it was asked and where it left off — answers "which one was this?".
+ *  Always full height so viewport math holds. */
 function previewPanel(r: DashboardRow | undefined, width: number, caps: ColorCaps, now: number, query: string): string[] {
   const out: string[] = [`${DIM}${'─'.repeat(width)}${RESET}`];
   if (r === undefined) {
@@ -294,19 +305,37 @@ function previewPanel(r: DashboardRow | undefined, width: number, caps: ColorCap
     : (STATUS_GLYPH[r.status] ?? '?');
   const metaPieces = [`${r.status} ${r.kind}/${r.mode}`, baseDir(r.cwd), relAge(r.created, now), `ctx ${fmtCtx(r.ctx_tokens)}`];
   if (r.asks > 0) metaPieces.push(`⚑${r.asks}`);
+  if (r.streaming === true) metaPieces.push('⟳ streaming');
+  if (r.viewed === true) metaPieces.push('◉ viewing');
   const metaText = clip(metaPieces.filter((p) => p !== '').join('  ·  '), Math.max(0, width - 2));
   out.push(caps.color ? `${glyph} ${DIM}${metaText}${RESET}` : `${glyph} ${metaText}`);
-  // With a query, window+highlight the matching prompt from the WHOLE conversation;
-  // otherwise show the spawn prompt from the start.
+
+  // Block 1 — spawn prompt / query-match. With a query, window+highlight the
+  // matching prompt from the WHOLE conversation; otherwise the spawn prompt.
   const sourceText = query !== '' ? promptText(r) : (r.goal ?? '');
-  const snippet = previewSnippet(query, sourceText, width, PREVIEW_BODY);
-  if (snippet.length === 0) {
+  const promptSnippet = previewSnippet(query, sourceText, width, PROMPT_LINES);
+  if (promptSnippet.length === 0) {
     out.push(`${DIM}(no spawn prompt)${RESET}`);
-    for (let i = 1; i < PREVIEW_BODY; i++) out.push('');
+    for (let i = 1; i < PROMPT_LINES; i++) out.push('');
   } else {
-    for (let i = 0; i < PREVIEW_BODY; i++) {
-      const ln = snippet[i];
+    for (let i = 0; i < PROMPT_LINES; i++) {
+      const ln = promptSnippet[i];
       out.push(ln === undefined ? '' : snippetLine(ln, width, caps));
+    }
+  }
+
+  // Block 2 — the node's LAST assistant reply, prefixed `↩` on its first line so
+  // the two blocks read apart. Wrapped to width-2 to leave room for the marker.
+  const replyMark = caps.color ? `${DIM}↩ ${RESET}` : '↩ ';
+  const replySnippet = previewSnippet('', r.lastAssistant ?? '', Math.max(1, width - 2), REPLY_LINES);
+  if (replySnippet.length === 0) {
+    out.push(`${replyMark}${DIM}(no reply yet)${RESET}`);
+    for (let i = 1; i < REPLY_LINES; i++) out.push('');
+  } else {
+    for (let i = 0; i < REPLY_LINES; i++) {
+      const ln = replySnippet[i];
+      const prefix = i === 0 ? replyMark : '  ';
+      out.push(ln === undefined ? (i === 0 ? `${replyMark}` : '') : `${prefix}${snippetLine(ln, Math.max(1, width - 2), caps)}`);
     }
   }
   return out;
@@ -380,11 +409,18 @@ export function renderFrame(
     for (const l of previewPanel(r, width, caps, now, state.query)) lines.push(l);
   }
 
-  // footer.
-  const footer = state.search
-    ? '⏎ commit  Esc cancel  ⌫ delete'
-    : '↑↓ move  →/← tree  ⏎ resume  Tab tabs  / search  s sort  c cwd  r residents  p preview  q quit';
-  lines.push(`${DIM}${clip(footer, width)}${RESET}`);
+  // footer — the y/n close-out confirm takes over when pending; else search / nav.
+  if (state.pendingClose !== null && state.pendingClose !== undefined) {
+    const node = state.tree.nodes.get(state.pendingClose);
+    const who = node !== undefined ? node.row.name : state.pendingClose;
+    const warn = `⚠ ${who} is actively streaming — close it (and its subtree) anyway?  y / n`;
+    lines.push(caps.color ? `${BOLD}${ESC}${FG_BRIGHT_YELLOW}m${clip(warn, width)}${RESET}` : `${REVERSE}${clip(warn, width)}${RESET}`);
+  } else {
+    const footer = state.search
+      ? '⏎ commit  Esc cancel  ⌫ delete'
+      : '↑↓ move  →/← tree  ⏎ resume  x close  Tab tabs  / search  s sort  c cwd  r residents  p preview  q quit';
+    lines.push(`${DIM}${clip(footer, width)}${RESET}`);
+  }
 
   // Assemble: home, each line cleared to EOL, then clear below.
   const body = lines.map((l) => `${l}${ESC}K`).join('\r\n');

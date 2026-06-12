@@ -20,6 +20,8 @@ import { getNode, listNodes, subscriptionsOf, view } from './canvas.js';
 import { fullName } from './labels.js';
 import { jobDir, contextDir } from './paths.js';
 import { countAsks } from './attention.js';
+import { isPidAlive } from './pid.js';
+import { getFocusByNode } from './focuses.js';
 import type { NodeStatus, Lifecycle } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -231,6 +233,17 @@ export interface DashboardRow {
    *  for never-revived nodes (no session file). Powers whole-conversation super-search
    *  + the windowed match snippet in the preview. */
   prompts?: string;
+  /** The node's LAST assistant message (text only), trimmed + capped. Populated by
+   *  dashboardRowsAll; undefined for a node whose session has no assistant reply yet.
+   *  Shown in the preview's reply block so you see where a conversation left off. */
+  lastAssistant?: string;
+  /** True when the node is GENUINELY mid-turn right now — its `busy` marker exists
+   *  AND its broker pid is alive (not merely an `active`, between-turns node). The
+   *  live "is it generating?" cue. Populated by dashboardRowsAll. */
+  streaming?: boolean;
+  /** True when a viewer (focus row) is attached to the node — i.e. someone has it
+   *  open on screen. Populated by dashboardRowsAll. */
+  viewed?: boolean;
 }
 
 /** The spawn prompt, read straight off disk (canvas-home state) and capped so a
@@ -285,6 +298,47 @@ function readConversationPrompts(sessionFile: string | null | undefined): string
     return joined.length > CONVO_CAP ? joined.slice(0, CONVO_CAP) : joined;
   } catch {
     return undefined;
+  }
+}
+
+/** The node's LAST assistant message text. Scans the session jsonl from the END,
+ *  parsing only assistant-role lines, and returns the first (= newest) one that
+ *  carries text content (tool-only replies are skipped). Capped like a prompt so a
+ *  long final answer can't bloat the snapshot. Never throws; undefined when there is
+ *  no session file or no assistant reply yet. */
+function readLastAssistant(sessionFile: string | null | undefined): string | undefined {
+  if (sessionFile === undefined || sessionFile === null || sessionFile === '') return undefined;
+  try {
+    if (!existsSync(sessionFile)) return undefined;
+    const lines = readFileSync(sessionFile, 'utf8').split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i]!;
+      if (line === '' || (line.indexOf('"role":"assistant"') === -1 && line.indexOf('"role": "assistant"') === -1)) continue;
+      let rec: { type?: string; message?: { role?: string; content?: unknown } };
+      try { rec = JSON.parse(line) as typeof rec; } catch { continue; }
+      if (rec.type !== 'message' || rec.message?.role !== 'assistant') continue;
+      const text = extractUserText(rec.message.content);
+      if (text === '') continue;
+      return text.length > CONVO_MSG_CAP ? text.slice(0, CONVO_MSG_CAP) : text;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Is the node GENUINELY mid-turn right now? The `busy` marker (touched on
+ *  agent_start, removed on agent_end) AND-ed with broker-pid liveness, so a stale
+ *  marker from a crashed pi reads false. This is the live "generating?" signal
+ *  — distinct from `status: 'active'`, which only means the engine never closed
+ *  (an active node is usually dormant between turns). Read directly off disk
+ *  (mirrors telemetry) to avoid inverting the canvas→runtime dependency. */
+function isStreaming(nodeId: string, piPid: number | null | undefined): boolean {
+  if (!isPidAlive(piPid)) return false;
+  try {
+    return existsSync(join(jobDir(nodeId), 'busy'));
+  } catch {
+    return false;
   }
 }
 
@@ -344,6 +398,9 @@ export function dashboardRowsAll(): DashboardRow[] {
       lifecycle: row.lifecycle,
       goal: readGoalText(row.node_id),
       prompts: readConversationPrompts(meta?.pi_session_file),
+      lastAssistant: readLastAssistant(meta?.pi_session_file),
+      streaming: isStreaming(row.node_id, meta?.pi_pid),
+      viewed: getFocusByNode(row.node_id) !== null,
     }];
   });
 }

@@ -354,10 +354,10 @@ export interface FlattenOpts {
    *  undefined = All dirs (no cwd filter). Like the tab predicate, it gates the
    *  matched set — ancestors from other dirs still render dimmed for tree context. */
   cwdScope?: string | null;
-  /** Lifecycle filter: when true, hide `terminal` (one-shot worker) nodes so only
-   *  the persistent `resident` agents you come back to show. The resume picker
-   *  defaults this ON. Undefined/false = every lifecycle. Gates the matched set
-   *  like the tab + cwd predicates (ancestors of a match still render for context). */
+  /** Lifecycle filter: when true, `terminal` (one-shot worker) nodes are kept out
+   *  of the TOP-LEVEL rows and the flat search results — but, in tree mode, still
+   *  appear when you manually expand their parent fold (drilling into a resident).
+   *  The resume picker defaults this ON. Undefined/false = every lifecycle. */
   residentsOnly?: boolean;
   /** Ordering. `tree` keeps the spanning tree + ancestor context; `relevance` /
    *  `recency` produce a FLAT ranked list of directly-matched rows. */
@@ -392,15 +392,18 @@ export function flatten(tree: Tree, opts: FlattenOpts): VisibleRow[] {
   const { collapsed, tab, query, cwdScope, residentsOnly, sort = 'tree' } = opts;
 
   // 1. Directly-matched nodes: tab predicate AND cwd scope AND lifecycle AND query.
+  //    `matched` honors the residents-only filter (drives top-level rows, ancestor
+  //    context, force-expand, and the flat search results below). `matchedAll` is
+  //    the same set WITHOUT the lifecycle gate — it's how a terminal node becomes
+  //    visible once you expand the resident parent that owns it (the fold-reveal
+  //    below), so residents-only de-clutters the top level + search yet still lets
+  //    you drill into a fold and see everything under it.
   const matched = new Set<string>();
+  const matchedAll = new Set<string>();
   for (const [id, node] of tree.nodes) {
-    if (
-      tabPredicate(tab, node.row) &&
-      cwdMatch(cwdScope, node.row) &&
-      lifecycleMatch(residentsOnly, node.row) &&
-      queryMatch(query, node.row)
-    ) {
-      matched.add(id);
+    if (tabPredicate(tab, node.row) && cwdMatch(cwdScope, node.row) && queryMatch(query, node.row)) {
+      matchedAll.add(id);
+      if (lifecycleMatch(residentsOnly, node.row)) matched.add(id);
     }
   }
 
@@ -437,13 +440,19 @@ export function flatten(tree: Tree, opts: FlattenOpts): VisibleRow[] {
     return !collapsed.has(id);
   };
 
-  // 3. Walk the tree in order, emitting included nodes and descending only into
-  //    expanded ones.
+  // 3. Walk the tree in order, emitting shown nodes and descending only into
+  //    expanded ones. A node is shown when it is `included` (matched or ancestor),
+  //    OR — under residents-only — when its already-shown parent is expanded and the
+  //    node matches everything but the lifecycle gate (`matchedAll`). That is the
+  //    fold-reveal: a terminal worker hidden from the top level reappears the moment
+  //    you open the resident fold that owns it. `parentShown` threads that down.
   const out: VisibleRow[] = [];
-  const walk = (id: string): void => {
+  const walk = (id: string, parentShown: boolean): void => {
     const node = tree.nodes.get(id);
     if (node === undefined) return;
-    if (included(id)) {
+    const show =
+      included(id) || (residentsOnly === true && parentShown && matchedAll.has(id));
+    if (show) {
       const hasChildren = node.childIds.length > 0;
       out.push({
         id,
@@ -454,9 +463,9 @@ export function flatten(tree: Tree, opts: FlattenOpts): VisibleRow[] {
       });
     }
     if (isExpanded(id)) {
-      for (const c of node.childIds) walk(c);
+      for (const c of node.childIds) walk(c, show);
     }
   };
-  for (const r of tree.roots) walk(r);
+  for (const r of tree.roots) walk(r, false);
   return out;
 }

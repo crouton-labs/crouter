@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import type { DashboardRow } from '../../render.js';
-import type { NodeStatus } from '../../types.js';
+import type { NodeStatus, Lifecycle } from '../../types.js';
 import { buildTree, flatten, fuzzyMatch, tabPredicate, TABS } from '../model.js';
 
 // ── Fixture canvas ───────────────────────────────────────────────────────────
@@ -16,6 +16,10 @@ import { buildTree, flatten, fuzzyMatch, tabPredicate, TABS } from '../model.js'
 
 function row(node_id: string, name: string, status: NodeStatus, asks = 0): DashboardRow {
   return { node_id, name, status, kind: 'general', mode: 'base', ctx_tokens: 0, asks, cwd: '/tmp/proj', created: '2026-01-01T00:00:00.000Z' };
+}
+
+function lrow(node_id: string, name: string, status: NodeStatus, lifecycle: Lifecycle): DashboardRow {
+  return { ...row(node_id, name, status), lifecycle };
 }
 
 const ROWS: DashboardRow[] = [
@@ -171,4 +175,50 @@ test('flatten: query force-expands ancestors even when collapsed', () => {
 test('flatten: query with no matches yields nothing', () => {
   const v = flatten(tree(), { collapsed: allCollapsed(), tab: 'All', query: 'zzzznope' });
   assert.deepEqual(v, []);
+});
+
+// ── flatten: residentsOnly fold-reveal ───────────────────────────────────────
+//   resident-root → terminal-worker (child) → terminal-grand (grandchild)
+//   resident-only must hide the terminals from the TOP LEVEL + flat search, yet
+//   still reveal them once you expand the resident fold that owns them.
+
+const RES_ROWS: DashboardRow[] = [
+  lrow('res-root', 'resident-root', 'idle', 'resident'),
+  lrow('term-a', 'worker-a', 'active', 'terminal'),
+  lrow('term-g', 'worker-grand', 'active', 'terminal'),
+  lrow('term-root', 'lone-worker', 'active', 'terminal'), // pure-terminal root
+];
+const RES_CHILDREN: Record<string, string[]> = { 'res-root': ['term-a'], 'term-a': ['term-g'] };
+function resTree() {
+  return buildTree(RES_ROWS, ['res-root', 'term-root'], (id) => RES_CHILDREN[id] ?? []);
+}
+
+test('flatten: residentsOnly hides terminal top-level rows (incl. terminal roots)', () => {
+  // Everything collapsed → only the resident root shows; the lone terminal root
+  // and the worker subtree are hidden at the top level.
+  const v = flatten(resTree(), { collapsed: new Set(['res-root', 'term-a']), tab: 'All', query: '', residentsOnly: true });
+  assert.deepEqual(v.map((r) => r.id), ['res-root']);
+});
+
+test('flatten: residentsOnly reveals terminal children once their fold is expanded', () => {
+  // Expand the resident root → its terminal worker appears (still collapsed, so
+  // its own terminal grandchild stays hidden).
+  const v1 = flatten(resTree(), { collapsed: new Set(['term-a']), tab: 'All', query: '', residentsOnly: true });
+  assert.deepEqual(v1.map((r) => r.id), ['res-root', 'term-a']);
+  // Expand the worker too → the terminal grandchild is revealed.
+  const v2 = flatten(resTree(), { collapsed: new Set(), tab: 'All', query: '', residentsOnly: true });
+  assert.deepEqual(v2.map((r) => r.id), ['res-root', 'term-a', 'term-g']);
+});
+
+test('flatten: residentsOnly keeps terminals out of flat (relevance) search results', () => {
+  // A query that matches the workers must not surface them in the flat search —
+  // resident-only de-clutters search even though the fold would reveal them.
+  const v = flatten(resTree(), { collapsed: new Set(), tab: 'All', query: 'worker', residentsOnly: true, sort: 'relevance' });
+  assert.deepEqual(v.map((r) => r.id), []);
+});
+
+test('flatten: residentsOnly off shows every lifecycle at the top level', () => {
+  // Roots are live-first: term-root (active) ranks ahead of res-root (idle).
+  const v = flatten(resTree(), { collapsed: new Set(['res-root', 'term-a']), tab: 'All', query: '', residentsOnly: false });
+  assert.deepEqual(v.map((r) => r.id), ['term-root', 'res-root']);
 });

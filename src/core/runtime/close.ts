@@ -125,9 +125,21 @@ function cancellationLabel(isRoot: boolean, deadChildren: string[]): string {
 
 /** Close `rootId` and its exclusive subtree. Best-effort throughout: a tmux/db
  *  failure on one node never aborts the cascade. Throws only on an unknown root
- *  so the command can surface a clean not-found error. */
-export function closeNode(rootId: string): CloseNodeResult {
+ *  so the command can surface a clean not-found error.
+ *
+ *  `rootEvent` decides the ROOT's terminal status (descendants are always
+ *  `cancel`led — they did not finish their own work, they were torn down with the
+ *  parent):
+ *    'cancel'   (default) — the node was abandoned/torn down  → canceled (⊜).
+ *    'finalize'           — the user is marking it COMPLETE   → done (✓). Used by
+ *      the canvas browser's `x` (close-out) action. A root already in a terminal
+ *      status keeps it (finalize is only legal from a live status). */
+export function closeNode(
+  rootId: string,
+  opts: { rootEvent?: 'cancel' | 'finalize' } = {},
+): CloseNodeResult {
   if (getNode(rootId) === null) throw new Error(`closeNode: unknown node ${rootId}`);
+  const rootEvent = opts.rootEvent ?? 'cancel';
 
   const closing = closingSet(rootId);
   const order = killOrder(rootId, closing);
@@ -154,8 +166,15 @@ export function closeNode(rootId: string): CloseNodeResult {
         .map((s) => s.node_id)
         .filter((c) => closing.has(c));
 
-      // 1) Canceled + intent cleared BEFORE the window dies (daemon race).
-      transition(id, 'cancel');
+      // 1) Terminal status set BEFORE the window dies (daemon race). The root may
+      //    finalize to `done` (a deliberate "mark complete" close-out); every
+      //    descendant, and the root by default, `cancel`s. finalize is legal only
+      //    from a live status — an already-terminal root keeps its status.
+      if (id === rootId && rootEvent === 'finalize') {
+        if (m.status === 'active' || m.status === 'idle') transition(id, 'finalize');
+      } else {
+        transition(id, 'cancel');
+      }
 
       // 2) Tear the node's ENGINE down: send the `shutdown` frame so the broker
       //    PROCESS exits and releases the sole .jsonl writer. Then proactively
