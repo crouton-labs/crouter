@@ -19,12 +19,12 @@ import type { ViteDevServer } from 'vite';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
-/** The shell SPA Vite root — the in-tree shell project (`src/clients/web/client/`).
+/** The shell SPA Vite root — the in-tree shell project (`src/clients/web/web-client/`).
  *  --dev is a from-source contributor loop, so this resolves against the source
  *  tree (HERE is `dist/clients/web` when built, `src/clients/web` under tsx);
  *  walk to the package root and into src. */
 function resolveShellRoot(packageRoot: string): string {
-  return join(packageRoot, 'src', 'clients', 'web', 'client');
+  return join(packageRoot, 'src', 'clients', 'web', 'web-client');
 }
 
 /** Create a Vite dev server in middleware mode, HMR bound to `httpServer`.
