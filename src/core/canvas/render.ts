@@ -13,15 +13,15 @@
 // subscribe to its own ancestor), but we track visited ids defensively because
 // the db is mutable and bugs happen.
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { getNode, listNodes, subscriptionsOf, view } from './canvas.js';
 import { fullName } from './labels.js';
 import { jobDir, contextDir } from './paths.js';
-import { countAsks } from './attention.js';
+import { countAsks, asksForNodes } from './attention.js';
 import { isPidAlive } from './pid.js';
-import { getFocusByNode } from './focuses.js';
+import { listFocuses } from './focuses.js';
 import type { NodeStatus, Lifecycle } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -223,27 +223,43 @@ export interface DashboardRow {
    *  agent you come back to. Drives the browser's resident-only lifecycle filter.
    *  Only populated by dashboardRowsAll (the browser snapshot). */
   lifecycle?: Lifecycle;
-  /** The node's spawn prompt (context/initial-prompt.md), trimmed + capped. Only
-   *  populated by dashboardRowsAll (the browser snapshot) — the dashboard leaf
-   *  leaves it undefined to avoid a file read per node. Indexed by super-search
-   *  and shown in the preview panel when there is no live query. */
+  /** "Most recent activity" sort key — epoch ms. The cheap boot stats the node's
+   *  job/telemetry.json (rewritten on every turn_end at a DETERMINISTIC path, so
+   *  no meta read), falling back to `created`'s epoch when a node never ran a turn.
+   *  This is the cheap proxy for last-message recency the attention sort tie-breaks
+   *  on. Always set by dashboardRowsAll; optional only so synthetic test rows + the
+   *  scoped dashboardRows can omit it. (NB: the pi session-file mtime would be truer
+   *  but its path lives in meta.json at a non-deterministic location — reading it
+   *  per node would defeat the cheap boot, so telemetry mtime is used instead.) */
+  mtimeMs?: number;
+  /** The node's spawn prompt (context/initial-prompt.md), trimmed + capped. Populated
+   *  LAZILY by loadPreview (selected-row preview) — NOT on the cheap boot path.
+   *  Indexed by super-search and shown in the preview panel when there is no query. */
   goal?: string;
-  /** EVERY user prompt across the node's pi session — the whole conversation, not
-   *  just the spawn prompt — joined + capped. Populated by dashboardRowsAll, undefined
-   *  for never-revived nodes (no session file). Powers whole-conversation super-search
-   *  + the windowed match snippet in the preview. */
+  /** EVERY user prompt across the node's pi session — the whole conversation, not just
+   *  the spawn prompt — joined + capped. Populated LAZILY by loadPreview (ONE session
+   *  read, folded with lastAssistant); undefined for never-revived nodes (no session
+   *  file). Powers whole-conversation super-search + the windowed preview snippet. */
   prompts?: string;
-  /** The node's LAST assistant message (text only), trimmed + capped. Populated by
-   *  dashboardRowsAll; undefined for a node whose session has no assistant reply yet.
-   *  Shown in the preview's reply block so you see where a conversation left off. */
+  /** The node's LAST assistant message (text only), trimmed + capped. Populated LAZILY
+   *  by loadPreview (same single session read as `prompts`); undefined for a node whose
+   *  session has no assistant reply yet. Shown in the preview's reply block. */
   lastAssistant?: string;
   /** True when the node is GENUINELY mid-turn right now — its `busy` marker exists
    *  AND its broker pid is alive (not merely an `active`, between-turns node). The
-   *  live "is it generating?" cue. Populated by dashboardRowsAll. */
+   *  live "is it generating?" cue. Computed on the cheap boot path for LIVE nodes
+   *  only (dormant rows are always false). */
   streaming?: boolean;
   /** True when a viewer (focus row) is attached to the node — i.e. someone has it
-   *  open on screen. Populated by dashboardRowsAll. */
+   *  open on screen. Set on the cheap boot path from the one listFocuses() query. */
   viewed?: boolean;
+  /** Lazy-enrichment guard (internal): true once enrichRow/enrichRows has folded in
+   *  the full label (meta), ctx tokens (telemetry), and ⚑ asks. Idempotency marker so
+   *  progressive paint can re-call enrich for a viewport every keystroke for free. */
+  enriched?: boolean;
+  /** Lazy-enrichment guard (internal): true once loadPreview has read goal + the
+   *  session (prompts + lastAssistant). Idempotency marker for the selected row. */
+  previewLoaded?: boolean;
 }
 
 /** The spawn prompt, read straight off disk (canvas-home state) and capped so a
@@ -263,68 +279,70 @@ function readGoalText(nodeId: string): string | undefined {
   }
 }
 
-/** EVERY user prompt across a node's pi session — the whole conversation, not just
- *  the spawn prompt. Streams the session jsonl off disk, prefiltering to user-role
- *  lines so the big assistant/toolResult lines are never JSON-parsed, extracts each
- *  user message's text, joins newline-separated, and caps total + per-message so a
- *  long session can't bloat the snapshot. Never throws; returns undefined when there
- *  is no session file yet (a node that was never revived). */
+/** The node's session-derived preview text in ONE file read (today's two reads,
+ *  folded): EVERY user prompt across the pi session (`prompts` — the whole
+ *  conversation, not just the spawn prompt) AND the LAST assistant message text
+ *  (`lastAssistant`). The single jsonl read is split once; a forward pass collects
+ *  user prompts (prefiltering to user-role lines so the big assistant/toolResult
+ *  lines are never JSON-parsed) and a backward pass finds the newest assistant
+ *  reply with text content (tool-only replies skipped). Both are capped per-message
+ *  + total so a long session can't bloat the snapshot. Never throws; returns an
+ *  empty object when there is no session file yet (a node that was never revived). */
 const CONVO_CAP = 8192;
 const CONVO_MSG_CAP = 2048;
-function readConversationPrompts(sessionFile: string | null | undefined): string | undefined {
-  if (sessionFile === undefined || sessionFile === null || sessionFile === '') return undefined;
-  try {
-    if (!existsSync(sessionFile)) return undefined;
-    const raw = readFileSync(sessionFile, 'utf8');
-    const parts: string[] = [];
-    let total = 0;
-    for (const line of raw.split('\n')) {
-      // Cheap prefilter: skip every line that isn't a user-role message before the
-      // (relatively costly) JSON.parse. Pi writes compact JSON (no spaces), but
-      // tolerate the spaced form too.
-      if (line === '' || (line.indexOf('"role":"user"') === -1 && line.indexOf('"role": "user"') === -1)) continue;
-      let rec: { type?: string; message?: { role?: string; content?: unknown } };
-      try { rec = JSON.parse(line) as typeof rec; } catch { continue; }
-      if (rec.type !== 'message' || rec.message?.role !== 'user') continue;
-      const text = extractUserText(rec.message.content);
-      if (text === '') continue;
-      const capped = text.length > CONVO_MSG_CAP ? text.slice(0, CONVO_MSG_CAP) : text;
-      parts.push(capped);
-      total += capped.length + 1;
-      if (total >= CONVO_CAP) break;
-    }
-    if (parts.length === 0) return undefined;
-    const joined = parts.join('\n');
-    return joined.length > CONVO_CAP ? joined.slice(0, CONVO_CAP) : joined;
-  } catch {
-    return undefined;
-  }
+interface SessionParts {
+  prompts?: string;
+  lastAssistant?: string;
 }
-
-/** The node's LAST assistant message text. Scans the session jsonl from the END,
- *  parsing only assistant-role lines, and returns the first (= newest) one that
- *  carries text content (tool-only replies are skipped). Capped like a prompt so a
- *  long final answer can't bloat the snapshot. Never throws; undefined when there is
- *  no session file or no assistant reply yet. */
-function readLastAssistant(sessionFile: string | null | undefined): string | undefined {
-  if (sessionFile === undefined || sessionFile === null || sessionFile === '') return undefined;
+function readSessionParts(sessionFile: string | null | undefined): SessionParts {
+  if (sessionFile === undefined || sessionFile === null || sessionFile === '') return {};
+  let lines: string[];
   try {
-    if (!existsSync(sessionFile)) return undefined;
-    const lines = readFileSync(sessionFile, 'utf8').split('\n');
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const line = lines[i]!;
-      if (line === '' || (line.indexOf('"role":"assistant"') === -1 && line.indexOf('"role": "assistant"') === -1)) continue;
-      let rec: { type?: string; message?: { role?: string; content?: unknown } };
-      try { rec = JSON.parse(line) as typeof rec; } catch { continue; }
-      if (rec.type !== 'message' || rec.message?.role !== 'assistant') continue;
-      const text = extractUserText(rec.message.content);
-      if (text === '') continue;
-      return text.length > CONVO_MSG_CAP ? text.slice(0, CONVO_MSG_CAP) : text;
-    }
-    return undefined;
+    if (!existsSync(sessionFile)) return {};
+    lines = readFileSync(sessionFile, 'utf8').split('\n');
   } catch {
-    return undefined;
+    return {};
   }
+
+  // Forward pass: every user prompt, joined + capped.
+  const parts: string[] = [];
+  let total = 0;
+  for (const line of lines) {
+    // Cheap prefilter: skip every line that isn't a user-role message before the
+    // (relatively costly) JSON.parse. Pi writes compact JSON (no spaces), but
+    // tolerate the spaced form too.
+    if (line === '' || (line.indexOf('"role":"user"') === -1 && line.indexOf('"role": "user"') === -1)) continue;
+    let rec: { type?: string; message?: { role?: string; content?: unknown } };
+    try { rec = JSON.parse(line) as typeof rec; } catch { continue; }
+    if (rec.type !== 'message' || rec.message?.role !== 'user') continue;
+    const text = extractUserText(rec.message.content);
+    if (text === '') continue;
+    const capped = text.length > CONVO_MSG_CAP ? text.slice(0, CONVO_MSG_CAP) : text;
+    parts.push(capped);
+    total += capped.length + 1;
+    if (total >= CONVO_CAP) break;
+  }
+  let prompts: string | undefined;
+  if (parts.length > 0) {
+    const joined = parts.join('\n');
+    prompts = joined.length > CONVO_CAP ? joined.slice(0, CONVO_CAP) : joined;
+  }
+
+  // Backward pass: the newest assistant message carrying text.
+  let lastAssistant: string | undefined;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]!;
+    if (line === '' || (line.indexOf('"role":"assistant"') === -1 && line.indexOf('"role": "assistant"') === -1)) continue;
+    let rec: { type?: string; message?: { role?: string; content?: unknown } };
+    try { rec = JSON.parse(line) as typeof rec; } catch { continue; }
+    if (rec.type !== 'message' || rec.message?.role !== 'assistant') continue;
+    const text = extractUserText(rec.message.content);
+    if (text === '') continue;
+    lastAssistant = text.length > CONVO_MSG_CAP ? text.slice(0, CONVO_MSG_CAP) : text;
+    break;
+  }
+
+  return { prompts, lastAssistant };
 }
 
 /** Is the node GENUINELY mid-turn right now? The `busy` marker (touched on
@@ -378,29 +396,112 @@ export function dashboardRows(rootId: string): DashboardRow[] {
   });
 }
 
-/** One row per node across the entire canvas. */
+/** "Most recent activity" sort key (epoch ms) read CHEAPLY: a `statSync` (no file
+ *  read, no parse) of the node's job/telemetry.json — rewritten on every turn_end at
+ *  a deterministic canvas-home path, so it tracks last-message recency without a meta
+ *  read. Falls back to `created`'s epoch when a node never ran a turn (no telemetry).
+ *  Never throws. */
+function sessionMtime(nodeId: string, created: string): number {
+  try {
+    const st = statSync(join(jobDir(nodeId), 'telemetry.json'), { throwIfNoEntry: false });
+    if (st !== undefined) return st.mtimeMs;
+  } catch {
+    /* fall through to created */
+  }
+  const t = Date.parse(created);
+  return Number.isNaN(t) ? 0 : t;
+}
+
+/**
+ * CHEAP boot builder — one row per node across the entire canvas, with only the
+ * fields that need no per-node meta/telemetry/session read. Two db queries total:
+ * `listNodes()` + `listFocuses()` (the focus set replaces 1473 `getFocusByNode`
+ * calls). For each node:
+ *   - identity/status/kind/mode/cwd/created/lifecycle straight off the db row;
+ *   - `name` is the db HANDLE only (the informative label needs meta.description —
+ *     fold it in lazily via {@link enrichRow}/{@link enrichRows});
+ *   - `viewed` from the one focus-set;
+ *   - `streaming` only for LIVE nodes (active|idle — the only ones that can be
+ *     mid-turn); dormant rows are always false (skips an isPidAlive + statSync);
+ *   - `mtimeMs` via a cheap telemetry statSync (no read) for the attention sort;
+ *   - `ctx_tokens`/`asks` left 0 and `goal`/`prompts`/`lastAssistant` undefined —
+ *     all deferred to the lazy enrichment API below.
+ *
+ * This is the first-frame path: paint from it immediately, then enrich the visible
+ * viewport on demand. See {@link enrichRow}, {@link enrichRows}, {@link loadPreview}.
+ */
 export function dashboardRowsAll(): DashboardRow[] {
-  return listNodes().flatMap((row) => {
-    const tel = readNodeTelemetry(row.node_id);
-    // listNodes() returns the db projection (no description); read the meta to
-    // get the full label. Falls back to the row name if the meta is gone.
-    const meta = getNode(row.node_id);
-    return [{
+  const focusedNodeIds = new Set(listFocuses().map((f) => f.node_id));
+  return listNodes().map((row) => {
+    const live = row.status === 'active' || row.status === 'idle';
+    return {
       node_id: row.node_id,
-      name: meta !== null ? fullName(meta) : row.name,
+      name: row.name, // handle only; enrichRow upgrades to fullName (meta.description)
       status: row.status,
       kind: row.kind,
       mode: row.mode,
-      ctx_tokens: tel.tokens_in ?? 0,
-      asks: countAsks(row.node_id),
+      ctx_tokens: 0, // lazy: enrichRow
+      asks: 0,       // lazy: enrichRow / enrichRows
       cwd: row.cwd,
       created: row.created,
       lifecycle: row.lifecycle,
-      goal: readGoalText(row.node_id),
-      prompts: readConversationPrompts(meta?.pi_session_file),
-      lastAssistant: readLastAssistant(meta?.pi_session_file),
-      streaming: isStreaming(row.node_id, meta?.pi_pid),
-      viewed: getFocusByNode(row.node_id) !== null,
-    }];
+      mtimeMs: sessionMtime(row.node_id, row.created),
+      streaming: live ? isStreaming(row.node_id, row.pi_pid) : false,
+      viewed: focusedNodeIds.has(row.node_id),
+    };
   });
+}
+
+// ---------------------------------------------------------------------------
+// Lazy enrichment API — fold the expensive per-node reads into rows on demand,
+// for the VISIBLE viewport / top tiers only (never all 1473 up front). Each
+// function mutates the row in place (the browse tree holds the row reference, so
+// a later flush re-renders the upgraded data) and is idempotent via a guard flag
+// so progressive paint can call it for the viewport every keystroke for free.
+// ---------------------------------------------------------------------------
+
+/** Fold the cheap-boot row's deferred fields in for ONE row: the full label
+ *  (meta.description → fullName), ctx tokens (telemetry.json), and ⚑ asks. One
+ *  meta read + one telemetry read + one ask scan. Idempotent (no-op once enriched).
+ *  For a batch, prefer {@link enrichRows} — it scans each cwd's ask inbox once. */
+export function enrichRow(row: DashboardRow): DashboardRow {
+  if (row.enriched === true) return row;
+  const meta = getNode(row.node_id);
+  if (meta !== null) row.name = fullName(meta);
+  row.ctx_tokens = readNodeTelemetry(row.node_id).tokens_in ?? 0;
+  row.asks = countAsks(row.node_id);
+  row.enriched = true;
+  return row;
+}
+
+/** Batch {@link enrichRow}: enrich every not-yet-enriched row, scanning each
+ *  distinct cwd's ask inbox exactly ONCE (via `asksForNodes`) instead of per row.
+ *  Use this for a whole viewport / the full forest; mutates each row in place. */
+export function enrichRows(rows: DashboardRow[]): void {
+  const todo = rows.filter((r) => r.enriched !== true);
+  if (todo.length === 0) return;
+  const asks = asksForNodes(todo.map((r) => r.node_id));
+  for (const row of todo) {
+    const meta = getNode(row.node_id);
+    if (meta !== null) row.name = fullName(meta);
+    row.ctx_tokens = readNodeTelemetry(row.node_id).tokens_in ?? 0;
+    row.asks = asks[row.node_id] ?? 0;
+    row.enriched = true;
+  }
+}
+
+/** Load the SELECTED row's preview text: the spawn `goal` (initial-prompt.md) plus
+ *  the whole-conversation `prompts` and the `lastAssistant` reply — the latter two
+ *  folded into ONE session-file read (see {@link readSessionParts}). Mutates the row
+ *  in place; idempotent. Call only for the cursor row (and lazily/in-background to
+ *  warm the prompt super-search corpus), never on the boot path. */
+export function loadPreview(row: DashboardRow): DashboardRow {
+  if (row.previewLoaded === true) return row;
+  row.goal = readGoalText(row.node_id);
+  const meta = getNode(row.node_id);
+  const { prompts, lastAssistant } = readSessionParts(meta?.pi_session_file);
+  row.prompts = prompts;
+  row.lastAssistant = lastAssistant;
+  row.previewLoaded = true;
+  return row;
 }
