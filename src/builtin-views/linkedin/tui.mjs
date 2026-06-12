@@ -389,7 +389,7 @@ export function render(state, draw, content) {
   renderThread(state, draw, right);
 }
 
-// ── keymap (replaces onKey; mode-gated bindings → named intents) ──────────────
+// ── keymap (mode-gated bindings → named intents) ──────────────────────────────
 
 /** @param {LiState} s */
 const isList = (s) => s.mode === 'list';
