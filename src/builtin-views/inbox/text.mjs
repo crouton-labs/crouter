@@ -4,9 +4,8 @@
  * path (`crtr view run inbox | cat`). Node-only, no ANSI. A plain snapshot of
  * the merged list + each down source's banner + the host's current banner.
  *
- * `dump` is lifted VERBATIM from the pre-migration view. The pure helpers it
- * shares with the TUI (badgeFor, unreadCount, labeled, relTimestamp, …) are
- * imported from `core.mjs`.
+ * The pure helpers `dump` shares with the TUI (badgeFor, unreadCount, labeled,
+ * relTimestamp, …) are imported from `core.mjs`.
  *
  * @module inbox/text
  */

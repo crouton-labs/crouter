@@ -16,8 +16,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { styleSpan, isSgrParams, createDraw, type ColorCaps, type Size, type ListItemRow } from '../tui/draw.js';
-import { drawChrome, type Chrome } from '../tui/host.js';
-import type { ViewManifest } from '../tui/contract.js';
+import { drawChrome, type Chrome, type ChromeManifest } from '../tui/host.js';
 
 const ESC = '\x1b[';
 
@@ -42,8 +41,8 @@ function baseChrome(over: Partial<Chrome> = {}): Chrome {
   return { status: null, banner: null, busy: false, loaded: true, lastRefresh: Date.now(), tick: 0, subtitle: null, mode: null, ...over };
 }
 
-const MANIFEST: ViewManifest = {
-  id: 't', title: 'Test View', subtitle: '3 unread', description: 'd',
+const MANIFEST: ChromeManifest = {
+  title: 'Test View', subtitle: '3 unread',
   keymap: [
     { keys: 'j/k', label: 'move' }, { keys: 'enter', label: 'open' },
     { keys: 'r', label: 'reply' }, { keys: 'g', label: 'refresh' }, { keys: 'q', label: 'quit' },

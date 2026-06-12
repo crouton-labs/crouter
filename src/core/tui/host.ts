@@ -1,20 +1,23 @@
-// host.ts — the alt-screen loop that hosts a ViewModule.
+// host.ts — the alt-screen loop that hosts a dual-target ViewCore + TuiPresenter
+// (src/core/view/contract.ts).
 //
 // Models browse/app.ts's loop, generalized: the host owns the screen, input,
-// chrome, and the single-flight async lane; the view paints into the `Draw` it's
-// handed and returns a `ViewAction` per keystroke.
+// chrome, and the single-flight async lane. State is immutable (the core's
+// intents update it via `ctx.set`); presenters are pure reads. A keystroke maps
+// through the TuiPresenter's keymap to a named intent the host dispatches.
 //
-//   • TTY gate: !process.stdin.isTTY → view.dump(state) to stdout, exit 0.
+//   • TTY gate: !process.stdin.isTTY → text.dump(state) (or a synthesized
+//     one-line dump) to stdout, exit 0.
 //   • setup/restore terminal (alt-screen, raw); restore exactly once, however we
 //     leave (quit / Ctrl-C / crash / process exit).
-//   • single-flight async lane: at most ONE async hook (refresh or an async
-//     onKey) in flight; a busy indicator shows in the chrome; keystrokes that
-//     arrive mid-flight are DROPPED (this paces fetches/sends).
+//   • single-flight async lane: at most ONE async intent in flight; a busy
+//     indicator shows in the chrome; keystrokes that arrive mid-flight are
+//     DROPPED (this paces fetches/sends).
 //   • chrome: title row + separator on top; an error banner + a footer (status
-//     left, keymap hints right) on the bottom; the view gets the content Rect.
-//   • loop: parseKeypress → view.onKey → ViewAction → render; refreshMs polling;
+//     left, keymap hints right) on the bottom; the presenter gets the content Rect.
+//   • loop: parseKeypress → keymap → dispatch(intent) → render; refreshMs polling;
 //     resize → render (NOT refresh) so a resize mid-fetch repaints from current
-//     state without re-entering the in-flight hook.
+//     state without re-entering the in-flight intent.
 
 import {
   setupTerminal,
@@ -24,12 +27,13 @@ import {
   type Key,
 } from './terminal.js';
 import { createDraw, detectColorCaps, type ColorCaps, type Draw, type Span, type Style, type Rect, type Size } from './draw.js';
-import type { ViewModule, ViewHost, ViewAction, ViewManifest, KeyHint, BannerLevel } from './contract.js';
 import type {
   ViewCore,
   TuiPresenter,
   TextPresenter,
   KeyBinding,
+  KeyHint,
+  BannerLevel,
   ChromeState,
   HostSignals,
   IntentCtx,
@@ -58,6 +62,14 @@ export interface Chrome {
   tick: number;           // spinner frame, advanced by the busy-tick repaint
   subtitle: string | null; // dynamic title subtitle (overrides manifest.subtitle); null ⇒ manifest default
   mode: string | null;     // explicit interaction-mode chip override (compose/react); null ⇒ derived chip
+}
+
+/** The slice of a view's manifest that drawChrome reads (title + subtitle), plus
+ *  the footer hints lifted from the TuiPresenter's keymap bindings. */
+export interface ChromeManifest {
+  title: string;
+  subtitle?: string;
+  keymap?: KeyHint[];
 }
 
 type ChipState = 'working' | 'blocked' | 'attention' | 'ready' | 'idle';
@@ -160,7 +172,7 @@ function keymapSpans(hints: KeyHint[], avail: number): Span[] {
  *  Three zones: title row (state rail + title/subtitle + state chip + liveness),
  *  a hairline, and a footer (status left, keymap right) with a severity banner
  *  on the row above it when set. */
-function drawChrome(draw: Draw, size: Size, manifest: ViewManifest, c: Chrome, now: number = Date.now()): Rect {
+function drawChrome(draw: Draw, size: Size, manifest: ChromeManifest, c: Chrome, now: number = Date.now()): Rect {
   const { cols, rows } = size;
   const st = deriveState(c);
 
@@ -229,178 +241,12 @@ function drawChrome(draw: Draw, size: Size, manifest: ViewManifest, c: Chrome, n
 
 export { drawChrome };
 
-/** Host a view in the alt screen until it quits (or Ctrl-C). */
-export async function runView<S>(view: ViewModule<S>, opts: RunViewOptions = {}): Promise<void> {
-  const options = Object.freeze({ ...(opts.options ?? {}) });
-
-  const chrome: Chrome = { status: null, banner: null, busy: false, loaded: false, lastRefresh: 0, tick: 0, subtitle: null, mode: null };
-  const host: ViewHost = {
-    options,
-    setStatus(msg) { chrome.status = msg; },
-    setBanner(msg, level) { chrome.banner = msg == null ? null : { msg, level }; },
-    setError(msg) { chrome.banner = msg == null ? null : { msg, level: 'error' }; },
-    setSubtitle(s) { chrome.subtitle = s; },
-    setMode(mode) { chrome.mode = mode; },
-  };
-
-  // ── Non-TTY / piped path: build state, best-effort load, dump, exit 0. ──
-  if (!process.stdin.isTTY) {
-    const state = await view.init(host);
-    if (view.refresh) {
-      try { await view.refresh(state, host); } catch { /* dump current state regardless */ }
-    }
-    // Thread the host's current banner so a view can surface guidance without
-    // mirroring it into state (older views ignore the arg).
-    let text = view.dump(state, { banner: chrome.banner });
-    if (!text.endsWith('\n')) text += '\n';
-    process.stdout.write(text);
-    return;
-  }
-
-  const caps: ColorCaps = detectColorCaps();
-  const state = await view.init(host);
-
-  // Restore the terminal exactly once, however we leave.
-  let restored = false;
-  const cleanup = (): void => {
-    if (restored) return;
-    restored = true;
-    try { restoreTerminal(); } catch { /* best-effort */ }
-  };
-  process.once('exit', cleanup);
-
-  const render = (): void => {
-    const size = getTerminalSize();
-    const { draw, frame } = createDraw(size, caps);
-    const content = drawChrome(draw, size, view.manifest, chrome);
-    try {
-      view.render(state, draw, content);
-    } catch (e) {
-      chrome.banner = { msg: `render error: ${errText(e)}`, level: 'error' };
-    }
-    process.stdout.write(frame());
-  };
-
-  // Busy-tick repaint: while an async op is in flight, a ~120ms timer advances
-  // the spinner + re-renders so live setStatus narration shows. Render-only — it
-  // NEVER re-enters a hook, and Ctrl-C still escapes (handled before the drop).
-  let tickTimer: ReturnType<typeof setInterval> | undefined;
-  const startBusyTick = (): void => {
-    if (tickTimer) return;
-    tickTimer = setInterval(() => { chrome.tick++; render(); }, 120);
-  };
-  const stopBusyTick = (): void => {
-    if (tickTimer) { clearInterval(tickTimer); tickTimer = undefined; }
-  };
-
-  // The single-flight lane. Returns true if the op ran (false if one was already
-  // in flight). Always repaints around the op so the busy indicator shows.
-  let busy = false;
-  const runRefresh = async (): Promise<void> => {
-    if (!view.refresh || busy) return;
-    busy = true;
-    chrome.busy = true;
-    render();
-    startBusyTick();
-    try {
-      await view.refresh(state, host);
-    } catch (e) {
-      chrome.banner = { msg: errText(e), level: 'error' };
-    } finally {
-      busy = false;
-      chrome.busy = false;
-      chrome.loaded = true;
-      chrome.lastRefresh = Date.now();
-      stopBusyTick();
-      render();
-    }
-  };
-
-  setupTerminal();
-  render();          // initial loading paint (before any fetch)
-  await runRefresh(); // first data load
-
-  await new Promise<void>((resolveLoop) => {
-    let done = false;
-    let timer: ReturnType<typeof setInterval> | undefined;
-    const finish = (): void => {
-      if (done) return;
-      done = true;
-      if (timer) clearInterval(timer);
-      stopBusyTick();
-      cleanup();
-      resolveLoop();
-    };
-
-    if (typeof view.manifest.refreshMs === 'number' && view.manifest.refreshMs > 0) {
-      timer = setInterval(() => { void runRefresh(); }, view.manifest.refreshMs);
-    }
-
-    const apply = async (action: ViewAction): Promise<void> => {
-      switch (action.type) {
-        case 'render': render(); break;
-        case 'refresh': await runRefresh(); break;
-        case 'quit': finish(); break;
-        case 'none': break;
-      }
-    };
-
-    const onData = async (data: Buffer): Promise<void> => {
-      if (done) return;
-      let parsed: { input: string; key: ReturnType<typeof parseKeypress>['key'] };
-      try { parsed = parseKeypress(data); } catch { return; }
-      const { input, key } = parsed;
-
-      // Ctrl-C is the universal escape hatch — works even mid-flight.
-      if (key.ctrl && input === 'c') { finish(); return; }
-
-      // Drop keystrokes while an async op is in flight (paces fetch/send).
-      if (busy) return;
-
-      if (!view.onKey) {
-        if (input === 'q') finish(); // minimal default so a no-onKey view escapes
-        return;
-      }
-
-      try {
-        const r = view.onKey({ input, key }, state, host);
-        let action: ViewAction;
-        if (r instanceof Promise) {
-          busy = true;
-          chrome.busy = true;
-          render();
-          startBusyTick();
-          try {
-            action = await r;
-          } finally {
-            busy = false;
-            chrome.busy = false;
-            stopBusyTick();
-          }
-        } else {
-          action = r;
-        }
-        await apply(action);
-      } catch (e) {
-        chrome.banner = { msg: errText(e), level: 'error' };
-        render();
-      }
-    };
-
-    process.stdin.on('data', (d: Buffer) => { void onData(d); });
-    // Resize → repaint from current state (never re-enter the in-flight hook).
-    process.stdout.on('resize', () => { if (!done) render(); });
-  });
-}
-
 // ── Dual-target core host (runCoreView) ─────────────────────────────────────
 //
 // Hosts a ViewCore + TuiPresenter under the dual-target contract
-// (src/core/view/contract.ts). Same alt-screen loop, drawChrome, single-flight
-// busy lane, refreshMs poll, and non-TTY dump branch as runView — but the model
-// is the immutable-state + intents thunk runtime, not mutate-in-place +
-// ViewAction. runView (above) stays for the legacy single-file builtins during
-// the dual-load migration; this is the path a migrated `<view>/core.mjs` takes.
+// (src/core/view/contract.ts). The model is the immutable-state + intents thunk
+// runtime: the core owns all state + behavior, presenters are pure reads, and a
+// keystroke maps through the keymap to a named intent the host dispatches.
 
 /** Tokens a keystroke can match a keymap binding's `keys` against. Arrows →
  *  up/down/left/right, return → return|enter, escape → escape|esc, a printable
@@ -519,7 +365,7 @@ export async function runCoreView<S>(
   let tick = 0;
 
   // Footer hints come from the keymap bindings' `hint` field (single source of
-  // truth) — adapt to the legacy drawChrome's (manifest.keymap, Chrome) shape.
+  // truth) — projected into the (ChromeManifest, Chrome) shape drawChrome reads.
   const hints: KeyHint[] = [];
   for (const b of tui.keymap) { if (b.hint) hints.push(b.hint); }
 
@@ -535,9 +381,9 @@ export async function runCoreView<S>(
   const render = (): void => {
     const size = getTerminalSize();
     const { draw, frame } = createDraw(size, caps);
-    const legacyManifest = { ...core.manifest, keymap: hints };
-    const legacyChrome: Chrome = { ...chrome, tick };
-    const content = drawChrome(draw, size, legacyManifest, legacyChrome);
+    const chromeManifest: ChromeManifest = { ...core.manifest, keymap: hints };
+    const tickChrome: Chrome = { ...chrome, tick };
+    const content = drawChrome(draw, size, chromeManifest, tickChrome);
     try {
       tui.render(state, draw, content);
     } catch (e) {

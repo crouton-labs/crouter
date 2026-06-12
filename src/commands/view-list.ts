@@ -1,13 +1,13 @@
 // `crtr view list` — enumerate every resolvable view across scopes.
 //
-// Lists id · title · description · scope. Loads each view to read its manifest
-// title/description; a malformed view is shown with an error marker (it never
-// crashes the listing). Plain text — pipeable as-is. The raw array is available
-// behind --json for tooling.
+// Lists id · title · description · scope. Loads each view's core.mjs to read its
+// manifest title/description; a malformed view is shown with an error marker (it
+// never crashes the listing). Plain text — pipeable as-is. The raw array is
+// available behind --json for tooling.
 
 import { defineLeaf } from '../core/command.js';
 import type { LeafDef } from '../core/command.js';
-import { listViews, loadView } from '../core/tui/loader.js';
+import { listViews, loadCore } from '../core/view/loader.js';
 
 interface ViewRow {
   id: string;
@@ -35,11 +35,11 @@ export const viewListLeaf: LeafDef = defineLeaf({
     const rows: ViewRow[] = [];
     for (const r of listViews()) {
       try {
-        const v = await loadView(r);
+        const core = await loadCore(r);
         rows.push({
           id: r.id,
-          title: v.manifest.title,
-          description: v.manifest.description ?? '',
+          title: core.manifest.title,
+          description: core.manifest.description ?? '',
           scope: r.scope,
         });
       } catch (e) {

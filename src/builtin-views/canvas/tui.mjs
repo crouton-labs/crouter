@@ -4,10 +4,8 @@
  * view. Node-only (it uses the host's `Draw` API + the `_lib/states.mjs` draw
  * helpers).
  *
- * `render` is BYTE-IDENTICAL to the pre-migration view's `render` — the only
- * thing that changed is the dispatch path: keystrokes now map to named intents
- * through `keymap`, instead of an `onKey` returning a `ViewAction`. All state +
- * data logic lives in `core.mjs`; this file is a pure read of state.
+ * `render` is a pure read of state; keystrokes map to named intents through
+ * `keymap`. All state + data logic lives in `core.mjs`.
  *
  * VISUAL LANGUAGE (crtr-views-visual-design §2/§3/§4): hierarchy is carried by
  * weight + hue + position, never boxes. The status glyph hues match `canvas
@@ -151,7 +149,7 @@ export function render(state, draw, content) {
   state.scroll = res.scroll; // store adjusted scroll back (Draw.list contract)
 }
 
-// ── keymap (replaces onKey) ────────────────────────────────────────────────────
+// ── keymap ───────────────────────────────────────────────────────────────
 
 /**
  * Read-only navigation: j/k move the cursor, g refreshes, q quits. No async

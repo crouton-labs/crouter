@@ -1,9 +1,11 @@
-// `crtr view run <name>` — resolve, load, and host a view.
+// `crtr view run <name>` — resolve, load, and host a view's TUI target.
 //
-// Resolves the view across scopes (project→user→builtin), dynamically imports
-// it, then hands it to the core/tui host. The host owns the screen and the
-// non-TTY path: when stdin is NOT a TTY it prints view.dump(state) and exits 0,
-// so `crtr view run <name> | cat` works anywhere. The interactive path is
+// Resolves the view across scopes (project→user→builtin), loads its core.mjs +
+// tui.mjs (+ optional text.mjs), then hands them to the dual-target core host.
+// The host owns the screen and the non-TTY path: when stdin is NOT a TTY it
+// prints the text presenter's dump and exits 0, so `crtr view run <name> | cat`
+// works anywhere. A view that ships no core.mjs is not a view — run fails with a
+// clear error naming the contract, never a fallback. The interactive path is
 // tmux-only (crtr is tmux-only) — outside tmux with a TTY we notify + no-op,
 // never a non-tmux fallback. --port / --target forward verbatim onto
 // host.options (camelCased, stringified); crtr does not interpret them.
@@ -19,15 +21,15 @@
 import { defineLeaf } from '../core/command.js';
 import type { LeafDef } from '../core/command.js';
 import { InputError } from '../core/io.js';
-import { runView, runCoreView } from '../core/tui/host.js';
-import { resolveView as resolveLegacyView, loadView, listViews as listLegacyViews } from '../core/tui/loader.js';
+import { runCoreView } from '../core/tui/host.js';
 import {
-  resolveView as resolveCoreView,
+  resolveView,
+  findViewDir,
   loadCore,
   loadTui,
   loadText,
   requireTui,
-  listViews as listCoreViews,
+  listViews,
 } from '../core/view/loader.js';
 // Commands reach the tmux driver through placement.ts (the sanctioned
 // model-over-driver seam, §5.1) — never `./tmux.js` directly.
@@ -84,15 +86,20 @@ export const viewRunLeaf: LeafDef = defineLeaf({
       });
     }
 
-    // Dual-load: prefer a NEW dual-target `core.mjs` view; fall back to the
-    // legacy single-file `view.mjs` so today's builtins keep working untouched.
-    const coreR = resolveCoreView(name);
-    const legacyR = coreR ? null : resolveLegacyView(name);
-    if (coreR === null && legacyR === null) {
-      const avail = Array.from(new Set([
-        ...listCoreViews().map((v) => v.id),
-        ...listLegacyViews().map((v) => v.id),
-      ])).sort();
+    const r = resolveView(name);
+    if (r === null) {
+      // A directory exists but holds no core.mjs — it is not a valid view (e.g. a
+      // pre-contract `view.mjs`-only dir). Name the contract, don't fall back.
+      const dir = findViewDir(name);
+      if (dir !== null) {
+        throw new InputError({
+          error: 'view_invalid',
+          message: `'${name}' is not a valid view: ${dir} has no core.mjs`,
+          received: name,
+          next: `A view is a directory containing core.mjs (the portable core) plus optional tui.mjs (render + keymap), web.jsx, and text.mjs. Scaffold the shape with \`crtr view new ${name}\`.`,
+        });
+      }
+      const avail = listViews().map((v) => v.id);
       throw new InputError({
         error: 'view_not_found',
         message: `no view: ${name}`,
@@ -111,16 +118,11 @@ export const viewRunLeaf: LeafDef = defineLeaf({
     // non-TTY dump and the interactive alt-screen — each host handles the TTY
     // gate internally).
     const hostView = async (): Promise<void> => {
-      if (coreR) {
-        requireTui(coreR);
-        const core = await loadCore(coreR);
-        const tui = await loadTui(coreR);
-        const txt = await loadText(coreR);
-        await runCoreView(core, tui, txt, { options });
-      } else {
-        const v = await loadView(legacyR!);
-        await runView(v, { options });
-      }
+      requireTui(r);
+      const core = await loadCore(r);
+      const tui = await loadTui(r);
+      const txt = await loadText(r);
+      await runCoreView(core, tui, txt, { options });
     };
 
     // --window / --split: open the view as a persistent monitor in a new pane.

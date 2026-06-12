@@ -9,7 +9,7 @@
 import { execFileSync } from 'node:child_process';
 import { defineLeaf } from '../core/command.js';
 import type { LeafDef } from '../core/command.js';
-import { listViews } from '../core/tui/loader.js';
+import { listViews } from '../core/view/loader.js';
 import {
   setupTerminal,
   restoreTerminal,

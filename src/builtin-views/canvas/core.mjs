@@ -7,14 +7,12 @@
  * `web.jsx`).
  *
  * Runs in BOTH Node and the browser, so it imports NOTHING — no `node:*`, no
- * crtr. The data layer that used to shell the `crtr` binary directly
- * (`client.mjs`'s `execFile` candidate walk) is now expressed as
- * transport-agnostic `Source` descriptors: the core describes WHAT to run
- * (`request()` → a SourceRequest for `crtr … --json`), the host's Transport runs
- * it (local `execFile` for the TUI, the HTTP bridge for web), and the pure
- * `parse()` turns bytes → typed data | a typed `SourceError`. All the forest
- * building + relative-age / chrome-copy logic moved here verbatim — it is pure
- * string/data work that runs anywhere.
+ * crtr. The data layer is expressed as transport-agnostic `Source` descriptors:
+ * the core describes WHAT to run (`request()` → a SourceRequest for
+ * `crtr … --json`), the host's Transport runs it (local `execFile` for the TUI,
+ * the HTTP bridge for web), and the pure `parse()` turns bytes → typed data | a
+ * typed `SourceError`. The forest building + relative-age / chrome-copy logic is
+ * pure string/data work that runs anywhere.
  *
  * It rebuilds the forest from each node's `parent` edge, keeps only trees that
  * contain live (active/idle) or human-blocked work, and renders them as a
@@ -102,7 +100,7 @@ function fail(error) {
   return { ok: false, error };
 }
 
-// ── Field mappers (lifted from client.mjs) ────────────────────────────────────
+// ── Field mappers ───────────────────────────────────────────────────
 
 /** @param {unknown} v @returns {string} */
 function str(v) {
@@ -319,7 +317,7 @@ export const attentionSource = {
   },
 };
 
-// ── Forest builder (lifted verbatim from view.mjs) ────────────────────────────
+// ── Forest builder ─────────────────────────────────────────────
 
 /**
  * Build the flattened active-tree forest from a flat node list + the

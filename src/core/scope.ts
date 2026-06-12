@@ -116,7 +116,7 @@ export function pluginMemoryDir(plugin: InstalledPlugin): string {
 
 /** Where view definition dirs live per scope. Builtin views sit directly under
  *  builtinViewsRoot() (no `views/` segment — they ARE the builtin views dir),
- *  matching the loader's `<root>/<name>/view.mjs` resolution. */
+ *  matching the loader's `<root>/<name>/core.mjs` resolution. */
 export function viewsDir(scope: Scope): string | null {
   if (scope === 'builtin') return builtinViewsRoot();
   const root = scope === 'user' ? userScopeRoot() : projectScopeRoot();

@@ -2,9 +2,7 @@
 /**
  * Shared render helpers for the combined `inbox` view.
  *
- * These are COPIED VERBATIM-IN-BEHAVIOR from `../../linkedin/view.mjs` so the
- * standalone `linkedin` view stays untouched (the contract forbids refactoring
- * it). Self-contained ESM, Node-builtins only, imports NOTHING from crtr — the
+ * Self-contained ESM, Node-builtins only, imports NOTHING from crtr — the
  * `inbox` view + its source adapters import these RELATIVELY.
  *
  * Discipline (design §2): all hue is NUMERIC SGR codes; color never carries

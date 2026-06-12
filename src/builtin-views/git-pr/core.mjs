@@ -6,13 +6,12 @@
  * React+Tailwind web page (`crtr view serve git-pr`, via `web.jsx`).
  *
  * Runs in BOTH Node and the browser, so it imports NOTHING — no `node:*`, no
- * crtr. The data layer that used to shell `git`/`gh` directly (`client.mjs`'s
- * `execFile`) is now expressed as transport-agnostic `Source` descriptors: the
- * core describes WHAT to run (`request()` → a SourceRequest), the host's
- * Transport runs it (local `execFile` for the TUI, the HTTP bridge for web), and
- * the pure `parse()` turns bytes → typed data. All the porcelain/JSON parsing
- * (parseStatus / rollupCi / relAge / classifyGh …) moved here verbatim — it is
- * pure string work that runs anywhere.
+ * crtr. The data layer is expressed as transport-agnostic `Source` descriptors:
+ * the core describes WHAT to run (`request()` → a SourceRequest for `git`/`gh`),
+ * the host's Transport runs it (local `execFile` for the TUI, the HTTP bridge
+ * for web), and the pure `parse()` turns bytes → typed data. The porcelain/JSON
+ * parsing (parseStatus / rollupCi / relAge / classifyGh …) is pure string work
+ * that runs anywhere.
  *
  * NOTHING throws. Sources return a `Result<T>` (typed `SourceError` on failure);
  * the `refresh` intent maps a blocking git error to a guided takeover and keeps
@@ -143,7 +142,7 @@ export function relAge(iso, now) {
   return `${mon} ʼ${String(date.getFullYear()).slice(-2)}`;
 }
 
-// ── git: status / churn parsing (lifted verbatim from client.mjs) ─────────────
+// ── git: status / churn parsing ──────────────────────────────────
 
 /**
  * Classify a porcelain XY pair into the file's primary class.
@@ -211,7 +210,7 @@ function parseNumstat(stdout) {
 
 const CLASS_RANK = { conflict: 0, staged: 1, modified: 2, untracked: 3 };
 
-// ── gh: rollups + classification (lifted verbatim from client.mjs) ────────────
+// ── gh: rollups + classification ────────────────────────────────
 
 const CI_BAD = new Set(['FAILURE', 'ERROR', 'CANCELLED', 'TIMED_OUT', 'ACTION_REQUIRED', 'STARTUP_FAILURE']);
 const CI_GOOD = new Set(['SUCCESS', 'NEUTRAL', 'SKIPPED']);

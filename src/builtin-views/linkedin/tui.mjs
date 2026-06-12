@@ -3,9 +3,7 @@
  * LinkedIn Messages — the TUI presenter (`render` + `keymap`) for the `linkedin`
  * view. Node-only (it uses the host's `Draw` API + the `_lib/states.mjs` draw
  * helpers). All state + behavior live in `core.mjs`; this is a pure read of
- * state. `render` preserves the pre-migration view's output; the only change is
- * the dispatch path — keystrokes map to named intents via `keymap` instead of an
- * `onKey` returning a `ViewAction`.
+ * state. Keystrokes map to named intents via `keymap`.
  *
  * The recovery / degraded panels render the typed `SourceError.display` VERBATIM
  * (the contract display/kind split): the presenter maps only `display.level` →

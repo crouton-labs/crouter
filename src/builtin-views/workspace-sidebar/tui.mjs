@@ -4,10 +4,9 @@
  * `workspace-sidebar` view. Node-only (it uses the host's `Draw` API + the
  * `_lib/states.mjs` draw helpers).
  *
- * `render` paints the same two-section rail as the pre-migration view — the
- * only change is the dispatch path: keystrokes now map to named intents through
- * `keymap` instead of an `onKey` returning a `ViewAction`. All state + data
- * logic lives in `core.mjs`; this file is a pure read of the logical `RailRow[]`.
+ * `render` paints a two-section rail; keystrokes map to named intents through
+ * `keymap`. All state + data logic lives in `core.mjs`; this file is a pure
+ * read of the logical `RailRow[]`.
  *
  * VISUAL LANGUAGE (mirrors the `canvas` view): hierarchy via weight + hue +
  * position, never boxes. Status glyph hues match `canvas browse` (active=green,
@@ -126,7 +125,7 @@ export function render(state, draw, content) {
   state.scroll = res.scroll; // store adjusted scroll back (Draw.list contract)
 }
 
-// ── keymap (replaces onKey) ────────────────────────────────────────────────────
+// ── keymap ───────────────────────────────────────────────────────────────
 
 /**
  * j/k move the cursor over node rows, ↵ swaps the selected node into the chat

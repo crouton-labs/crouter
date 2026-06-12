@@ -4,8 +4,8 @@
  * the `git-pr` view (`crtr view run git-pr | cat`). Node-only, no ANSI. A plain
  * snapshot of the current state; the host threads its current banner via `ctx`.
  *
- * `dump` is unchanged from the pre-migration view. The pure helpers it shares
- * with the TUI (relAge, treePhrase) are imported from `core.mjs`.
+ * The pure helpers `dump` shares with the TUI (relAge, treePhrase) are imported
+ * from `core.mjs`.
  *
  * @module git-pr/text
  */

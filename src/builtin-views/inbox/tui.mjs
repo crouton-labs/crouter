@@ -3,10 +3,8 @@
  * Combined `inbox` view — the TUI presenter (`render` + `keymap`). Node-only (it
  * uses the host's `Draw` API + the `_lib` draw helpers).
  *
- * `render` and all its helpers are lifted VERBATIM-IN-BEHAVIOR from the
- * pre-migration `view.mjs` — the only change is the dispatch path: keystrokes now
- * map to named intents through `keymap` instead of an `onKey` returning a
- * ViewAction, and the compose/react bars READ `state.draft`/`state.reactCursor`/
+ * `render` is a pure read of state; keystrokes map to named intents through
+ * `keymap`. The compose/react bars READ `state.draft`/`state.reactCursor`/
  * `state.mode` (input flows through the `setDraft` capture intent, not a buffer
  * owned here). All state + data logic lives in `core.mjs`.
  *
@@ -86,7 +84,7 @@ function renderRowList(state, draw, left) {
   state.scroll = res.scroll;
 }
 
-/** Pad a badge glyph to 2 cols (matches legacy `padEnd(b.glyph, 2)`). */
+/** Pad a badge glyph to 2 cols. */
 function padEnd2(s) {
   const str = String(s == null ? '' : s);
   return str.length >= 2 ? str.slice(0, 2) : str + ' '.repeat(2 - str.length);
@@ -280,7 +278,7 @@ export function render(state, draw, content) {
   renderDetail(state, draw, right);
 }
 
-// ── keymap (replaces onKey) ────────────────────────────────────────────────────
+// ── keymap ───────────────────────────────────────────────────────────────
 
 /** @param {InboxState} s */
 const listMode = (s) => s.mode === 'list';

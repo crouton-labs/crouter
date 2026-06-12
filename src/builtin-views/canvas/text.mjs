@@ -4,10 +4,10 @@
  * the `canvas` view (`crtr view run canvas | cat`). Node-only, no ANSI. A plain
  * snapshot of the current state; the host threads its current banner via `ctx`.
  *
- * `dump` is unchanged from the pre-migration view except that the data-source
- * failure is now a typed `SourceError` (we render its `display.explanation`
- * VERBATIM, never branching on `kind`). The pure helpers it shares with the TUI
- * (relAge, lifeAbbr, dumpSummary) are imported from `core.mjs`.
+ * A data-source failure is a typed `SourceError` (we render its
+ * `display.explanation` VERBATIM, never branching on `kind`). The pure helpers
+ * `dump` shares with the TUI (relAge, lifeAbbr, dumpSummary) are imported from
+ * `core.mjs`.
  *
  * @module canvas/text
  */

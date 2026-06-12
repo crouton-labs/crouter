@@ -11,13 +11,12 @@
  *
  * Runs in BOTH Node (the tmux TUI, via `tui.mjs`) and the browser (the
  * React+Tailwind page, via `web.jsx`), so it imports NOTHING — no `node:*`, no
- * crtr. The data layer that used to shell `crtr`/`tmux` directly (`client.mjs`'s
- * `execFile`) is now expressed as transport-agnostic `Source`/`Command`
- * descriptors: the core describes WHAT to run (`request()` → a SourceRequest),
- * the host's Transport runs it (local `execFile` for the TUI, the HTTP bridge
- * for web), and the pure `parse()` turns bytes → typed data. The forest model,
- * cwd scoping, attention rollup, and cursor logic are pure string work that runs
- * anywhere.
+ * crtr. The data layer is expressed as transport-agnostic `Source`/`Command`
+ * descriptors: the core describes WHAT to run (`request()` → a SourceRequest for
+ * `crtr`/`tmux`), the host's Transport runs it (local `execFile` for the TUI,
+ * the HTTP bridge for web), and the pure `parse()` turns bytes → typed data. The
+ * forest model, cwd scoping, attention rollup, and cursor logic are pure string
+ * work that runs anywhere.
  *
  * The rail is a CONTROLLER in the TUI: the `open` intent shells
  * `crtr node focus <id> --pane <chatPane>` (a `Command`), swapping the selected

@@ -17,7 +17,7 @@
 
 import { defineLeaf } from '../core/command.js';
 import type { LeafDef } from '../core/command.js';
-import { listViews, resolveView, loadView } from '../core/tui/loader.js';
+import { listViews, resolveView, loadCore } from '../core/view/loader.js';
 // Commands reach the tmux driver through placement.ts (the sanctioned
 // model-over-driver seam, §5.1) — never `./tmux.js` directly.
 import {
@@ -88,7 +88,7 @@ export const viewCycleLeaf: LeafDef = defineLeaf({
       if (cand === current) continue;
       const rv = resolveView(cand);
       if (rv === null) continue;
-      try { await loadView(rv); targetId = cand; break; } catch { /* skip malformed */ }
+      try { await loadCore(rv); targetId = cand; break; } catch { /* skip malformed */ }
     }
     if (targetId === undefined) return { cycled: false, from: current };
 

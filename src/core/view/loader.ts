@@ -7,11 +7,7 @@
 //
 // Resolution order: project → user → builtin, first hit wins (scope.ts
 // viewsDir). Node-side loads are plain `import(pathToFileURL())` — no
-// transpile, no bundle.
-//
-// Legacy single-file `view.mjs` modules are handled by src/core/tui/loader.ts;
-// commands try this loader first and fall back (temporary dual-load until the
-// builtins are migrated and the old contract is deleted).
+// transpile, no bundle. A directory without a `core.mjs` is not a view.
 
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -56,6 +52,19 @@ export function resolveView(name: string): ResolvedView | null {
     if (!root) continue;
     const r = probe(join(root, name), scope, name);
     if (r) return r;
+  }
+  return null;
+}
+
+/** Find a directory named `name` across scopes even when it holds no core.mjs —
+ *  lets a caller distinguish "no such view" from "a dir that isn't a valid view"
+ *  (e.g. a pre-contract `view.mjs`-only dir) and name the contract in the error. */
+export function findViewDir(name: string): string | null {
+  for (const scope of SCOPE_ORDER) {
+    const root = viewsDir(scope);
+    if (!root) continue;
+    const dir = join(root, name);
+    try { if (statSync(dir).isDirectory()) return dir; } catch { /* not here */ }
   }
   return null;
 }

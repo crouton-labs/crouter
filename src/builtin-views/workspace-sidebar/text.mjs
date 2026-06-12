@@ -4,9 +4,8 @@
  * (`crtr view run workspace-sidebar | cat`). Node-only, no ANSI. A plain
  * snapshot of the current state; the host threads its current banner via `ctx`.
  *
- * `dump` mirrors the pre-migration view's dump, reading the SAME logical
- * `RailRow[]` the TUI/web presenters do. The pure `plural` helper is imported
- * from `core.mjs`.
+ * `dump` reads the SAME logical `RailRow[]` the TUI/web presenters do. The pure
+ * `plural` helper is imported from `core.mjs`.
  *
  * @module workspace-sidebar/text
  */
