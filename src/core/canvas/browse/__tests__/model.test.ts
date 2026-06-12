@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import type { DashboardRow } from '../../render.js';
 import type { NodeStatus, Lifecycle } from '../../types.js';
-import { buildTree, flatten, fuzzyMatch, tabPredicate, TABS } from '../model.js';
+import { buildTree, flatten, fuzzyMatch, tabPredicate, TABS, attentionTier, attentionMtime } from '../model.js';
 
 // ── Fixture canvas ───────────────────────────────────────────────────────────
 //   root1 (active)            ← rank 0
@@ -221,4 +221,57 @@ test('flatten: residentsOnly off shows every lifecycle at the top level', () => 
   // Roots are live-first: term-root (active) ranks ahead of res-root (idle).
   const v = flatten(resTree(), { collapsed: new Set(['res-root', 'term-a']), tab: 'All', query: '', residentsOnly: false });
   assert.deepEqual(v.map((r) => r.id), ['term-root', 'res-root']);
+});
+
+// ── attention sort (default tiered ordering) ────────────────────────────────
+//   Each row carries cheap fields: viewed / streaming / status + a session mtime
+//   (mtimeMs). Tiers: T0 viewed&streaming, T1 viewed, T2 streaming, T3 live,
+//   T4 dormant; newest-message-first WITHIN each tier.
+
+type AttnRow = DashboardRow & { mtimeMs?: number };
+function arow(node_id: string, status: NodeStatus, opts: { viewed?: boolean; streaming?: boolean; mtimeMs?: number }): AttnRow {
+  return { ...row(node_id, node_id, status), ...opts };
+}
+
+test('attentionTier: classifies each cheap-field combination', () => {
+  assert.equal(attentionTier(arow('x', 'active', { viewed: true, streaming: true })), 0);
+  assert.equal(attentionTier(arow('x', 'active', { viewed: true })), 1);
+  assert.equal(attentionTier(arow('x', 'active', { streaming: true, viewed: false })), 2);
+  assert.equal(attentionTier(arow('x', 'active', {})), 3);
+  assert.equal(attentionTier(arow('x', 'idle', {})), 3);
+  assert.equal(attentionTier(arow('x', 'done', {})), 4);
+  assert.equal(attentionTier(arow('x', 'dead', {})), 4);
+  assert.equal(attentionTier(arow('x', 'canceled', {})), 4);
+});
+
+test('attentionMtime: prefers mtimeMs, falls back to created', () => {
+  assert.equal(attentionMtime(arow('x', 'active', { mtimeMs: 1234 })), 1234);
+  // No mtimeMs → epoch-ms of the ISO `created` (fixture is 2026-01-01T00:00:00Z).
+  assert.equal(attentionMtime(arow('x', 'active', {})), Date.parse('2026-01-01T00:00:00.000Z'));
+});
+
+test('flatten: attention sort tiers rows (attached/streaming/live first)', () => {
+  // One row per tier, deliberately shuffled in input order.
+  const rows: AttnRow[] = [
+    arow('dormant', 'done', { mtimeMs: 100 }),       // T4
+    arow('live', 'active', { mtimeMs: 100 }),         // T3
+    arow('streaming', 'active', { streaming: true, mtimeMs: 100 }), // T2
+    arow('attached', 'idle', { viewed: true, mtimeMs: 100 }),       // T1
+    arow('both', 'active', { viewed: true, streaming: true, mtimeMs: 100 }), // T0
+  ];
+  const t = buildTree(rows, [], () => []);
+  const v = flatten(t, { collapsed: new Set(), tab: 'All', query: '', sort: 'attention' });
+  assert.deepEqual(v.map((r) => r.id), ['both', 'attached', 'streaming', 'live', 'dormant']);
+});
+
+test('flatten: attention sort orders newest-message-first WITHIN a tier', () => {
+  // All dormant (T4) → ordering is purely by mtime, newest first.
+  const rows: AttnRow[] = [
+    arow('old', 'done', { mtimeMs: 1000 }),
+    arow('newest', 'done', { mtimeMs: 3000 }),
+    arow('mid', 'done', { mtimeMs: 2000 }),
+  ];
+  const t = buildTree(rows, [], () => []);
+  const v = flatten(t, { collapsed: new Set(), tab: 'All', query: '', sort: 'attention' });
+  assert.deepEqual(v.map((r) => r.id), ['newest', 'mid', 'old']);
 });

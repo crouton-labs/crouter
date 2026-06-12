@@ -22,11 +22,13 @@ export const TABS: readonly Tab[] = ['All', 'Live', 'Dormant', 'Flagged'] as con
 
 /** How the visible rows are ordered.
  *    tree      — spanning-tree order, ancestors shown for context (the default).
+ *    attention — FLAT list, tiered by where your attention belongs (attached/
+ *                streaming/live), newest-message-first within each tier.
  *    relevance — FLAT list, best query match first (super-search).
  *    recency   — FLAT list, newest `created` first. */
-export type SortMode = 'tree' | 'relevance' | 'recency';
+export type SortMode = 'tree' | 'attention' | 'relevance' | 'recency';
 
-export const SORTS: readonly SortMode[] = ['tree', 'relevance', 'recency'] as const;
+export const SORTS: readonly SortMode[] = ['tree', 'attention', 'relevance', 'recency'] as const;
 
 /** Does a node belong to this tab's slice?
  *    All      — every node.
@@ -335,6 +337,41 @@ export function scoreRow(query: string, row: DashboardRow): number {
 }
 
 // ---------------------------------------------------------------------------
+// Attention tiering (default sort)
+// ---------------------------------------------------------------------------
+
+/** The "most recent message" signal for the attention sort: the pi session-file
+ *  mtime (ms) the snapshot stamps on each row, falling back to the `created`
+ *  birth timestamp when no session file exists. Larger = more recent.
+ *
+ *  NOTE (phase-3 reconcile): phase 1 owns the field name on DashboardRow. We read
+ *  `mtimeMs` here as the most likely name; if phase 1 lands a different name,
+ *  update this single accessor. `created` is ISO 8601, so its epoch-ms is a
+ *  monotonic stand-in within the same tier. */
+export function attentionMtime(row: DashboardRow): number {
+  const m = (row as { mtimeMs?: number }).mtimeMs;
+  if (typeof m === 'number' && Number.isFinite(m)) return m;
+  const t = Date.parse(row.created);
+  return Number.isFinite(t) ? t : 0;
+}
+
+/** Attention tier (lower = higher priority, shown first):
+ *    T0 — attached AND streaming (`viewed && streaming`)
+ *    T1 — attached, not streaming (`viewed`)
+ *    T2 — streaming, not attached
+ *    T3 — live but neither (`status active|idle`)
+ *    T4 — everything else (dormant: done/dead/canceled). */
+export function attentionTier(row: DashboardRow): number {
+  const viewed = row.viewed === true;
+  const streaming = row.streaming === true;
+  if (viewed && streaming) return 0;
+  if (viewed) return 1;
+  if (streaming) return 2;
+  if (row.status === 'active' || row.status === 'idle') return 3;
+  return 4;
+}
+
+// ---------------------------------------------------------------------------
 // Flatten — the ordered list of visible rows
 // ---------------------------------------------------------------------------
 
@@ -414,7 +451,14 @@ export function flatten(tree: Tree, opts: FlattenOpts): VisibleRow[] {
     const ids = [...matched];
     const createdOf = (id: string): string => tree.nodes.get(id)?.row.created ?? '';
     const byRecency = (a: string, b: string): number => createdOf(b).localeCompare(createdOf(a));
-    if (sort === 'recency' || query === '') {
+    if (sort === 'attention') {
+      // Tiered (attached/streaming/live first), newest-message-first within tier.
+      const rowOf = (id: string): DashboardRow => tree.nodes.get(id)!.row;
+      ids.sort((a, b) =>
+        (attentionTier(rowOf(a)) - attentionTier(rowOf(b))) ||
+        (attentionMtime(rowOf(b)) - attentionMtime(rowOf(a))) ||
+        byRecency(a, b));
+    } else if (sort === 'recency' || query === '') {
       ids.sort(byRecency);
     } else {
       const score = new Map<string, number>();
