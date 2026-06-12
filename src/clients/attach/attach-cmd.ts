@@ -39,8 +39,7 @@ import { InputError } from '../../core/io.js';
 import { getNode, getRow } from '../../core/canvas/index.js';
 // tmux driver verbs only through placement (the §5.1 model-over-driver seam) —
 // never `core/runtime/tmux.js` directly.
-import { setPaneOption, currentTmux } from '../../core/runtime/placement.js';
-import { inTmux, installMenuBinding } from '../../core/runtime/tmux.js';
+import { setPaneOption, currentTmux, inTmux, installMenuBinding } from '../../core/runtime/placement.js';
 import type {
   BrokerSnapshot,
   BrokerToClient,

@@ -80,6 +80,7 @@ export {
   paneCurrentPath,
   currentTmux,
   inTmux,
+  installMenuBinding,
   setPaneOption,
   getPaneOption,
   piCommand,
