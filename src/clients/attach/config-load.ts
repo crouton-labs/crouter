@@ -17,8 +17,10 @@
 // pi-tui components (SelectList autocomplete, the dialog editor) honor overrides.
 
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   KeybindingsManager,
   TUI_KEYBINDINGS,
@@ -112,6 +114,51 @@ export function createKeybindingsManager(agentDir = defaultAgentDir()): Keybindi
   const km = new KeybindingsManager(definitions, loadUserKeybindings(agentDir));
   setKeybindings(km);
   return km;
+}
+
+/**
+ * pi-coding-agent's `CustomEditor` resolves `@earendil-works/pi-tui` from its OWN
+ * `node_modules`, which can be a SEPARATE module instance from the one this file
+ * imports (a non-deduped install leaves a nested copy). The editor's newline /
+ * submit handling reads keybindings AND the kitty-protocol flag from THAT
+ * instance's module-globals via `getKeybindings()` / `isKittyProtocolActive()`,
+ * so state we set only on our copy is invisible to it — the user's `alt+enter`
+ * newline binding never applies and Enter falls through to submit. We mirror our
+ * state onto the editor's instance too. When the install IS deduped both resolve
+ * to one module and the mirror is a harmless re-set. Best-effort: a resolution /
+ * import failure leaves the editor on our copy's state (the deduped case).
+ */
+let editorPiTuiPromise:
+  | Promise<typeof import('@earendil-works/pi-tui') | undefined>
+  | undefined;
+
+function editorPiTui(): Promise<typeof import('@earendil-works/pi-tui') | undefined> {
+  if (!editorPiTuiPromise) {
+    editorPiTuiPromise = (async () => {
+      try {
+        const pcaEntry = import.meta.resolve('@earendil-works/pi-coding-agent');
+        const piTuiPath = createRequire(pcaEntry).resolve('@earendil-works/pi-tui');
+        return (await import(pathToFileURL(piTuiPath).href)) as typeof import('@earendil-works/pi-tui');
+      } catch {
+        return undefined;
+      }
+    })();
+  }
+  return editorPiTuiPromise;
+}
+
+/** Register the manager on the editor's pi-tui instance too (see `editorPiTui`),
+ *  so the editor's newline/submit handling honors the same (user-overridden)
+ *  bindings as the rest of the viewer. Call once, after `createKeybindingsManager`. */
+export async function mirrorKeybindingsToEditor(km: KeybindingsManager): Promise<void> {
+  (await editorPiTui())?.setKeybindings(km);
+}
+
+/** Mirror the negotiated kitty-keyboard-protocol flag onto the editor's pi-tui
+ *  instance (ProcessTerminal sets it only on OUR copy). Call after the terminal
+ *  has negotiated, i.e. after `tui.start()`. */
+export async function mirrorKittyProtocolToEditor(active: boolean): Promise<void> {
+  (await editorPiTui())?.setKittyProtocolActive(active);
 }
 
 /**

@@ -19,7 +19,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { CustomEditor } from '@earendil-works/pi-coding-agent';
 import type { Component, KeybindingsManager, OverlayHandle, TUI } from '@earendil-works/pi-tui';
-import type { ImageContent } from '@earendil-works/pi-ai';
 import {
   BROKER_READ_CAPS,
   encodeFrame,
@@ -35,7 +34,7 @@ import {
   type RpcExtensionUIResponse,
 } from '../../core/runtime/broker-protocol.js';
 import { renderDialog, type DialogHandle } from './extension-dialogs.js';
-import { readClipboardImage } from './clipboard-image.js';
+import { readClipboardImage, writeClipboardImageToFile } from './clipboard-image.js';
 import { dispatchSlashCommand, isSlashCommand, type SlashContext } from './slash-commands.js';
 import type { ReadOpRequest } from './view-socket.js';
 import {
@@ -56,24 +55,12 @@ const PICKER_OVERLAY_OPTIONS = { anchor: 'center', width: '80%', maxHeight: '85%
 /** Max gap between two Esc presses to count as a double-tap (pi uses 500ms). */
 const DOUBLE_ESCAPE_MS = 500;
 
-/** Aggregate budget for images held for the next message (review M2). A drained
- *  prompt/steer/follow_up frame inlines ALL pending images as base64 in a single
- *  frame; these ceilings keep the images[] portion well within the broker's
- *  24 MiB line cap. Each clipboard image is ≤ 3 MiB base64 (clipboard-image
- *  MAX_BYTES), so the worst case is MAX_PENDING_IMAGES × 3 MiB = 12 MiB. A paste
- *  that would exceed EITHER bound is refused (not accumulated). The WHOLE frame
- *  (images + unbounded text + JSON envelope) is then bounded airtight by the
- *  MAX_FRAME_BYTES guard in `emitDrive` — this budget alone is not enough, since
- *  `text` is otherwise unbounded. */
-const MAX_PENDING_IMAGE_BYTES = 16 * 1024 * 1024;
-const MAX_PENDING_IMAGES = 4;
-
 /** Largest drive frame the controller will emit. The broker DESTROYS the viewer
  *  socket on any client line over BROKER_READ_CAPS.maxLineBytes (24 MiB), so we
  *  refuse to emit within a 4 MiB margin of that. `emitDrive` measures the ACTUAL
- *  encoded frame (text + base64 images[] + JSON envelope), so the cap holds no
- *  matter how the bytes split — closing the gap where a large text paste plus
- *  max images could otherwise overflow and tear down the socket. */
+ *  encoded frame (text + JSON envelope), so the cap holds however the bytes
+ *  split. Pasted images go to a temp file and enter the prompt as a path, never
+ *  as inline base64, so a paste can no longer push a frame toward this ceiling. */
 const MAX_FRAME_BYTES = BROKER_READ_CAPS.maxLineBytes - 4 * 1024 * 1024;
 
 export interface InputControllerHooks {
@@ -122,10 +109,6 @@ export interface InputControllerHooks {
 }
 
 export class InputController {
-  /** Images pasted since the last send, attached to the next prompt/follow-up. */
-  private pendingImages: ImageContent[] = [];
-  /** Running base64-byte total of `pendingImages` (review M2 aggregate budget). */
-  private pendingImageBytes = 0;
   /** The currently-rendered blocking dialog, if any (for supersede/dismiss). */
   private dialog: DialogHandle | undefined;
   /** The currently-open native picker overlay, if any (for supersede/dismiss). */
@@ -194,7 +177,8 @@ export class InputController {
         this.lastEscapeAt = now;
       }
     };
-    // Ctrl+V / Alt+V → read clipboard image, hold it for the next message.
+    // Ctrl+V / Alt+V → read clipboard image, save it to a temp file, and splice
+    // the file PATH into the editor at the caret (so the agent can read it).
     this.editor.onPasteImage = () => {
       void this.handlePaste();
     };
@@ -408,9 +392,9 @@ export class InputController {
 
   private handleSubmit(text: string): void {
     const trimmed = text.trim();
-    if (!trimmed && this.pendingImages.length === 0) return;
+    if (!trimmed) return;
 
-    if (trimmed && isSlashCommand(trimmed)) {
+    if (isSlashCommand(trimmed)) {
       // Recognized builtin/scoped-out → handled here; unrecognized falls through
       // and is sent to the engine as a prompt (extension command).
       if (dispatchSlashCommand(trimmed, this.slashContext())) {
@@ -419,28 +403,24 @@ export class InputController {
       }
     }
 
-    const images = this.pendingImagesPayload();
     // Submit-while-streaming = steer (pi-native parity): interject into the
     // running turn instead of queueing a fresh prompt. `isStreaming` is the
     // broker snapshot's busy signal; the broker routes `steer` → session.steer()
     // and `prompt` → session.prompt(). Idle / no state yet → prompt (safe default).
     const busy = this.state?.isStreaming === true;
     const frame: ClientToBroker = busy
-      ? { type: 'steer', text: trimmed, images }
-      : { type: 'prompt', text: trimmed, images };
-    if (!this.emitDrive(frame)) return; // too large — keep editor + pending to trim
-    this.clearPendingImages();
-    if (trimmed) this.editor.addToHistory(trimmed);
+      ? { type: 'steer', text: trimmed }
+      : { type: 'prompt', text: trimmed };
+    if (!this.emitDrive(frame)) return; // too large — keep editor to trim
+    this.editor.addToHistory(trimmed);
     this.editor.setText('');
   }
 
   private handleFollowUp(): void {
     const text = this.editor.getText().trim();
-    if (!text && this.pendingImages.length === 0) return;
-    const images = this.pendingImagesPayload();
-    if (!this.emitDrive({ type: 'follow_up', text, images })) return;
-    this.clearPendingImages();
-    if (text) this.editor.addToHistory(text);
+    if (!text) return;
+    if (!this.emitDrive({ type: 'follow_up', text })) return;
+    this.editor.addToHistory(text);
     this.editor.setText('');
   }
 
@@ -547,48 +527,23 @@ export class InputController {
         this.notify('No image in the clipboard');
         return;
       }
-      // The clipboard layer read an image but DROPPED it (over its per-image
-      // ceiling) — surface the reason and attach nothing.
+      // The clipboard layer read an image but DROPPED it — surface the reason.
       if (!result.image) {
-        this.notify(result.note ?? 'Image not attached');
+        this.notify(result.note ?? 'Image not pasted');
         return;
       }
-      // Enforce the aggregate pending-image budget so the eventual drained frame
-      // stays under the broker cap: refuse a paste that would breach the count or
-      // byte ceiling rather than accumulate an over-cap images[] (review M2).
-      const bytes = Buffer.byteLength(result.image.data);
-      if (
-        this.pendingImages.length + 1 > MAX_PENDING_IMAGES ||
-        this.pendingImageBytes + bytes > MAX_PENDING_IMAGE_BYTES
-      ) {
-        this.notify('Image not attached: pending image budget exceeded — send your message first');
-        return;
-      }
-      this.pendingImages.push(result.image);
-      this.pendingImageBytes += bytes;
-      this.notify(
-        result.note
-          ? `Image attached (${result.note}) — sends with your next message`
-          : 'Image attached — sends with your next message',
-      );
+      // Persist to a temp file and splice the PATH into the editor at the caret,
+      // so the agent reads the image off disk instead of relying on inline base64
+      // the viewer can't render.
+      const path = writeClipboardImageToFile(result.image);
+      const cur = this.editor.getText();
+      const sep = cur && !/\s$/.test(cur) ? ' ' : '';
+      this.editor.insertTextAtCursor(`${sep}${path} `);
+      this.notify(result.note ? `Image saved (${result.note}) — path inserted` : 'Image saved — path inserted');
       this.tui.requestRender();
     } catch {
       this.notify('Could not read the clipboard image');
     }
-  }
-
-  /** Snapshot the pending images as an `images?` payload (undefined when none)
-   *  WITHOUT clearing — so a frame refused by `emitDrive` (too large) keeps them
-   *  for the user to trim. The caller clears via `clearPendingImages` only after a
-   *  successful send. */
-  private pendingImagesPayload(): ImageContent[] | undefined {
-    return this.pendingImages.length === 0 ? undefined : this.pendingImages.slice();
-  }
-
-  /** Drop all pending images + reset the aggregate byte counter (after a send). */
-  private clearPendingImages(): void {
-    this.pendingImages = [];
-    this.pendingImageBytes = 0;
   }
 
   private notify(message: string): void {

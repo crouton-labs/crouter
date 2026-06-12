@@ -29,7 +29,7 @@
 // dropped, a `note`-only result and no image).
 
 import { spawnSync } from 'node:child_process';
-import { readFileSync, unlinkSync } from 'node:fs';
+import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -64,6 +64,19 @@ export interface ClipboardImageResult {
   /** Either a resize note ("Resized from 4032×3024 to 1568×1176", present only
    *  when resized) or, when `image` is absent, the reason no image was attached. */
   note?: string;
+}
+
+/** Persist a (already-resized) clipboard image to a stable temp file and return
+ *  its absolute path, so the attach editor can drop the PATH inline into the
+ *  prompt instead of inlining base64 the agent can't see. The broker runs on the
+ *  same host, so a tmpdir path is readable by the engine. */
+export function writeClipboardImageToFile(image: ImageContent): string {
+  const dir = join(tmpdir(), 'crtr-clip-images');
+  mkdirSync(dir, { recursive: true });
+  const ext = image.mimeType === 'image/jpeg' ? 'jpg' : 'png';
+  const path = join(dir, `paste-${Date.now()}-${process.pid}.${ext}`);
+  writeFileSync(path, Buffer.from(image.data, 'base64'));
+  return path;
 }
 
 /** Read + resize the current clipboard image. Returns `null` ONLY when the

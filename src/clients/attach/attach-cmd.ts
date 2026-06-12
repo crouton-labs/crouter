@@ -53,7 +53,14 @@ import { writeClipboardText } from './clipboard-text.js';
 import { buildCanvasPanelLines } from './canvas-panels.js';
 import { GraphOverlay } from './graph-overlay.js';
 import { slashCommandList } from './slash-commands.js';
-import { applyTheme, attachPalette, createKeybindingsManager, defaultAgentDir } from './config-load.js';
+import {
+  applyTheme,
+  attachPalette,
+  createKeybindingsManager,
+  defaultAgentDir,
+  mirrorKeybindingsToEditor,
+  mirrorKittyProtocolToEditor,
+} from './config-load.js';
 import { buildLoginPicker, buildLogoutPicker } from './auth-pickers.js';
 import { TitledEditor, thinkingBorderColor, thinkingTitleStyle, defaultTitleStyle } from './titled-editor.js';
 import { fetchGitInfo, type GitInfo } from './git-info.js';
@@ -160,6 +167,12 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
   applyTheme({ cwd: meta.cwd });
   const pal = attachPalette();
   const km = createKeybindingsManager();
+  // pi-coding-agent's CustomEditor may resolve a SEPARATE pi-tui instance whose
+  // global keybindings we'd otherwise never set — mirror the manager onto it so
+  // the editor honors the user's bindings (e.g. alt+enter → newline). No-op on a
+  // deduped install. Awaited before tui.start so the editor never handles a key
+  // against stale defaults.
+  await mirrorKeybindingsToEditor(km);
   // The front door installs the Alt+C menu binding before it ever loads a theme,
   // so it lands unstyled. Now that this viewer process HAS themed (applyTheme
   // above populated the live-theme global), re-install it so the menu picks up
@@ -175,7 +188,8 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
   //    the viewport to the cursor at the bottom, so a topmost badge scrolls off
   //    into scrollback the instant the chat exceeds one screen. The badge + the
   //    two canvas panels reproduce the pi-extension chrome natively (Unit Q).
-  const tui = new TUI(new ProcessTerminal());
+  const procTerminal = new ProcessTerminal();
+  const tui = new TUI(procTerminal);
   const chatContainer = new Container();
   const chrome = new Container(); // a themed rule dividing scrolling chat from the fixed chrome below
   const managers = new Container();
@@ -210,11 +224,9 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
   // count of the most recent assistant turn (input + cacheRead + cacheWrite =
   // everything sent to the model, since with prompt caching bare `input` is just
   // the uncached slice and badly understates the context), read off the relayed
-  // message_end stream; `contextWindow` comes from the welcome snapshot's stats.
-  // Both ride data the viewer already receives, so the indicator needs no
-  // broker/protocol change.
+  // message_end stream. It rides data the viewer already receives, so the
+  // indicator needs no broker/protocol change.
   let contextTokens: number | undefined;
-  let contextWindow: number | undefined;
   const formatTokens = (n: number): string =>
     n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : `${n}`;
   // A themed, aligned status bar: live state on the LEFT (role · model · streaming
@@ -226,8 +238,7 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
     if (liveState?.model) segs.push(pal.info(liveState.model));
     if (liveState?.isStreaming) segs.push(pal.active('streaming'));
     if (contextTokens !== undefined) {
-      const pct = contextWindow ? ` ${Math.round((contextTokens / contextWindow) * 100)}%` : '';
-      segs.push(pal.muted(`${formatTokens(contextTokens)} ctx${pct}`));
+      segs.push(pal.muted(`${formatTokens(contextTokens)} ctx`));
     }
     if (liveState && liveState.pendingMessageCount > 0) {
       segs.push(pal.muted(`queued ${liveState.pendingMessageCount}`));
@@ -439,10 +450,7 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
         chatView.applySnapshot(frame.snapshot);
         // Seed the footer's context indicator from the catch-up snapshot.
         const cu = frame.snapshot.stats.contextUsage;
-        if (cu) {
-          contextWindow = cu.contextWindow;
-          if (cu.tokens != null) contextTokens = cu.tokens;
-        }
+        if (cu && cu.tokens != null) contextTokens = cu.tokens;
         setLiveState(frame.snapshot.state);
         // Ask the broker for its merged command list (engine/extension/skill
         // commands) to enrich slash autocomplete beyond the builtins+canvas set.
@@ -664,12 +672,28 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
     void attemptReconnect();
   });
 
-  // ctrl+c / ctrl+d → detach (T6 left these unwired; lifecycle is ours). A
-  // global TUI input listener fires BEFORE the focused component (and before any
-  // dialog overlay), so detach is unconditional and consistent.
+  // ctrl+d → detach immediately (lifecycle is ours). ctrl+c is gentler: a single
+  // tap CLEARS the editor (and arms a window); a second tap within that window
+  // detaches. A global TUI input listener fires BEFORE the focused component (and
+  // before any dialog overlay), so this is consistent regardless of focus.
+  const CTRL_C_DETACH_MS = 1000;
+  let lastCtrlCAt = 0;
   const removeKeyListener = tui.addInputListener((data) => {
-    if (matchesKey(data, 'ctrl+c') || matchesKey(data, 'ctrl+d')) {
+    if (matchesKey(data, 'ctrl+d')) {
       teardown('detach');
+      return { consume: true };
+    }
+    if (matchesKey(data, 'ctrl+c')) {
+      const now = Date.now();
+      if (now - lastCtrlCAt < CTRL_C_DETACH_MS) {
+        lastCtrlCAt = 0;
+        teardown('detach');
+        return { consume: true };
+      }
+      lastCtrlCAt = now;
+      editor.setText('');
+      setNotice('Editor cleared — press Ctrl+C again to detach');
+      tui.requestRender();
       return { consume: true };
     }
     // alt+g toggles the GRAPH overlay. The global listener fires BEFORE the
@@ -705,6 +729,9 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
   renderQueued();
   pollGitInfo();
   tui.start();
+  // ProcessTerminal negotiated the keyboard protocol on OUR pi-tui instance; the
+  // editor reads the flag from its own (possibly separate) instance, so mirror it.
+  void mirrorKittyProtocolToEditor(procTerminal.kittyProtocolActive);
 
   sendHello();
 
