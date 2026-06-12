@@ -295,23 +295,30 @@ function rowLine(
   const collapse = !row.hasChildren ? ' ' : row.collapsed ? '▸' : '▾';
   const terminal = r.status === 'done' || r.status === 'dead' || r.status === 'canceled';
 
-  // Inline attention flags that travel with the name (streaming lives in the rail).
+  // Left gutter (fixed slot): an eye when a viewer is ATTACHED — a scannable rail
+  // down the left edge of "what's on a screen right now". Blank otherwise.
+  const gutter: Span = r.viewed === true
+    ? { text: '◉ ', style: { fg: FG_BRIGHT_CYAN, bold: true } }
+    : { text: '  ' };
+
+  // Inline attention flag that travels with the name (streaming lives in the rail,
+  // attached lives in the gutter).
   const flags: Span[] = [];
-  if (r.viewed === true) flags.push({ text: ' ◉', style: { fg: FG_CYAN } });          // a viewer is attached
   if (r.asks > 0) flags.push({ text: ` ⚑${r.asks}`, style: { fg: FG_BRIGHT_YELLOW, bold: true } }); // pending asks
 
   const status = statusRail(r);
   const right = metaCluster(r, now, showCwd);
   const treeLead = `${indent}${collapse} `;
 
-  // Clip the NAME (only) so status + tree + name + flags + meta all fit; the cluster
-  // is dropped first (assembleRow) when even a 4-col name won't leave room for it.
-  const fixed = spansWidth(status) + [...treeLead].length + spansWidth(flags);
+  // Clip the NAME (only) so gutter + status + tree + name + flags + meta all fit;
+  // the cluster is dropped first (assembleRow) when even a 4-col name won't fit it.
+  const fixed = spansWidth([gutter]) + spansWidth(status) + [...treeLead].length + spansWidth(flags);
   const rightW = spansWidth(right);
   const nameMax = Math.max(4, width - fixed - rightW - 1);
   const nameStyle = { dim: !isCursor && terminal, bold: isCursor }; // dim terminal names; bold the cursor row
 
   const left: Span[] = [
+    gutter,
     ...status,
     { text: treeLead, style: { dim: true } },
     ...nameSpans(clip(r.name, nameMax), query, nameStyle),
@@ -336,6 +343,7 @@ function rowLine(
  *  the metadata columns read as a table. */
 function columnHeaderLine(width: number, showCwd: boolean, caps: ColorCaps): string {
   const left: Span[] = [
+    { text: '  ' }, // viewer gutter (no label)
     { text: 'STATUS'.padEnd(STATUS_W), style: { dim: true, bold: true } },
     { text: 'NAME', style: { dim: true, bold: true } },
   ];
