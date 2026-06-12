@@ -6,16 +6,15 @@
  * page (`crtr view serve linkedin`, via `web.jsx`).
  *
  * Runs in BOTH Node and the browser, so it imports NOTHING — no `node:*`, no
- * crtr. The data layer that used to shell `capture exec` directly
- * (`client.mjs`'s `execFile`) is now expressed as transport-agnostic `Source`
+ * crtr. The data layer is expressed as transport-agnostic `Source`
  * (reads) and `Command` (writes) descriptors: the core describes WHAT to run
  * (`request()` → a SourceRequest hitting the `capture` CLI), the host's
  * Transport runs it (local `execFile` for the TUI, the HTTP bridge for web), and
  * the pure `parse()` turns bytes → typed data | a typed `SourceError`.
  *
  * THE RECOVERY MACHINE LIVES HERE, ONCE. The discover→auth→settle state machine
- * (formerly duplicated between `linkedin/view.mjs` and `inbox/sources/
- * linkedin.mjs`) is a single implementation in the `refresh` intent. Every
+ * is a single implementation in the `refresh` intent, shared by both the
+ * linkedin view and the inbox view (which imports these descriptors). Every
  * client failure is classified to a typed `SourceError` whose `display` payload
  * BOTH presenters render VERBATIM — they map only `display.level` → glyph/hue,
  * never branch on `kind`. The view never re-derives error copy.
@@ -330,7 +329,7 @@ function extractMessage(stderr) {
  * and command parse routes failures through here.
  * @param {RawResponse} raw @returns {SourceError}
  */
-function classify(raw) {
+export function classify(raw) {
   // Transport-level failure: the binary could not be spawned.
   if (!raw.ok) {
     const s = String(raw.stderr || '');
@@ -375,7 +374,7 @@ function parseTs(iso) {
 }
 
 /** @param {any} c @returns {Conversation} */
-function toConversation(c) {
+export function toConversation(c) {
   const o = c || {};
   const participants = Array.isArray(o.participants) ? o.participants : [];
   const p0 = participants[0] || {};
@@ -439,7 +438,7 @@ function isLinkedInUrl(url) {
 // ── Sources (reads): request descriptor + pure parse ──────────────────────────
 
 /** @type {import('../../core/view/contract.js').Source<string, {port?:string}>} */
-const discoverTabSource = {
+export const discoverTabSource = {
   id: 'li-discover-tab',
   request: (a) => listReq(a),
   parse: (raw) => {
@@ -461,7 +460,7 @@ const discoverTabSource = {
 };
 
 /** @type {import('../../core/view/contract.js').Source<LiContext, {target?:string, port?:string}>} */
-const contextSource = {
+export const contextSource = {
   id: 'li-context',
   request: (a) => execReq('getContext', null, a),
   parse: (raw) => {
@@ -475,7 +474,7 @@ const contextSource = {
 };
 
 /** @type {import('../../core/view/contract.js').Source<Conversation[], {target?:string, port?:string, csrf:string, memberId:string, count:number}>} */
-const conversationsSource = {
+export const conversationsSource = {
   id: 'li-conversations',
   request: (a) => execReq('listConversations', { count: a.count, csrf: a.csrf, memberId: a.memberId }, a),
   parse: (raw) => {
@@ -490,7 +489,7 @@ const conversationsSource = {
 // ── Commands (writes): same {request, parse}, intent-invoked ──────────────────
 
 /** @type {import('../../core/view/contract.js').Command<string, {port?:string}>} */
-const openTabCommand = {
+export const openTabCommand = {
   id: 'li-open-tab',
   request: (a) => openReq(a),
   parse: (raw) => {
@@ -503,14 +502,14 @@ const openTabCommand = {
 };
 
 /** @type {import('../../core/view/contract.js').Command<void, {target?:string, port?:string}>} */
-const navigateCommand = {
+export const navigateCommand = {
   id: 'li-navigate',
   request: (a) => navReq(a),
   parse: (raw) => (raw.ok && raw.exitCode === 0 ? ok(undefined) : fail(classify(raw))),
 };
 
 /** @type {import('../../core/view/contract.js').Command<Array<Message & {fromMemberId:string}>, {target?:string, port?:string, csrf:string, conversationUrn:string}>} */
-const viewThreadCommand = {
+export const viewThreadCommand = {
   id: 'li-view-thread',
   request: (a) => execReq('viewConversation', { csrf: a.csrf, conversationUrn: a.conversationUrn }, a),
   parse: parseMessages,
@@ -524,7 +523,7 @@ const markReadCommand = {
 };
 
 /** @type {import('../../core/view/contract.js').Command<void, {target?:string, port?:string, csrf:string, myMemberId:string, recipient:string, text:string, conversationUrn?:string}>} */
-const sendMessageCommand = {
+export const sendMessageCommand = {
   id: 'li-send',
   request: (a) => {
     /** @type {Record<string, unknown>} */
@@ -547,7 +546,7 @@ const sendMessageCommand = {
 };
 
 /** @type {import('../../core/view/contract.js').Command<void, {target?:string, port?:string, csrf:string, messageUrn:string, emoji:string}>} */
-const reactCommand = {
+export const reactCommand = {
   id: 'li-react',
   request: (a) => execReq('reactToMessage', { csrf: a.csrf, messageUrn: a.messageUrn, emoji: a.emoji }, a),
   parse: (raw) => {
