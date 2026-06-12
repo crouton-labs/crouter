@@ -11,7 +11,7 @@
 import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 
-import { dashboardRowsAll, renderForest } from '../render.js';
+import { dashboardRowsAll, enrichRows, loadPreview, renderForest, type DashboardRow } from '../render.js';
 import { listNodes, subscriptionsOf, getNode } from '../canvas.js';
 import { closeNode } from '../../runtime/close.js';
 import {
@@ -21,7 +21,11 @@ import {
   parseKeypress,
   type Key,
 } from '../../tui/terminal.js';
-import { buildTree, flatten, TABS, SORTS, type Tab, type Tree, type VisibleRow, type SortMode } from './model.js';
+import { buildTree, flatten, TABS, type Tab, type Tree, type VisibleRow, type SortMode } from './model.js';
+
+// Sort cycle for the `s` key. Starts on the default `attention` ordering; one `s`
+// press restores the structural `tree` view, then relevance/recency, then back.
+const SORT_CYCLE: readonly SortMode[] = ['attention', 'tree', 'relevance', 'recency'] as const;
 import { renderFrame, detectColorCaps, headerHeight, PREVIEW_HEIGHT, type ColorCaps } from './render.js';
 
 interface BrowseState {
@@ -87,13 +91,18 @@ export async function runBrowse(opts: { returnPane?: string; cwd?: string } = {}
     search: false,
     scrollOffset: 0,
     cwdScope: launchCwd, // default: this dir
-    sort: 'tree',
+    sort: 'attention',   // default: attention ordering (attached/streaming/live first)
     preview: true,       // default ON (decision)
     residentsOnly: true, // default ON: hide one-shot workers (decision)
     pendingClose: null,
   };
 
   let visible: VisibleRow[] = [];
+
+  // The DashboardRow ref the tree holds for a visible id. Enrichment mutates this
+  // object in place, so a later renderFrame (reading off the same tree) re-renders
+  // the upgraded label/ctx/preview without a re-snapshot.
+  const rowOf = (id: string): DashboardRow | undefined => tree.nodes.get(id)?.row;
 
   // Color capability is fixed for the session (it's a property of the tty/env).
   const caps: ColorCaps = detectColorCaps();
@@ -147,6 +156,22 @@ export async function runBrowse(opts: { returnPane?: string; cwd?: string } = {}
     if (state.cursor < state.scrollOffset) state.scrollOffset = state.cursor;
     if (state.cursor >= state.scrollOffset + viewport) state.scrollOffset = state.cursor - viewport + 1;
     if (state.scrollOffset < 0) state.scrollOffset = 0;
+    // Lazy paint: enrich only the rows about to be drawn (full label + ctx + asks),
+    // and load the selected row's preview. Both are idempotent (guard-flagged), so
+    // calling them every flush is cheap once a row is warm.
+    const top = state.scrollOffset;
+    const bottom = Math.min(visible.length, top + viewport);
+    const slice: DashboardRow[] = [];
+    for (let i = top; i < bottom; i++) {
+      const r = rowOf(visible[i]!.id);
+      if (r !== undefined) slice.push(r);
+    }
+    enrichRows(slice);
+    const cur = curRow();
+    if (cur !== undefined) {
+      const r = rowOf(cur.id);
+      if (r !== undefined) loadPreview(r);
+    }
     const frame = renderFrame(
       {
         tree, visible, tab: state.tab, cursor: state.cursor, scrollOffset: state.scrollOffset,
@@ -218,11 +243,12 @@ export async function runBrowse(opts: { returnPane?: string; cwd?: string } = {}
     recompute();
   };
 
-  // Cycle sort (tree → relevance → recency), keeping the selected node put.
+  // Cycle sort (attention → tree → relevance → recency → attention), keeping the
+  // selected node put. One `s` from the default `attention` lands on `tree`.
   const cycleSort = (): void => {
     const keep = curRow()?.id;
-    const i = SORTS.indexOf(state.sort);
-    state.sort = SORTS[(i + 1) % SORTS.length]!;
+    const i = SORT_CYCLE.indexOf(state.sort);
+    state.sort = SORT_CYCLE[(i + 1) % SORT_CYCLE.length]!;
     recompute(keep);
   };
 
@@ -414,6 +440,27 @@ export async function runBrowse(opts: { returnPane?: string; cwd?: string } = {}
   }
   setupTerminal();
   flush();
+
+  // Background corpus warmer: after the instant first paint, progressively enrich
+  // + load-preview every row (in small chunks, off the event loop) so the prompt
+  // super-search corpus lights up shortly after the instant name/kind/id search.
+  // Mutates row objects only; re-flushes solely while a live search is open so new
+  // matches surface. Stops as soon as the terminal is restored (quit/resume/crash).
+  const warmRows: DashboardRow[] = [...tree.nodes.values()].map((n) => n.row);
+  let warmIdx = 0;
+  const WARM_CHUNK = 30;
+  const warmChunk = (): void => {
+    if (restored) return;
+    const end = Math.min(warmIdx + WARM_CHUNK, warmRows.length);
+    const slice = warmRows.slice(warmIdx, end);
+    enrichRows(slice);
+    for (const r of slice) loadPreview(r);
+    warmIdx = end;
+    // A live search may match the freshly-warmed prompts → recompute + repaint.
+    if (state.search && state.query !== '') { recompute(curRow()?.id); flush(); }
+    if (warmIdx < warmRows.length) setImmediate(warmChunk);
+  };
+  setImmediate(warmChunk);
 
   await new Promise<void>(() => {
     const onData = (data: Buffer): void => {

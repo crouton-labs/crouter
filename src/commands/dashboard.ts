@@ -10,7 +10,7 @@ import { defineLeaf } from '../core/command.js';
 import type { LeafDef } from '../core/command.js';
 import { InputError } from '../core/io.js';
 import { getNode, listNodes } from '../core/canvas/index.js';
-import { renderTree, renderForest, dashboardRows, dashboardRowsAll } from '../core/canvas/render.js';
+import { renderTree, renderForest, dashboardRows, dashboardRowsAll, enrichRows } from '../core/canvas/render.js';
 
 // ---------------------------------------------------------------------------
 // dashboard show — the main leaf
@@ -63,7 +63,11 @@ export const dashboardLeaf: LeafDef = defineLeaf({
 
     // Full forest: all nodes on the canvas.
     const allNodes = listNodes();
+    // dashboardRowsAll is the cheap-boot builder: ctx_tokens/asks are 0 and `name`
+    // is the handle only until enriched. The JSON consumer wants the real values,
+    // so fold the deferred fields in before emitting (the rendered TREE is unaffected).
     const rows = dashboardRowsAll();
+    enrichRows(rows);
     return {
       tree: renderForest(),
       nodes: allNodes.length,
