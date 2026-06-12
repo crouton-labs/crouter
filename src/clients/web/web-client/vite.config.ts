@@ -1,10 +1,14 @@
-// vite.config.ts — DEV/BUILD config for the web client. Used two ways:
-//  • Verification (dev): `vite --config …/vite.config.ts` serves the dev harness
-//    and PROXIES the broker relay so same-origin WS works (rewriting Origin to an
-//    allowed value so the relay's same-origin allowlist M1 admits it).
-//  • Shipped (design §11): the shell phase runs `vite build` against this config
-//    to emit `dist/web-client/`. v1 ships ConversationPane; the full shell entry
-//    (Sidebar/ViewPane/registry) is the next phase and is NOT in this build yet.
+// vite.config.ts — BUILD/DEV config for the shell SPA (design §11). Used two ways:
+//  • Shipped: `npm run build` runs `vite build` against this config to emit the
+//    static shell bundle into `dist/web-client/`, which `crtr web serve` serves.
+//  • Standalone dev: `vite --config …/vite.config.ts` serves the shell and PROXIES
+//    the bridge + broker relay to a running `crtr web serve` so same-origin
+//    POST/WS work (rewriting Origin to an allowed value so the relay's same-origin
+//    allowlist M1 admits it). (`crtr web serve --dev` is the integrated equivalent.)
+//
+// The shell statically imports the builtin view cores/presenters from src/ and the
+// web runtime via the `@crouton-kit/crouter/web` subpath — aliased here to the
+// built barrel (dist/web), produced by the `tsc` step that runs before this build.
 //
 // The relay runs on 127.0.0.1:7878 by default (`crtr web serve`); override with
 // CRTR_WEB_PORT for the proxy target.
@@ -25,9 +29,19 @@ const rewriteOrigin = (proxy: any) => {
   proxy.on('proxyReq', (req: { setHeader: (k: string, v: string) => void }) => req.setHeader('origin', `http://${RELAY}`));
 };
 
+const PACKAGE_ROOT = resolve(HERE, '../../../..');
+
 export default defineConfig({
-  root: resolve(HERE, 'dev'),
+  root: HERE,
   plugins: [react(), tailwindcss()],
+  resolve: {
+    alias: {
+      // crouter's own web runtime, pinned to its built barrel so the shell + the
+      // builtin web.jsx presenters resolve it from this root.
+      '@crouton-kit/crouter/web': resolve(PACKAGE_ROOT, 'dist/web/index.js'),
+    },
+    dedupe: ['react', 'react-dom'],
+  },
   server: {
     proxy: {
       '/node': { target: `ws://${RELAY}`, ws: true, changeOrigin: true, configure: rewriteOrigin },

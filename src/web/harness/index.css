@@ -1,9 +1,0 @@
-@import "tailwindcss";
-
-/* Scan the SOURCE files for Tailwind classes — the class strings are identical
-   to the built dist this harness loads, and src/ is not gitignored (Tailwind v4
-   skips gitignored paths like dist/, so @source-ing dist would miss them). */
-@source "../ViewChrome.tsx";
-@source "../states.tsx";
-@source "../../builtin-views/canvas/web.jsx";
-@source "./main.tsx";

@@ -17,8 +17,8 @@ export function Dialog({
   onCancel: () => void;
 }): JSX.Element {
   return (
-    <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/60 p-4">
-      <div className="w-full max-w-md rounded-lg border border-neutral-700 bg-neutral-900 shadow-xl">
+    <div className="absolute inset-0 z-20 flex items-center justify-center bg-slate-900/40 p-4">
+      <div className="w-full max-w-md rounded-lg border border-slate-300 bg-slate-50 shadow-xl">
         <Body request={request} onAnswer={onAnswer} onCancel={onCancel} />
       </div>
     </div>
@@ -44,7 +44,7 @@ function Body({
               <button
                 key={opt}
                 onClick={() => onAnswer({ type: 'extension_ui_response', id, value: opt })}
-                className="rounded border border-neutral-700 bg-neutral-800 px-3 py-2 text-left text-sm text-neutral-100 hover:border-sky-600 hover:bg-neutral-700"
+                className="rounded border border-slate-300 bg-slate-100 px-3 py-2 text-left text-sm text-slate-900 hover:border-sky-600 hover:bg-slate-200"
               >
                 {opt}
               </button>
@@ -55,11 +55,11 @@ function Body({
     case 'confirm':
       return (
         <Frame title={request.title} onCancel={onCancel}>
-          <p className="mb-3 text-sm text-neutral-300">{request.message}</p>
+          <p className="mb-3 text-sm text-slate-600">{request.message}</p>
           <div className="flex justify-end gap-2">
             <button
               onClick={() => onAnswer({ type: 'extension_ui_response', id, confirmed: false })}
-              className="rounded border border-neutral-700 px-3 py-1.5 text-sm text-neutral-300 hover:bg-neutral-800"
+              className="rounded border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100"
             >
               No
             </button>
@@ -95,7 +95,7 @@ function Body({
     case 'notify':
       return (
         <Frame title={request.notifyType ? request.notifyType.toUpperCase() : 'Notice'} onCancel={onCancel}>
-          <p className="mb-3 text-sm text-neutral-300">{request.message}</p>
+          <p className="mb-3 text-sm text-slate-600">{request.message}</p>
           <div className="flex justify-end">
             <button
               onClick={onCancel}
@@ -133,8 +133,8 @@ function Frame({
   return (
     <div className="p-4">
       <div className="mb-3 flex items-start justify-between gap-2">
-        <h3 className="text-sm font-semibold text-neutral-100">{title}</h3>
-        <button onClick={onCancel} className="text-neutral-500 hover:text-neutral-300" aria-label="cancel">
+        <h3 className="text-sm font-semibold text-slate-900">{title}</h3>
+        <button onClick={onCancel} className="text-slate-400 hover:text-slate-600" aria-label="cancel">
           ✕
         </button>
       </div>
@@ -169,7 +169,7 @@ function TextEntry({
           placeholder={placeholder}
           onChange={(e) => setValue(e.target.value)}
           rows={8}
-          className="w-full resize-y rounded border border-neutral-700 bg-neutral-950 px-2 py-1.5 font-mono text-sm text-neutral-100 outline-none focus:border-sky-600"
+          className="w-full resize-y rounded border border-slate-300 bg-white px-2 py-1.5 font-mono text-sm text-slate-900 outline-none focus:border-sky-500"
         />
       ) : (
         <input
@@ -180,13 +180,13 @@ function TextEntry({
           onKeyDown={(e) => {
             if (e.key === 'Enter') onSubmit(value);
           }}
-          className="w-full rounded border border-neutral-700 bg-neutral-950 px-2 py-1.5 text-sm text-neutral-100 outline-none focus:border-sky-600"
+          className="w-full rounded border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-900 outline-none focus:border-sky-500"
         />
       )}
       <div className="mt-3 flex justify-end gap-2">
         <button
           onClick={onCancel}
-          className="rounded border border-neutral-700 px-3 py-1.5 text-sm text-neutral-300 hover:bg-neutral-800"
+          className="rounded border border-slate-300 px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100"
         >
           Cancel
         </button>

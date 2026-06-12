@@ -25,20 +25,20 @@ function ImageBlock({ block }: { block: ImageContent }): JSX.Element {
     <img
       src={`data:${block.mimeType};base64,${block.data}`}
       alt="attached"
-      className="my-1 max-h-64 max-w-full rounded border border-neutral-700"
+      className="my-1 max-h-64 max-w-full rounded border border-slate-300"
     />
   );
 }
 
 function TextBlock({ block }: { block: TextContent }): JSX.Element {
-  return <div className="whitespace-pre-wrap break-words text-neutral-100">{block.text}</div>;
+  return <div className="whitespace-pre-wrap break-words text-slate-900">{block.text}</div>;
 }
 
 function ThinkingBlock({ block }: { block: ThinkingContent }): JSX.Element {
   return (
-    <details className="my-1 rounded border border-neutral-700 bg-neutral-900/60 px-2 py-1">
-      <summary className="cursor-pointer text-xs text-neutral-400 select-none">💭 thinking</summary>
-      <div className="mt-1 whitespace-pre-wrap break-words text-sm text-neutral-400">
+    <details className="my-1 rounded border border-slate-300 bg-slate-50 px-2 py-1">
+      <summary className="cursor-pointer text-xs text-slate-500 select-none">💭 thinking</summary>
+      <div className="mt-1 whitespace-pre-wrap break-words text-sm text-slate-500">
         {block.redacted ? '[redacted]' : block.thinking}
       </div>
     </details>
@@ -47,12 +47,12 @@ function ThinkingBlock({ block }: { block: ThinkingContent }): JSX.Element {
 
 function ToolCallBlock({ block, executing }: { block: ToolCall; executing: boolean }): JSX.Element {
   return (
-    <div className="my-1 rounded border border-sky-800/60 bg-sky-950/30 px-2 py-1 text-sm">
+    <div className="my-1 rounded border border-sky-200 bg-sky-50 px-2 py-1 text-sm">
       <div className="flex items-center gap-2">
-        <span className="font-mono text-sky-300">⚙ {block.name}</span>
-        {executing && <span className="animate-pulse text-xs text-amber-400">executing…</span>}
+        <span className="font-mono text-sky-700">⚙ {block.name}</span>
+        {executing && <span className="animate-pulse text-xs text-amber-600">executing…</span>}
       </div>
-      <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words text-xs text-neutral-400">
+      <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words text-xs text-slate-500">
         {safeJson(block.arguments)}
       </pre>
     </div>
@@ -82,7 +82,7 @@ function contentBlock(block: unknown, key: number, executingToolIds: ReadonlySet
       return <ImageBlock key={key} block={block as ImageContent} />;
     default:
       return (
-        <pre key={key} className="my-1 whitespace-pre-wrap break-words text-xs text-neutral-500">
+        <pre key={key} className="my-1 whitespace-pre-wrap break-words text-xs text-slate-400">
           {safeJson(block)}
         </pre>
       );
@@ -104,7 +104,7 @@ function UserBlock({ m }: { m: UserMessage }): JSX.Element {
       ? [<TextBlock key={0} block={{ type: 'text', text: m.content }} />]
       : m.content.map((b, i) => contentBlock(b, i, new Set()));
   return (
-    <Bubble label="you" tone="text-emerald-400">
+    <Bubble label="you" tone="text-emerald-600">
       {content}
     </Bubble>
   );
@@ -112,10 +112,10 @@ function UserBlock({ m }: { m: UserMessage }): JSX.Element {
 
 function AssistantBlock({ m, executingToolIds }: { m: AssistantMessage; executingToolIds: ReadonlySet<string> }): JSX.Element {
   return (
-    <Bubble label="agent" tone="text-sky-400">
+    <Bubble label="agent" tone="text-sky-600">
       {m.content.map((b, i) => contentBlock(b, i, executingToolIds))}
       {m.errorMessage && (
-        <div className="mt-1 rounded border border-red-800 bg-red-950/40 px-2 py-1 text-sm text-red-300">
+        <div className="mt-1 rounded border border-red-200 bg-red-50 px-2 py-1 text-sm text-red-700">
           {m.stopReason === 'aborted' ? 'aborted' : 'error'}: {m.errorMessage}
         </div>
       )}
@@ -124,12 +124,12 @@ function AssistantBlock({ m, executingToolIds }: { m: AssistantMessage; executin
 }
 
 function ToolResultBlock({ m }: { m: ToolResultMessage }): JSX.Element {
-  const tone = m.isError ? 'text-red-400' : 'text-violet-400';
+  const tone = m.isError ? 'text-red-600' : 'text-violet-600';
   return (
     <Bubble label={`result · ${m.toolName}`} tone={tone}>
       <div
         className={`rounded border px-2 py-1 ${
-          m.isError ? 'border-red-800 bg-red-950/30' : 'border-neutral-700 bg-neutral-900/60'
+          m.isError ? 'border-red-200 bg-red-50' : 'border-slate-300 bg-slate-50'
         }`}
       >
         {m.content.map((b, i) => contentBlock(b, i, new Set()))}
@@ -140,8 +140,8 @@ function ToolResultBlock({ m }: { m: ToolResultMessage }): JSX.Element {
 
 function GenericBlock({ m }: { m: AnyMessage }): JSX.Element {
   return (
-    <Bubble label={roleOf(m)} tone="text-neutral-500">
-      <pre className="overflow-x-auto whitespace-pre-wrap break-words text-xs text-neutral-500">{safeJson(m)}</pre>
+    <Bubble label={roleOf(m)} tone="text-slate-400">
+      <pre className="overflow-x-auto whitespace-pre-wrap break-words text-xs text-slate-400">{safeJson(m)}</pre>
     </Bubble>
   );
 }
@@ -161,13 +161,13 @@ function messageNode(m: AnyMessage, key: number, executingToolIds: ReadonlySet<s
 
 export function Transcript({ conv }: { conv: ConvState }): JSX.Element {
   return (
-    <div className="divide-y divide-neutral-800/70">
+    <div className="divide-y divide-slate-200">
       {conv.messages.length === 0 && (
-        <div className="px-3 py-6 text-center text-sm text-neutral-500">No messages yet.</div>
+        <div className="px-3 py-6 text-center text-sm text-slate-400">No messages yet.</div>
       )}
       {conv.messages.map((m, i) => messageNode(m, i, conv.executingToolIds))}
       {conv.activity && (
-        <div className="flex items-center gap-2 px-3 py-2 text-sm text-amber-400">
+        <div className="flex items-center gap-2 px-3 py-2 text-sm text-amber-600">
           <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-amber-400" />
           {conv.activity}
         </div>

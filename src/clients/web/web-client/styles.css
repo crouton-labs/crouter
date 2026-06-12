@@ -1,1 +1,9 @@
 @import "tailwindcss";
+
+/* Tailwind v4 auto-detects classes from this file's project (the shell dir),
+ * but SKIPS gitignored paths — and the builtin view presenters + the web runtime
+ * live OUTSIDE this dir, under src/. Point @source at those src/ paths (NEVER
+ * dist/, which is gitignored) so the canvas/inbox/git-pr web.jsx classes and the
+ * ViewChrome/states classes are compiled into the bundle. (design §11) */
+@source "../../../builtin-views";
+@source "../../../web";

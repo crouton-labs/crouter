@@ -38,7 +38,7 @@ export function ConversationPane({ nodeId, onWake }: ConversationPaneProps): JSX
   }, [state.notice, actions]);
 
   return (
-    <div className="relative flex h-full flex-col bg-neutral-950 text-neutral-100">
+    <div className="relative flex h-full flex-col bg-white text-slate-900">
       <Header nodeId={nodeId} state={state} actions={actions} />
       <ScrollBody state={state} />
       <Displays state={state} placement="aboveEditor" />
@@ -61,7 +61,7 @@ const PHASE_DOT: Record<ConnPhase, string> = {
   open: 'bg-emerald-500',
   connecting: 'bg-amber-500 animate-pulse',
   closed: 'bg-amber-500 animate-pulse',
-  'no-broker': 'bg-neutral-500',
+  'no-broker': 'bg-slate-400',
   'no-node': 'bg-red-500',
   invalid: 'bg-red-500',
 };
@@ -70,22 +70,22 @@ function Header({ nodeId, state, actions }: { nodeId: string; state: PaneState; 
   const isController = state.role === 'controller';
   const someoneElseDriving = !isController && state.controllerId !== null;
   return (
-    <div className="flex items-center gap-3 border-b border-neutral-800 bg-neutral-900 px-3 py-2 text-sm">
+    <div className="flex items-center gap-3 border-b border-slate-200 bg-slate-50 px-3 py-2 text-sm">
       <span className={`inline-block h-2.5 w-2.5 rounded-full ${PHASE_DOT[state.conn]}`} />
-      <span className="font-mono text-xs text-neutral-400">{state.title ?? state.sessionName ?? nodeId}</span>
+      <span className="font-mono text-xs text-slate-500">{state.title ?? state.sessionName ?? nodeId}</span>
       <span className="flex-1" />
-      {state.model && <span className="text-xs text-neutral-500">{state.model}</span>}
+      {state.model && <span className="text-xs text-slate-400">{state.model}</span>}
       {state.contextTokens !== undefined && (
-        <span className="text-xs text-neutral-500">{fmtTokens(state.contextTokens)} tok</span>
+        <span className="text-xs text-slate-400">{fmtTokens(state.contextTokens)} tok</span>
       )}
-      <span className={isController ? 'text-xs text-emerald-400' : 'text-xs text-neutral-500'}>
+      <span className={isController ? 'text-xs text-emerald-600' : 'text-xs text-slate-400'}>
         {isController ? '● drive' : someoneElseDriving ? '○ read-only' : '○ observer'}
       </span>
       {state.conn === 'open' &&
         (isController ? (
           <button
             onClick={actions.releaseControl}
-            className="rounded border border-neutral-700 px-2 py-0.5 text-xs text-neutral-300 hover:bg-neutral-800"
+            className="rounded border border-slate-300 px-2 py-0.5 text-xs text-slate-600 hover:bg-slate-100"
           >
             Release
           </button>
@@ -130,7 +130,7 @@ function Displays({ state, placement }: { state: PaneState; placement: 'aboveEdi
   const showStatuses = placement === 'belowEditor' && Object.keys(state.statuses).length > 0;
   if (widgets.length === 0 && !showStatuses) return null;
   return (
-    <div className="border-t border-neutral-800 bg-neutral-900/70 px-3 py-1 text-xs text-neutral-400">
+    <div className="border-t border-slate-200 bg-slate-50 px-3 py-1 text-xs text-slate-500">
       {widgets.map(([key, w]) => (
         <div key={key} className="whitespace-pre-wrap font-mono">
           {w.lines.join('\n')}
@@ -159,7 +159,7 @@ function Composer({ state, actions }: { state: PaneState; actions: ReturnType<ty
   };
 
   return (
-    <div className="border-t border-neutral-800 bg-neutral-900 p-2">
+    <div className="border-t border-slate-200 bg-slate-50 p-2">
       <div className="flex items-end gap-2">
         <textarea
           value={text}
@@ -181,7 +181,7 @@ function Composer({ state, actions }: { state: PaneState; actions: ReturnType<ty
                 : 'message the agent… (Enter to send, Shift+Enter for newline)'
           }
           disabled={disabled}
-          className="flex-1 resize-none rounded border border-neutral-700 bg-neutral-950 px-2 py-1.5 text-sm text-neutral-100 outline-none focus:border-sky-600 disabled:opacity-50"
+          className="flex-1 resize-none rounded border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-900 outline-none focus:border-sky-500 disabled:opacity-50"
         />
         {streaming && isController && (
           <button
@@ -230,12 +230,12 @@ function ConnOverlay({
   };
 
   return (
-    <div className="absolute inset-0 z-10 flex items-center justify-center bg-neutral-950/85 p-6">
-      <div className="max-w-sm rounded-lg border border-neutral-700 bg-neutral-900 p-5 text-center">
+    <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/85 p-6">
+      <div className="max-w-sm rounded-lg border border-slate-300 bg-slate-50 p-5 text-center">
         {conn === 'no-broker' && (
           <>
-            <div className="mb-1 text-sm font-semibold text-neutral-100">Node is dormant</div>
-            <p className="mb-4 text-sm text-neutral-400">Its broker isn't running. Wake it to connect.</p>
+            <div className="mb-1 text-sm font-semibold text-slate-900">Node is dormant</div>
+            <p className="mb-4 text-sm text-slate-500">Its broker isn't running. Wake it to connect.</p>
             {onWake ? (
               <button
                 onClick={doWake}
@@ -245,27 +245,27 @@ function ConnOverlay({
                 {waking ? 'Waking…' : 'Wake'}
               </button>
             ) : (
-              <p className="text-xs text-neutral-500">Waking is wired by the shell (crtr canvas revive).</p>
+              <p className="text-xs text-slate-400">Waking is wired by the shell (crtr canvas revive).</p>
             )}
           </>
         )}
         {conn === 'no-node' && (
           <>
-            <div className="mb-1 text-sm font-semibold text-neutral-100">Node not found</div>
-            <p className="text-sm text-neutral-400">This node no longer exists on the canvas.</p>
+            <div className="mb-1 text-sm font-semibold text-slate-900">Node not found</div>
+            <p className="text-sm text-slate-500">This node no longer exists on the canvas.</p>
           </>
         )}
         {conn === 'invalid' && (
           <>
-            <div className="mb-1 text-sm font-semibold text-red-300">Invalid node</div>
-            <p className="text-sm text-neutral-400">The relay rejected this node id.</p>
+            <div className="mb-1 text-sm font-semibold text-red-700">Invalid node</div>
+            <p className="text-sm text-slate-500">The relay rejected this node id.</p>
           </>
         )}
         {conn === 'closed' && (
           <>
-            <div className="mb-1 text-sm font-semibold text-neutral-100">Reconnecting…</div>
-            <p className="mb-4 text-sm text-neutral-400">The broker connection dropped.</p>
-            <button onClick={reconnect} className="rounded border border-neutral-700 px-4 py-1.5 text-sm text-neutral-200 hover:bg-neutral-800">
+            <div className="mb-1 text-sm font-semibold text-slate-900">Reconnecting…</div>
+            <p className="mb-4 text-sm text-slate-500">The broker connection dropped.</p>
+            <button onClick={reconnect} className="rounded border border-slate-300 px-4 py-1.5 text-sm text-slate-700 hover:bg-slate-100">
               Retry now
             </button>
           </>
