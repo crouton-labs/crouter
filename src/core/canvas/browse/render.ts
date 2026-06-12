@@ -31,9 +31,24 @@ export const PROMPT_LINES = 3;
 export const REPLY_LINES = 3;
 export const PREVIEW_BODY = PROMPT_LINES + REPLY_LINES;
 export const PREVIEW_HEIGHT = PREVIEW_BODY + 2;
+//   header = title + tab bar + status line + column header + separator (+ search input)
 export function headerHeight(search: boolean): number {
-  return 4 + (search ? 1 : 0);
+  return 5 + (search ? 1 : 0);
 }
+
+// ── Row table layout ──────────────────────────────────────────────────────────
+// A row is three zones: a fixed-width STATUS rail (glyph + word) on the left, the
+// flexible tree-indented NAME in the middle, and a flush-right METADATA cluster
+// (kind/mode · ctx · age · project) whose fixed-width segments align into clean
+// vertical columns down the right edge. Wide terminals widen the name; narrow ones
+// clip the name (and drop the cluster) first. The status WORD — not a lone glyph —
+// is the legible, NO_COLOR-safe state signal.
+const STATUS_W = 10; // glyph + ' ' + longest word ('active'/'cancel') + trailing gap
+const KM_W = 22;     // kind/mode column
+const CTX_W = 6;     // ctx tokens column
+const AGE_W = 5;     // age column
+const PROJ_W = 16;   // project (~basename) column, only across All dirs
+const COL_GAP = '  ';
 
 // ── ANSI ────────────────────────────────────────────────────────────────────
 const ESC = '\x1b[';
@@ -198,8 +213,71 @@ function nameSpans(name: string, query: string, style: { dim: boolean; bold: boo
   return out;
 }
 
-/** One row line: `<indent><collapse> <glyph> <name> [kind/mode] ctx Nk age [~dir] [⚑n]`.
- *  `showCwd` adds the project-name cue (All-dirs view); `now` drives the age. */
+/** Visible (cell) width of a span group — ANSI-free, surrogate-safe. */
+function spansWidth(spans: Span[]): number {
+  let n = 0;
+  for (const s of spans) n += [...s.text].length;
+  return n;
+}
+
+/** The status rail: a status WORD next to its glyph, both in the status hue, padded
+ *  to STATUS_W so the rail forms a clean left column. `live` (bright green) when the
+ *  node is genuinely mid-turn; otherwise the lifecycle word. The word is what makes
+ *  state legible at a glance and survives NO_COLOR (the glyph is the second cue). */
+function statusRail(r: DashboardRow): Span[] {
+  const streaming = r.streaming === true;
+  const word = streaming
+    ? 'live'
+    : ({ active: 'active', idle: 'idle', done: 'done', dead: 'dead', canceled: 'cancel' }[r.status] ?? r.status);
+  const fg = streaming ? FG_BRIGHT_GREEN : STATUS_COLOR[r.status];
+  const glyph = streaming ? '⟳' : (STATUS_GLYPH[r.status] ?? '?');
+  const text = `${glyph} ${word}`;
+  const pad = Math.max(1, STATUS_W - [...text].length);
+  return [
+    { text, style: { fg, bold: streaming } },
+    { text: ' '.repeat(pad) },
+  ];
+}
+
+/** The flush-right metadata cluster as fixed-width segments, so kind/mode · ctx ·
+ *  age · project align into vertical columns down the right edge. `showCwd` adds the
+ *  project column (only meaningful across All dirs). */
+function metaCluster(r: DashboardRow, now: number, showCwd: boolean): Span[] {
+  const ctxFg = ctxColorCode(r.ctx_tokens);
+  const out: Span[] = [
+    { text: clipPad(`${r.kind}/${r.mode}`, KM_W), style: { fg: FG_GRAY } },
+    { text: COL_GAP },
+    { text: fmtCtx(r.ctx_tokens).padStart(CTX_W), style: { fg: ctxFg, dim: ctxFg === undefined } },
+    { text: COL_GAP },
+    { text: relAge(r.created, now).padStart(AGE_W), style: { dim: true } },
+  ];
+  if (showCwd) {
+    out.push({ text: COL_GAP }, { text: clipPad(`~${baseDir(r.cwd)}`, PROJ_W), style: { fg: FG_GRAY } });
+  }
+  return out;
+}
+
+/** Left-clip-pad: clip `s` to `w` cells then pad-end with spaces to exactly `w`. */
+function clipPad(s: string, w: number): string {
+  return clip(s, w).padEnd(w);
+}
+
+/** Compose a row from a flexible LEFT zone and a fixed flush-right RIGHT cluster:
+ *  pad fills the gap so RIGHT hugs the edge; when the terminal is too narrow the
+ *  cluster is dropped rather than colliding with the name. The caller has already
+ *  clipped the name to fit. */
+function assembleRow(left: Span[], right: Span[], width: number, color: boolean, lineBase: string, fill: boolean): string {
+  const leftW = spansWidth(left);
+  const rightW = spansWidth(right);
+  if (right.length === 0 || leftW + rightW + 1 > width) {
+    return assemble(left, width, color, lineBase, fill);
+  }
+  const pad = width - leftW - rightW;
+  return assemble([...left, { text: ' '.repeat(pad) }, ...right], width, color, lineBase, fill);
+}
+
+/** One table row: `<status rail>  <indent><collapse> <name> <flags>` ........ `<meta>`.
+ *  `showCwd` adds the project column (All-dirs view); `now` drives the age. */
 function rowLine(
   row: VisibleRow,
   tree: Tree,
@@ -215,32 +293,33 @@ function rowLine(
   const r = node.row;
   const indent = '  '.repeat(row.depth);
   const collapse = !row.hasChildren ? ' ' : row.collapsed ? '▸' : '▾';
-  const glyph = STATUS_GLYPH[r.status] ?? '?';
   const terminal = r.status === 'done' || r.status === 'dead' || r.status === 'canceled';
-  const ctxStr = fmtCtx(r.ctx_tokens);
-  const ctxFg = ctxColorCode(r.ctx_tokens);
-  const age = relAge(r.created, now);
 
-  // Name: bold on the cursor row; dim for terminal status (live names stay default).
-  const nameStyle = { dim: !isCursor && terminal, bold: isCursor };
+  // Inline attention flags that travel with the name (streaming lives in the rail).
+  const flags: Span[] = [];
+  if (r.viewed === true) flags.push({ text: ' ◉', style: { fg: FG_CYAN } });          // a viewer is attached
+  if (r.asks > 0) flags.push({ text: ` ⚑${r.asks}`, style: { fg: FG_BRIGHT_YELLOW, bold: true } }); // pending asks
 
-  const spans: Span[] = [
-    { text: `${indent}${collapse} ` },
-    { text: glyph, style: { fg: STATUS_COLOR[r.status] } }, // load-bearing status hue
-    { text: ' ' },
-    ...nameSpans(r.name, query, nameStyle),
-    { text: ` [${r.kind}/${r.mode}]`, style: { fg: FG_GRAY } }, // recedes
-    { text: ' ctx ', style: { dim: true } },
-    { text: ctxStr, style: { fg: ctxFg, dim: ctxFg === undefined } }, // tiered budget cue
+  const status = statusRail(r);
+  const right = metaCluster(r, now, showCwd);
+  const treeLead = `${indent}${collapse} `;
+
+  // Clip the NAME (only) so status + tree + name + flags + meta all fit; the cluster
+  // is dropped first (assembleRow) when even a 4-col name won't leave room for it.
+  const fixed = spansWidth(status) + [...treeLead].length + spansWidth(flags);
+  const rightW = spansWidth(right);
+  const nameMax = Math.max(4, width - fixed - rightW - 1);
+  const nameStyle = { dim: !isCursor && terminal, bold: isCursor }; // dim terminal names; bold the cursor row
+
+  const left: Span[] = [
+    ...status,
+    { text: treeLead, style: { dim: true } },
+    ...nameSpans(clip(r.name, nameMax), query, nameStyle),
+    ...flags,
   ];
-  if (age !== '') spans.push({ text: ` ${age}`, style: { dim: true } }); // recency cue
-  if (showCwd) spans.push({ text: ` ~${baseDir(r.cwd)}`, style: { fg: FG_GRAY } }); // project cue (All dirs)
-  if (r.streaming === true) spans.push({ text: ' ⟳', style: { fg: FG_BRIGHT_GREEN, bold: true } }); // generating right now
-  if (r.viewed === true) spans.push({ text: ' ◉', style: { fg: FG_CYAN } }); // a viewer is attached
-  if (r.asks > 0) spans.push({ text: ` ⚑${r.asks}`, style: { fg: FG_BRIGHT_YELLOW, bold: true } }); // attention
 
-  // Row base: cursor → subtle bg (256) or reverse fallback (also covers !color);
-  // non-matched ancestor → whole-row dim for tree context (keep prior behavior).
+  // Row base: cursor → subtle bg (256) or reverse fallback (also !color); non-matched
+  // ancestor → whole-row dim for tree context.
   let lineBase = '';
   let fill = false;
   if (isCursor) {
@@ -250,7 +329,25 @@ function rowLine(
     lineBase = DIM;
   }
 
-  return assemble(spans, width, caps.color, lineBase, fill);
+  return assembleRow(left, right, width, caps.color, lineBase, fill);
+}
+
+/** The column-header row — dim labels aligned to the same zones the rows use, so
+ *  the metadata columns read as a table. */
+function columnHeaderLine(width: number, showCwd: boolean, caps: ColorCaps): string {
+  const left: Span[] = [
+    { text: 'STATUS'.padEnd(STATUS_W), style: { dim: true, bold: true } },
+    { text: 'NAME', style: { dim: true, bold: true } },
+  ];
+  const right: Span[] = [
+    { text: 'KIND/MODE'.padEnd(KM_W), style: { dim: true, bold: true } },
+    { text: COL_GAP },
+    { text: 'CTX'.padStart(CTX_W), style: { dim: true, bold: true } },
+    { text: COL_GAP },
+    { text: 'AGE'.padStart(AGE_W), style: { dim: true, bold: true } },
+  ];
+  if (showCwd) right.push({ text: COL_GAP }, { text: 'PROJECT'.padEnd(PROJ_W), style: { dim: true, bold: true } });
+  return assembleRow(left, right, width, caps.color, '', false);
 }
 
 /** The status line (always present): active cwd scope · sort mode · committed
@@ -380,12 +477,13 @@ export function renderFrame(
     lines.push(`${slash} ${state.query}▎`);
   }
 
-  // separator.
+  // column header (table labels) + separator.
+  const showCwd = state.cwdScope === null; // project column only matters across dirs
+  lines.push(columnHeaderLine(width, showCwd, caps));
   lines.push(`${DIM}${'─'.repeat(width)}${RESET}`);
 
   // body — windowed visible rows, leaving room for the (optional) preview panel.
   const head = lines.length; // === headerHeight(state.search)
-  const showCwd = state.cwdScope === null; // project cue only matters across dirs
   const previewOn = state.preview && state.visible.length > 0;
   const previewH = previewOn ? PREVIEW_HEIGHT : 0;
   const viewport = Math.max(1, rows - head - 1 /* footer */ - previewH);

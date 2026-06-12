@@ -68,7 +68,8 @@ test('color on: each status glyph carries its hue, glyph kept', () => {
 
 test('color on: ctx ≥100k row is red; asks are bright-yellow', () => {
   const out = renderFrame(state({ cursor: -1 }), SIZE, ON);
-  assert.ok(out.includes(`${ESC}31m120k`), 'ctx ≥100k → red');
+  // ctx is a right-aligned fixed-width column now, so the red span carries padding.
+  assert.ok(out.includes(`${ESC}31m`) && out.includes('120k'), 'ctx ≥100k → red');
   assert.ok(out.includes(`${ESC}93m`), 'asks → bright-yellow');
   assert.ok(out.includes('⚑3'), 'flag glyph kept');
 });
