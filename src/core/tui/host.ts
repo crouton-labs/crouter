@@ -40,7 +40,7 @@ import type {
   Source,
   Command,
 } from '../view/contract.js';
-import { initialChrome } from '../view/chrome.js';
+import { initialChrome, deriveState, type ChipState } from '../view/chrome.js';
 import { createLocalTransport } from '../view/transport-local.js';
 
 export interface RunViewOptions {
@@ -72,8 +72,6 @@ export interface ChromeManifest {
   keymap?: KeyHint[];
 }
 
-type ChipState = 'working' | 'blocked' | 'attention' | 'ready' | 'idle';
-
 /** The persistent state signal: word + glyph + hue, derived from host signals so
  *  every view gets it for free. Each pairs hue with a glyph/word — mono-safe. */
 const CHIP: Record<ChipState, { word: string; glyph: string; fg: string }> = {
@@ -101,17 +99,6 @@ const BANNER: Record<BannerLevel, { glyph: string; fg: string }> = {
   action: { glyph: '▸', fg: FG.yellow },
   error:  { glyph: '✗', fg: FG.red },
 };
-
-/** Derive the one state chip from host signals (resume guidance): busy→working,
- *  error banner→blocked, action banner→attention, else ready (once loaded) / idle.
- *  An info banner does not block — the chip stays ready/idle and the cyan banner
- *  carries the notice. */
-function deriveState(c: Chrome): ChipState {
-  if (c.busy) return 'working';
-  if (c.banner?.level === 'error') return 'blocked';
-  if (c.banner?.level === 'action') return 'attention';
-  return c.loaded ? 'ready' : 'idle';
-}
 
 /** Color-code the transient footer status by kind (not dim, so it leads): a
  *  trailing … or an in-progress verb → cyan; a completed verb → green; else plain.
