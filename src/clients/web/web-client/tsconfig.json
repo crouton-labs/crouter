@@ -1,0 +1,17 @@
+{
+  "//": "Browser tsconfig for the web client — built by Vite (design §11), NOT the root tsc. Root tsconfig excludes this dir; this config types it with DOM libs + bundler resolution.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": []
+  },
+  "include": [".", "dev"],
+  "exclude": ["vite.config.ts"]
+}
