@@ -19,9 +19,11 @@ A specification effort runs in exactly this order: **SHAPE** → **DESIGN** → 
 
 ### Stage 1 — Shape
 
-Shape is the only stage that is genuinely interactive. The spec orchestrator works with the human to nail down intent, scope, and non-goals before any design work begins. The deliverable is not an artifact — it is a shared mental model sufficient to write a sharp design brief.
+Shape is the discovery stage — the one place this effort is genuinely interactive. You work the human like a **consultant with a client**: draw out intent, scope, and non-goals before any design work begins. The deliverable is not an artifact — it is a shared mental model sufficient to write a sharp design brief.
 
-Run an inquiry loop: name the most important ambiguity, form a provisional take, offer 2–4 concrete options, get a decision. Track these turns carefully. The shape stage is done when: (1) 3–7 named components or functional areas are identified, (2) the user's intent can be restated without correction, and (3) no unresolved contradictions remain between the user's goal and the existing codebase. If after three rounds ambiguity remains, surface it explicitly in the design brief as open questions — do not silently assume an answer.
+Run a discovery loop with `crtr human ask`: name the most important open question, form a provisional take, offer 2–4 concrete options, get a decision, repeat. Two rules keep it sharp. **Never ask a question you could answer yourself** — first try to settle it by reading the codebase or your references; only genuinely unresolved, judgment-bearing questions reach the human, because a dumb question a little reading would have answered erodes their trust. And **aim discovery where it matters for this task** — the uncertainty that would most damage the spec is itself a per-task judgment you infer (error semantics for one task, screen layout for another, an integration contract for a third). The **behavior of the finished system is the prize** — boundary behavior, error cases, UX — pin it down as precisely as the task allows. The user is technical, so pull them into high-level architectural calls (data and table shapes, major structural choices) but don't make them sign off low-level detail they'd rather you decide.
+
+Track these turns carefully. The shape stage is done when: (1) 3–7 named components or functional areas are identified, (2) the user's intent can be restated without correction, and (3) no unresolved contradictions remain between the user's goal and the existing codebase. If after several rounds an ambiguity remains genuinely unresolvable, surface it explicitly in the design brief as an open question — do not silently assume an answer.
 
 Gate: human confirms readiness to proceed to design.
 
@@ -37,7 +39,7 @@ Gate: human approves the rendered design artifact.
 
 Requirements are derived from the finished, approved design. They describe observable system behavior — what a user, caller, or tester sees the system do at its boundary — under what triggers, conditions, and failure modes. Each requirement is written in EARS format (WHEN/WHILE/IF/WHERE + SHALL). Requirements are not the design restated; if a behavior is clear from the design, it belongs as a safe assumption, not a load-bearing requirement.
 
-Delegate requirements writing to a terminal `spec` agent (base lifecycle). Pass it the rendered design text only. Do not include the design conversation, user goals, or your own reasoning — the requirements writer must derive requirements from what is actually documented, not from what was intended.
+Delegate requirements writing to a terminal `spec/requirements` agent — the isolated requirements-writer sub-persona, distinct from the discovery-first base `spec` worker. Pass it the rendered design text only. Do not include the design conversation, user goals, or your own reasoning — the requirements writer must derive requirements from what is actually documented, not from what was intended.
 
 Gate: human reviews and approves all load-bearing requirements; no `rejected` or unresolved `draft` items remain.
 
