@@ -27,7 +27,7 @@ The load-bearing distinction is **consult vs behave** — it is the only one tha
 
 ## Loading is two hooks and a four-rung dial
 
-There are exactly two moments a document can surface into an agent, because there are exactly two injection points: **at boot** (the system prompt / CLI docs) and **on read** (when a related file is read). Every document independently sets how much of itself surfaces at each, on one monotone ladder:
+There are exactly two moments a document can surface into an agent, because there are exactly two injection points: **at boot** (the system prompt / CLI docs) and **on read** (when a related file is read). (The general channel taxonomy these two points sit inside — and the placement reasoning behind them — is [[ai/agent-context/context-placement-channels]]; this doc carries only what is crouter's own design.) Every document independently sets how much of itself surfaces at each, on one monotone ladder:
 
 `none` (invisible; found only by search) → `name` (just its title) → `preview` (the routing line) → `content` (the full body).
 
@@ -37,7 +37,7 @@ The **preview** is the document's `when-and-why-to-read` line — one routing se
 
 ## Why `short-form` is not a rung — the satisficing rule
 
-A document also carries a `short-form`: an abbreviated version of its content. It is tempting to make that a disclosure rung between preview and content. **It must not be.** An agent handed an abbreviation always believes it now has enough and never reads the rest — it satisfices, every time. An abbreviation in the context window is therefore worse than none: it quietly suppresses the full read. So `short-form` never enters an agent's context as a loading level. It exists for one purpose: a *human* listing what memories exist (`crtr memory list`) wants the gist of each, not its title alone. Disclosure to an agent is name → preview → the whole thing; there is no "just the summary" rung, by design.
+A document also carries a `short-form`: an abbreviated version of its content. It is tempting to make that a disclosure rung between preview and content. **It must not be** — agents satisfice on abbreviations (the general failure mode is in [[ai/agent-context/context-placement-channels]], memory-pointers channel). The crouter ruling: `short-form` never enters an agent's context as a loading level. It exists for one purpose: a *human* listing what memories exist (`crtr memory list`) wants the gist of each, not its title alone. Disclosure to an agent is name → preview → the whole thing; there is no "just the summary" rung, by design.
 
 ## Conditional loading scales with the work
 
