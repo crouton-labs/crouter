@@ -33,6 +33,7 @@ import {
   type PromptOptions,
 } from '@earendil-works/pi-coding-agent';
 import { jobDir, nodeDir } from '../canvas/paths.js';
+import { getNode, updateNode } from '../canvas/index.js';
 import { FRONT_DOOR_ENV } from './front-door.js';
 import { piInvocationToSdkConfig, type BrokerSdkConfig, type PiInvocation } from './launch.js';
 import { assertEngineVersion, loadBrokerEngine, type BrokerEngine } from './broker-sdk.js';
@@ -386,11 +387,36 @@ export async function runBroker(nodeId: string): Promise<void> {
     broadcast({ type: 'control_changed', controller_id: controllerId });
   };
 
+  // Persist a live model switch into the node's durable launch recipe so it
+  // survives a yield/revive. pi's `/model` (→ set_model/cycle_model) only
+  // mutates the in-memory engine; without this the node reverts to its
+  // persona/spawn model on the next revive. We write the full `provider/id`
+  // (which normalizeModel passes through unchanged) to BOTH model_override (so
+  // polymorphs preserve it via buildLaunchSpec) and launch.model (the recipe
+  // buildPiArgv replays on revive). Best-effort: a degenerate/ephemeral node
+  // with no canvas row just skips persistence. CRTR_NODE_ID is set in the
+  // broker's own env (merged by piInvocationToSdkConfig at boot).
+  const persistModelChoice = (): void => {
+    const nodeId = process.env['CRTR_NODE_ID'];
+    const m = session.model;
+    if (nodeId === undefined || nodeId === '' || m === null || m === undefined) return;
+    const spec = `${m.provider}/${m.id}`;
+    try {
+      const meta = getNode(nodeId);
+      if (meta === null) return;
+      const launch = meta.launch !== undefined ? { ...meta.launch, model: spec } : undefined;
+      updateNode(nodeId, { model_override: spec, ...(launch !== undefined ? { launch } : {}) });
+    } catch {
+      // Persistence is best-effort; the live switch already succeeded.
+    }
+  };
+
   // pi emits no AgentSessionEvent for a model switch, so after a successful
   // set_model/cycle_model the broker announces it itself — otherwise the new
   // model reaches no viewer (the requester gets only a bare ack) and every
   // footer shows the stale model until the next unrelated event.
   const broadcastModelChanged = (): void => {
+    persistModelChoice();
     broadcast({ type: 'model_changed', model: session.model?.id });
   };
 
