@@ -695,12 +695,14 @@ const nodePromote = defineLeaf({
     params: [
       { kind: 'flag', name: 'kind', type: 'string', required: false, constraint: 'Specialize as this kind of orchestrator. The <kinds> list below names every installable kind and when to use each; the <sub-personas> block (when present) names the specialist sub-personas available to YOU, spawnable by full kind string. Defaults to your current kind. Promoting from a generic kind? CHOOSE a concrete one — it sets the orchestrator persona you revive into.' },
       { kind: 'flag', name: 'resident', type: 'bool', required: false, constraint: 'ALSO flip lifecycle→resident: make the node interactable — it stays dormant, woken by inbox/human, and is never forced to submit a final. Omit to stay terminal/orchestrator (delegates + holds a roadmap, but still owes a final up the spine and reaps when done).' },
+      { kind: 'flag', name: 'model', type: 'enum', choices: ['ultra', 'strong'], required: false, constraint: 'Change the model you run on, by capability tier: `ultra` (frontier — reserve for high-taste judgment or enormous work: speccing, planning something large, e2e-testing something hard to test) or `strong` (opus — regular dev work). Omit to keep your current model. An orchestrator steering work is never weaker than opus, so these are the only two choices; the change is durable across future revives.' },
       { kind: 'flag', name: 'node', type: 'string', required: false, constraint: 'Node to promote. Defaults to the caller (CRTR_NODE_ID).' },
     ],
     output: [
       { name: 'node_id', type: 'string', required: true, constraint: 'The promoted node.' },
       { name: 'kind', type: 'string', required: true, constraint: 'The kind it now orchestrates as.' },
       { name: 'mode', type: 'string', required: true, constraint: 'Now "orchestrator".' },
+      { name: 'model', type: 'string', required: false, constraint: 'The model tier it now runs on, present only when you changed it with --model.' },
       { name: 'lifecycle', type: 'string', required: true, constraint: '"resident" if you passed --resident, else unchanged (typically "terminal").' },
       { name: 'roadmap_written', type: 'boolean', required: true, constraint: 'True if a roadmap scaffold was seeded by this call.' },
       { name: 'roadmap_path', type: 'string', required: true, constraint: 'Absolute path to your roadmap doc (context/roadmap.md) — edit it to author your plan.' },
@@ -708,16 +710,17 @@ const nodePromote = defineLeaf({
     ],
     dynamicState: () => kindsStateBlock(),
     outputKind: 'object',
-    effects: ['Flips mode→orchestrator + kind→chosen (lifecycle unchanged unless --resident, which also flips lifecycle→resident); rewrites the launch spec to that kind\'s orchestrator persona; seeds context/roadmap.md scaffold if absent.', 'Your new-role guidance is injected automatically at the turn boundary by the persona injector — the command no longer returns it.'],
+    effects: ['Flips mode→orchestrator + kind→chosen (lifecycle unchanged unless --resident, which also flips lifecycle→resident); --model durably pins the model tier; rewrites the launch spec to that kind\'s orchestrator persona; seeds context/roadmap.md scaffold if absent.', 'Your new-role guidance is injected automatically at the turn boundary by the persona injector — the command no longer returns it.'],
   },
   run: async (input) => {
     const id = (input['node'] as string | undefined) ?? process.env['CRTR_NODE_ID'];
     if (id === undefined || id === '') throw new InputError({ error: 'no_node', message: 'no node to promote (set CRTR_NODE_ID or pass --node)', next: 'Run from inside a node, or pass --node <id>.' });
     const kind = input['kind'] as string | undefined;
     if (kind !== undefined) assertKind(kind);
+    const model = input['model'] as string | undefined;
     const resident = input['resident'] === true;
-    const res = promote(id, { ...(kind !== undefined ? { kind } : {}), ...(resident ? { resident: true } : {}) });
-    return { node_id: res.meta.node_id, kind: res.meta.kind, mode: res.meta.mode, lifecycle: res.meta.lifecycle, roadmap_written: res.roadmapWritten, roadmap_path: res.roadmapPath, goal_path: res.goalPath };
+    const res = promote(id, { ...(kind !== undefined ? { kind } : {}), ...(resident ? { resident: true } : {}), ...(model !== undefined ? { model } : {}) });
+    return { node_id: res.meta.node_id, kind: res.meta.kind, mode: res.meta.mode, lifecycle: res.meta.lifecycle, ...(res.meta.model_override != null ? { model: res.meta.model_override } : {}), roadmap_written: res.roadmapWritten, roadmap_path: res.roadmapPath, goal_path: res.goalPath };
   },
 });
 
@@ -845,34 +848,37 @@ const nodeLifecycle = defineLeaf({
 const nodeYield = defineLeaf({
   name: 'yield',
   description: 'refresh your context against your roadmap',
-  whenToUse: 'your context window is filling up but the mandate is unfinished: request a refresh — end your turn and revive fresh against your roadmap, leaving a note to your future self for the moment you wake. A base node auto-promotes to orchestrator first (a yield needs a roadmap to refresh against). Use `node promote` instead when you need to BECOME an orchestrator with no refresh pending',
+  whenToUse: 'your context window is filling up but the mandate is unfinished: request a refresh — end your turn and revive fresh against your roadmap, leaving a note to your future self for the moment you wake. A base node auto-promotes to orchestrator first (a yield needs a roadmap to refresh against). You may also respecialize (--kind) or raise your model (--model) as you refresh. Use `node promote` instead when you need to BECOME an orchestrator with no refresh pending',
   help: {
     name: 'node yield',
-    summary: 'request a context refresh — you will be respawned fresh against your roadmap on your next stop (a base node auto-promotes to orchestrator first)',
+    summary: 'request a context refresh — you will be respawned fresh against your roadmap on your next stop (a base node auto-promotes to orchestrator first); optionally change your kind or model as you refresh',
     params: [
-      { kind: 'flag', name: 'kind', type: 'string', required: false, constraint: 'If this yield auto-promotes a base node, specialize it as this kind of orchestrator (developer, review, spec, design, plan, explore, general). Defaults to your current kind.' },
+      { kind: 'flag', name: 'kind', type: 'string', required: false, constraint: 'Respecialize as you refresh — change your kind to this (developer, review, spec, design, plan, explore, general); a base node also auto-promotes into an orchestrator of this kind. Defaults to your current kind.' },
+      { kind: 'flag', name: 'model', type: 'enum', choices: ['ultra', 'strong'], required: false, constraint: 'Change the model your fresh revive runs on, by capability tier: `ultra` (frontier — reserve for high-taste judgment or enormous work: speccing, planning something large, e2e-testing something hard to test) or `strong` (opus — regular dev work). Omit to keep your current model. A node steering work is never weaker than opus, so these are the only two choices; the change is durable across future revives.' },
       { kind: 'stdin', name: 'message', required: true, constraint: 'A note to your future self — what to do the moment you wake fresh. Surfaced as <yield-message> in the next revive. Pass as a positional or pipe via heredoc.' },
     ],
     output: [
       { name: 'node_id', type: 'string', required: true, constraint: 'The yielding node.' },
       { name: 'promoted', type: 'boolean', required: true, constraint: 'True if this yield promoted a base node to orchestrator.' },
+      { name: 'model', type: 'string', required: false, constraint: 'The model tier your fresh revive will run on, present only when you changed it with --model.' },
       { name: 'will_refresh', type: 'boolean', required: true, constraint: 'Always true: end your turn and you will revive fresh against your roadmap.' },
     ],
     outputKind: 'object',
-    effects: ['Sets intent=refresh; the stophook shuts the process down on next stop and the daemon revives it fresh.'],
+    effects: ['Sets intent=refresh; the stophook shuts the process down on next stop and the daemon revives it fresh.', '--kind and/or --model durably reshape the node (kind respecialization, model-tier pin) before the refresh-revive; a base node also auto-promotes to orchestrator.'],
   },
   run: async (input) => {
     const id = process.env['CRTR_NODE_ID'];
     if (id === undefined || id === '') throw new InputError({ error: 'no_node', message: 'no node to yield (CRTR_NODE_ID unset)', next: 'Run from inside a node.' });
     const kind = input['kind'] as string | undefined;
     if (kind !== undefined) assertKind(kind);
+    const model = input['model'] as string | undefined;
     const message = typeof input['message'] === 'string' ? (input['message'] as string).trim() : '';
     if (message === '') {
       throw new InputError({ error: 'empty_message', message: 'a yield message is required (stdin or positional)', next: 'Pass a note to your future self as an argument or pipe it on stdin.' });
     }
     writeYieldMessage(id, message);
-    const res = requestYield(id, kind !== undefined ? { kind } : {});
-    return { node_id: res.meta.node_id, promoted: res.promoted, will_refresh: res.willRefresh };
+    const res = requestYield(id, { ...(kind !== undefined ? { kind } : {}), ...(model !== undefined ? { model } : {}) });
+    return { node_id: res.meta.node_id, promoted: res.promoted, ...(res.meta.model_override != null ? { model: res.meta.model_override } : {}), will_refresh: res.willRefresh };
   },
 });
 

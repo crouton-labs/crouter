@@ -41,12 +41,15 @@ export interface PromoteResult {
  *  boss with no map is a failure mode) — no goal is forced here; authoring the
  *  goal + roadmap is the node's next act. The transition guidance is injected
  *  centrally by the persona injector at the next turn boundary, not returned. */
-export function promote(nodeId: string, opts: { kind?: string; resident?: boolean } = {}): PromoteResult {
+export function promote(nodeId: string, opts: { kind?: string; resident?: boolean; model?: string } = {}): PromoteResult {
   const node = getNode(nodeId);
   if (node === null) throw new Error(`unknown node: ${nodeId}`);
 
   // The node may specialize as it promotes; default to its current kind.
   const targetKind = opts.kind ?? node.kind;
+  // ...and may raise/change its model tier; default to its current pin (so a
+  // promote with no --model preserves whatever it was running on).
+  const targetModel = opts.model ?? node.model_override ?? undefined;
 
   // Rewrite the launch spec to the target kind's orchestrator persona so the
   // *next* revive comes back orchestrating in that kind (polymorph stage 2).
@@ -58,9 +61,11 @@ export function promote(nodeId: string, opts: { kind?: string; resident?: boolea
   const { launch } = buildLaunchSpec(targetKind, 'orchestrator', {
     lifecycle: opts.resident === true ? 'resident' : node.lifecycle,
     hasManager: node.parent !== null,
-    // Preserve a caller-pinned model tier across the polymorph (the persona
-    // default is recomputed fresh for targetKind).
-    model: node.model_override ?? undefined,
+    // A model tier chosen on this call (opts.model) overrides the persona
+    // default and is persisted below; absent one, the existing pin carries
+    // across the polymorph (the persona default is recomputed fresh for
+    // targetKind).
+    model: targetModel,
   });
 
   // Seed a barebones roadmap scaffold if absent so the file exists for a
@@ -81,6 +86,9 @@ export function promote(nodeId: string, opts: { kind?: string; resident?: boolea
     kind: targetKind,
     mode: 'orchestrator',
     launch,
+    // Persist a newly-chosen tier so it is durable across future revives; omit
+    // when unchanged so the existing pin (or persona default) stands.
+    ...(opts.model !== undefined ? { model_override: opts.model } : {}),
     ...(opts.resident === true ? { lifecycle: 'resident' as const } : {}),
   });
   return {
@@ -104,18 +112,28 @@ export interface YieldResult {
  *  so it comes back as an orchestrator, optionally specializing its kind. Sets
  *  intent='refresh'; the stophook shuts the process down on the next stop and
  *  the daemon revives it fresh. */
-export function requestYield(nodeId: string, opts: { kind?: string } = {}): YieldResult {
+export function requestYield(nodeId: string, opts: { kind?: string; model?: string } = {}): YieldResult {
   const node = getNode(nodeId);
   if (node === null) throw new Error(`unknown node: ${nodeId}`);
 
+  // A yield may also RESHAPE the node as it refreshes — change kind and/or raise
+  // model tier. promote() is idempotent (on an already-orchestrator node it just
+  // rewrites the launch spec), so it doubles as the apply-path for that reshape.
+  const reshaping = opts.kind !== undefined || opts.model !== undefined;
+  const wasBase = node.mode !== 'orchestrator';
   let promoted = false;
-  if (node.mode !== 'orchestrator') {
+  if (wasBase || reshaping) {
     // A yield needs a ROADMAP to refresh against — i.e. orchestrator mode, not
     // resident lifecycle. Ensure orchestrator (which seeds the roadmap + memory)
     // WITHOUT forcing resident: a terminal/orchestrator yields fine, since the
     // daemon's refresh-revive keys on intent='refresh', not lifecycle.
-    promote(nodeId, opts.kind !== undefined ? { kind: opts.kind } : {});
-    promoted = true;
+    promote(nodeId, {
+      ...(opts.kind !== undefined ? { kind: opts.kind } : {}),
+      ...(opts.model !== undefined ? { model: opts.model } : {}),
+    });
+    // "promoted" means a base node became an orchestrator — not a mere reshape
+    // of an already-orchestrator node.
+    promoted = wasBase;
   }
 
   // Mark the intent; the stophook enacts the shutdown, the daemon the revive.
