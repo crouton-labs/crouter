@@ -165,10 +165,26 @@ function Composer({ state, actions }: { state: PaneState; actions: ReturnType<ty
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
+            if (e.key !== 'Enter') return;
+            // Shift+Enter → native newline; let the browser insert it.
+            if (e.shiftKey) return;
+            // Alt/Option+Enter → newline (not native): splice '\n' at the caret.
+            if (e.altKey) {
               e.preventDefault();
-              submit();
+              const ta = e.currentTarget;
+              const start = ta.selectionStart ?? ta.value.length;
+              const end = ta.selectionEnd ?? start;
+              const caret = start + 1;
+              setText(`${ta.value.slice(0, start)}\n${ta.value.slice(end)}`);
+              requestAnimationFrame(() => {
+                ta.selectionStart = caret;
+                ta.selectionEnd = caret;
+              });
+              return;
             }
+            // Plain Enter → send.
+            e.preventDefault();
+            submit();
           }}
           rows={2}
           placeholder={
@@ -178,7 +194,7 @@ function Composer({ state, actions }: { state: PaneState; actions: ReturnType<ty
                 : 'take control to drive this agent'
               : streaming
                 ? 'steer the running turn… (Enter to send)'
-                : 'message the agent… (Enter to send, Shift+Enter for newline)'
+                : 'message the agent… (Enter to send, Shift/Alt+Enter for newline)'
           }
           disabled={disabled}
           className="flex-1 resize-none rounded border border-slate-300 bg-white px-2 py-1.5 text-sm text-slate-900 outline-none focus:border-sky-500 disabled:opacity-50"
