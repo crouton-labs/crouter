@@ -153,18 +153,22 @@ function lastAssistantMessage(messages: any[]): any | undefined {
 //             185k+ pushy. Keyed on mode, NOT lifecycle: a terminal/orchestrator
 //             yields against its roadmap exactly like a resident one (the
 //             daemon's refresh-revive keys on intent='refresh', not lifecycle).
-//   resident/base (a root conversation): never promoted ⇒ NO roadmap on disk,
-//             so it is NOT told to checkpoint/yield against one. Instead: if the
-//             chat is outgrowing one window into a multi-phase job, promote;
-//             otherwise wrap up or start fresh. 130k gentle → 150k firm → 185k+
+//   resident/base (a root conversation): NO roadmap on disk yet, so it is not
+//             told to checkpoint one. `crtr node yield` is still its continue
+//             verb — it auto-promotes + seeds a roadmap transparently — offered
+//             against wrap-up, since a root chat can simply end. Gentle → firm →
 //             pushy.
-//   terminal/base (a worker): 130k/150k suggest promote → 170k suggest promote
-//             (+ "ignore if nearly done") → 185k+ pushy.
+//   terminal/base (a worker): steered to `crtr node yield` to continue in a
+//             fresh window when work remains (yield auto-promotes under the
+//             hood), or `push final` when close. Gentle → firm → pushy.
 //
-// The promote/push-final guidance only makes sense for a terminal BASE worker. A
-// resident node finishes by yielding or being closed, not `push final`, so it is
-// never told to push final; only an ORCHESTRATOR (either lifecycle) has a roadmap
-// to yield against, so only it is steered at the roadmap.
+// Every persona's "keep going" verb is `crtr node yield` — NEVER a bare `node
+// promote`, which framed promotion as a heavy "become an orchestrator" step and
+// bred yield-avoidance. A base node's yield auto-promotes + seeds the roadmap
+// under the hood, so the agent never decides to promote — it just yields. Only a
+// terminal node is ever told `push final` (a resident finishes by yielding or
+// being closed); only an orchestrator already HAS a roadmap to checkpoint before
+// it yields.
 // ---------------------------------------------------------------------------
 
 const STEER_STEP = 10_000;
@@ -186,20 +190,22 @@ function steerBand(tokens: number): number | null {
 }
 
 /** The nudge text for a crossed band, specialized to the node's (mode,
- *  lifecycle) persona + how far along the escalation it is.
+ *  lifecycle) persona + how far along the escalation it is. `crtr node yield` is
+ *  the single "keep going past this window" verb for every persona: it refreshes
+ *  the node into a clean window against a roadmap, and for a base node
+ *  auto-promotes transparently — so no persona is ever steered at a bare `node
+ *  promote` (which framed promotion as a heavy "become an orchestrator" step and
+ *  bred yield-avoidance).
  *
- *  - orchestrator (terminal OR resident): checkpoint its roadmap and yield
- *    (gently → firmly → pushy). It has a context/roadmap.md to yield against.
- *  - resident/base (root conversation): never promoted, so NO roadmap exists —
- *    steer it to PROMOTE if the chat is growing into a multi-phase job (which
- *    seeds a roadmap), else wrap up / start fresh. Never points at roadmap.md or
- *    a bare `node yield`, which for a roadmap-less root just drops context.
- *  - terminal/base (worker): PROMOTE itself — become an orchestrator — when
- *    work remains, with an "ignore if nearly done, finish with push final" once
- *    it's deeper in.
+ *  - orchestrator (terminal OR resident): checkpoint context/roadmap.md, then
+ *    yield (it already has a roadmap to bring current first).
+ *  - resident/base (root conversation): yield to continue in a fresh window if
+ *    the chat is growing into a job, else wrap up — a root can simply end.
+ *  - terminal/base (worker): yield to continue if work remains, or `push final`
+ *    when close.
  *
- *  At/past 185k every persona goes PUSHY: the context is long enough that
- *  drifting further risks an overflow. */
+ *  The wording strengthens with depth: gentle < 150k → firm < 185k → pushy at/
+ *  past 185k, where drifting further risks an overflow. */
 export function steerNote(at: number, lifecycle: string, mode: string): string {
   const k = Math.round(at / 1000);
   const pushy = at >= 185_000;
@@ -217,25 +223,32 @@ export function steerNote(at: number, lifecycle: string, mode: string): string {
   }
 
   if (lifecycle === 'resident') {
-    // resident/base — a root conversation. It has no roadmap (only promotion
-    // seeds one), so steer it toward promote-or-wrap-up, never at roadmap.md.
-    const grow = `If this is turning into a multi-phase job, \`crtr node promote\` to become a resident orchestrator (seeds a roadmap so you can delegate and \`crtr node yield\` to refresh).`;
+    // resident/base — a root conversation with no roadmap yet. `crtr node yield`
+    // is still the natural "carry this forward" verb: it refreshes into a clean
+    // window against a roadmap and auto-promotes transparently (no scary
+    // "become an orchestrator" step). Offer wrap-up as the alternative — a root
+    // chat can simply end.
+    const grow = `If this is turning into a multi-phase job, \`crtr node yield\` to continue in a fresh window against a roadmap — no need to "become" anything, yield just carries you forward.`;
     if (at < 150_000) {
       return `Context ~${k}k and growing. ${grow} Otherwise no rush — wrap up when you reach a good stopping point.`;
     }
     if (!pushy) {
-      return `Context ~${k}k. ${grow} If you're near done, just finish here; if there's more open-ended work, start a fresh \`crtr\` rather than letting this context grow.`;
+      return `Context ~${k}k. ${grow} If you're near done, just finish here; if there's more open-ended work, \`crtr node yield\` rather than letting this context grow.`;
     }
-    return `Context ~${k}k — this is getting long. Wrap up now before this context overflows: finish what's in hand, or \`crtr node promote\` immediately if substantial work remains, otherwise continue in a fresh \`crtr\`.`;
+    return `Context ~${k}k — this is getting long. Wrap up now before this context overflows: finish what's in hand, or \`crtr node yield\` immediately to continue fresh against a roadmap if substantial work remains.`;
   }
 
-  // terminal — a worker.
-  const suggest = `If much more work remains than this context can finish, consider \`crtr node promote\` to become an orchestrator (seeds a roadmap, lets you delegate and \`crtr node yield\` to refresh).`;
-  if (at < 170_000) return `Context ~${k}k. ${suggest}`;
-  if (!pushy) {
-    return `Context ~${k}k. ${suggest} If you're nearly done, ignore this suggestion and finish with \`crtr push final\`.`;
+  // terminal/base — a worker. The natural "keep going past this window" verb is
+  // `crtr node yield`: it refreshes into a clean window against a roadmap and
+  // auto-promotes transparently, so there is no separate "become an orchestrator"
+  // decision to agonize over. Steer it to yield-or-finish, never a bare promote.
+  if (at < 150_000) {
+    return `Context ~${k}k and growing. If you're near done, finish with \`crtr push final\`. If real work remains, \`crtr node yield\` to continue in a fresh window against a roadmap — no rush yet.`;
   }
-  return `Context ~${k}k — this is getting long. Wrap up now: \`crtr push final\` if you're close, otherwise \`crtr node promote\` immediately to continue as an orchestrator instead of overflowing this context.`;
+  if (!pushy) {
+    return `Context ~${k}k. If you're close, finish with \`crtr push final\`; otherwise \`crtr node yield\` now to refresh into a clean window and keep going against a roadmap.`;
+  }
+  return `Context ~${k}k — this is getting long. Wrap up now before this context overflows: \`crtr push final\` if you're close, otherwise \`crtr node yield\` immediately to continue in a fresh window against a roadmap.`;
 }
 
 // ---------------------------------------------------------------------------

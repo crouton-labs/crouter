@@ -22,17 +22,19 @@ test('an orchestrator (resident) gets the same roadmap/yield steering as a termi
   assert.equal(r, t, 'mode drives the message, not lifecycle');
 });
 
-test('a terminal BASE worker is steered to promote / push final', () => {
+test('a terminal BASE worker is steered to yield-or-finish, never at a bare promote', () => {
   const msg = steerNote(170_000, 'terminal', 'base');
-  assert.match(msg, /node promote/, 'a base worker is told it can promote');
-  assert.match(msg, /push final/, 'and to finish with push final when nearly done');
-  assert.doesNotMatch(msg, /roadmap\.md/, 'a base worker has no roadmap to checkpoint');
+  assert.match(msg, /node yield/, 'a base worker is told to yield to continue (which auto-promotes under the hood)');
+  assert.match(msg, /push final/, 'and to finish with push final when close');
+  assert.doesNotMatch(msg, /node promote/, 'never the heavy "become an orchestrator" framing that bred yield-avoidance');
+  assert.doesNotMatch(msg, /roadmap\.md/, 'a base worker has no roadmap.md to checkpoint');
 });
 
-test('a resident BASE root is steered to promote-or-wrap-up, never at a roadmap', () => {
+test('a resident BASE root is steered to yield-or-wrap-up, never at a bare promote or roadmap', () => {
   const msg = steerNote(150_000, 'resident', 'base');
-  assert.match(msg, /node promote/, 'a root growing into a job is told to promote');
-  assert.doesNotMatch(msg, /roadmap\.md/, 'a root has no roadmap to point at');
+  assert.match(msg, /node yield/, 'a root growing into a job is told to yield (which auto-promotes)');
+  assert.doesNotMatch(msg, /node promote/, 'never the heavy "become an orchestrator" framing');
+  assert.doesNotMatch(msg, /roadmap\.md/, 'a root has no roadmap.md to point at');
   assert.doesNotMatch(msg, /push final/, 'a resident node never finishes with push final');
 });
 
