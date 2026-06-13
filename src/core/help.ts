@@ -44,6 +44,10 @@ export interface FlagParam {
   /** When true, the flag may appear multiple times; values accumulate into an
    *  array. TODO: no current leaf needs this — implement when first leaf migrates. */
   repeatable?: boolean;
+  /** When true, the flag is PARSED normally but never rendered in `-h`. For a
+   *  deliberately-undiscoverable confirmation gate the agent must be TOLD about
+   *  in the command's own output (not by reading the schema), never advertised. */
+  hidden?: boolean;
 }
 
 /** Raw stdin content blob (piped text, not parsed as JSON). */
@@ -430,7 +434,10 @@ export function renderLeafArgv(h: LeafHelp): string {
 
   lines.push('');
 
-  const params = h.params ?? [];
+  // Hidden flags are parsed but never advertised in -h (see FlagParam.hidden).
+  const params = (h.params ?? []).filter(
+    (p) => !(p.kind === 'flag' && (p as FlagParam).hidden === true),
+  );
   if (params.length > 0) {
     lines.push('Input');
     const labels = params.map(paramLabel);
