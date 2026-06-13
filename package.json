@@ -28,8 +28,7 @@
     "bin"
   ],
   "scripts": {
-    "build": "rm -rf dist && tsc && cp -R src/builtin-personas dist/builtin-personas && cp -R src/builtin-views dist/builtin-views && cp -R src/builtin-memory dist/builtin-memory && npm run build:attach && vite build --config src/clients/web/web-client/vite.config.ts",
-    "build:attach": "node scripts/build-attach.mjs",
+    "build": "rm -rf dist && tsc && cp -R src/builtin-personas dist/builtin-personas && cp -R src/builtin-views dist/builtin-views && cp -R src/builtin-memory dist/builtin-memory && vite build --config src/clients/web/web-client/vite.config.ts",
     "dev": "tsx src/cli.ts",
     "link": "npm link",
     "prepublishOnly": "npm run build",
@@ -62,7 +61,6 @@
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@types/ws": "^8.18.1",
-    "esbuild": "^0.27.7",
     "tsx": "^4.0.0",
     "typescript": "^5.7.0"
   }
