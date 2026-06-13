@@ -24,7 +24,7 @@
 //     tmux-chrome.ts import tmux.ts") holds — every other module reaches the
 //     driver verbs through here.
 
-import { spawnSync } from 'node:child_process';
+import { Worker } from 'node:worker_threads';
 import { join } from 'node:path';
 
 import {
@@ -175,19 +175,17 @@ export function graphSurfaceTarget(nodeId: string): FocusRow | null {
 const BROKER_FOCUS_SOCKET_WAIT_MS = 30_000;
 const BROKER_FOCUS_SOCKET_RETRY_MS = 100;
 
-/** Synchronously wait until a broker's view.sock accepts a connection. The spawn
- *  and focus flows are sync (the command layer calls them directly), so the
- *  readiness probe lives in a short child Node process that can use async net
- *  events while this process blocks in `spawnSync`. Success proves more than file
- *  existence: it is robust to a stale leftover socket the launching broker has
- *  not unlinked yet, because only an accepting listener exits 0. */
-export function waitForBrokerViewSocket(nodeId: string): boolean {
-  const sockPath = join(nodeDir(nodeId), 'view.sock');
-  const probe = `
+// The probe runs inside a worker thread (see waitForBrokerViewSocket). Async net
+// events drive the same poll loop; the worker reports its verdict into a shared
+// Int32 (0 = pending, 1 = accepted, 2 = gave up) and Atomics.notify wakes the
+// blocked main thread. eval:true ⇒ CommonJS, so `require` and workerData apply.
+const VIEW_SOCKET_PROBE_WORKER = `
 const net = require('node:net');
-const sockPath = process.argv[1];
-const deadline = Date.now() + Number(process.argv[2]);
-const delay = Number(process.argv[3]);
+const { workerData, parentPort } = require('node:worker_threads');
+const { buffer, sockPath, waitMs, retryMs } = workerData;
+const result = new Int32Array(buffer);
+const deadline = Date.now() + waitMs;
+const report = (code) => { Atomics.store(result, 0, code); Atomics.notify(result, 0); };
 function attempt() {
   let socket;
   let settled = false;
@@ -195,9 +193,9 @@ function attempt() {
     if (settled) return;
     settled = true;
     if (socket !== undefined) socket.destroy();
-    if (ok) process.exit(0);
-    if (Date.now() >= deadline) process.exit(1);
-    setTimeout(attempt, delay);
+    if (ok) { report(1); return; }
+    if (Date.now() >= deadline) { report(2); return; }
+    setTimeout(attempt, retryMs);
   };
   try {
     socket = net.createConnection(sockPath);
@@ -207,22 +205,32 @@ function attempt() {
   }
   socket.once('connect', () => finish(true));
   socket.once('error', () => finish(false));
-  socket.setTimeout(delay, () => finish(false));
+  socket.setTimeout(retryMs, () => finish(false));
 }
 attempt();
+void parentPort;
 `;
-  const r = spawnSync(
-    process.execPath,
-    ['--input-type=commonjs', '-e', probe, sockPath, String(BROKER_FOCUS_SOCKET_WAIT_MS), String(BROKER_FOCUS_SOCKET_RETRY_MS)],
-    {
-      stdio: 'ignore',
-      timeout: BROKER_FOCUS_SOCKET_WAIT_MS + 1_000,
-      // Keep the probe deterministic: NODE_OPTIONS like --input-type=module or
-      // --inspect-brk can break/hang a tiny `node -e` readiness check.
-      env: { ...process.env, NODE_OPTIONS: '' },
-    },
-  );
-  return r.status === 0;
+
+/** Synchronously wait until a broker's view.sock accepts a connection. The spawn
+ *  and focus flows are sync (the command layer calls them directly), so the async
+ *  net poll runs in a worker THREAD while this thread blocks on `Atomics.wait` —
+ *  in-process, no child Node cold-start. Success proves more than file existence:
+ *  it is robust to a stale leftover socket the launching broker has not unlinked
+ *  yet, because only an accepting listener yields a `connect`. */
+export function waitForBrokerViewSocket(nodeId: string): boolean {
+  const sockPath = join(nodeDir(nodeId), 'view.sock');
+  const buffer = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT);
+  const result = new Int32Array(buffer);
+  const worker = new Worker(VIEW_SOCKET_PROBE_WORKER, {
+    eval: true,
+    workerData: { buffer, sockPath, waitMs: BROKER_FOCUS_SOCKET_WAIT_MS, retryMs: BROKER_FOCUS_SOCKET_RETRY_MS },
+  });
+  worker.unref();
+  // Block until the worker reports (or a hard timeout matching the old
+  // spawnSync). 'not-equal' covers the worker finishing before we wait.
+  Atomics.wait(result, 0, 0, BROKER_FOCUS_SOCKET_WAIT_MS + 1_000);
+  void worker.terminate();
+  return Atomics.load(result, 0) === 1;
 }
 
 // ---------------------------------------------------------------------------
