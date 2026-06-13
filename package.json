@@ -1,6 +1,6 @@
 {
   "name": "@crouton-kit/crouter",
-  "version": "0.3.28",
+  "version": "0.3.29",
   "description": "crtr — fast access to skills, plugins, and marketplaces",
   "type": "module",
   "main": "dist/index.js",
@@ -61,7 +61,6 @@
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@types/ws": "^8.18.1",
-
     "tsx": "^4.0.0",
     "typescript": "^5.7.0"
   }
