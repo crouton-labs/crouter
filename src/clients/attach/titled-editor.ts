@@ -12,20 +12,22 @@ import { truncateToWidth, visibleWidth } from '@earendil-works/pi-tui';
 /** Thinking levels pi cycles through (shift+tab), lowest → highest budget. */
 export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
 
-/** Per-level border/chip color as a 24-bit RGB triple — ONE blue-violet hue at
- *  CONSTANT perceived lightness (luma ≈ 120) whose SATURATION alone climbs with
- *  the budget: a near-gray blue at `minimal` deepening to a vivid violet at
- *  `xhigh`, never getting lighter or darker — only more colorful. (pi paints its
- *  own `thinking*` theme colors off its public palette surface, so we own this
- *  ramp directly — truecolor, not the 16-color ANSI hues, so the saturation
- *  climb actually reads.) `off` falls back to the caller's default border color. */
+/** Per-level border/chip color as a 24-bit RGB triple. Each level ROTATES HUE by
+ *  a large step (~35–45°) along a "heat" ramp — indigo → violet → magenta → pink
+ *  → red-orange — so adjacent levels are unmistakably different at a glance (a
+ *  constant-hue saturation climb read as nearly identical; see #8). All sit at
+ *  roughly constant, high-ish lightness so each is vivid on a dark terminal, and
+ *  the cool→hot direction maps intuitively onto a climbing thinking budget. (pi
+ *  paints its own `thinking*` theme colors off its public palette surface, so we
+ *  own this ramp directly — truecolor, not the 16-color ANSI hues, so the hue
+ *  sweep actually reads.) `off` falls back to the caller's default border color. */
 const THINKING_RGB: Record<ThinkingLevel, [number, number, number] | undefined> = {
   off: undefined, // default border color
-  minimal: [125, 115, 135], // near-gray blue-violet
-  low: [129, 109, 151], // muted blue-violet
-  medium: [134, 103, 168], // violet
-  high: [139, 98, 184], // deeper violet
-  xhigh: [144, 92, 200], // vivid violet
+  minimal: [96, 132, 220], // indigo / cornflower blue
+  low: [150, 110, 214], // violet
+  medium: [200, 98, 196], // magenta
+  high: [224, 102, 142], // pink-red
+  xhigh: [228, 120, 84], // red-orange
 };
 
 /** The default (thinking `off`) title chip: reverse video + a space of padding
