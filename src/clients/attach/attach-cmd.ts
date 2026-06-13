@@ -17,6 +17,8 @@
 
 import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
+import { dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   CombinedAutocompleteProvider,
   Container,
@@ -65,6 +67,24 @@ import { buildLoginPicker, buildLogoutPicker } from './auth-pickers.js';
 import { TitledEditor, thinkingBorderColor, thinkingTitleStyle, defaultTitleStyle } from './titled-editor.js';
 import { fetchGitInfo, type GitInfo } from './git-info.js';
 import { BrokerUnavailableError, ViewSocketClient, reconnectShouldGiveUp } from './view-socket.js';
+
+// `npm run build:attach` esbuild-bundles this entry into crouter's dist, which
+// relocates this file's import.meta.url — and that breaks pi-coding-agent's asset
+// resolution: pi finds its theme/asset root by walking up from its OWN module URL
+// to the nearest package.json (config.js getPackageDir). Inlined into the bundle,
+// that walk lands on CROUTER's package.json, where pi's themes don't exist (ENOENT
+// on dark.json the moment applyTheme runs). PI_PACKAGE_DIR is pi's documented
+// override for exactly this; point it at pi's REAL package dir — resolved with
+// import.meta.resolve, which stays correct in the bundle because it resolves from
+// the output file's node_modules. No-op unbundled (dev/tsx): pi's own walk works,
+// and this just re-asserts the same dir. Set at import time so it precedes any
+// pi theme/asset access during viewer construction.
+if (process.env['PI_PACKAGE_DIR'] === undefined) {
+  try {
+    const piEntry = import.meta.resolve('@earendil-works/pi-coding-agent');
+    process.env['PI_PACKAGE_DIR'] = dirname(dirname(fileURLToPath(piEntry)));
+  } catch { /* unbundled/dev — pi resolves its assets from its own location */ }
+}
 
 /** Async per-node ask-map fetch (NON-blocking — the viewer must never block its
  *  input pump on a shell-out, unlike canvas-nav's execFileSync). Buckets a whole
