@@ -18,7 +18,7 @@
  * @module canvas/tui
  */
 
-import { relAge } from './core.mjs';
+import { relAge, hangingLabel, hangingCountdown } from './core.mjs';
 import { loadingState, emptyState, notReadyState } from '../_lib/states.mjs';
 
 /** @typedef {import('./core.mjs').CanvasState} CanvasState */
@@ -38,9 +38,10 @@ const STATUS_FG = {
   canceled: '90', // grey
 };
 
-/** @param {string} status @returns {import('../../core/tui/draw.js').Style|undefined} */
-function glyphStyle(status) {
-  const fg = STATUS_FG[status];
+/** @param {TreeRow} r @returns {import('../../core/tui/draw.js').Style|undefined} */
+function glyphStyle(r) {
+  if (r.hanging) return { fg: '33', bold: true }; // hanging → yellow ⚠ (overrides status hue)
+  const fg = STATUS_FG[r.status];
   return fg ? { fg } : undefined; // hue only — the glyph SHAPE is the mono carrier
 }
 
@@ -70,11 +71,14 @@ function rowToItem(r, now) {
   /** @type {import('../../core/tui/draw.js').Span[]} */
   const spans = [{ text: ' ', style: undefined }]; // 1-cell gutter (rides the cursor bg)
   if (r.prefix) spans.push({ text: r.prefix, style: { dim: true } });
-  spans.push({ text: r.glyph, style: glyphStyle(r.status) });
+  spans.push({ text: r.glyph, style: glyphStyle(r) });
   spans.push({ text: ' ', style: undefined });
   spans.push({ text: r.name, style: nameStyle(r.status) });
   spans.push({ text: ` [${r.kind}/${r.mode}]`, style: { fg: '90', dim: true } }); // muted: grey + dim (mono-safe)
   if (r.blocked) spans.push({ text: ` ⚑${r.askCount}`, style: { fg: '93', bold: true } }); // attention
+  // Hanging: kind label + countdown to the daemon's auto-revive, in yellow (the
+  // ⚠ glyph already leads the row).
+  if (r.hanging) spans.push({ text: ` ${hangingLabel(r.hanging.kind)} · ${hangingCountdown(r.hanging.since, now)}`, style: { fg: '33' } });
 
   const age = relAge(r.created, now);
   if (age) {

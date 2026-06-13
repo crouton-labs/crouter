@@ -14,6 +14,7 @@
 
 import type { NodeStatus } from '../types.js';
 import type { DashboardRow } from '../render.js';
+import { STATUS_GLYPH, STATUS_COLOR, resolveNodeVisual, hangingLabel, hangingCountdown } from '../status-glyph.js';
 import type { Tab, Tree, VisibleRow, SortMode } from './model.js';
 import { TABS, matchIndices, promptText, previewSnippet, type SnippetLine } from './model.js';
 // Span/color primitives live in core/tui/draw.ts (one copy, shared with the
@@ -59,32 +60,18 @@ const BOLD = `${ESC}1m`;
 const CURSOR_BG = `${ESC}48;5;236m`; // subtle dark-gray cursor-row bg (256-color)
 
 // Basic-16 ANSI fg codes used by the palette.
-const FG_GREEN = '32';
 const FG_YELLOW = '33';
 const FG_RED = '31';
 const FG_CYAN = '36';
 const FG_GRAY = '90'; // bright-black
 const FG_BRIGHT_YELLOW = '93';
-const FG_BRIGHT_GREEN = '92'; // streaming pulse (brighter than the active-status green)
 const FG_BRIGHT_CYAN = '96'; // query-match highlight (ties to the cyan search accent)
 
-const STATUS_GLYPH: Record<NodeStatus, string> = {
-  active:   '●',
-  idle:     '○',
-  done:     '✓',
-  dead:     '✗',
-  canceled: '⊘',
-};
-
-/** The load-bearing color: glyph hue per status. Single source of truth, mirrors
- *  STATUS_GLYPH. Reinforces the glyph everywhere it appears (rows + summary). */
-const STATUS_COLOR: Record<NodeStatus, string> = {
-  active:   FG_GREEN,
-  idle:     FG_YELLOW,
-  done:     FG_CYAN,
-  dead:     FG_RED,
-  canceled: FG_GRAY,
-};
+// STATUS_GLYPH + STATUS_COLOR are imported from ../status-glyph.js (the shared
+// canvas-graph map). STATUS_COLOR there is NUMERIC SGR (e.g. 32) — wrap with
+// `sgr()` where a string ANSI code is needed (Span fg / template literals accept
+// the number directly).
+const FG = (code: number): string => String(code);
 
 // ── Color capability ──────────────────────────────────────────────────────────
 
@@ -225,16 +212,17 @@ function spansWidth(spans: Span[]): number {
  *  node is genuinely mid-turn; otherwise the lifecycle word. The word is what makes
  *  state legible at a glance and survives NO_COLOR (the glyph is the second cue). */
 function statusRail(r: DashboardRow): Span[] {
-  const streaming = r.streaming === true;
-  const word = streaming
-    ? 'live'
-    : ({ active: 'active', idle: 'idle', done: 'done', dead: 'dead', canceled: 'cancel' }[r.status] ?? r.status);
-  const fg = streaming ? FG_BRIGHT_GREEN : STATUS_COLOR[r.status];
-  const glyph = streaming ? '⟳' : (STATUS_GLYPH[r.status] ?? '?');
-  const text = `${glyph} ${word}`;
+  const v = resolveNodeVisual(r.status, { streaming: r.streaming === true, hanging: r.hanging ?? null });
+  // Plain status keeps browse's own status WORD; overlays (hanging/streaming)
+  // carry their own word from resolveNodeVisual. A hanging kind label can exceed
+  // STATUS_W — acceptable: the rare, attention-demanding row gets a slightly
+  // wider rail (Math.max(1,…) keeps a gap), which draws the eye.
+  const word = v.word ?? ({ active: 'active', idle: 'idle', done: 'done', dead: 'dead', canceled: 'cancel' }[r.status] ?? r.status);
+  const fg = FG(v.color);
+  const text = `${v.glyph} ${word}`;
   const pad = Math.max(1, STATUS_W - [...text].length);
   return [
-    { text, style: { fg, bold: streaming } },
+    { text, style: { fg, bold: v.bold === true } },
     { text: ' '.repeat(pad) },
   ];
 }
@@ -305,6 +293,9 @@ function rowLine(
   // attached lives in the gutter).
   const flags: Span[] = [];
   if (r.asks > 0) flags.push({ text: ` ⚑${r.asks}`, style: { fg: FG_BRIGHT_YELLOW, bold: true } }); // pending asks
+  // Hanging: the countdown to auto-recovery travels with the name (the ⚠ + kind
+  // label live in the rail). Dim yellow so it reads as secondary detail.
+  if (r.hanging != null) flags.push({ text: ` · ${hangingCountdown(r.hanging.since, now)}`, style: { fg: FG_YELLOW, dim: true } });
 
   const status = statusRail(r);
   const right = metaCluster(r, now, showCwd);
@@ -405,11 +396,13 @@ function previewPanel(r: DashboardRow | undefined, width: number, caps: ColorCap
     while (out.length < PREVIEW_HEIGHT) out.push('');
     return out;
   }
+  const v = resolveNodeVisual(r.status, { streaming: r.streaming === true, hanging: r.hanging ?? null });
   const glyph = caps.color
-    ? `${ESC}${STATUS_COLOR[r.status]}m${STATUS_GLYPH[r.status]}${RESET}`
-    : (STATUS_GLYPH[r.status] ?? '?');
+    ? `${ESC}${v.color}m${v.glyph}${RESET}`
+    : v.glyph;
   const metaPieces = [`${r.status} ${r.kind}/${r.mode}`, baseDir(r.cwd), relAge(r.created, now), `ctx ${fmtCtx(r.ctx_tokens)}`];
   if (r.asks > 0) metaPieces.push(`⚑${r.asks}`);
+  if (r.hanging != null) metaPieces.push(`⚠ ${hangingLabel(r.hanging.kind)} · ${hangingCountdown(r.hanging.since, now)}`);
   if (r.streaming === true) metaPieces.push('⟳ streaming');
   if (r.viewed === true) metaPieces.push('◉ viewing');
   const metaText = clip(metaPieces.filter((p) => p !== '').join('  ·  '), Math.max(0, width - 2));
@@ -522,9 +515,15 @@ export function renderFrame(
     const warn = `⚠ ${who} is actively streaming — close it (and its subtree) anyway?  y / n`;
     lines.push(caps.color ? `${BOLD}${ESC}${FG_BRIGHT_YELLOW}m${clip(warn, width)}${RESET}` : `${REVERSE}${clip(warn, width)}${RESET}`);
   } else {
+    // When the cursor row is HANGING, lead the footer with the on-demand kick
+    // hint (K shells `canvas revive <id> --now` — SIGTERM the live broker so the
+    // daemon resumes it in ~20s instead of waiting out the 5-min grace).
+    const selRow = state.visible[state.cursor];
+    const cursorRow = selRow !== undefined ? state.tree.nodes.get(selRow.id)?.row : undefined;
+    const hangingHint = cursorRow?.hanging != null ? 'K revive now  ' : '';
     const footer = state.search
       ? '⏎ commit  Esc cancel  ⌫ delete'
-      : '↑↓ move  →/← tree  ⏎ resume  x close  Tab tabs  / search  s sort  c cwd  r residents  p preview  q quit';
+      : `${hangingHint}↑↓ move  →/← tree  ⏎ resume  x close  Tab tabs  / search  s sort  c cwd  r residents  p preview  q quit`;
     lines.push(`${DIM}${clip(footer, width)}${RESET}`);
   }
 

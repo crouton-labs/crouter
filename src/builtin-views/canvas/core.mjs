@@ -44,6 +44,16 @@
  * @property {string} status      active | idle | done | dead | canceled.
  * @property {string|null} parent Spawn/subscription parent id (null ⇒ a forest root).
  * @property {string} created     ISO 8601 birth timestamp (drives child ordering).
+ * @property {ErrorStall|null} hanging  Non-null ⇒ the node is PARKED on an exhausted-
+ *   retry engine error (a live broker, awaiting the daemon's auto-revive).
+ */
+
+/**
+ * The error-stall marker payload (mirrors core/runtime/error-stall.ts).
+ * @typedef {Object} ErrorStall
+ * @property {string} kind     rate-limit | connection | overloaded | other.
+ * @property {string} message  The raw engine error (capped).
+ * @property {string} since    ISO 8601 — when the stall was recorded (countdown origin).
  */
 
 /**
@@ -71,6 +81,8 @@
  * @property {string} created    ISO 8601 birth timestamp (drives the right-flush age).
  * @property {boolean} blocked   True ⇒ this node has pending human asks.
  * @property {number} askCount
+ * @property {ErrorStall|null} hanging  Non-null ⇒ parked on an engine error (⚠ +
+ *   kind label + countdown to the daemon's auto-revive).
  */
 
 /**
@@ -119,6 +131,7 @@ function toNode(n) {
     status: str(o.status) || '?',
     parent: o.parent ? str(o.parent) : null,
     created: str(o.created),
+    hanging: o.hanging && typeof o.hanging === 'object' ? o.hanging : null,
   };
 }
 
@@ -145,6 +158,34 @@ export const STATUS_GLYPH = {
   dead: '✗',
   canceled: '⊘',
 };
+
+// Hanging overlay (parked on an exhausted-retry engine error). The ⚠ glyph +
+// per-kind label + countdown mirror core/canvas/status-glyph.ts — duplicated
+// here (with the grace constant) because this portable .mjs view CANNOT import
+// the TS dist. error-stall.ts is the source of truth; keep these in sync.
+export const HANGING_GLYPH = '⚠';
+/** Mirror of ERROR_STALL_QUIET_MS (core/runtime/error-stall.ts) — the countdown
+ *  origin span. Source of truth is error-stall.ts; keep in sync. */
+const ERROR_STALL_QUIET_MS = 5 * 60_000;
+
+/** @param {string} kind @returns {string} */
+export function hangingLabel(kind) {
+  if (kind === 'rate-limit') return 'rate-limited';
+  if (kind === 'overloaded') return 'overloaded';
+  if (kind === 'connection') return 'conn error';
+  return 'errored';
+}
+
+/** Human countdown to the daemon's auto-recovery (mirrors status-glyph.ts).
+ *  @param {string} since @param {number} now @returns {string} */
+export function hangingCountdown(since, now) {
+  const start = Date.parse(since);
+  if (Number.isNaN(start)) return 'reviving…';
+  const remaining = ERROR_STALL_QUIET_MS - (now - start);
+  if (remaining <= 0) return 'reviving…';
+  if (remaining >= 60_000) return `auto-revive ~${Math.max(1, Math.round(remaining / 60_000))}m`;
+  return `auto-revive ~${Math.ceil(remaining / 1000)}s`;
+}
 
 /** @param {string} lifecycle @returns {string} */
 export function lifeAbbr(lifecycle) {
@@ -388,7 +429,7 @@ export function buildForest(nodes, blockedById) {
     return {
       nodeId: node.nodeId,
       prefix,
-      glyph: STATUS_GLYPH[node.status] || '?',
+      glyph: node.hanging ? HANGING_GLYPH : (STATUS_GLYPH[node.status] || '?'),
       status: node.status,
       name: node.name,
       kind: node.kind,
@@ -398,6 +439,7 @@ export function buildForest(nodes, blockedById) {
       created: node.created,
       blocked: askCount > 0,
       askCount,
+      hanging: node.hanging || null,
     };
   }
 

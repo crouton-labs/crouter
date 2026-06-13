@@ -33,6 +33,7 @@ import { join } from 'node:path';
 import { getNode, jobDir, updateNode, recordPid, setPresence } from '../core/canvas/index.js';
 import { transition } from '../core/runtime/lifecycle.js';
 import { markBusy, clearBusy } from '../core/runtime/busy.js';
+import { markErrorStall, clearErrorStall } from '../core/runtime/error-stall.js';
 import { evaluateStop } from '../core/runtime/stop-guard.js';
 import { personaDrift, commitPersonaAck } from '../core/runtime/persona.js';
 import { handleNewSession, relaunchRoot, markCleanExitDone } from '../core/runtime/reset.js';
@@ -366,7 +367,12 @@ export function registerCanvasStophook(pi: PiLike): void {
   // rather than reaping it. Cleared at the top of agent_end (turn over).
   // ---------------------------------------------------------------------------
   pi.on('agent_start', (): void => {
-    try { markBusy(nodeId); } catch { /* best-effort */ }
+    try {
+      markBusy(nodeId);
+      // A fresh turn started → the node is no longer parked on a stale engine
+      // error (a re-steer / inbox-wake worked). Clear any error-stall marker.
+      clearErrorStall(nodeId);
+    } catch { /* best-effort */ }
   });
 
   // ---------------------------------------------------------------------------
@@ -397,6 +403,7 @@ export function registerCanvasStophook(pi: PiLike): void {
   pi.on('session_shutdown', (event: any, _ctx: any): void => {
     try {
       clearBusy(nodeId); // turn marker is meaningless once pi is exiting
+      clearErrorStall(nodeId); // ditto the error-stall marker
       // Clean /quit (reason='quit') resolves the node to done; if it held the
       // user's viewport, Q1-close it (tearDownNode kills the frozen focus pane +
       // closes the focus row → returns the user to a shell, §1.5/flow (e)). pi is
@@ -501,7 +508,18 @@ export function registerCanvasStophook(pi: PiLike): void {
         const stopReason: string = last?.stopReason ?? '';
 
         // (a) Interrupted or errored — stay alive so the user can re-steer.
-        if (stopReason !== 'stop' && stopReason !== 'length') return;
+        //     When the engine EXHAUSTED its retry budget (stopReason 'error', NOT
+        //     a human Esc 'aborted'), record an error-stall marker BEFORE the
+        //     return so the canvas graph views can surface this otherwise-
+        //     invisible parked window + its countdown to the daemon's auto-revive.
+        if (stopReason !== 'stop' && stopReason !== 'length') {
+          if (stopReason === 'error') {
+            try {
+              markErrorStall(nodeId, last?.errorMessage ?? 'engine error (no errorMessage recorded)');
+            } catch { /* best-effort */ }
+          }
+          return;
+        }
 
         // (b) Already done: `crtr push --final` was called this turn, which
         //     transitions node.status → 'done' synchronously. Shut down cleanly.

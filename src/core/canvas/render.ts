@@ -22,19 +22,20 @@ import { jobDir, contextDir } from './paths.js';
 import { countAsks, asksForNodes } from './attention.js';
 import { isPidAlive } from './pid.js';
 import { listFocuses } from './focuses.js';
-import type { NodeStatus, Lifecycle } from './types.js';
+import { resolveNodeVisual, hangingLabel, hangingCountdown } from './status-glyph.js';
+import { readErrorStall, type ErrorStall } from '../runtime/error-stall.js';
+import type { NodeStatus, Lifecycle, NodeMeta } from './types.js';
 
 // ---------------------------------------------------------------------------
-// Glyphs
+// Hanging overlay (parked on an exhausted-retry engine error). Read the marker
+// pid-gated for LIVE nodes only — mirrors isStreaming: a stale marker from a
+// crashed broker fails the isPidAlive AND and reads as not-hanging.
 // ---------------------------------------------------------------------------
-
-const STATUS_GLYPH: Record<NodeStatus, string> = {
-  active:   '●',
-  idle:     '○',
-  done:     '✓',
-  dead:     '✗',
-  canceled: '⊘',
-};
+function hangingFor(node: NodeMeta): ErrorStall | null {
+  if (node.status !== 'active' && node.status !== 'idle') return null;
+  if (!isPidAlive(node.pi_pid)) return null;
+  return readErrorStall(node.node_id);
+}
 
 // ---------------------------------------------------------------------------
 // Telemetry (best-effort)
@@ -72,13 +73,15 @@ function nodeLine(nodeId: string, indent: string, connector: string): string {
     return `${indent}${connector}? <missing meta: ${nodeId}>`;
   }
 
-  const glyph = STATUS_GLYPH[node.status] ?? '?';
+  const hanging = hangingFor(node);
+  const glyph = resolveNodeVisual(node.status, { hanging }).glyph;
   const tel = readNodeTelemetry(nodeId);
   const ctx = fmtCtx(tel.tokens_in);
   const asks = countAsks(nodeId);
   const askSuffix = asks > 0 ? ` ⚑${asks}` : '';
+  const hangSuffix = hanging !== null ? ` · ${hangingLabel(hanging.kind)} · ${hangingCountdown(hanging.since)}` : '';
 
-  return `${indent}${connector}${glyph} ${fullName(node)} [${node.kind}/${node.mode}] ctx ${ctx}${askSuffix}`;
+  return `${indent}${connector}${glyph} ${fullName(node)} [${node.kind}/${node.mode}] ctx ${ctx}${askSuffix}${hangSuffix}`;
 }
 
 /**
@@ -142,10 +145,12 @@ export function renderTree(rootId: string): string {
   const ctx = fmtCtx(tel.tokens_in);
   const asks = countAsks(rootId);
   const askSuffix = asks > 0 ? ` ⚑${asks}` : '';
-  const glyph = STATUS_GLYPH[node.status] ?? '?';
+  const hanging = hangingFor(node);
+  const glyph = resolveNodeVisual(node.status, { hanging }).glyph;
+  const hangSuffix = hanging !== null ? ` · ${hangingLabel(hanging.kind)} · ${hangingCountdown(hanging.since)}` : '';
 
   const out: string[] = [];
-  out.push(`${glyph} ${fullName(node)} [${node.kind}/${node.mode}] ctx ${ctx}${askSuffix}`);
+  out.push(`${glyph} ${fullName(node)} [${node.kind}/${node.mode}] ctx ${ctx}${askSuffix}${hangSuffix}`);
 
   // visited starts with root already rendered (walkTree doesn't re-emit root).
   const visited = new Set<string>([rootId]);
@@ -250,6 +255,13 @@ export interface DashboardRow {
    *  live "is it generating?" cue. Computed on the cheap boot path for LIVE nodes
    *  only (dormant rows are always false). */
   streaming?: boolean;
+  /** Set when the node is PARKED on an exhausted-retry engine error (rate-limit /
+   *  overloaded / connection / other) — its `error-stall` marker exists AND its
+   *  broker pid is alive. The otherwise-invisible "stuck, awaiting the daemon's
+   *  auto-revive" window. Mutually exclusive with `streaming` (hanging means the
+   *  turn ended, so `busy` is gone); when set, dashboardRowsAll forces
+   *  `streaming:false`. Computed on the cheap boot path for LIVE nodes only. */
+  hanging?: ErrorStall | null;
   /** True when a viewer (focus row) is attached to the node — i.e. someone has it
    *  open on screen. Set on the cheap boot path from the one listFocuses() query. */
   viewed?: boolean;
@@ -434,6 +446,11 @@ export function dashboardRowsAll(): DashboardRow[] {
   const focusedNodeIds = new Set(listFocuses().map((f) => f.node_id));
   return listNodes().map((row) => {
     const live = row.status === 'active' || row.status === 'idle';
+    // Hanging takes precedence over streaming (mutually exclusive in practice).
+    // Both are LIVE-only and pid-gated off the row's pi_pid — no meta read, so
+    // the cheap-boot contract holds (readErrorStall is one small file read, only
+    // for live nodes, comparable to isStreaming's existsSync).
+    const hanging = live && isPidAlive(row.pi_pid) ? readErrorStall(row.node_id) : null;
     return {
       node_id: row.node_id,
       name: row.name, // handle only; enrichRow upgrades to fullName (meta.description)
@@ -446,7 +463,8 @@ export function dashboardRowsAll(): DashboardRow[] {
       created: row.created,
       lifecycle: row.lifecycle,
       mtimeMs: sessionMtime(row.node_id, row.created),
-      streaming: live ? isStreaming(row.node_id, row.pi_pid) : false,
+      streaming: hanging === null && live ? isStreaming(row.node_id, row.pi_pid) : false,
+      hanging,
       viewed: focusedNodeIds.has(row.node_id),
     };
   });

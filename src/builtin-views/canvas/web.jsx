@@ -21,7 +21,7 @@
  * @module canvas/web
  */
 
-import { relAge } from './core.mjs';
+import { relAge, hangingLabel, hangingCountdown } from './core.mjs';
 import { Loading, Empty, ErrorState, NotReady } from '@crouton-kit/crouter/web';
 
 /** @typedef {import('./core.mjs').CanvasState} CanvasState */
@@ -57,10 +57,11 @@ function TreeRowItem({ row, selected, onClick }) {
       onClick={onClick}
     >
       {row.prefix ? <span className="whitespace-pre text-slate-400">{row.prefix}</span> : null}
-      <span className={STATUS_CLS[row.status] || 'text-slate-400'}>{row.glyph}</span>
+      <span className={row.hanging ? 'font-bold text-amber-500' : (STATUS_CLS[row.status] || 'text-slate-400')}>{row.glyph}</span>
       <span className={nameCls(row.status)}>{row.name}</span>
       <span className="text-slate-400">[{row.kind}/{row.mode}]</span>
       {row.blocked ? <span className="font-bold text-yellow-500">⚑{row.askCount}</span> : null}
+      {row.hanging ? <span className="text-amber-500">{hangingLabel(row.hanging.kind)} · {hangingCountdown(row.hanging.since, now)}</span> : null}
       {age ? <span className="ml-auto shrink-0 text-slate-400">{age}</span> : null}
     </li>
   );

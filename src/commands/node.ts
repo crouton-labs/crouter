@@ -16,6 +16,8 @@ import { readRoadmap } from '../core/runtime/roadmap.js';
 import { parseWhen, parseCadence, cadenceDisplay, type WakeError } from '../core/wake.js';
 
 import { recycleNode } from '../core/runtime/recycle.js';
+import { readErrorStall } from '../core/runtime/error-stall.js';
+import { isPidAlive } from '../core/canvas/pid.js';
 import { detachToBackground, focus as placementFocus, windowAlive, windowOfPane, currentTmux, getPaneOption } from '../core/runtime/placement.js';
 import { buildLaunchSpec, normalizeModel } from '../core/runtime/launch.js';
 import { closeNode } from '../core/runtime/close.js';
@@ -212,15 +214,23 @@ const nodeList = defineLeaf({
       { kind: 'flag', name: 'status', type: 'string', required: false, constraint: 'Filter: active | idle | done | dead | canceled. Comma-separated for several. NOTE: `active` means the engine process is live (never closed), NOT that the node is generating right now — an active node is usually dormant between turns. To tell working-vs-idle, check the pi session-file mtime or CPU, not status.' },
     ],
     output: [
-      { name: 'nodes', type: 'object[]', required: true, constraint: 'Rows: {node_id, name, kind, mode, lifecycle, status, cwd, parent, created}.' },
+      { name: 'nodes', type: 'object[]', required: true, constraint: 'Rows: {node_id, name, kind, mode, lifecycle, status, cwd, parent, created, hanging}. `hanging` is null normally, or {kind, message, since} when the node is PARKED on an exhausted-retry engine error (rate-limit/overloaded/connection/other) — a live broker AND an error-stall marker; the canvas-graph views render it with ⚠ + a countdown to the daemon\'s auto-revive.' },
     ],
     outputKind: 'object',
-    effects: ['Read-only: queries canvas.db.'],
+    effects: ['Read-only: queries canvas.db (+ a pid-gated error-stall marker read for live rows).'],
   },
   run: async (input) => {
     const raw = input['status'] as string | undefined;
     const status = raw !== undefined && raw !== '' ? (raw.split(',').map((s) => s.trim()) as NodeStatus[]) : undefined;
-    const nodes = listNodes(status !== undefined ? { status } : undefined);
+    const rows = listNodes(status !== undefined ? { status } : undefined);
+    // Enrich each LIVE row with its hanging state (error-stall marker, pid-gated
+    // — a stale marker from a crashed broker reads as not-hanging). This is the
+    // data source for the TUI/web `canvas` monitor view.
+    const nodes = rows.map((row) => {
+      const live = row.status === 'active' || row.status === 'idle';
+      const hanging = live && isPidAlive(row.pi_pid) ? readErrorStall(row.node_id) : null;
+      return { ...row, hanging };
+    });
     return { nodes };
   },
 });

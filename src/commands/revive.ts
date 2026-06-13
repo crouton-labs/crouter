@@ -16,6 +16,8 @@ import { reviveNode } from '../core/runtime/revive.js';
 import { listDisconnected, reviveAll } from '../core/runtime/revive-all.js';
 import { waitForBrokerViewSocket } from '../core/runtime/placement.js';
 import { getNode, fullName } from '../core/canvas/index.js';
+import { isPidAlive } from '../core/canvas/pid.js';
+import { readErrorStall } from '../core/runtime/error-stall.js';
 
 // ---------------------------------------------------------------------------
 // revive node
@@ -50,6 +52,14 @@ export const reviveLeaf: LeafDef = defineLeaf({
         required: false,
         default: false,
         constraint: 'When set, start a clean pi session (no --session). Default: resume the saved conversation. Ignored with --all (which always resumes).',
+      },
+      {
+        kind: 'flag',
+        name: 'now',
+        type: 'bool',
+        required: false,
+        default: false,
+        constraint: 'On-demand kick of a HANGING node (parked on an exhausted-retry engine error, broker still alive). Its broker pid is alive, so an ordinary revive no-ops (double-launch guard) — --now SIGTERMs the live broker instead, so the daemon\'s crash→grace→resume path brings it back in ~20s instead of waiting out the 5-min auto-revive grace. Only valid for a node that has an error-stall marker AND a live pid. Mutually exclusive with --all/--fresh.',
       },
       // --force is a DELIBERATELY UNDOCUMENTED confirmation gate for --all (hidden
       // from -h; see FlagParam.hidden). Silas's intent (2026-06-13): a mass revive
@@ -110,6 +120,7 @@ export const reviveLeaf: LeafDef = defineLeaf({
     }
 
     const fresh = (input['fresh'] as boolean | undefined) ?? false;
+    const now = (input['now'] as boolean | undefined) ?? false;
 
     // Validate the node exists before attempting revival.
     const meta = getNode(nodeId);
@@ -119,6 +130,41 @@ export const reviveLeaf: LeafDef = defineLeaf({
         message: `no node: ${nodeId}`,
         next: 'List nodes with `crtr node inspect list`.',
       });
+    }
+
+    // --now: the on-demand kick for a hanging node. The broker is ALIVE (so
+    // reviveNode would no-op the double-launch guard) — SIGTERM it so the daemon's
+    // ordinary crash→grace→resume path recovers it on the saved session, the same
+    // thing the daemon does at the 5-min grace, just on demand. Gated on a live
+    // pid AND an error-stall marker so it can't be used to nuke a healthy node.
+    if (now) {
+      const pid = meta.pi_pid;
+      const stall = readErrorStall(nodeId);
+      if (pid == null || !isPidAlive(pid)) {
+        throw new InputError({
+          error: 'not_hanging',
+          message: `${nodeId} has no live broker — nothing to kick. --now is for a HANGING node (live broker parked on an engine error).`,
+          next: 'Revive a dormant node with `crtr canvas revive ' + nodeId + '` (no --now).',
+        });
+      }
+      if (stall === null) {
+        throw new InputError({
+          error: 'not_hanging',
+          message: `${nodeId} is live but not hanging (no error-stall marker) — --now refuses to SIGTERM a healthy node.`,
+          next: 'Use --now only on a node the canvas shows as hanging (⚠). For a routine relaunch, omit --now.',
+        });
+      }
+      try {
+        process.kill(pid, 'SIGTERM');
+      } catch {
+        /* best-effort: the broker may have just died; the daemon owns the resume */
+      }
+      return {
+        window: null,
+        session: meta.tmux_session ?? null,
+        kicked: true,
+        message: `Sent SIGTERM to ${fullName(meta)} (${nodeId}, pid ${pid}). The daemon will resume it on the saved session within ~20s (crash→grace→resume).`,
+      };
     }
 
     const result = reviveNode(nodeId, { resume: !fresh });

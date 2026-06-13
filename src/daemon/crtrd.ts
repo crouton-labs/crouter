@@ -75,6 +75,8 @@ import {
 } from '../core/canvas/index.js';
 import { transition } from '../core/runtime/lifecycle.js';
 import { isBusy } from '../core/runtime/busy.js';
+import { ERROR_STALL_QUIET_MS } from '../core/runtime/error-stall.js';
+export { ERROR_STALL_QUIET_MS };
 import { isPidAlive } from '../core/canvas/pid.js';
 import { listLivePanes, tearDownNode } from '../core/runtime/placement.js';
 import { reviveNode } from '../core/runtime/revive.js';
@@ -223,13 +225,15 @@ function handleYieldStall(row: NodeRow, pid: number, now: number): void {
   }
 }
 
-// §I error-stall grace: how long a node's session .jsonl must have been QUIET
-// (no append — mtime is the clock, so it survives daemon restarts) before a
-// trailing-error engine is declared wedged and killed. Generous enough that an
-// in-flight recovery (the human re-steering, a parent's message waking a new
-// turn via the live inbox-watcher — both of which append and reset the clock)
-// always wins, while a true zombie recovers in minutes instead of never.
-export const ERROR_STALL_QUIET_MS = 5 * 60_000;
+// §I error-stall grace (ERROR_STALL_QUIET_MS): how long a node's session .jsonl
+// must have been QUIET (no append — mtime is the clock, so it survives daemon
+// restarts) before a trailing-error engine is declared wedged and killed.
+// Generous enough that an in-flight recovery (the human re-steering, a parent's
+// message waking a new turn via the live inbox-watcher — both of which append
+// and reset the clock) always wins, while a true zombie recovers in minutes
+// instead of never. The constant now lives in core/runtime/error-stall.ts (so
+// the render layer can read it without importing the daemon) and is imported
+// above; the §I logic and the marker share one source of truth.
 
 // Per-node SIGTERM timestamps for §I kill escalation, mirroring yieldTermAt.
 const errorTermAt = new Map<string, number>();

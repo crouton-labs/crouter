@@ -118,6 +118,17 @@ export async function runBrowse(opts: { returnPane?: string; cwd?: string } = {}
   // never strand the tty in raw + alt-screen + hidden-cursor.
   process.once('exit', cleanup);
 
+  /** On-demand kick of a hanging node: shell `canvas revive <id> --now` (which
+   *  SIGTERMs the live broker — the daemon resumes it). Synchronous + quiet
+   *  (stdio ignored) so it never takes over the TUI; best-effort. */
+  const reviveNow = (id: string): void => {
+    try {
+      execFileSync('crtr', ['canvas', 'revive', id, '--now'], { stdio: 'ignore' });
+    } catch {
+      /* best-effort — the SIGTERM is what matters; the daemon owns the resume */
+    }
+  };
+
   /** Open the chosen node — the ONLY sanctioned path (reviveNode via node focus). */
   const selectAndFocus = (id: string): never => {
     cleanup();
@@ -416,6 +427,20 @@ export async function runBrowse(opts: { returnPane?: string; cwd?: string } = {}
       state.cursor = 0;
       state.scrollOffset = 0;
       recompute();
+      flush();
+      return;
+    }
+
+    // Revive now (on-demand kick): for a HANGING node, SIGTERM the live broker so
+    // the daemon's crash→grace→resume path brings it back in ~20s instead of
+    // waiting out the 5-min auto-revive grace. Shells `canvas revive <id> --now`
+    // (browse goes through commands, never touching the runtime directly). 'k' is
+    // vim-up here, so the kick is on SHIFT-K.
+    if (input === 'K') {
+      if (row !== undefined) {
+        const r = rowOf(row.id);
+        if (r?.hanging != null) reviveNow(row.id);
+      }
       flush();
       return;
     }

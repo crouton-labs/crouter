@@ -30,6 +30,7 @@ import { buildReviveKickoff, drainBearings } from './kickoff.js';
 import type { WakeOrigin } from './bearings.js';
 import { headlessBrokerHost } from './host.js';
 import { isPidAlive } from '../canvas/pid.js';
+import { clearErrorStall } from './error-stall.js';
 import { clearInjectedDocs } from '../substrate/injected-store.js';
 
 // ---------------------------------------------------------------------------
@@ -145,6 +146,10 @@ export function reviveNode(
   // opens NO viewer — engine-only; existing viewers reconnect, and a viewer-less
   // node is brought on screen by the next `focus`.
   transition(nodeId, 'revive');
+  // Clear any error-stall marker the instant this node is (re)launched — don't
+  // wait for the fresh agent_start. A revive (auto or on-demand) IS the recovery
+  // this marker advertised.
+  clearErrorStall(nodeId);
   // Cancel-on-wake (design §6.4, AC-E1): every revive-for-any-reason (an inbox
   // event, a different wake, a manual focus) drops this node's pending deadline,
   // so the deadline always belongs to the dormancy being left. Writes only the
