@@ -8,8 +8,7 @@
 // `crtr <argv>`. This keeps the menu static while the behaviour stays fully
 // config-driven (no per-node menu rebuild).
 //
-// Two special cases bypass the bind table:
-//   • a digit key 1..9 → focus report N (the Nth live report of the pane node)
+// One special case bypasses the bind table:
 //   • a bind whose `run` is the sentinel `__graph__` → send-keys `/graph` into
 //     the pane (toggles the in-pi GRAPH modal); the menu emits this directly so
 //     the dispatcher only handles it defensively.
@@ -28,7 +27,6 @@ import { nodeInPane } from './node.js';
 import {
   getNode,
   subscribersOf,
-  subscriptionsOf,
   view,
   fullName,
 } from '../core/canvas/index.js';
@@ -88,7 +86,7 @@ export const chordLeaf: LeafDef = defineLeaf({
         name: 'key',
         type: 'string',
         required: true,
-        constraint: 'The chord key pressed after alt+c (e.g. m, e, or a digit 1-9 for focus report N).',
+        constraint: 'The chord key pressed after alt+c (e.g. g or m).',
       },
     ],
     output: [
@@ -111,25 +109,6 @@ export const chordLeaf: LeafDef = defineLeaf({
         message: 'no node found in this pane',
         next: 'Run from inside an agent\'s pane, or pass --pane <pane-id>.',
       });
-    }
-
-    // Digit keys 1..9 → focus the Nth live report (generated, not a bind entry).
-    if (/^[1-9]$/.test(key)) {
-      const n = parseInt(key, 10);
-      const reports = subscriptionsOf(selfId)
-        .map((r) => r.node_id)
-        .filter((id) => {
-          const s = getNode(id)?.status;
-          return s === 'active' || s === 'idle';
-        });
-      const target = reports[n - 1];
-      if (target === undefined) return { ran: false, key, node_id: selfId, action: 'noop' };
-      try {
-        await pexec('crtr', ['node', 'focus', target], { timeout: 15_000 });
-      } catch {
-        /* best-effort */
-      }
-      return { ran: true, key, node_id: selfId, action: `node focus ${target}` };
     }
 
     const bind = readConfig('user').canvasNav.prefixBinds[key];

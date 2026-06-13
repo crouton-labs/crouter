@@ -12,8 +12,8 @@ import assert from 'node:assert/strict';
 import { buildRoot } from '../../build-root.js';
 import type { BranchDef } from '../command.js';
 
-test('every non-hidden listing child declares description + whenToUse', () => {
-  const root = buildRoot();
+test('every non-hidden listing child declares description + whenToUse', async () => {
+  const root = await buildRoot();
   const missing: string[] = [];
 
   const walk = (branch: BranchDef, path: string): void => {

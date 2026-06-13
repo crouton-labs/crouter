@@ -413,8 +413,8 @@ export function sendKeysEnter(pane: string, text: string): boolean {
 const RESERVED_MENU_KEYS = new Set(['o', 'r', 'd', 'D', 'x']);
 
 /** Bind Alt+C to the crouter action menu. Best-effort; false if tmux fails.
- *  The built-in items (promote/demote/detach/close/browse) are static; the canvas-nav
- *  chords (graph/manager/expand/report-N + any custom prefixBind) are appended
+ *  The built-in items (promote/resume/demote/detach/close) are static; the canvas-nav
+ *  chords (default g→graph, m→manager + any custom prefixBind) are appended
  *  from `canvasNav.prefixBinds`, each routed through `crtr canvas chord` (or, for
  *  the `__graph__` sentinel, a `send-keys '/graph'`) so the menu stays static
  *  while behaviour is config-driven. */
@@ -441,7 +441,7 @@ export function installMenuBinding(): boolean {
     { name: 'close agent + subtree',       key: 'x', cmd: `run-shell "crtr node close --pane '#{pane_id}' >/dev/null 2>&1"` },
   ];
 
-  // Canvas-nav chords from config (default: g→graph, m→manager, e→expand). The
+  // Canvas-nav chords from config (default: g→graph, m→manager). The
   // `__graph__` sentinel toggles the in-pi GRAPH modal via send-keys; every
   // other bind shells the chord dispatcher, which resolves the pane's node and
   // interpolates the bind at popup time. Keys colliding with the built-ins are
@@ -456,16 +456,6 @@ export function installMenuBinding(): boolean {
         ? `send-keys -t '#{pane_id}' '/graph' Enter`
         : `run-shell "crtr canvas chord --pane '#{pane_id}' --key ${key} >/dev/null 2>&1"`;
     items.push({ name, key, cmd });
-  }
-
-  // Focus report N: nine generated chord items (1..9), each resolved by the
-  // dispatcher to subscriptionsOf(self)[N-1] at popup time.
-  for (let n = 1; n <= 9; n++) {
-    items.push({
-      name: `focus report ${n}`,
-      key: `${n}`,
-      cmd: `run-shell "crtr canvas chord --pane '#{pane_id}' --key ${n} >/dev/null 2>&1"`,
-    });
   }
 
   // Alt+C TOGGLE: re-pressing Alt+C while the menu is open should DISMISS it.
