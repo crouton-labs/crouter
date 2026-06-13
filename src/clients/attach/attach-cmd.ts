@@ -226,6 +226,9 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
   let role: ClientRole = observer ? 'observer' : 'controller';
   let brokerAgentDir: string | undefined;
   let liveState: BrokerSnapshot['state'] | undefined;
+  // Shell/bash mode: the editor text leads with `!`. Tracks pi's interactive
+  // `isBashMode`, which recolors the editor border green as a visual cue (#7).
+  let bashMode = false;
   let notice = '';
   // Live context occupancy for the footer: `contextTokens` is the prompt-token
   // count of the most recent assistant turn (input + cacheRead + cacheWrite =
@@ -427,16 +430,36 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
   // routing (T6) reads `state.isStreaming`, so this must stay current — the
   // broker only ships full state in `welcome`, so we patch isStreaming/name/etc
   // from the relayed event stream below.
+  // Paint the editor border + title chip. Shell/bash mode (leading `!`) wins and
+  // forces the whole frame green (#7); otherwise the hue tracks the thinking
+  // level. One place so the onChange bash toggle and live-state updates agree.
+  const paintEditorFrame = (): void => {
+    if (bashMode) {
+      editor.borderColor = pal.bashMode;
+      editor.titleStyle = (s) => `\x1b[42m\x1b[97m\x1b[1m ${s} \x1b[0m`;
+    } else {
+      editor.borderColor = thinkingBorderColor(liveState?.thinkingLevel, pal.border);
+      // Title chip background = the same thinking-level color (bold white text),
+      // so the name chip and the border rule read as one hue.
+      editor.titleStyle = thinkingTitleStyle(liveState?.thinkingLevel, defaultTitleStyle);
+    }
+  };
+  // Recolor the editor when `!` enters/leaves the front of the input (#7). pi's
+  // interactive mode does the same off `editor.onChange`.
+  editor.onChange = (text: string): void => {
+    const next = text.trimStart().startsWith('!');
+    if (next === bashMode) return;
+    bashMode = next;
+    paintEditorFrame();
+    tui.requestRender();
+  };
   const setLiveState = (state: BrokerSnapshot['state']): void => {
     liveState = state;
     input.setState(state);
     // The session name lives in the editor's top border (solid chip); the border
     // color tracks the agent's thinking level. Both follow live state.
     editor.title = state.sessionName ? `⬢ ${state.sessionName}` : '';
-    editor.borderColor = thinkingBorderColor(state.thinkingLevel, pal.border);
-    // Title chip background = the same thinking-level color (bold white text), so
-    // the name chip and the border rule read as one hue.
-    editor.titleStyle = thinkingTitleStyle(state.thinkingLevel, defaultTitleStyle);
+    paintEditorFrame();
     renderFooter();
     // Panel liveness rides the relayed event stream (agent_start/agent_end/
     // queue_update/session_info_changed all patch state through here) plus the
