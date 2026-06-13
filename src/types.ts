@@ -85,6 +85,17 @@ export interface CanvasNavConfig {
   graphBinds: Record<string, CanvasBind>;
 }
 
+export type ModelStrength = 'ultra' | 'strong' | 'medium' | 'light';
+export type ModelProvider = 'anthropic' | 'openai';
+
+export interface ModelLaddersConfig {
+  /** Optional default provider for bare strengths. If unset, runtime falls back
+   *  to CRTR_MODEL_PROVIDER, then anthropic. */
+  defaultProvider?: ModelProvider;
+  anthropic: Record<ModelStrength, string>;
+  openai: Record<ModelStrength, string>;
+}
+
 export interface ScopeConfig {
   schema_version: number;
   marketplaces: Record<string, ConfigMarketplaceEntry>;
@@ -92,6 +103,8 @@ export interface ScopeConfig {
   auto_update: AutoUpdateConfig;
   max_panes_per_window: number;
   canvasNav: CanvasNavConfig;
+  modelLadders: ModelLaddersConfig;
+  personaStrengths: Record<string, ModelStrength>;
 }
 
 export interface ScopeState {
@@ -179,6 +192,8 @@ export function defaultScopeConfig(): ScopeConfig {
     auto_update: { crtr: 'notify', content: 'notify', interval_hours: 24 },
     max_panes_per_window: DEFAULT_MAX_PANES_PER_WINDOW,
     canvasNav: defaultCanvasNavConfig(),
+    modelLadders: defaultModelLaddersConfig(),
+    personaStrengths: {},
   };
 }
 
@@ -194,6 +209,23 @@ export function defaultCanvasNavConfig(): CanvasNavConfig {
       m: { run: 'node focus {manager}', desc: 'focus manager' },
     },
     graphBinds: {},
+  };
+}
+
+export function defaultModelLaddersConfig(): ModelLaddersConfig {
+  return {
+    anthropic: {
+      ultra: 'anthropic/claude-fable-5:high',
+      strong: 'anthropic/claude-opus-4-8:high',
+      medium: 'anthropic/claude-sonnet-4-6:high',
+      light: 'anthropic/claude-haiku-4-5:high',
+    },
+    openai: {
+      ultra: 'openai-codex/gpt-5.5:xhigh',
+      strong: 'openai-codex/gpt-5.5:high',
+      medium: 'openai-codex/gpt-5.4-mini:medium',
+      light: 'openai-codex/gpt-5.3-codex-spark',
+    },
   };
 }
 

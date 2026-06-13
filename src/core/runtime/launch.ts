@@ -7,14 +7,17 @@
 // The spec is rewritten on every polymorph (base→orchestrator) so a node
 // always comes back as its *current* self.
 
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readConfig, configPath as userConfigPath } from '../config.js';
 import { resolve as resolvePersona } from '../personas/index.js';
 import { nodeEnv } from './nodes.js';
 import { editorLabel } from '../canvas/index.js';
 import { nodeDir } from '../canvas/paths.js';
+import { defaultScopeConfig } from '../../types.js';
 import type { NodeMeta, LaunchSpec, Mode, Lifecycle } from '../canvas/index.js';
+import type { ModelProvider, ModelStrength, ScopeConfig } from '../../types.js';
 
 // ---------------------------------------------------------------------------
 // The two canvas pi-extensions every node loads. They self-gate on the live
@@ -77,46 +80,64 @@ export const CANVAS_EXTENSIONS = [
 // A persona declares ONE `model:` field valued `provider/strength` (e.g.
 // `openai/strong`, `anthropic/light`). The provider is a fixed per-persona
 // property; the caller/persona thinks only in strength; the concrete model id
-// AND the thinking level both fall out of the per-provider ladder below. pi
-// accepts the `:thinking` suffix on `--model` (off,minimal,low,medium,high,
+// AND the thinking level both fall out of the per-provider ladder below. The
+// ladder itself and the default provider are user-configurable in config.json;
+// pi accepts the `:thinking` suffix on `--model` (off,minimal,low,medium,high,
 // xhigh — confirmed via `pi --help`), so the resolved spec is exactly the
 // string buildPiArgv passes to `--model`; no extra launch plumbing.
 // ---------------------------------------------------------------------------
 
-/** The four named strengths, descending. */
-type Strength = 'ultra' | 'strong' | 'medium' | 'light';
+/** Cached user config for model resolution. The launch path is hot and reads
+ *  config synchronously, so cache the merged config and invalidate on mtime/size
+ *  changes rather than rereading on every normalizeModel/buildLaunchSpec call. */
+let cachedUserConfig: { path: string; mtimeMs: number; size: number; config: ScopeConfig } | null = null;
 
-/** Anthropic ladder: vary the model, thinking always `high`. Every id is a
- *  verified registry id (`pi --list-models`) — an unversioned/bogus spec
- *  silently falls back to the SDK default, so these must be exact. */
-const ANTHROPIC_LADDER: Record<Strength, string> = {
-  ultra: 'anthropic/claude-fable-5:high',
-  strong: 'anthropic/claude-opus-4-8:high',
-  medium: 'anthropic/claude-sonnet-4-6:high',
-  light: 'anthropic/claude-haiku-4-5:high',
-};
+function readUserConfigCached(): ScopeConfig {
+  const path = userConfigPath('user');
+  if (path === null) return defaultScopeConfig();
+  try {
+    const stat = statSync(path);
+    if (
+      cachedUserConfig !== null &&
+      cachedUserConfig.path === path &&
+      cachedUserConfig.mtimeMs === stat.mtimeMs &&
+      cachedUserConfig.size === stat.size
+    ) {
+      return cachedUserConfig.config;
+    }
+    const config = readConfig('user');
+    cachedUserConfig = { path, mtimeMs: stat.mtimeMs, size: stat.size, config };
+    return config;
+  } catch {
+    cachedUserConfig = null;
+    return defaultScopeConfig();
+  }
+}
 
-/** OpenAI ladder, served by the `openai-codex` provider (ChatGPT-subscription
- *  auth in pi's auth.json), NOT `openai` (which needs OPENAI_API_KEY / paid
- *  Platform credits). `light` is codex-spark, which has no thinking support
- *  (`pi --list-models` shows thinking=no), so it is left bare. We deliberately
- *  never use the plain gpt-5.4. */
-const OPENAI_LADDER: Record<Strength, string> = {
-  ultra: 'openai-codex/gpt-5.5:xhigh',
-  strong: 'openai-codex/gpt-5.5:high',
-  medium: 'openai-codex/gpt-5.4-mini:medium',
-  light: 'openai-codex/gpt-5.3-codex-spark',
-};
+const DEFAULT_MODEL_LADDERS = defaultScopeConfig().modelLadders;
+
+function modelLadders(): ScopeConfig['modelLadders'] {
+  return readUserConfigCached().modelLadders ?? DEFAULT_MODEL_LADDERS;
+}
+
+function ladderFor(provider: ModelProvider, ladders: ScopeConfig['modelLadders'] = modelLadders()): Record<ModelStrength, string> {
+  return ladders[provider];
+}
 
 /** Env var naming the DEFAULT provider for an UNqualified bare strength only.
  *  `CRTR_MODEL_PROVIDER=openai` (case-insensitive) makes a bare `strong` resolve
- *  on the OpenAI ladder; anything else defaults to Anthropic. A qualified
- *  `provider/strength`, a concrete `provider/id` spec, and the bare family
- *  aliases all ignore this env. */
+ *  on the OpenAI ladder; anything else defaults to Anthropic. A configured
+ *  defaultProvider in config.json wins over this env. */
 export const OPENAI_PROVIDER_ENV = 'CRTR_MODEL_PROVIDER';
 
+function defaultProvider(): ModelProvider {
+  const cfgProvider = readUserConfigCached().modelLadders.defaultProvider;
+  if (cfgProvider === 'anthropic' || cfgProvider === 'openai') return cfgProvider;
+  return (process.env[OPENAI_PROVIDER_ENV] ?? '').toLowerCase() === 'openai' ? 'openai' : 'anthropic';
+}
+
 /** Strength synonyms accepted from personas/callers. */
-const STRENGTH_ALIASES: Record<string, Strength> = {
+const STRENGTH_ALIASES: Record<string, ModelStrength> = {
   ultra: 'ultra',
   strong: 'strong',
   medium: 'medium',
@@ -125,14 +146,6 @@ const STRENGTH_ALIASES: Record<string, Strength> = {
   weak: 'light',
 };
 
-function ladderFor(provider: 'anthropic' | 'openai'): Record<Strength, string> {
-  return provider === 'openai' ? OPENAI_LADDER : ANTHROPIC_LADDER;
-}
-
-function defaultProvider(): 'anthropic' | 'openai' {
-  return (process.env[OPENAI_PROVIDER_ENV] ?? '').toLowerCase() === 'openai' ? 'openai' : 'anthropic';
-}
-
 /** Resolve a persona/caller `model:` token to the concrete `model:thinking`
  *  spec pi gets via `--model`, in order:
  *   1. `provider/rest` — apply strength aliases to `rest`; if `provider` is
@@ -140,11 +153,13 @@ function defaultProvider(): 'anthropic' | 'openai' {
  *      (the word `openai` maps to the openai-codex ladder). Otherwise it is a
  *      concrete `provider/id` (incl. any `:thinking` suffix) → pass through.
  *   2. Bare strength (incl. aliases normal/weak) → the default-provider ladder
- *      cell (default provider from CRTR_MODEL_PROVIDER, else anthropic).
+ *      cell (config default provider, then CRTR_MODEL_PROVIDER, else anthropic).
  *   3. Bare family alias (opus/sonnet/haiku) → the Anthropic ladder's
- *      strong/medium/light, ALWAYS anthropic (ignores the env).
+ *      strong/medium/light, ALWAYS anthropic (ignores the env/config default).
  *   4. Anything else → pass through unchanged. */
 export function normalizeModel(model: string): string {
+  const ladders = modelLadders();
+
   // 1. Qualified provider/rest.
   if (model.includes('/')) {
     const slash = model.indexOf('/');
@@ -152,7 +167,7 @@ export function normalizeModel(model: string): string {
     const rest = model.slice(slash + 1);
     const strength = STRENGTH_ALIASES[rest];
     if (strength !== undefined && (provider === 'anthropic' || provider === 'openai')) {
-      return ladderFor(provider)[strength];
+      return ladderFor(provider as ModelProvider, ladders)[strength];
     }
     // Concrete `provider/id` (optionally `...:thinking`) — pass through.
     return model;
@@ -160,12 +175,12 @@ export function normalizeModel(model: string): string {
 
   // 2. Bare strength → default-provider ladder.
   const strength = STRENGTH_ALIASES[model];
-  if (strength !== undefined) return ladderFor(defaultProvider())[strength];
+  if (strength !== undefined) return ladderFor(defaultProvider(), ladders)[strength];
 
   // 3. Bare family alias → always Anthropic.
-  if (model === 'opus') return ANTHROPIC_LADDER.strong;
-  if (model === 'sonnet') return ANTHROPIC_LADDER.medium;
-  if (model === 'haiku') return ANTHROPIC_LADDER.light;
+  if (model === 'opus') return ladders.anthropic.strong;
+  if (model === 'sonnet') return ladders.anthropic.medium;
+  if (model === 'haiku') return ladders.anthropic.light;
 
   // 4. Unknown — pass through.
   return model;
@@ -188,10 +203,14 @@ export function buildLaunchSpec(
   opts: { lifecycle: Lifecycle; hasManager: boolean; extraEnv?: Record<string, string>; model?: string },
 ): { launch: LaunchSpec; lifecycle: 'terminal' | 'resident'; skills: string[] } {
   const p = resolvePersona(kind, mode, { lifecycle: opts.lifecycle, hasManager: opts.hasManager });
-  // A caller-supplied override (durable on `meta.model_override`, re-passed on
-  // every polymorph) wins over the persona's declared default; absent both, the
-  // model is left unset and the node inherits pi's default.
-  const chosenModel = opts.model ?? p.model;
+  const cfg = readUserConfigCached();
+  // Precedence, from strongest to weakest:
+  // 1. Caller-supplied override (durable on `meta.model_override`, re-passed on
+  //    every polymorph).
+  // 2. Configured persona strength for this kind.
+  // 3. The persona file's own frontmatter model.
+  // 4. Unset → pi default.
+  const chosenModel = opts.model ?? cfg.personaStrengths[kind] ?? p.model;
   const launch: LaunchSpec = {
     model: chosenModel !== undefined ? normalizeModel(chosenModel) : undefined,
     tools: p.tools,

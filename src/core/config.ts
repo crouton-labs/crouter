@@ -1,6 +1,6 @@
 import { join } from 'node:path';
-import { CONFIG_FILE, STATE_FILE, defaultScopeConfig, defaultScopeState, defaultCanvasNavConfig } from '../types.js';
-import type { Scope, ScopeConfig, ScopeState, CanvasNavConfig, CanvasBind } from '../types.js';
+import { CONFIG_FILE, STATE_FILE, defaultScopeConfig, defaultScopeState, defaultCanvasNavConfig, defaultModelLaddersConfig } from '../types.js';
+import type { Scope, ScopeConfig, ScopeState, CanvasNavConfig, CanvasBind, ModelLaddersConfig, ModelStrength } from '../types.js';
 import { readJsonIfExists, writeJson, ensureDir } from './fs-utils.js';
 import { scopeRoot, requireScopeRoot } from './scope.js';
 
@@ -101,6 +101,40 @@ function mergeCanvasNav(raw: unknown): CanvasNavConfig {
   };
 }
 
+function mergeModelLadders(raw: unknown): ModelLaddersConfig {
+  const defaults = defaultModelLaddersConfig();
+  if (raw === null || typeof raw !== 'object') return defaults;
+  const r = raw as Partial<ModelLaddersConfig>;
+  const out: ModelLaddersConfig = {
+    anthropic: { ...defaults.anthropic },
+    openai: { ...defaults.openai },
+  };
+  if (r.defaultProvider === 'anthropic' || r.defaultProvider === 'openai') {
+    out.defaultProvider = r.defaultProvider;
+  }
+  for (const provider of ['anthropic', 'openai'] as const) {
+    const over = r[provider];
+    if (over === null || typeof over !== 'object') continue;
+    for (const [strength, value] of Object.entries(over)) {
+      if ((strength === 'ultra' || strength === 'strong' || strength === 'medium' || strength === 'light') && typeof value === 'string') {
+        out[provider][strength as keyof typeof out[typeof provider]] = value;
+      }
+    }
+  }
+  return out;
+}
+
+function mergePersonaStrengths(raw: unknown): Record<string, ModelStrength> {
+  const out: Record<string, ModelStrength> = {};
+  if (raw === null || typeof raw !== 'object') return out;
+  for (const [persona, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (value === 'ultra' || value === 'strong' || value === 'medium' || value === 'light') {
+      out[persona] = value;
+    }
+  }
+  return out;
+}
+
 function normalizeMode(value: unknown, fallback: ScopeConfig['auto_update']['crtr']): ScopeConfig['auto_update']['crtr'] {
   if (value === true) return 'notify';
   if (value === false) return false;
@@ -131,7 +165,9 @@ function mergeConfig(partial: Partial<ScopeConfig>): ScopeConfig {
       ? Math.floor(rawMaxPanes)
       : defaults.max_panes_per_window;
   const canvasNav = mergeCanvasNav(partial.canvasNav);
-  return { schema_version, marketplaces, plugins, auto_update, max_panes_per_window, canvasNav };
+  const modelLadders = mergeModelLadders(partial.modelLadders);
+  const personaStrengths = mergePersonaStrengths(partial.personaStrengths);
+  return { schema_version, marketplaces, plugins, auto_update, max_panes_per_window, canvasNav, modelLadders, personaStrengths };
 }
 
 export function updateConfig(scope: Scope, mutate: (cfg: ScopeConfig) => void): ScopeConfig {
