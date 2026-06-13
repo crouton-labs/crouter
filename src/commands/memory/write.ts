@@ -48,7 +48,7 @@ export const writeLeaf = defineLeaf({
       { name: 'name', type: 'string', required: true, constraint: 'The path-derived document name written.' },
       { name: 'kind', type: 'string', required: true, constraint: 'Kind recorded in frontmatter.' },
       { name: 'scope', type: 'string', required: true, constraint: 'Scope the document was written to: user or project.' },
-      { name: 'path', type: 'string', required: true, constraint: 'Absolute path to the written document.' },
+      { name: 'path', type: 'string', required: true, constraint: 'Absolute path to the written document — edit this file directly for later body tweaks instead of re-running write.' },
       { name: 'created', type: 'boolean', required: true, constraint: 'true when a new document was created, false when an existing one was updated in place.' },
       { name: 'follow_up', type: 'string', required: true, constraint: 'Concrete next commands — read it back or list the inventory.' },
     ],
@@ -121,7 +121,7 @@ export const writeLeaf = defineLeaf({
       scope,
       path,
       created,
-      follow_up: `Read it back with \`crtr memory read ${name}\`, or browse the inventory with \`crtr memory list\`.`,
+      follow_up: `Read it back with \`crtr memory read ${name}\`, edit ${path} directly for later tweaks, or browse the inventory with \`crtr memory list\`.`,
     };
   },
 });

@@ -23,7 +23,7 @@ export const readLeaf = defineLeaf({
       { name: 'name', type: 'string', required: true, constraint: 'Resolved document name.' },
       { name: 'kind', type: 'string', required: true, constraint: 'Resolved kind: knowledge or preference.' },
       { name: 'scope', type: 'string', required: true, constraint: 'Scope the document was resolved from: project, user, or builtin.' },
-      { name: 'path', type: 'string', required: true, constraint: 'Absolute path to the document on disk.' },
+      { name: 'path', type: 'string', required: true, constraint: 'Absolute path to the document on disk — edit this file directly to tweak the doc in place.' },
       { name: 'content', type: 'string', required: true, constraint: 'Document body. Frontmatter stripped unless --frontmatter is set.' },
       { name: 'follow_up', type: 'string', required: true, constraint: 'Hints at variant flags or next commands.' },
     ],
@@ -62,7 +62,7 @@ export const readLeaf = defineLeaf({
           scope: doc.scope,
           path: doc.path,
           content,
-          follow_up: 'Add --frontmatter to include the YAML header. Browse the inventory with `crtr memory list`.',
+          follow_up: 'Add --frontmatter to include the YAML header, or edit `path` directly to tweak the doc. Browse the inventory with `crtr memory list`.',
         };
       }
     }

@@ -17,7 +17,7 @@ export const listLeaf = defineLeaf({
       { kind: 'flag', name: 'scope', type: 'enum', choices: [...MEMORY_SCOPES], required: false, constraint: 'Filter to a single scope. Default: all resolved scopes.' },
     ],
     output: [
-      { name: 'items', type: 'object[]', required: true, constraint: 'One row per document. Each: {name, title, short_form, kind, scope, is_dir}. A directory INDEX.md surfaces as a dir entry (is_dir true, name = the directory path with a trailing slash); is_dir is false for an ordinary doc. short_form is the abbreviated hook — shown here and nowhere else. Sorted by scope then kind then name ascending.' },
+      { name: 'items', type: 'object[]', required: true, constraint: 'One row per document. Each: {name, title, short_form, kind, scope, path, is_dir}. path is the absolute file on disk — edit it directly to tweak the doc. A directory INDEX.md surfaces as a dir entry (is_dir true, name = the directory path with a trailing slash, path = its INDEX.md); is_dir is false for an ordinary doc. short_form is the abbreviated hook — shown here and nowhere else. Sorted by scope then kind then name ascending.' },
       { name: 'follow_up', type: 'string', required: true, constraint: 'Concrete next commands — read a document in full or narrow the inventory.' },
     ],
     outputKind: 'object',
@@ -35,6 +35,7 @@ export const listLeaf = defineLeaf({
       name: string;
       kind: string;
       scope: Scope;
+      path: string;
       shortForm: string;
       isDir: boolean;
     }
@@ -58,7 +59,7 @@ export const listLeaf = defineLeaf({
       // slash, flagged is_dir, so the inventory distinguishes it from a doc.
       const isDir = isIndexName(sub.name);
       const name = isDir ? indexDirOf(sub.name) + '/' : sub.name;
-      addItem({ name, kind: sub.kind, scope: sub.scope, shortForm: sub.shortForm, isDir });
+      addItem({ name, kind: sub.kind, scope: sub.scope, path: sub.path, shortForm: sub.shortForm, isDir });
     }
 
     items.sort((a, b) => {
@@ -76,10 +77,11 @@ export const listLeaf = defineLeaf({
         short_form: d.shortForm,
         kind: d.kind,
         scope: d.scope,
+        path: d.path,
         is_dir: d.isDir,
       })),
       follow_up:
-        'Read one in full with `crtr memory read <name>`. Narrow with --kind / --scope, or search a topic with `crtr memory find <query>`.',
+        'Read one in full with `crtr memory read <name>`, or edit its `path` directly to tweak it. Narrow with --kind / --scope, or search a topic with `crtr memory find <query>`.',
     };
   },
 });

@@ -76,7 +76,7 @@ export const findLeaf = defineLeaf({
     ],
     output: [
       { name: 'query', type: 'string', required: true, constraint: 'Echo of the input query.' },
-      { name: 'hits', type: 'object[]', required: true, constraint: 'Ranked mode — each: {name, kind, scope, score, short_form}, sorted by score descending. Under --grep instead — each: {path, line, text} for every body line matching the regex, sorted by path then line ascending.' },
+      { name: 'hits', type: 'object[]', required: true, constraint: 'Ranked mode — each: {name, kind, scope, path, score, short_form}, sorted by score descending; path is the absolute file on disk — edit it directly to tweak the doc. Under --grep instead — each: {path, line, text} for every body line matching the regex, sorted by path then line ascending.' },
       { name: 'follow_up', type: 'string', required: true, constraint: 'Concrete next commands for reading a hit in full or refining the search.' },
     ],
     outputKind: 'object',
@@ -154,10 +154,11 @@ export const findLeaf = defineLeaf({
         name: h.unit.name,
         kind: h.unit.kind,
         scope: h.unit.scope,
+        path: h.unit.path,
         score: h.score,
         short_form: h.unit.shortForm,
       })),
-      follow_up: 'Read a hit in full with `crtr memory read <name>`. Add --body to weigh body text, or --grep for an exact regex.',
+      follow_up: 'Read a hit in full with `crtr memory read <name>`, or edit its `path` directly to tweak it. Add --body to weigh body text, or --grep for an exact regex.',
     };
   },
 });
