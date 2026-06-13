@@ -111,6 +111,14 @@ function tierFor(kind: PushKind): InboxTier {
  *   (c) If kind === 'final', mark the node done.
  */
 export async function push(nodeId: string, opts: PushOpts): Promise<PushResult> {
+  // A report MUST belong to a node. An empty nodeId would resolve reportsDir('')
+  // to `nodes/reports` and silently mint a stray non-node sibling under nodes/
+  // (the latent corruption behind the full-tier flake on CI run 27459304455).
+  // Refuse it loudly at the boundary so a bad caller surfaces with a stack
+  // instead of writing garbage.
+  if (!nodeId) {
+    throw new Error(`push: empty nodeId (kind=${opts.kind}) — a report must belong to a node`);
+  }
   const { kind, body } = opts;
   const from = opts.from ?? nodeId;
   const now = new Date();

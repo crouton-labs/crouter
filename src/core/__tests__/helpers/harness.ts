@@ -364,7 +364,13 @@ export async function createHarness(opts: HarnessOpts = {}): Promise<Harness> {
   }
   function nodeDirs(): string[] {
     try {
-      return readdirSync(join(home, 'nodes'));
+      // Node ids are minted by newNodeId() (runtime/nodes.ts) as `<base36-ts>-<8
+      // hex>`. Scope the scan to that shape so a stray non-node sibling under
+      // nodes/ is never miscounted as a new node dir — e.g. a `reports/` dir
+      // created for an empty node id (the rare CI flake on full-tier run
+      // 27459304455 that broke the spawn counters with
+      // `expected exactly 1 new node dir, got [<id>, reports]`).
+      return readdirSync(join(home, 'nodes')).filter((d) => /^[0-9a-z]+-[0-9a-f]{8}$/.test(d));
     } catch {
       return [];
     }

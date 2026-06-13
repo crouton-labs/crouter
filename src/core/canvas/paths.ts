@@ -88,6 +88,12 @@ export function injectedDocsPath(nodeId: string): string {
 
 /** Create the full directory skeleton for a node. Idempotent. */
 export function ensureNodeDirs(nodeId: string): void {
+  // Refuse an empty nodeId: it would mint stray `nodes/context`, `nodes/job`,
+  // `nodes/reports` siblings (non-node entries the test harness's node-dir
+  // scan would miscount). A node skeleton must belong to a real node id.
+  if (!nodeId) {
+    throw new Error('ensureNodeDirs: empty nodeId — refusing to create stray node-skeleton dirs under nodes/');
+  }
   for (const d of [contextDir(nodeId), jobDir(nodeId), reportsDir(nodeId)]) {
     mkdirSync(d, { recursive: true });
   }
