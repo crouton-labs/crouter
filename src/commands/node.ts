@@ -17,8 +17,9 @@ import { parseWhen, parseCadence, cadenceDisplay, type WakeError } from '../core
 
 import { recycleNode } from '../core/runtime/recycle.js';
 import { detachToBackground, focus as placementFocus, windowAlive, windowOfPane, currentTmux, getPaneOption } from '../core/runtime/placement.js';
-import { buildLaunchSpec } from '../core/runtime/launch.js';
+import { buildLaunchSpec, normalizeModel } from '../core/runtime/launch.js';
 import { closeNode } from '../core/runtime/close.js';
+import { isBrokerLive, setModelLive, persistDormantModel } from '../core/runtime/model-swap.js';
 import { appendInbox, type InboxTier } from '../core/feed/inbox.js';
 import { availableKinds, kindWhenToUse, subPersonasFor } from '../core/personas/index.js';
 import { stateBlock } from '../core/help.js';
@@ -470,6 +471,77 @@ const nodeClose = defineLeaf({
     const spared = (r['spared'] as string[] | undefined)?.length ?? 0;
     return `Closed ${r['node_id']} and its exclusive subtree — ${r['count']} node(s) closed${spared > 0 ? `, ${spared} spared (still managed from outside the subtree)` : ''}.`;
   },
+});
+
+// ---------------------------------------------------------------------------
+// node model — headless live model/provider swap for a node (no viewer attach)
+// ---------------------------------------------------------------------------
+
+const nodeModel = defineLeaf({
+  name: 'model',
+  description: 'swap a node\'s model/provider headlessly (durable, survives revives)',
+  whenToUse: 'you want to change which model (and thus provider) a node runs on WITHOUT opening its viewer — flip a running node to a stronger/cheaper model or a different provider, or repin a dormant node\'s model before its next revive. The choice is durable: it survives revives and polymorphs. This is the headless twin of the in-viewer `/model` slash command; reach for `node promote --model` instead when you are also changing a node\'s role',
+  help: {
+    name: 'node model',
+    summary: 'swap a node\'s model headlessly — if its broker is live, drive the switch over view.sock (no viewer attached); if dormant, repin its durable recipe for the next revive. The choice persists across revives either way.',
+    params: [
+      { kind: 'positional', name: 'spec', required: true, constraint: 'Model query: an exact `provider/id` (e.g. `openai-codex/gpt-5.5`), a capability tier (`ultra|strong|medium|light`), a bare family alias (`opus|sonnet|haiku`), or a free-text substring matched against the live registry. A free-text substring only resolves against a LIVE broker; a dormant node needs a concrete `provider/id` (or a tier/alias).' },
+      { kind: 'flag', name: 'node', type: 'string', required: false, constraint: 'Node to repoint. Defaults to the node occupying --pane (or your current pane).' },
+      { kind: 'flag', name: 'pane', type: 'string', required: false, constraint: 'tmux pane id whose node to repoint. Defaults to $TMUX_PANE / your current pane.' },
+    ],
+    output: [
+      { name: 'node_id', type: 'string', required: true, constraint: 'The node whose model was swapped.' },
+      { name: 'model', type: 'string', required: true, constraint: 'The resolved model — a concrete `provider/id` for a live broker (registry-resolved) or the normalized recipe value for a dormant node.' },
+      { name: 'applied', type: 'string', required: true, constraint: '"live" (the running broker switched immediately and persisted it) or "next-revive" (the dormant node\'s recipe was repinned; takes effect when it next revives).' },
+    ],
+    outputKind: 'object',
+    effects: [
+      'LIVE broker: connects to the node\'s view.sock, claims controller, and drives `set_model` on the running engine; the broker persists the choice (model_override + launch.model) itself.',
+      'DORMANT node: writes model_override + launch.model directly into the node\'s durable recipe — no engine runs until its next revive.',
+    ],
+  },
+  run: async (input) => {
+    const pane = (input['pane'] as string | undefined) ?? process.env['TMUX_PANE'];
+    let id = input['node'] as string | undefined;
+    if (id === undefined || id === '') id = nodeInPane(pane);
+    if (id === undefined || id === '') {
+      throw new InputError({ error: 'no_node', message: 'no node found in this pane to repoint', next: 'Pass --node <id>, or run from inside the agent\'s pane.' });
+    }
+    const meta = getNode(id);
+    if (meta === null) {
+      throw new InputError({ error: 'not_found', message: `no node: ${id}`, next: 'List nodes with `crtr node inspect list`.' });
+    }
+    const spec = ((input['spec'] as string | undefined) ?? '').trim();
+    if (spec === '') {
+      throw new InputError({ error: 'empty_spec', message: 'a model spec is required', field: 'spec', next: 'Pass a `provider/id`, a tier (ultra|strong|medium|light), an alias (opus|sonnet|haiku), or a substring.' });
+    }
+
+    if (isBrokerLive(meta)) {
+      // Live: drive the running engine over its socket. The broker resolves the
+      // query against the live registry (substrings included) and persists.
+      let model: string;
+      try {
+        model = await setModelLive(id, spec);
+      } catch (err) {
+        throw new InputError({ error: 'switch_failed', message: `live model switch failed: ${err instanceof Error ? err.message : String(err)}`, next: 'Check the spec resolves (`provider/id`, tier, alias, or a substring of a registered model).' });
+      }
+      return { node_id: id, model, applied: 'live' };
+    }
+
+    // Dormant: no live registry to search, so normalizeModel only maps
+    // tiers/aliases. A bare substring that isn't a tier/alias can't resolve to a
+    // concrete id offline — reject rather than write a meaningless override.
+    const normalized = normalizeModel(spec);
+    if (!normalized.includes('/')) {
+      throw new InputError({ error: 'unresolvable_dormant', message: `'${spec}' does not resolve to a concrete model for a dormant node`, field: 'spec', next: 'Pass an exact `provider/id` (e.g. openai-codex/gpt-5.5) or a tier/alias — the live registry search is only available while the node\'s broker is up.' });
+    }
+    persistDormantModel(id, normalized);
+    return { node_id: id, model: normalized, applied: 'next-revive' };
+  },
+  render: (r) =>
+    r['applied'] === 'live'
+      ? `Switched ${r['node_id']} to ${r['model']} (live — applied now and persisted).`
+      : `Repinned ${r['node_id']} to ${r['model']} (applies on next revive).`,
 });
 
 // ---------------------------------------------------------------------------
@@ -1426,6 +1498,6 @@ export function registerNode(): BranchDef {
         'HOW: `crtr node new "<task>" --kind <kind>` returns a node id immediately and runs the worker as a detached headless broker (no window opens; open a viewer on demand with `crtr node focus`). Match the kind to the work (see `node new -h`). You are woken when a child finishes — the wake message ALREADY IS the coalesced digest (the watcher drains your inbox to wake you), so don\'t re-run `crtr feed read` to "open" it (it would read empty, the cursor already advanced); instead dereference the report paths in that digest that matter, don\'t act on a one-line label. (`crtr feed read` is for proactively polling before a wake, or inspecting a child\'s inbox via `--node`; `--all` re-reads history with full message bodies.) Integrate, then either delegate the next units or finish.\n\n' +
         'FINISH: a worker ends its own work with `crtr push final "<result>"` (writes the canonical result, marks done, closes the window) — stopping without it is not finishing. For a job too big for one context window, `node promote` to an orchestrator (holds a roadmap, delegates phases); when context fills, `node yield` to refresh against that roadmap.',
     },
-    children: [nodeNew, nodeInspect, nodeFocus, nodeCycle, nodeRecycle, nodeClose, nodeMsg, nodeSubscribe, nodeUnsubscribe, nodePromote, nodeDemote, nodeLifecycle, nodeYield, nodeWake],
+    children: [nodeNew, nodeInspect, nodeFocus, nodeCycle, nodeRecycle, nodeClose, nodeMsg, nodeModel, nodeSubscribe, nodeUnsubscribe, nodePromote, nodeDemote, nodeLifecycle, nodeYield, nodeWake],
   });
 }
