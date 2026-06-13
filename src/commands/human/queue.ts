@@ -95,23 +95,15 @@ export async function finalizeResolvedInteraction(jobId: string): Promise<boolea
   const completedAt = (resp['completedAt'] as string | undefined) ?? new Date().toISOString();
   const summary = summarizeResponses(responses);
 
-  if (rc.mode === 'approve') {
-    const sel = responses.find((r) => r.id === rc.approve_iid)?.selectedOptionId;
-    await pushFinal(
-      jobId,
-      JSON.stringify({ approved: sel === 'yes', summary, responses, responsePath: responsePath(idir), completedAt }),
-    );
-  } else {
-    // ask (and any other answered deck): the full ResolutionEnvelope shape.
-    const env: ResolutionEnvelope = {
-      summary,
-      responsePath: responsePath(idir),
-      schema: 'humanloop.response/v2',
-      responses,
-      completedAt,
-    };
-    await pushFinal(jobId, JSON.stringify(env));
-  }
+  // ask (and any other answered deck): the full ResolutionEnvelope shape.
+  const env: ResolutionEnvelope = {
+    summary,
+    responsePath: responsePath(idir),
+    schema: 'humanloop.response/v2',
+    responses,
+    completedAt,
+  };
+  await pushFinal(jobId, JSON.stringify(env));
   return true;
 }
 
@@ -217,21 +209,21 @@ export const humanList = defineLeaf({
 });
 
 // ---------------------------------------------------------------------------
-// cancel — retract a pending ask/approve/review
+// cancel — retract a pending ask/review
 // ---------------------------------------------------------------------------
 
 export const humanCancel = defineLeaf({
   name: 'cancel',
-  description: 'retract a pending ask/approve/review',
+  description: 'retract a pending ask/review',
   whenToUse: 'a question went stale before the human answered',
   help: {
     name: 'human cancel',
     summary:
-      'retract a pending ask/approve/review you posed — kills its TUI pane, drops it from the human queue, and retires the node. Reach for this the moment a question goes stale (you answered it yourself, the situation changed) so a human is not left resolving a prompt whose answer no longer matters',
+      'retract a pending ask/review you posed — kills its TUI pane, drops it from the human queue, and retires the node. Reach for this the moment a question goes stale (you answered it yourself, the situation changed) so a human is not left resolving a prompt whose answer no longer matters',
     guide:
-      'Pass the job_id returned by `human ask`/`approve`/`review`. Best-effort and idempotent: if the human already answered, or it was already canceled, it reports canceled:false with reason "already_resolved" and changes nothing. The agent that posed the deck is almost always the one canceling it, so the caller is never messaged — only OTHER subscribers (e.g. the asking node when a human dismisses the prompt) get a quiet deferred note that no answer is coming. Canceling a review kills its live on-screen pane and delivers no comments — the same quiet deferred note covers it.',
+      'Pass the job_id returned by `human ask`/`review`. Best-effort and idempotent: if the human already answered, or it was already canceled, it reports canceled:false with reason "already_resolved" and changes nothing. The agent that posed the deck is almost always the one canceling it, so the caller is never messaged — only OTHER subscribers (e.g. the asking node when a human dismisses the prompt) get a quiet deferred note that no answer is coming. Canceling a review kills its live on-screen pane and delivers no comments — the same quiet deferred note covers it.',
     params: [
-      { kind: 'positional', name: 'job_id', type: 'string', required: true, constraint: 'Node id of the interaction to cancel — the job_id returned by ask/approve/review.' },
+      { kind: 'positional', name: 'job_id', type: 'string', required: true, constraint: 'Node id of the interaction to cancel — the job_id returned by ask/review.' },
       { kind: 'flag', name: 'reason', type: 'string', required: false, constraint: 'Optional short note delivered to subscribers explaining why it was retracted.' },
     ],
     output: [
@@ -256,7 +248,7 @@ export const humanCancel = defineLeaf({
         error: 'not_found',
         message: `no interaction node: ${jobId}`,
         field: 'job_id',
-        next: 'Pass the job_id from human ask/approve/review, or list pending with `crtr human list`.',
+        next: 'Pass the job_id from human ask/review, or list pending with `crtr human list`.',
       });
     }
 
@@ -352,23 +344,11 @@ export const humanRun = defineLeaf({
     }
 
     try {
-      if (rc.mode === 'ask' || rc.mode === 'approve' || rc.mode === 'notify') {
+      if (rc.mode === 'ask' || rc.mode === 'notify') {
         const deck: Deck = parseDeck(deckPath(dir));
         const env: ResolutionEnvelope = await ask(deck, { dir });
         if (rc.mode === 'ask') {
           await pushFinal(rc.job_id as string, JSON.stringify(env));
-        } else if (rc.mode === 'approve') {
-          const sel = env.responses.find((r) => r.id === rc.approve_iid)?.selectedOptionId;
-          await pushFinal(
-            rc.job_id as string,
-            JSON.stringify({
-              approved: sel === 'yes',
-              summary: env.summary,
-              responses: env.responses,
-              responsePath: env.responsePath,
-              completedAt: env.completedAt,
-            }),
-          );
         }
         // notify: no job — nothing to write
       } else if (rc.mode === 'review') {

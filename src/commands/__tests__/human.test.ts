@@ -28,43 +28,6 @@ function tmpJson(obj: unknown): string {
 }
 
 // ---------------------------------------------------------------------------
-// human approve — positional title + optional flags
-// ---------------------------------------------------------------------------
-
-describe('human approve: params', () => {
-  const params: InputParam[] = [
-    { kind: 'positional', name: 'title', type: 'string', required: true, constraint: 'The question.' },
-    { kind: 'flag', name: 'subtitle', type: 'string', required: false, constraint: 'One-line context.' },
-    { kind: 'flag', name: 'body', type: 'string', required: false, constraint: 'Markdown body.' },
-  ];
-
-  test('parses positional title', async () => {
-    const result = await parseArgv(params, ['Deploy to prod?']);
-    assert.equal(result['title'], 'Deploy to prod?');
-  });
-
-  test('parses title with optional flags', async () => {
-    const result = await parseArgv(params, ['Deploy?', '--subtitle', 'v1.2.3', '--body', 'LGTM']);
-    assert.equal(result['title'], 'Deploy?');
-    assert.equal(result['subtitle'], 'v1.2.3');
-    assert.equal(result['body'], 'LGTM');
-  });
-
-  test('flags absent → undefined', async () => {
-    const result = await parseArgv(params, ['Deploy?']);
-    assert.equal(result['subtitle'], undefined);
-    assert.equal(result['body'], undefined);
-  });
-
-  test('missing title throws missing_parameter', async () => {
-    await assert.rejects(
-      () => parseArgv(params, []),
-      (err: Error) => { assert.match(err.message, /required parameter is missing/); return true; },
-    );
-  });
-});
-
-// ---------------------------------------------------------------------------
 // human review — positional file (path) + optional --output
 // ---------------------------------------------------------------------------
 

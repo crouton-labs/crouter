@@ -1,6 +1,6 @@
 // Run with: node --import tsx/esm --test src/core/__tests__/human-surface-target.test.ts
 //
-// BUG REGRESSION: `crtr human ask|approve|review|notify` surfaced its humanloop
+// BUG REGRESSION: `crtr human ask|review|notify` surfaced its humanloop
 // TUI in the backstage `crtr` session (the asking node's own pane) — a session
 // the user never watches — because spawnAndDetach was called with no `-t`
 // target. The fix routes the TUI to the HIGHEST FOCUSED node of the asking

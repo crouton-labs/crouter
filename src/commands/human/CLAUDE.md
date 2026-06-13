@@ -1,6 +1,6 @@
 # src/commands/human — the `crtr human` bridge
 
-`ask|approve|review` spawn a `kind:"human"` node under the asking node, write
+`ask|review` spawn a `kind:"human"` node under the asking node, write
 deck/run JSON to `interactionDir`, and open a detached humanloop TUI pane;
 `notify`/`show` open a pane with no node. The blocking humanloop call runs in the
 detached `crtr human _run` worker (queue.ts), which `pushFinal`s the answer into

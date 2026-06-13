@@ -1,6 +1,6 @@
 // Run with: node --import tsx/esm --test src/core/__tests__/human-new-window-regression.test.ts
 //
-// BUG REGRESSION: `crtr human ask|approve|review|notify` opened NO pane at all.
+// BUG REGRESSION: `crtr human ask|review|notify` opened NO pane at all.
 //
 // spawnAndDetach's 'new-window' placement passed a tmux PANE id straight to
 // `new-window -t` (`new-window -d -a -t %<pane>`). tmux REJECTS a pane id for

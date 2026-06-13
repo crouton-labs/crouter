@@ -17,12 +17,11 @@ export const DECK_SCHEMA_HINT =
   'source?:{sessionName?,askedBy?,blockedSince?}, ' +
   'interactions:[{id,title,subtitle?,(body?|bodyPath?),options:[{id,label,' +
   'description?}],multiSelect?,allowFreetext?,freetextLabel?,' +
-  "kind?:'notify'|'validation'|'decision'|'context'|'error'}]}.";
+  "kind?:'notify'|'decision'|'context'|'error'}]}.";
 
 export interface RunRecord {
-  mode: 'ask' | 'approve' | 'notify' | 'review';
+  mode: 'ask' | 'notify' | 'review';
   job_id?: string;
-  approve_iid?: string;
   file?: string;
   output?: string;
   /** tmux pane id of the detached TUI, recorded so `human cancel` can kill it. */
@@ -66,7 +65,7 @@ export function resolveHumanTarget(): string | undefined {
 /**
  * Open the detached humanloop `_run` pane for an interaction dir, ROUTED to the
  * session the user is watching (`resolveHumanTarget`). The single spawn path
- * behind ask/approve/review (`spawnHumanJob`) and notify. `detached: true` keeps
+ * behind ask/review (`spawnHumanJob`) and notify. `detached: true` keeps
  * the user's view put — the prompt lands beside the watched node without
  * jumping their session/window. `jobId`, when given, is injected as CRTR_JOB_ID.
  */
@@ -123,7 +122,7 @@ export function followUpReview(_jobId: string): string {
  *
  * Completion routing needs no bookkeeping here: the human node was created
  * under the asking node as its parent (spawnNode auto-subscribes the parent),
- * so the `pushFinal` the `_run` worker emits — for ask, approve, AND review —
+ * so the `pushFinal` the `_run` worker emits — for ask AND review —
  * fans the answer straight into the asking node's inbox. The pane id is recorded
  * on run.json (not returned) so `human cancel` can later kill the TUI.
  */

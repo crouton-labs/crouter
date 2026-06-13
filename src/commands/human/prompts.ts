@@ -8,7 +8,6 @@ import { join, resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import {
   validateDeck,
-  approveDeck,
   notifyDeck,
   atomicWriteJson,
   deckPath,
@@ -37,7 +36,7 @@ export const humanAsk = defineLeaf({
   name: 'ask',
   description: 'put a structured choice or open question to a person',
   whenToUse:
-    'you would otherwise lay a decision, a set of options, or a question out for the user as prose — reach for this instead, for anything from a quick yes/no to a judgment-heavy call: reviewing all the requirements before building, choosing among implementation patterns, walking a list of risks and deciding what to do about each, settling a naming or scope question, picking which of several findings to act on. Works for open-ended asks too (set `allowFreetext`, offer a few `options` as starting points). The kickoff never blocks, so the human answering on their own time is never a reason to skip the ask and guess instead',
+    'you would otherwise lay a decision, a set of options, or a question out for the user as prose — reach for this instead, for anything from a quick yes/no to a judgment-heavy call: gating a handoff, merge, deploy, destructive/irreversible operation, or real budget on an explicit human sign-off (offer Yes/No options), reviewing all the requirements before building, choosing among implementation patterns, walking a list of risks and deciding what to do about each, settling a naming or scope question, picking which of several findings to act on. Works for open-ended asks too (set `allowFreetext`, offer a few `options` as starting points). The kickoff never blocks, so the human answering on their own time is never a reason to skip the ask and guess instead',
   help: {
     name: 'human ask',
     summary: 'put a humanloop decision deck in front of a person; returns a job handle immediately. This is the default, expected channel for posing ANY question or decision to the user — reach for it instead of writing the question as prose in your reply.',
@@ -85,68 +84,16 @@ export const humanAsk = defineLeaf({
 });
 
 // ---------------------------------------------------------------------------
-// approve
-// ---------------------------------------------------------------------------
-
-export const humanApprove = defineLeaf({
-  name: 'approve',
-  description: 'a Yes/No sign-off gate',
-  whenToUse: 'a step needs an explicit human yes before it proceeds and a plain answer (not anchored comments) is enough: before a handoff, a merge or deploy, a destructive or irreversible operation, spending real budget, or acting on a risky plan. Reach for `ask` instead when you need them to choose among options or answer something open-ended; reach for `review` when the feedback belongs inline on a document',
-  help: {
-    name: 'human approve',
-    summary: 'a Yes/No approval gate; returns a job handle immediately. The standard way to gate a handoff on human sign-off. Kickoff never blocks — peek at the result later rather than busy-waiting; the human answering on their own time is not a reason to skip the gate.',
-    guide:
-      'The body is directive-flavored markdown rendered by termrender (panels, columns, trees, callouts, mermaid) — see `termrender doc -h` for the directive set before authoring one.',
-    params: [
-      { kind: 'positional', name: 'title', type: 'string', required: true, constraint: 'The question shown to the human.' },
-      { kind: 'flag', name: 'subtitle', type: 'string', required: false, constraint: 'Optional one-line context.' },
-      { kind: 'flag', name: 'body', type: 'string', required: false, constraint: 'Optional markdown body.' },
-    ],
-    output: [
-      { name: 'job_id', type: 'string', required: true, constraint: 'Node id of this approval; the {approved, …envelope} result is pushed to your inbox when answered.' },
-      { name: 'dir', type: 'string', required: true, constraint: 'Interaction directory.' },
-      { name: 'follow_up', type: 'string', required: true, constraint: 'A non-blocking status peek. The human may take minutes to hours — never block waiting on this.' },
-    ],
-    outputKind: 'object',
-    effects: [
-      'Creates a kind:"human" node under you and writes a Yes/No validation deck.',
-      'Spawns the approval TUI in a detached tmux pane (when in tmux).',
-    ],
-  },
-  run: async (input) => {
-    const title = input['title'] as string;
-    const subtitle = input['subtitle'] as string | undefined;
-    const body = input['body'] as string | undefined;
-
-    const deck = approveDeck(title, {
-      ...(subtitle !== undefined ? { subtitle } : {}),
-      ...(body !== undefined ? { body } : {}),
-    });
-
-    const cwd = process.cwd();
-    const jobId = spawnNode({ kind: 'human', parent: askingNode(), cwd, name: 'human-approve', lifecycle: 'terminal' }).node_id;
-    const idir = interactionDir(jobId, cwd);
-    mkdirSync(idir, { recursive: true });
-    atomicWriteJson(deckPath(idir), deck);
-    const rc: RunRecord = { mode: 'approve', job_id: jobId, approve_iid: 'approve' };
-    atomicWriteJson(join(idir, 'run.json'), rc);
-
-    const { follow_up } = spawnHumanJob(jobId, idir, cwd);
-    return { job_id: jobId, dir: idir, follow_up };
-  },
-});
-
-// ---------------------------------------------------------------------------
 // review
 // ---------------------------------------------------------------------------
 
 export const humanReview = defineLeaf({
   name: 'review',
   description: 'collect anchored comments on a .md (plan or spec)',
-  whenToUse: 'a human should comment line-by-line on a document rather than give one overall answer: reviewing a plan or spec before you build it, marking up a draft, flagging specific sections to change. The comments come back anchored to the lines they touch. Use `approve` instead for a single yes/no on the whole thing, or `ask` to pose a discrete choice',
+  whenToUse: 'a human should comment line-by-line on a document rather than give one overall answer: reviewing a plan or spec before you build it, marking up a draft, flagging specific sections to change. The comments come back anchored to the lines they touch. Use `ask` instead for a single yes/no sign-off on the whole thing, or to pose a discrete choice',
   help: {
     name: 'human review',
-    summary: "put a .md live on the human's screen for anchored, line-by-line comments; returns a job handle instantly (a non-blocking kickoff, like ask/approve). The pane tracks the file and re-renders on every save, so edit in place rather than re-presenting.",
+    summary: "put a .md live on the human's screen for anchored, line-by-line comments; returns a job handle instantly (a non-blocking kickoff, like ask). The pane tracks the file and re-renders on every save, so edit in place rather than re-presenting.",
     guide:
       "A kickoff, not a blocking call: it returns at once and the human reviews on their own time. When they submit, the FeedbackResult (anchored comments, plus any line edits they made) is pushed to your inbox — waking you — and autosaved to `output`; you never poll, verify it opened, or background it. The pane is a LIVE view of the file: keep editing the .md in place and it updates, so do not cancel and re-present to show a change. The .md is directive-flavored markdown rendered by termrender (panels, columns, trees, callouts, mermaid) — see `termrender doc -h` for the directive set before authoring one.",
     params: [
@@ -195,7 +142,7 @@ export const humanReview = defineLeaf({
     const rc: RunRecord = { mode: 'review', job_id: jobId, file: abs, output };
     atomicWriteJson(join(idir, 'run.json'), rc);
 
-    // review is a non-blocking kickoff, exactly like ask/approve: the detached
+    // review is a non-blocking kickoff, exactly like ask: the detached
     // `_run` worker pushes the FeedbackResult as this node's final report when
     // the human submits, which fans into our inbox and wakes us (and is also
     // autosaved to `output`). There is nothing to block on — the doc is live on
