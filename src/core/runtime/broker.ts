@@ -228,9 +228,22 @@ export async function runBroker(nodeId: string): Promise<void> {
   let disposed = false;
   let server: Server | undefined;
 
+  // Liveness-aware: a controllerId whose client's transport is already gone counts
+  // as NO controller, so control self-heals the instant a controller's peer departs
+  // — WITHOUT waiting for the socket 'close' event. On a unix socket a peer
+  // destroy() delivers EOF (readableEnded) promptly, but the matching 'close' can
+  // lag arbitrarily while undrainable pending writes to the gone peer flush; under
+  // load that lag stranded control on a dead client and froze admission (a fresh
+  // controller hello was denied for the whole window — the one-writer reattach
+  // deadlock the G9 gate locks). Treating an ended/destroyed/unwritable holder as
+  // free closes that window at every read of the controller (admission included).
   const controllerClient = (): BrokerClient | null => {
     if (controllerId === null) return null;
-    for (const c of clients) if (c.id === controllerId) return c;
+    for (const c of clients) {
+      if (c.id !== controllerId) continue;
+      if (c.socket.destroyed || c.socket.readableEnded || !c.socket.writable) return null;
+      return c;
+    }
     return null;
   };
 
@@ -908,9 +921,11 @@ export async function runBroker(nodeId: string): Promise<void> {
       case 'hello': {
         client.id = frame.client_id;
         client.helloed = true;
-        // First-attach-wins controller (§5.3): admit as controller iff one was
-        // requested and none is currently held; otherwise read-only observer.
-        if (frame.role === 'controller' && controllerId === null) {
+        // First-attach-wins (§5.3), but only against a LIVE controller: admit as
+        // controller iff none is currently held by a live client (controllerClient
+        // is liveness-aware, so a controllerId stranded on a departed peer reads as
+        // free here). Otherwise read-only observer.
+        if (frame.role === 'controller' && controllerClient() === null) {
           client.role = 'controller';
           controllerId = client.id;
         } else {
