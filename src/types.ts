@@ -79,12 +79,6 @@ export interface CanvasBind {
 export interface CanvasNavConfig {
   /** Fallback pi shortcut for GRAPH toggle when NOT in tmux. Default 'alt+g'. */
   prefixKey?: string;
-  /** pi shortcut that opens the resume-node picker directly. Default 'alt+r'.
-   *  Must be a single-modifier chord (alt+<letter>): pi's matchesKey() has no
-   *  legacy fallback for alt+shift+<letter>, so those only fire under kitty /
-   *  modifyOtherKeys terminals and are dead in a plain terminal. See
-   *  canvas-resume.ts for the full reasoning. */
-  resumeKey?: string;
   /** chord key (after alt+c) → action; tmux-menu layer. */
   prefixBinds: Record<string, CanvasBind>;
   /** extra raw key in GRAPH → action; pi-extension layer (additive only). */
@@ -195,7 +189,6 @@ export function defaultScopeConfig(): ScopeConfig {
 export function defaultCanvasNavConfig(): CanvasNavConfig {
   return {
     prefixKey: 'alt+g',
-    resumeKey: 'alt+r',
     prefixBinds: {
       g: { run: '__graph__', desc: 'graph view' },
       m: { run: 'node focus {manager}', desc: 'focus manager' },

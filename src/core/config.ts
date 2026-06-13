@@ -94,11 +94,8 @@ function mergeCanvasNav(raw: unknown): CanvasNavConfig {
   const r = raw as Partial<CanvasNavConfig>;
   const prefixKey =
     typeof r.prefixKey === 'string' && r.prefixKey.trim() !== '' ? r.prefixKey : defaults.prefixKey;
-  const resumeKey =
-    typeof r.resumeKey === 'string' && r.resumeKey.trim() !== '' ? r.resumeKey : defaults.resumeKey;
   return {
     prefixKey,
-    resumeKey,
     prefixBinds: mergeBinds(defaults.prefixBinds, r.prefixBinds),
     graphBinds: mergeBinds(defaults.graphBinds, r.graphBinds),
   };
