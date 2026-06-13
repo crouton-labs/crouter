@@ -1,6 +1,6 @@
 {
   "name": "@crouton-kit/crouter",
-  "version": "0.3.29",
+  "version": "0.3.30",
   "description": "crtr — fast access to skills, plugins, and marketplaces",
   "type": "module",
   "main": "dist/index.js",
