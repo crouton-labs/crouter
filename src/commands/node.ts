@@ -19,7 +19,7 @@ import { recycleNode } from '../core/runtime/recycle.js';
 import { detachToBackground, focus as placementFocus, windowAlive, windowOfPane, currentTmux, getPaneOption } from '../core/runtime/placement.js';
 import { buildLaunchSpec } from '../core/runtime/launch.js';
 import { closeNode } from '../core/runtime/close.js';
-import { appendInbox, type InboxTier } from '../core/feed/inbox.js';
+import { appendInbox, clipBody, writeMessageBody, type InboxTier } from '../core/feed/inbox.js';
 import { availableKinds, kindWhenToUse, subPersonasFor } from '../core/personas/index.js';
 import { stateBlock } from '../core/help.js';
 import {
@@ -591,7 +591,11 @@ const nodeMsg = defineLeaf({
     const tier = ((input['tier'] as string | undefined) ?? 'normal') as InboxTier;
     const from = process.env['CRTR_NODE_ID'] ?? 'human';
 
-    appendInbox(id, { from, tier, kind: 'message', label: body.split('\n')[0]!.slice(0, 120), data: { body } });
+    // A long body would clip in the receiver's digest with nowhere to recover
+    // the rest (a direct msg writes no report). Persist it and carry the path as
+    // `ref` so the digest shows a bounded preview + a pointer to the full text.
+    const ref = clipBody(body).clipped ? writeMessageBody(id, from, body) : undefined;
+    appendInbox(id, { from, tier, kind: 'message', label: body.split('\n')[0]!.slice(0, 120), data: { body }, ...(ref ? { ref } : {}) });
 
     // A direct message wakes any node: if the target has no live window
     // (done/dead/idle-released), revive it so its inbox-watcher delivers this.

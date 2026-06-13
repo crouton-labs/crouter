@@ -16,8 +16,8 @@ import {
   renameSync,
   mkdirSync,
 } from 'node:fs';
-import { dirname } from 'node:path';
-import { inboxPath } from '../canvas/index.js';
+import { dirname, join } from 'node:path';
+import { inboxPath, messagesDir } from '../canvas/index.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -78,6 +78,25 @@ export function appendInbox(nodeId: string, entry: Omit<InboxEntry, 'ts'>): Inbo
   return full;
 }
 
+/**
+ * Persist a direct-message body to the target's `messages/` dir (atomic
+ * tmp+rename) and return its absolute path. Used when the body is too long to
+ * inline in the coalesced digest — the path becomes the entry's `ref`, so the
+ * receiver can dereference the full text the same way it dereferences a push.
+ */
+export function writeMessageBody(nodeId: string, from: string | null, body: string): string {
+  const dir = messagesDir(nodeId);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+
+  const isoTs = new Date().toISOString();
+  const finalPath = join(dir, `${isoTs.replace(/[:.]/g, '-')}-msg.md`);
+  const tmpPath = `${finalPath}.tmp`;
+  const frontmatter = `---\nto: ${nodeId}\nfrom: ${from ?? 'system'}\nts: ${isoTs}\n---\n`;
+  writeFileSync(tmpPath, frontmatter + body, 'utf8');
+  renameSync(tmpPath, finalPath);
+  return finalPath;
+}
+
 // ---------------------------------------------------------------------------
 // Read
 // ---------------------------------------------------------------------------
@@ -134,12 +153,12 @@ export function writeCursor(nodeId: string, iso: string): void {
 // Coalesce
 // ---------------------------------------------------------------------------
 
-/** Bounds for inlining a ref-less entry's body in the digest. */
+/** Bounds for inlining a message body's preview in the digest. */
 const BODY_MAX_LINES = 12;
 const BODY_MAX_CHARS = 1000;
 
 /** Clip a body to a bounded preview, reporting whether anything was dropped. */
-function clipBody(body: string): { text: string; clipped: boolean } {
+export function clipBody(body: string): { text: string; clipped: boolean } {
   let text = body;
   let clipped = false;
   const lines = text.split('\n');
@@ -165,16 +184,22 @@ function clipBody(body: string): { text: string; clipped: boolean } {
  * would strand the rest with nowhere to recover it.
  */
 function renderEntry(e: InboxEntry): string {
-  if (e.ref !== undefined) {
-    return `  [${e.kind}] ${e.label}  (ref: ${e.ref})`;
-  }
   const body = typeof e.data?.['body'] === 'string' ? (e.data['body'] as string).trim() : '';
+  // No inline body → a push pointer (body lives at `ref`) or a one-line entry
+  // whose label IS the whole message. Dereference the ref on demand.
   if (body === '' || body === e.label) {
-    return `  [${e.kind}] ${e.label}`;
+    return e.ref !== undefined
+      ? `  [${e.kind}] ${e.label}  (ref: ${e.ref})`
+      : `  [${e.kind}] ${e.label}`;
   }
+  // Inline body (direct msg / system alert): bounded preview. When clipped, the
+  // full text is recoverable only if the sender persisted it to `ref` — point
+  // there instead of stranding the rest with nowhere to read it.
   const { text, clipped } = clipBody(body);
   const indented = text.split('\n').map((l) => `    ${l}`).join('\n');
-  const more = clipped ? '\n    … (body clipped)' : '';
+  const more = clipped
+    ? (e.ref !== undefined ? `\n    … (full message: ${e.ref})` : '\n    … (body clipped)')
+    : '';
   return `  [${e.kind}]\n${indented}${more}`;
 }
 

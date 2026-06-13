@@ -53,6 +53,13 @@ export function reportsDir(nodeId: string): string {
   return join(nodeDir(nodeId), 'reports');
 }
 
+/** Incoming direct-message bodies too long to inline in the digest are persisted
+ *  here (`<ts>-msg.md`) so the receiver can dereference the full text by path —
+ *  the message analogue of a publisher's reports/. */
+export function messagesDir(nodeId: string): string {
+  return join(nodeDir(nodeId), 'messages');
+}
+
 export function nodeMetaPath(nodeId: string): string {
   return join(nodeDir(nodeId), 'meta.json');
 }
