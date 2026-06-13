@@ -1,11 +1,20 @@
 #!/usr/bin/env node
 
+import { enableCompileCache } from 'node:module';
 import { runCli } from './core/command.js';
 import { resolveRoot } from './build-root.js';
 import { maybeBootRoot } from './core/runtime/front-door.js';
 import { maybeAutoUpdate } from './core/auto-update.js';
 import { ensureOfficialMarketplace, ensureProjectScope } from './core/bootstrap.js';
 import { provisionExports } from './core/skill-sync/export.js';
+
+// V8 compile-cache (Node 22+): persist compiled bytecode across runs so a cold
+// `crtr` re-spawn skips recompiling its module graph. Biggest payoff is the
+// heavy attach-viewer bundle that main() dynamic-imports via resolveRoot — this
+// runs first, so the cache is active before that import() compiles. Measured
+// neutral on the tiny leaf path (feed/node), a clear win on attach. Best-effort:
+// older Node lacks the API.
+try { enableCompileCache(); } catch { /* pre-22 Node: no compile cache */ }
 
 async function main(): Promise<void> {
   // Lazy command tree: load only the subtree this invocation dispatches into.
