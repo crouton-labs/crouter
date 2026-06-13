@@ -367,12 +367,13 @@ export function registerCanvasStophook(pi: PiLike): void {
   // rather than reaping it. Cleared at the top of agent_end (turn over).
   // ---------------------------------------------------------------------------
   pi.on('agent_start', (): void => {
-    try {
-      markBusy(nodeId);
-      // A fresh turn started → the node is no longer parked on a stale engine
-      // error (a re-steer / inbox-wake worked). Clear any error-stall marker.
-      clearErrorStall(nodeId);
-    } catch { /* best-effort */ }
+    // A fresh turn started → the node is no longer parked on a stale engine error
+    // (a re-steer / inbox-wake worked). Clear the error-stall marker FIRST so it
+    // and `busy` are never both set (the precedence + the daemon's not-busy kill
+    // guard rest on their mutual exclusivity); then mark busy. Both are
+    // internally best-effort (never throw), so neither can strand the other.
+    try { clearErrorStall(nodeId); } catch { /* best-effort */ }
+    try { markBusy(nodeId); } catch { /* best-effort */ }
   });
 
   // ---------------------------------------------------------------------------

@@ -18,6 +18,7 @@ import { waitForBrokerViewSocket } from '../core/runtime/placement.js';
 import { getNode, fullName } from '../core/canvas/index.js';
 import { isPidAlive } from '../core/canvas/pid.js';
 import { readErrorStall } from '../core/runtime/error-stall.js';
+import { isBusy } from '../core/runtime/busy.js';
 
 // ---------------------------------------------------------------------------
 // revive node
@@ -87,6 +88,7 @@ export const reviveLeaf: LeafDef = defineLeaf({
       { name: 'candidates', type: 'string', required: false, constraint: '--all preview: the node ids that WOULD be revived (newline-joined). Empty when none are disconnected.' },
       { name: 'revived', type: 'string', required: false, constraint: '--all sweep: the node ids whose broker engine was relaunched (newline-joined).' },
       { name: 'failed', type: 'string', required: false, constraint: '--all sweep: node ids whose relaunch threw, with the error (newline-joined). Absent when none failed.' },
+      { name: 'kicked', type: 'boolean', required: false, constraint: '--now only: true when the hanging node\'s live broker was SIGTERM\'d (the daemon resumes it on the saved session within ~20s). Absent for an ordinary revive.' },
     ],
     outputKind: 'object',
     effects: [
@@ -98,9 +100,17 @@ export const reviveLeaf: LeafDef = defineLeaf({
   },
   run: async (input) => {
     const all = (input['all'] as boolean | undefined) ?? false;
+    const now = (input['now'] as boolean | undefined) ?? false;
     const nodeId = input['node'] as string | undefined;
 
     if (all) {
+      if (now) {
+        throw new InputError({
+          error: 'conflicting_args',
+          message: '`--now` kicks ONE hanging node; it cannot combine with `--all`.',
+          next: 'Run `crtr canvas revive <node> --now` for the hanging node, or `crtr canvas revive --all` (no --now).',
+        });
+      }
       if (nodeId !== undefined) {
         throw new InputError({
           error: 'conflicting_args',
@@ -120,7 +130,13 @@ export const reviveLeaf: LeafDef = defineLeaf({
     }
 
     const fresh = (input['fresh'] as boolean | undefined) ?? false;
-    const now = (input['now'] as boolean | undefined) ?? false;
+    if (now && fresh) {
+      throw new InputError({
+        error: 'conflicting_args',
+        message: '`--now` kicks a live hanging broker (SIGTERM → daemon resumes the SAVED session); `--fresh` is meaningless there.',
+        next: 'Run `crtr canvas revive <node> --now` (resumes), or `crtr canvas revive <node> --fresh` (no --now) to relaunch clean.',
+      });
+    }
 
     // Validate the node exists before attempting revival.
     const meta = getNode(nodeId);
@@ -152,6 +168,16 @@ export const reviveLeaf: LeafDef = defineLeaf({
           error: 'not_hanging',
           message: `${nodeId} is live but not hanging (no error-stall marker) — --now refuses to SIGTERM a healthy node.`,
           next: 'Use --now only on a node the canvas shows as hanging (⚠). For a routine relaunch, omit --now.',
+        });
+      }
+      // Mirror the daemon's errorStallVerdict, which never kills a BUSY engine: a
+      // node mid-turn (busy marker present) is making progress, not wedged —
+      // refuse rather than SIGTERM it mid-flight.
+      if (isBusy(nodeId)) {
+        throw new InputError({
+          error: 'busy',
+          message: `${nodeId} is mid-turn right now (busy) — --now refuses to SIGTERM a working engine; it has recovered on its own.`,
+          next: 'Re-check the canvas — if it\'s no longer marked hanging (⚠), nothing to do.',
         });
       }
       try {
