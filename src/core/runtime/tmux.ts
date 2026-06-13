@@ -192,6 +192,30 @@ export function renameWindow(window: string, name: string): boolean {
   return tmux(['rename-window', '-t', window, name]).ok;
 }
 
+/** Break a single PANE out into a BRAND-NEW window of its own (`tmux break-pane
+ *  -d`). `-d` keeps the new window in the background (does not switch the client
+ *  to it); `-s <pane>` names the source pane — the §2.2 HARD DRIVER INVARIANT, so
+ *  the break never falls back to tmux's global current pane. The pane keeps its
+ *  durable `%id` across the move (only its window changes), so callers can keep
+ *  using the same pane handle. Returns the new `{window, pane}` location, or null
+ *  if tmux fails. Used by `canvas tmux-spread` to lift the caller's viewer into a
+ *  fresh window before tiling sibling viewers beside it. */
+export function breakPane(pane: string): { window: string; pane: string } | null {
+  const r = tmux([
+    'break-pane',
+    '-d',
+    '-P',
+    '-F',
+    '#{window_id}\t#{pane_id}',
+    '-s',
+    pane,
+  ]);
+  if (!r.ok) return null;
+  const [window, p] = r.stdout.split('\t');
+  if (window === undefined || window === '' || p === undefined || p === '') return null;
+  return { window, pane: p };
+}
+
 /** Close a single PANE. Its window closes automatically once this was the last
  *  pane, but sibling panes survive — so co-located nodes (several agents sharing
  *  one window via swap-pane focus) are torn down one at a time instead of all
@@ -381,6 +405,14 @@ export function windowAlive(
  *  to `tmux select-window -t <session>:<window>`. Best-effort; never throws. */
 export function selectWindow(session: string, window: string): boolean {
   return tmux(['select-window', '-t', `${session}:${window}`]).ok;
+}
+
+/** Apply a named tmux layout to a window (`tmux select-layout -t <window>
+ *  <layout>`). `canvas tmux-spread` calls it with `tiled` to evenly grid every
+ *  viewer pane in the spread window (and between splits, to redistribute space so
+ *  the next split has room). Best-effort; false if tmux fails. */
+export function selectLayout(window: string, layout: string): boolean {
+  return tmux(['select-layout', '-t', window, layout]).ok;
 }
 
 /** Switch the tmux client to a different session (cross-session focus). Runs

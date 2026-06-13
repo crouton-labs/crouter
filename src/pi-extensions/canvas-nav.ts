@@ -520,6 +520,13 @@ export function registerCanvasNav(pi: PiLike): void {
       render();
       return { consume: true };
     }
+    if (isPlain(data, 'e')) {
+      // Expand → tmux: spread the cursor node's local subtree into a tiled tmux
+      // window (same action as the alt+c → e menu chord), for parity.
+      shellCrtr(['canvas', 'tmux-spread', cursorId ?? nodeId], render);
+      render();
+      return { consume: true };
+    }
 
     // Custom graphBinds — additive only (built-in keys reserved).
     for (const [key, bind] of Object.entries(navConfig.graphBinds) as [string, CanvasBind][]) {

@@ -61,7 +61,10 @@ export type { FocusRow };
 // the §5.1 lint can hold "only placement.ts / tmux-chrome.ts import tmux.ts".
 // These are the chrome + viewer verbs that survive the cut (the engine-in-pane
 // verbs — respawnPane, respawnPaneDetached, swapPaneInPlace, breakPaneToSession,
-// joinPane, selectLayout, setWindowOption, setRemainOnExit — are deleted).
+// joinPane, setWindowOption, setRemainOnExit — are deleted). `breakPane` +
+// `selectLayout` are FRESH minimal viewer-chrome helpers (not the deleted
+// engine-in-pane `breakPaneToSession`): `canvas tmux-spread` breaks the caller's
+// viewer pane into its own window and tiles sibling viewers beside it.
 // `piCommand` + `paneCurrentPath` are KEPT: the sessionless `crtr view` system
 // (view-cycle.ts / view-run.ts) builds its pane commands with them, and the §5.1
 // import-lint forbids those commands importing tmux.ts directly — they must reach
@@ -69,6 +72,8 @@ export type { FocusRow };
 // "nothing keeps" classification missed the view consumers.)
 export {
   splitWindow,
+  breakPane,
+  selectLayout,
   focusWindow,
   selectWindow,
   switchClient,
