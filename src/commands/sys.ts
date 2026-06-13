@@ -6,6 +6,7 @@ import type { BranchDef } from '../core/command.js';
 import { configBranch } from './sys/config.js';
 import { sysDoctorLeaf } from './sys/doctor.js';
 import { sysFeedbackLeaf } from './sys/feedback.js';
+import { sysSettingsLeaf } from './sys/settings.js';
 import { sysSyncLeaf } from './sys/sync.js';
 import { sysUpdateLeaf, sysVersionLeaf } from './sys/update.js';
 
@@ -14,13 +15,13 @@ export function registerSys(): BranchDef {
     name: 'sys',
     rootEntry: {
       concept: 'crtr configuration, diagnostics, and self-management',
-      desc: 'config, doctor, sync, update, version, feedback',
-      useWhen: 'managing the crtr installation',
+      desc: 'config, settings, doctor, sync, update, version, feedback',
+      useWhen: 'managing the crtr installation or opening the built-in settings view',
     },
     help: {
       name: 'sys',
-      summary: 'crtr system configuration, diagnostics, and self-management',
+      summary: 'crtr system configuration, settings, diagnostics, and self-management',
     },
-    children: [configBranch, sysDoctorLeaf, sysFeedbackLeaf, sysSyncLeaf, sysUpdateLeaf, sysVersionLeaf],
+    children: [configBranch, sysSettingsLeaf, sysDoctorLeaf, sysFeedbackLeaf, sysSyncLeaf, sysUpdateLeaf, sysVersionLeaf],
   });
 }

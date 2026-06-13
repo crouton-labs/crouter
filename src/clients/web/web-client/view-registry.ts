@@ -18,6 +18,8 @@ import gitPrCore from '../../../builtin-views/git-pr/core.mjs';
 import GitPrWeb from '../../../builtin-views/git-pr/web.jsx';
 import linkedinCore from '../../../builtin-views/linkedin/core.mjs';
 import LinkedinWeb from '../../../builtin-views/linkedin/web.jsx';
+import settingsCore from '../../../builtin-views/settings/core.mjs';
+import SettingsWeb from '../../../builtin-views/settings/web.jsx';
 import workspaceCore from '../../../builtin-views/workspace-sidebar/core.mjs';
 import WorkspaceWeb from '../../../builtin-views/workspace-sidebar/web.jsx';
 
@@ -37,6 +39,7 @@ export const VIEW_REGISTRY: Record<string, ViewEntry> = {
   inbox: { core: inboxCore as ViewCore, View: InboxWeb },
   'git-pr': { core: gitPrCore as ViewCore, View: GitPrWeb },
   linkedin: { core: linkedinCore as ViewCore, View: LinkedinWeb },
+  settings: { core: settingsCore as ViewCore, View: SettingsWeb },
   'workspace-sidebar': { core: workspaceCore as ViewCore, View: WorkspaceWeb },
 };
 

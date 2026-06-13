@@ -3,7 +3,7 @@ import { readConfig, writeConfig, configPath as coreConfigPath } from '../../cor
 import { usage, notFound } from '../../core/errors.js';
 import { scopeRoot, listScopes } from '../../core/scope.js';
 import { resolveScope } from './shared.js';
-import type { Scope, ScopeConfig, AutoUpdateConfig } from '../../types.js';
+import type { Scope, ScopeConfig, AutoUpdateConfig, ModelProvider, ModelStrength } from '../../types.js';
 
 // ---------------------------------------------------------------------------
 // Config helpers (ported from commands/config.ts)
@@ -15,7 +15,20 @@ const TOP_LEVEL_KEYS: ReadonlySet<string> = new Set([
   'plugins',
   'max_panes_per_window',
   'canvasNav',
+  'modelLadders',
+  'personaStrengths',
 ]);
+
+const MODEL_PROVIDERS: ReadonlySet<ModelProvider> = new Set(['anthropic', 'openai']);
+const MODEL_STRENGTHS: ReadonlySet<ModelStrength> = new Set(['ultra', 'strong', 'medium', 'light']);
+
+function isModelProvider(value: string): value is ModelProvider {
+  return MODEL_PROVIDERS.has(value as ModelProvider);
+}
+
+function isModelStrength(value: string): value is ModelStrength {
+  return MODEL_STRENGTHS.has(value as ModelStrength);
+}
 
 function getNestedValue(obj: ScopeConfig, key: string): unknown {
   const parts = key.split('.');
@@ -34,7 +47,7 @@ function parseConfigValue(raw: string): boolean | number | string {
   return raw;
 }
 
-function setNestedValue(cfg: ScopeConfig, key: string, value: unknown): void {
+function setNestedValue(cfg: ScopeConfig, key: string, rawValue: string, value: unknown): void {
   const parts = key.split('.');
   const topKey = parts[0];
 
@@ -72,12 +85,53 @@ function setNestedValue(cfg: ScopeConfig, key: string, value: unknown): void {
     // record tables are edited directly in config.json (run `crtr sys config
     // path` to locate it).
     if (key === 'canvasNav.prefixKey') {
-      cfg.canvasNav.prefixKey = String(value);
+      cfg.canvasNav.prefixKey = rawValue;
       return;
     }
     throw usage(
       `canvasNav.${parts.slice(1).join('.') || '*'} is a record table — edit config.json directly (run \`crtr sys config path\`). Only canvasNav.prefixKey is settable via this command.`,
     );
+  }
+
+  if (topKey === 'modelLadders') {
+    if (parts.length === 2 && parts[1] === 'defaultProvider') {
+      if (!isModelProvider(rawValue)) {
+        throw usage(`modelLadders.defaultProvider must be anthropic or openai`);
+      }
+      cfg.modelLadders.defaultProvider = rawValue;
+      return;
+    }
+    if (parts.length === 3) {
+      const provider = parts[1];
+      const strength = parts[2];
+      if (!isModelProvider(provider)) {
+        throw usage(`modelLadders provider must be anthropic or openai`);
+      }
+      if (!isModelStrength(strength)) {
+        throw usage(`modelLadders strength must be ultra, strong, medium, or light`);
+      }
+      if (rawValue.trim() === '') {
+        throw usage(`modelLadders.${provider}.${strength} cannot be empty`);
+      }
+      cfg.modelLadders[provider][strength] = rawValue;
+      return;
+    }
+    throw usage(`unsupported key path for set: ${key}`);
+  }
+
+  if (topKey === 'personaStrengths') {
+    if (parts.length !== 2) {
+      throw usage(`unsupported key path for set: ${key}`);
+    }
+    const persona = parts[1];
+    if (persona.trim() === '' || persona !== persona.trim()) {
+      throw usage(`personaStrengths.<persona-kind> must be a non-empty persona kind without leading or trailing whitespace`);
+    }
+    if (!isModelStrength(rawValue)) {
+      throw usage(`personaStrengths.<persona-kind> must be ultra, strong, medium, or light`);
+    }
+    cfg.personaStrengths[persona] = rawValue;
+    return;
   }
 
   if (parts.length === 1) {
@@ -101,13 +155,13 @@ function setNestedValue(cfg: ScopeConfig, key: string, value: unknown): void {
 const configGet = defineLeaf({
   name: 'get',
   description: 'read a config value by key',
-  whenToUse: 'you want to read a single config value by its dotted key — the current auto_update policy, max_panes_per_window, the canvasNav prefix key — optionally from a specific scope. Use sys config set instead to change a value, sys config path to locate the file for hand-editing.',
+  whenToUse: 'you want to read a single config value by its dotted key — the current auto_update policy, max_panes_per_window, the canvasNav prefix key, model ladders, or persona strengths — optionally from a specific scope. Use sys config set instead to change a value, sys config path to locate the file for hand-editing.',
   help: {
     name: 'sys config get',
     summary: 'read a config value by dotted key',
     params: [
-      { kind: 'positional', name: 'key', type: 'string', required: true, constraint: 'Dotted key path. Top-level keys: auto_update, marketplaces, plugins, max_panes_per_window, canvasNav (read whole; edit canvasNav.prefixBinds/graphBinds in config.json directly).' },
-      { kind: 'flag', name: 'scope', type: 'enum', choices: ['user', 'project', 'all'], required: false, constraint: 'Scope to read from. Default: user.' },
+      { kind: 'positional', name: 'key', type: 'string', required: true, constraint: 'Dotted key path. Top-level keys: auto_update, marketplaces, plugins, max_panes_per_window, canvasNav, modelLadders, personaStrengths (read whole; edit canvasNav.prefixBinds/graphBinds in config.json directly).' },
+      { kind: 'flag', name: 'scope', type: 'enum', choices: ['user', 'project'], required: false, constraint: 'Scope to read from. Default: user.' },
     ],
     output: [
       { name: 'key', type: 'string', required: true, constraint: 'Echo of input key.' },
@@ -132,12 +186,12 @@ const configGet = defineLeaf({
 const configSet = defineLeaf({
   name: 'set',
   description: 'write a config value by key',
-  whenToUse: 'you want to change a crtr setting — flip auto_update.crtr or auto_update.content to notify, apply, or off, raise max_panes_per_window, rebind canvasNav.prefixKey — written to the user or project scope. Use sys config get instead to read a value; the canvasNav record tables are not settable here, so edit config.json directly (sys config path) for those.',
+  whenToUse: 'you want to change a crtr setting — flip auto_update.crtr or auto_update.content to notify, apply, or off, raise max_panes_per_window, rebind canvasNav.prefixKey, set model ladders, or map persona strengths — written to the user or project scope. Use sys config get instead to read a value; the canvasNav record tables are not settable here, so edit config.json directly (sys config path) for those.',
   help: {
     name: 'sys config set',
     summary: 'write a config value by dotted key',
     params: [
-      { kind: 'positional', name: 'key', type: 'string', required: true, constraint: 'Dotted key path. Supported: auto_update.crtr, auto_update.content, auto_update.interval_hours, max_panes_per_window, canvasNav.prefixKey. The canvasNav.prefixBinds/graphBinds record tables are not settable here — edit config.json directly (`crtr sys config path`).' },
+      { kind: 'positional', name: 'key', type: 'string', required: true, constraint: 'Dotted key path. Supported: auto_update.crtr, auto_update.content, auto_update.interval_hours, max_panes_per_window, canvasNav.prefixKey, modelLadders.defaultProvider, modelLadders.<anthropic|openai>.<ultra|strong|medium|light>, personaStrengths.<persona-kind>. The canvasNav.prefixBinds/graphBinds record tables are not settable here — edit config.json directly (`crtr sys config path`).' },
       { kind: 'flag', name: 'value', type: 'string', required: true, constraint: 'value VALUE — string, required. Stored as-is if quoted; coerced to number or boolean when unambiguous.' },
       { kind: 'flag', name: 'scope', type: 'enum', choices: ['user', 'project'], required: false, constraint: 'Scope to write to. Default: user.' },
     ],
@@ -158,7 +212,7 @@ const configSet = defineLeaf({
     const parsed: boolean | number | string = parseConfigValue(rawValue);
 
     const cfg = readConfig(scope);
-    setNestedValue(cfg, key, parsed);
+    setNestedValue(cfg, key, rawValue, parsed);
     writeConfig(scope, cfg);
 
     // Read back the written value for echo
@@ -210,10 +264,10 @@ const configPath = defineLeaf({
 export const configBranch = defineBranch({
   name: 'config',
   description: 'read and write configuration',
-  whenToUse: 'inspecting or changing crtr settings — read a value with sys config get, change one with sys config set (auto_update policy, max_panes_per_window, canvasNav.prefixKey), or locate config.json with sys config path to hand-edit the record tables set cannot reach.',
+  whenToUse: 'inspecting or changing crtr settings — read a value with sys config get, change one with sys config set (auto_update policy, max_panes_per_window, canvasNav.prefixKey, model ladders, persona strengths), or locate config.json with sys config path to hand-edit the record tables set cannot reach.',
   help: {
     name: 'sys config',
-    summary: 'read and write crtr configuration',
+    summary: 'read and write crtr configuration, including model ladders and persona strengths',
   },
   children: [configGet, configSet, configPath],
 });
