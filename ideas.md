@@ -18,12 +18,6 @@ When I start crouter, I want to be able to switch between agent mode, tickets, a
 
 - when terminal agents use ask, that has to bubble up to top.
 
-## Memory & Knowledge
-
-- Memories are literally just that—memories the agent has of who the user is/preferences/etc
-
-Some way of going through conversation history and extracting philosophy/good ideas/idea-savings
-
 ## Telemetry
 
 - Diff or snapshot at time of user propmt—that way if there are thigns that go wrong, I can see exact state at time of complaint
