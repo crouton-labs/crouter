@@ -56,6 +56,7 @@ import {
   closeSync,
 } from 'node:fs';
 import { join } from 'node:path';
+import { homedir } from 'node:os';
 import { crtrHome, nodeDir, jobDir } from '../core/canvas/paths.js';
 import {
   listNodes,
@@ -77,6 +78,8 @@ import { isBusy } from '../core/runtime/busy.js';
 import { isPidAlive } from '../core/canvas/pid.js';
 import { listLivePanes, tearDownNode } from '../core/runtime/placement.js';
 import { reviveNode } from '../core/runtime/revive.js';
+import { isBrokerLive } from '../core/runtime/model-swap.js';
+import { reloadAuthLive } from '../core/runtime/auth-reload.js';
 import { spawnChild, type SpawnChildOpts } from '../core/runtime/spawn.js';
 import { wakeOriginFrom } from '../core/runtime/bearings.js';
 import { pushUrgent } from '../core/feed/feed.js';
@@ -361,6 +364,83 @@ function handleErrorStall(row: NodeRow, pid: number, now: number): void {
       /* already gone */
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Auth-reload fan (one /login → every live broker follows)
+// ---------------------------------------------------------------------------
+
+/** Path of the shared pi credentials file every broker reads. VENDORED from pi
+ *  `config.getAuthPath()` (= `<agentDir>/auth.json`) the same way spawn.ts
+ *  vendors the sessions root: a ROOT import of pi's `getAgentDir` would eager-
+ *  load the heavy pi SDK index, so we mirror its resolution — `PI_CODING_AGENT_DIR`
+ *  env, else `~/.pi/agent`. Re-sync on a pi SDK bump that moves auth.json. */
+function piAuthPath(): string {
+  const env = process.env['PI_CODING_AGENT_DIR'];
+  const agentDir = env !== undefined && env !== '' ? env : join(homedir(), '.pi', 'agent');
+  return join(agentDir, 'auth.json');
+}
+
+// Last-observed auth.json mtime, for the daemon's change-watch. Lazily seeded on
+// the first poll that sees the file (so daemon start never fans a spurious
+// reload), then updated on every detected change. In-memory only — a daemon
+// restart re-seeds from the current file, so at most one missed change spans the
+// restart gap (re-login during a ~1s restart), which a human just redoes.
+let knownAuthMtimeMs: number | null = null;
+
+/** Watch the shared auth.json mtime and, on a change, fan a live `reload_auth`
+ *  to every live broker so one `/login` propagates across the whole canvas. The
+ *  broker that performed the login already self-reloaded; re-reloading it is
+ *  harmless (authStorage.reload() is idempotent), so we don't exclude it.
+ *
+ *  Rides the existing ~2s poll, so several rapid writes from one login collapse
+ *  to a single observed mtime change → a single fan. Each broker is reloaded
+ *  under its own try/catch (Promise.allSettled): a broker mid-shutdown or whose
+ *  socket refuses connect is logged and skipped, never aborting the others. */
+async function handleAuthReload(now: number): Promise<void> {
+  let mtimeMs: number;
+  try {
+    mtimeMs = statSync(piAuthPath()).mtimeMs;
+  } catch {
+    return; // no auth.json yet (never logged in) — nothing to watch
+  }
+  if (knownAuthMtimeMs === null) {
+    knownAuthMtimeMs = mtimeMs; // seed on first sight; never fan on daemon start
+    return;
+  }
+  if (mtimeMs === knownAuthMtimeMs) return;
+  knownAuthMtimeMs = mtimeMs;
+
+  // Enumerate live brokers (pid alive + view.sock present) only when auth
+  // actually changed — the rare path, so the extra list/stat cost is paid only
+  // on a real login, never every tick.
+  let live: string[];
+  try {
+    live = listNodes({ status: ['active', 'idle'] })
+      .filter((r) => r.kind !== 'human')
+      .map((r) => getNode(r.node_id))
+      .filter((m): m is NodeMeta => m !== null && isBrokerLive(m))
+      .map((m) => m.node_id);
+  } catch (err) {
+    process.stderr.write(`[crtrd] auth-reload enumerate error: ${(err as Error).message}\n`);
+    return;
+  }
+  if (live.length === 0) return;
+
+  const results = await Promise.allSettled(
+    live.map(async (id) => {
+      try {
+        await reloadAuthLive(id);
+      } catch (err) {
+        process.stderr.write(`[crtrd] auth-reload ${id} failed: ${(err as Error).message}\n`);
+        throw err;
+      }
+    }),
+  );
+  const ok = results.filter((r) => r.status === 'fulfilled').length;
+  process.stderr.write(
+    `[crtrd] auth-reload: auth.json changed — fanned to ${live.length} live broker(s) (${ok} ok, ${live.length - ok} failed)\n`,
+  );
 }
 
 export type LivenessVerdict = 'leave' | 'pending' | 'revive';
@@ -667,6 +747,16 @@ export function isDaemonRunning(): boolean {
 // ---------------------------------------------------------------------------
 
 export async function superviseTick(now: number = Date.now()): Promise<void> {
+  // Auth-reload fan FIRST, independent of node supervision: a change to the
+  // shared auth.json propagates a live credential reload to every broker. Kept
+  // ahead of the listNodes guard below so a transient list error in the
+  // supervision passes never skips an auth fan (it does its own enumeration).
+  try {
+    await handleAuthReload(now);
+  } catch (err) {
+    process.stderr.write(`[crtrd] handleAuthReload error: ${(err as Error).message}\n`);
+  }
+
   let rows: NodeRow[];
   try {
     rows = listNodes({ status: ['active', 'idle'] });
