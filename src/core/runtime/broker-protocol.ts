@@ -306,7 +306,11 @@ export interface ShareFrame {
 }
 
 /** Reload credentials + refresh model registry after a viewer-side auth change.
- *  Controller-only. Broker handler: services.authStorage.reload() + services.modelRegistry.refresh(). */
+ *  Open to any client — reload_auth is an idempotent local re-read that doesn't
+ *  steer the conversation, so the daemon's canvas-wide fan (one /login → every
+ *  live broker) can trigger it without claiming controller and demoting an
+ *  attached human. Broker handler: services.authStorage.reload() +
+ *  services.modelRegistry.refresh(). */
 export interface ReloadAuthFrame {
   type: 'reload_auth';
 }

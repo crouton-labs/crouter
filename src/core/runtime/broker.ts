@@ -1256,7 +1256,13 @@ export async function runBroker(nodeId: string): Promise<void> {
         break;
       }
       case 'reload_auth': {
-        if (notController(client, 'reload auth')) break;
+        // Open to any client: reload_auth is an idempotent local re-read of the
+        // shared auth.json + a model-registry refresh. It does NOT steer the
+        // conversation, so there is nothing to gate behind controller. Gating it
+        // forced callers (notably the daemon's canvas-wide fan, which propagates
+        // a single /login to every live broker) to first request_control, which
+        // ALWAYS preempts — silently demoting any attached human to observer on
+        // every login. Letting an observer trigger this is the safer default.
         try {
           services.authStorage.reload();
           services.modelRegistry.refresh();
