@@ -14,7 +14,13 @@
 // MIDDLE node with a live sideways-sibling subtree. This test fills exactly that
 // gap: it builds a real tree, closes the middle, and proves the reap is EXACTLY
 // the closed node's own subtree — nothing above (the ancestor) or sideways (a
-// sibling subtree) is touched, and real panes actually die.
+// sibling subtree) is touched, and the real broker engines actually die.
+//
+// VIEWER MODEL (a09b71f): a managed child boots as a detached headless BROKER
+// with NO viewer pane on spawn (a viewer is opened on demand via `node focus`).
+// So "the node is up" is broker-engine liveness — its recorded `pi_pid` is alive
+// — NOT pane presence. close tears that broker engine down (headlessBrokerHost
+// .teardown over view.sock), so we assert pid liveness, not panes.
 //
 // The tree (covers BOTH required shapes in one topology):
 //
@@ -49,6 +55,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 
 import { createHarness, hasTmux, type Harness } from '../helpers/harness.js';
+import { isPidAlive } from '../../canvas/pid.js';
 
 function sessionExists(session: string): boolean {
   return spawnSync('tmux', ['has-session', '-t', session], { stdio: 'ignore' }).status === 0;
@@ -81,7 +88,8 @@ test(
       {
         for (const id of [B, C, D, E, S, G]) {
           assert.equal(h.status(id), 'active', `${id} active before close`);
-          assert.equal(h.paneAlive(id), true, `${id} has a live pane before close`);
+          const pid = h.node(id)!.pi_pid;
+          assert.ok(pid != null && isPidAlive(pid), `${id} broker engine alive before close`);
         }
         assert.equal(h.status(A), 'active', 'A (root) active before close');
         // Spine: A→{B,S}, B→{C,D}, C→{E}, S→{G} (all active spawn-seed edges).
@@ -148,12 +156,20 @@ test(
       }
 
       // ===================================================================
-      // ASSERT 2 — real panes destroyed for the ENTIRE subtree (invariant 12-ish:
-      // a torn-down node owns no pane). tearDownNode killed each real tmux pane.
+      // ASSERT 2 — broker ENGINE torn down for the ENTIRE subtree (the real
+      // "node is up" invariant now: a closed node owns no live broker process).
+      // close → headlessBrokerHost.teardown shut each broker down over view.sock.
       // ===================================================================
       for (const id of subtree) {
-        await h.waitForPaneGone(id);
-        assert.equal(h.paneAlive(id), false, `${id} real pane destroyed by close`);
+        await h.waitFor(
+          () => {
+            const pid = h.node(id)?.pi_pid ?? null;
+            return pid === null || !isPidAlive(pid);
+          },
+          { label: `${id} broker engine torn down by close` },
+        );
+        const pid = h.node(id)?.pi_pid ?? null;
+        assert.ok(pid === null || !isPidAlive(pid), `${id} broker engine destroyed by close`);
       }
 
       // ===================================================================
@@ -182,10 +198,11 @@ test(
         assert.equal(added[0]!.from, B, 'the new entry is from the closed child B');
         assert.match(added[0]!.label, /closed/i, 'the new entry tells A its child B was closed');
       }
-      // Sideways subtree S→G — wholly alive: status active AND real panes alive.
+      // Sideways subtree S→G — wholly alive: status active AND broker engine alive.
       for (const id of sideways) {
         assert.equal(h.status(id), 'active', `${id} (sideways) still active — not reaped`);
-        assert.equal(h.paneAlive(id), true, `${id} (sideways) real pane still alive`);
+        const pid = h.node(id)!.pi_pid;
+        assert.ok(pid != null && isPidAlive(pid), `${id} (sideways) broker engine still alive`);
       }
       // The strong "EXACTLY its own subtree" closure: every node in the graph is
       // either in B's subtree (canceled) or untouched (active) — no over-reach.

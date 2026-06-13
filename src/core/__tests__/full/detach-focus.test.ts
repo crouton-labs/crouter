@@ -3,8 +3,9 @@
 // `crtr node demote --detach` on a node with a live viewer (Alt+C → D).
 //
 // BROKER-CUT ADAPTATION (taste/broker-is-the-host, 2026-06-10): every node is a
-// detached headless broker and the only thing on screen is its `crtr attach`
-// VIEWER pane (tracked in the focuses table). The engine is NOT in a pane, so the
+// detached headless broker. After a09b71f a managed child opens NO viewer on
+// spawn — a viewer is opened on demand via `node focus`, registering its
+// `crtr attach` VIEWER pane in the focuses table. The engine is NOT in a pane, so the
 // pre-cut "relocate the still-running pi pane to the backstage" behavior —
 // detachToBackground's engine break-pane/release path, and its isGenerating()
 // gate that released a non-generating node to dormant — is DELETED. The Bug-1
@@ -42,6 +43,18 @@ function paneExistsReal(pane: string): boolean {
     pane
   );
 }
+// Split a throwaway pane in the harness session; return its %id. The caller pane
+// `node focus` opens the viewer beside (a09b71f: spawn no longer auto-opens one).
+function makePane(session: string): string {
+  const r = spawnSync(
+    'tmux',
+    ['split-window', '-d', '-t', session, '-P', '-F', '#{pane_id}', 'sleep 100000'],
+    { encoding: 'utf8' },
+  );
+  const pane = (r.stdout ?? '').trim();
+  assert.ok(pane.startsWith('%'), `expected a %pane_id, got "${pane}" (stderr: ${r.stderr})`);
+  return pane;
+}
 
 // ===========================================================================
 // `crtr node demote --detach` on a node with a live viewer (Alt+C → D).
@@ -53,8 +66,7 @@ test(
     const h: Harness = await createHarness({ sessionPrefix: 'crtr-detach-focus' });
     try {
       // A resident root + a live terminal child B. spawnChild launches B's broker
-      // and opens its one background `crtr attach` VIEWER window, registering the
-      // viewer focus row (§A.3) — so B is genuinely "on screen" via its viewer.
+      // but opens NO viewer (a09b71f) — so B has no focus row yet.
       const A = h.spawnRoot('resident root');
       const B = await h.spawnChild(A, 'do the work', { kind: 'developer' });
       const b0 = h.node(B)!;
@@ -63,7 +75,14 @@ test(
       const brokerPid = b0.pi_pid!;
       assert.ok(brokerPid != null && isPidAlive(brokerPid), 'B broker engine alive before detach');
 
-      // The viewer pane is the node's on-screen presence (the focuses row spawn
+      // Put B genuinely "on screen": `node focus` opens its one `crtr attach`
+      // VIEWER pane beside a caller pane in the harness session, registering the
+      // viewer focus row (§A.3) — the on-demand viewer the detach then tears down.
+      const caller = makePane(h.session);
+      const focusRes = h.cli(B, ['node', 'focus', B, '--pane', caller]);
+      assert.equal(focusRes.code, 0, `node focus B exit 0\n${focusRes.stderr}`);
+
+      // The viewer pane is the node's on-screen presence (the focuses row `focus`
       // registered) — NOT a node-row pane (a broker carries null placement).
       closeDb();
       const viewerRow = getFocusByNode(B);
