@@ -120,12 +120,27 @@ export function registerCanvasResume(pi: PiLike): void {
   }
 
   // A pi shortcut that opens the picker DIRECTLY (no keystroke simulation),
-  // mirroring canvas-nav's prefixKey. Default 'alt+shift+g', configurable via
-  // canvasNav.resumeKey. Registered once per load (pi dedupes on /reload); wrap
-  // in try/catch since pi rejects some specs. A headless ('print') broker has no
-  // keyboard, so this only ever fires in the interactive TUI.
+  // mirroring canvas-nav's prefixKey. Default 'alt+r', configurable via
+  // canvasNav.resumeKey. A headless ('print') broker has no keyboard, so this
+  // only ever fires in the interactive TUI.
+  //
+  // ⚠ Must be a SINGLE-modifier chord (alt+<letter>), like prefixKey's 'alt+g'.
+  //   pi matches shortcuts at runtime with pi-tui's matchesKey(rawBytes, spec)
+  //   (CustomEditor.handleInput → onExtensionShortcut). For a letter key,
+  //   matchesKey has an explicit LEGACY branch ONLY for pure alt (ESC+<letter>):
+  //   alt+shift+<letter> matches ONLY a kitty CSI-u or xterm modifyOtherKeys
+  //   sequence. A plain terminal delivers Alt+Shift+G as the legacy bytes ESC+'G'
+  //   (uppercase), which matchesKey matches against NOTHING — so 'alt+shift+g'
+  //   was silently dead outside kitty/extended-keys terminals (the /resume-node
+  //   command still worked because it's a slash command, not a key match).
+  //   Verified empirically against the installed pi-tui matchesKey.
+  //
+  // registerShortcut() does NOT validate the spec — it just stores it; an invalid
+  // spec is kept and simply never matches. The try/catch here only guards pi's
+  // assertActive() lifecycle throw (e.g. a torn-down extension on /reload); it is
+  // NOT swallowing a spec rejection.
   let resumeKey: string | undefined;
-  try { resumeKey = readConfig('user').canvasNav.resumeKey; } catch { resumeKey = 'alt+shift+g'; }
+  try { resumeKey = readConfig('user').canvasNav.resumeKey; } catch { resumeKey = 'alt+r'; }
   if (typeof pi.registerShortcut === 'function' && resumeKey !== undefined && resumeKey !== '') {
     try {
       pi.registerShortcut(resumeKey, {
@@ -133,7 +148,7 @@ export function registerCanvasResume(pi: PiLike): void {
         handler: async (ctx: CommandCtx): Promise<void> => { openResumePicker(ctx); },
       });
     } catch {
-      /* shortcut spec rejected by pi — /resume-node still works */
+      /* pi extension torn down (assertActive) — /resume-node still works */
     }
   }
 }
