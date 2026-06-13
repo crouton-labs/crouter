@@ -232,7 +232,10 @@ export async function runBrowse(opts: { returnPane?: string; cwd?: string } = {}
       n.row.streaming = false;
       n.row.viewed = false;
     }
-    recompute(id);
+    // Keep the cursor at the same INDEX (the row that shifts up into the closed
+    // slot), not pinned to the now-gone node — recompute() leaves state.cursor
+    // put and clamps it to the new bounds.
+    recompute();
   };
 
   const cycleTab = (dir: 1 | -1): void => {
