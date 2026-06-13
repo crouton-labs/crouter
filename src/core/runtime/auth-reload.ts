@@ -24,11 +24,12 @@ import type { BrokerToClient } from './broker-protocol.js';
  *  to cap the worst-case stall if a broker connects but never acks. */
 const ACK_TIMEOUT_MS = 3_000;
 
-/** Reload a LIVE node's credentials over its view.sock. Connects, claims
- *  controller (hello + request_control, so an attached viewer never blocks the
- *  reload), sends `reload_auth`, and resolves on its ack. Rejects on the broker's
- *  `error` frame, connect failure, a premature close, or timeout — the caller
- *  (the daemon fan) isolates each broker so one failure never aborts the rest. */
+/** Reload a LIVE node's credentials over its view.sock. Connects as an OBSERVER
+ *  (hello only — NO request_control, so an attached human keeps control through
+ *  the fan; the broker's reload_auth handler is open to any client), sends
+ *  `reload_auth`, and resolves on its ack. Rejects on the broker's `error` frame,
+ *  connect failure, a premature close, or timeout — the caller (the daemon fan)
+ *  isolates each broker so one failure never aborts the rest. */
 export function reloadAuthLive(nodeId: string): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const client = new ViewSocketClient(nodeId);
