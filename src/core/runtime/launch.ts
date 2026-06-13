@@ -71,59 +71,103 @@ export const CANVAS_EXTENSIONS = [
   CANVAS_VIEW_PATH,
 ];
 
-/** The named capability tiers a caller picks with `--model`, in descending
- *  strength. Each maps to a concrete pi model spec. `strong`/`medium`/`light`
- *  resolve to the latest opus/sonnet/haiku; `ultra` to the frontier model. */
-export const MODEL_TIERS: Record<string, string> = {
-  ultra: 'anthropic/claude-fable-5',
-  strong: 'anthropic/claude-opus-4-8',
-  medium: 'anthropic/claude-sonnet-4-6',
-  light: 'anthropic/claude-haiku-4-5',
+// ---------------------------------------------------------------------------
+// Two-axis model resolution: (provider × strength) → concrete `model:thinking`.
+//
+// A persona declares ONE `model:` field valued `provider/strength` (e.g.
+// `openai/strong`, `anthropic/light`). The provider is a fixed per-persona
+// property; the caller/persona thinks only in strength; the concrete model id
+// AND the thinking level both fall out of the per-provider ladder below. pi
+// accepts the `:thinking` suffix on `--model` (off,minimal,low,medium,high,
+// xhigh — confirmed via `pi --help`), so the resolved spec is exactly the
+// string buildPiArgv passes to `--model`; no extra launch plumbing.
+// ---------------------------------------------------------------------------
+
+/** The four named strengths, descending. */
+type Strength = 'ultra' | 'strong' | 'medium' | 'light';
+
+/** Anthropic ladder: vary the model, thinking always `high`. Every id is a
+ *  verified registry id (`pi --list-models`) — an unversioned/bogus spec
+ *  silently falls back to the SDK default, so these must be exact. */
+const ANTHROPIC_LADDER: Record<Strength, string> = {
+  ultra: 'anthropic/claude-fable-5:high',
+  strong: 'anthropic/claude-opus-4-8:high',
+  medium: 'anthropic/claude-sonnet-4-6:high',
+  light: 'anthropic/claude-haiku-4-5:high',
 };
 
-/** Bare family aliases → the same concrete versioned ids as the tiers. These
- *  MUST be real registry ids (see `pi --list-models`): an unversioned spec like
- *  `anthropic/sonnet` is NOT in the registry and silently falls back to the SDK
- *  default (opus), so it can never be the resolution target. */
-const BARE_ALIASES: Record<string, string> = {
-  opus: 'anthropic/claude-opus-4-8',
-  sonnet: 'anthropic/claude-sonnet-4-6',
-  haiku: 'anthropic/claude-haiku-4-5',
+/** OpenAI ladder, served by the `openai-codex` provider (ChatGPT-subscription
+ *  auth in pi's auth.json), NOT `openai` (which needs OPENAI_API_KEY / paid
+ *  Platform credits). `light` is codex-spark, which has no thinking support
+ *  (`pi --list-models` shows thinking=no), so it is left bare. We deliberately
+ *  never use the plain gpt-5.4. */
+const OPENAI_LADDER: Record<Strength, string> = {
+  ultra: 'openai-codex/gpt-5.5:xhigh',
+  strong: 'openai-codex/gpt-5.5:high',
+  medium: 'openai-codex/gpt-5.4-mini:medium',
+  light: 'openai-codex/gpt-5.3-codex-spark',
 };
 
-/** When `CRTR_MODEL_PROVIDER=openai` is set in the spawning/reviving process,
- *  every named tier AND bare family alias resolves to an OpenAI model served by
- *  the `openai-codex` provider (the ChatGPT subscription auth in pi's
- *  auth.json), NOT the `openai` provider (which needs OPENAI_API_KEY / paid
- *  Platform credits). A concrete `provider/id` spec still passes through
- *  untouched, so an explicit `--model anthropic/...` or `openai/...` overrides
- *  the switch. Resolution happens at launch-spec build time and is baked into
- *  the node's durable recipe, so it survives revives. */
+/** Env var naming the DEFAULT provider for an UNqualified bare strength only.
+ *  `CRTR_MODEL_PROVIDER=openai` (case-insensitive) makes a bare `strong` resolve
+ *  on the OpenAI ladder; anything else defaults to Anthropic. A qualified
+ *  `provider/strength`, a concrete `provider/id` spec, and the bare family
+ *  aliases all ignore this env. */
 export const OPENAI_PROVIDER_ENV = 'CRTR_MODEL_PROVIDER';
 
-const OPENAI_TIERS: Record<string, string> = {
-  ultra: 'openai-codex/gpt-5.5',
-  strong: 'openai-codex/gpt-5.5',
-  medium: 'openai-codex/gpt-5.4',
-  light: 'openai-codex/gpt-5.4-mini',
-  opus: 'openai-codex/gpt-5.5',
-  sonnet: 'openai-codex/gpt-5.4',
-  haiku: 'openai-codex/gpt-5.4-mini',
+/** Strength synonyms accepted from personas/callers. */
+const STRENGTH_ALIASES: Record<string, Strength> = {
+  ultra: 'ultra',
+  strong: 'strong',
+  medium: 'medium',
+  light: 'light',
+  normal: 'medium',
+  weak: 'light',
 };
 
-function openAiProviderActive(): boolean {
-  return (process.env[OPENAI_PROVIDER_ENV] ?? '').toLowerCase() === 'openai';
+function ladderFor(provider: 'anthropic' | 'openai'): Record<Strength, string> {
+  return provider === 'openai' ? OPENAI_LADDER : ANTHROPIC_LADDER;
 }
 
-/** Resolve a model token to the spec pi gets via `--model`. A named tier
- *  (ultra/strong/medium/light) maps to its concrete spec; a bare family alias
- *  (sonnet/opus/haiku) maps to that family's current versioned id; anything
- *  with a `/` or an unknown name passes through. With `CRTR_MODEL_PROVIDER=openai`
- *  the tiers/aliases instead resolve to `openai-codex` gpt-5.x models. */
+function defaultProvider(): 'anthropic' | 'openai' {
+  return (process.env[OPENAI_PROVIDER_ENV] ?? '').toLowerCase() === 'openai' ? 'openai' : 'anthropic';
+}
+
+/** Resolve a persona/caller `model:` token to the concrete `model:thinking`
+ *  spec pi gets via `--model`, in order:
+ *   1. `provider/rest` — apply strength aliases to `rest`; if `provider` is
+ *      `anthropic`/`openai` AND `rest` is a strength, return that ladder cell
+ *      (the word `openai` maps to the openai-codex ladder). Otherwise it is a
+ *      concrete `provider/id` (incl. any `:thinking` suffix) → pass through.
+ *   2. Bare strength (incl. aliases normal/weak) → the default-provider ladder
+ *      cell (default provider from CRTR_MODEL_PROVIDER, else anthropic).
+ *   3. Bare family alias (opus/sonnet/haiku) → the Anthropic ladder's
+ *      strong/medium/light, ALWAYS anthropic (ignores the env).
+ *   4. Anything else → pass through unchanged. */
 export function normalizeModel(model: string): string {
-  if (openAiProviderActive() && model in OPENAI_TIERS) return OPENAI_TIERS[model];
-  if (model in MODEL_TIERS) return MODEL_TIERS[model];
-  if (model in BARE_ALIASES) return BARE_ALIASES[model];
+  // 1. Qualified provider/rest.
+  if (model.includes('/')) {
+    const slash = model.indexOf('/');
+    const provider = model.slice(0, slash);
+    const rest = model.slice(slash + 1);
+    const strength = STRENGTH_ALIASES[rest];
+    if (strength !== undefined && (provider === 'anthropic' || provider === 'openai')) {
+      return ladderFor(provider)[strength];
+    }
+    // Concrete `provider/id` (optionally `...:thinking`) — pass through.
+    return model;
+  }
+
+  // 2. Bare strength → default-provider ladder.
+  const strength = STRENGTH_ALIASES[model];
+  if (strength !== undefined) return ladderFor(defaultProvider())[strength];
+
+  // 3. Bare family alias → always Anthropic.
+  if (model === 'opus') return ANTHROPIC_LADDER.strong;
+  if (model === 'sonnet') return ANTHROPIC_LADDER.medium;
+  if (model === 'haiku') return ANTHROPIC_LADDER.light;
+
+  // 4. Unknown — pass through.
   return model;
 }
 
