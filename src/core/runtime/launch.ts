@@ -91,11 +91,37 @@ const BARE_ALIASES: Record<string, string> = {
   haiku: 'anthropic/claude-haiku-4-5',
 };
 
+/** When `CRTR_MODEL_PROVIDER=openai` is set in the spawning/reviving process,
+ *  every named tier AND bare family alias resolves to an OpenAI model served by
+ *  the `openai-codex` provider (the ChatGPT subscription auth in pi's
+ *  auth.json), NOT the `openai` provider (which needs OPENAI_API_KEY / paid
+ *  Platform credits). A concrete `provider/id` spec still passes through
+ *  untouched, so an explicit `--model anthropic/...` or `openai/...` overrides
+ *  the switch. Resolution happens at launch-spec build time and is baked into
+ *  the node's durable recipe, so it survives revives. */
+export const OPENAI_PROVIDER_ENV = 'CRTR_MODEL_PROVIDER';
+
+const OPENAI_TIERS: Record<string, string> = {
+  ultra: 'openai-codex/gpt-5.5',
+  strong: 'openai-codex/gpt-5.5',
+  medium: 'openai-codex/gpt-5.4',
+  light: 'openai-codex/gpt-5.4-mini',
+  opus: 'openai-codex/gpt-5.5',
+  sonnet: 'openai-codex/gpt-5.4',
+  haiku: 'openai-codex/gpt-5.4-mini',
+};
+
+function openAiProviderActive(): boolean {
+  return (process.env[OPENAI_PROVIDER_ENV] ?? '').toLowerCase() === 'openai';
+}
+
 /** Resolve a model token to the spec pi gets via `--model`. A named tier
  *  (ultra/strong/medium/light) maps to its concrete spec; a bare family alias
  *  (sonnet/opus/haiku) maps to that family's current versioned id; anything
- *  with a `/` or an unknown name passes through. */
+ *  with a `/` or an unknown name passes through. With `CRTR_MODEL_PROVIDER=openai`
+ *  the tiers/aliases instead resolve to `openai-codex` gpt-5.x models. */
 export function normalizeModel(model: string): string {
+  if (openAiProviderActive() && model in OPENAI_TIERS) return OPENAI_TIERS[model];
   if (model in MODEL_TIERS) return MODEL_TIERS[model];
   if (model in BARE_ALIASES) return BARE_ALIASES[model];
   return model;
