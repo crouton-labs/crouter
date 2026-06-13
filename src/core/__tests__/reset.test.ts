@@ -1,21 +1,15 @@
 // Run with: node --import tsx/esm --test src/core/__tests__/reset.test.ts
+//
+// resetRoot now handles ONLY the non-root child `/new` (a session-id refresh).
+// A root's `/new` mints a fresh node via relaunchRoot — see relaunch-root.test.ts.
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import {
-  createNode,
-  getNode,
-  subscribe,
-  setStatus,
-  subscriptionsOf,
-  view,
-} from '../canvas/canvas.js';
+import { createNode, getNode, subscribe } from '../canvas/canvas.js';
 import { closeDb } from '../canvas/db.js';
-import { reportsDir, inboxPath } from '../canvas/paths.js';
-import { roadmapPath } from '../runtime/roadmap.js';
 import { resetRoot } from '../runtime/reset.js';
 import type { NodeMeta } from '../canvas/types.js';
 
@@ -51,105 +45,39 @@ after(() => {
   delete process.env['CRTR_HOME'];
 });
 
-test('resetRoot empties the root view, reaps descendants, and wipes working state', () => {
-  // root → child → grandchild (mirrors a parent that subscribes to its workers)
-  createNode(node('root', { parent: null, lifecycle: 'resident', mode: 'orchestrator', pi_session_id: 'old-sess' }));
-  createNode(node('child', { parent: 'root' }));
-  createNode(node('grand', { parent: 'child' }));
-  subscribe('root', 'child', true);
-  subscribe('child', 'grand', true);
-
-  // Root accumulated working state.
-  writeFileSync(roadmapPath('root'), '# Roadmap\nold goal\n');
-  writeFileSync(inboxPath('root'), '{"ts":"x","from":"child","tier":"normal","kind":"update","label":"hi"}\n');
-  writeFileSync(join(reportsDir('root'), '20260101T000000-update.md'), 'stale report');
-
-  assert.equal(view('root').length, 2, 'precondition: root sees 2 descendants');
-
-  const res = resetRoot('root', 'new-sess', '/abs/sessions/new.jsonl');
-
-  assert.equal(res.reset, true);
-  assert.deepEqual(res.detached, ['child'], 'root detaches its direct subscription');
-  assert.deepEqual(res.reaped.sort(), ['child', 'grand'], 'whole sub-DAG reaped');
-
-  // Graph is empty from the root's view.
-  assert.equal(view('root').length, 0, 'root view is empty after reset');
-  assert.equal(subscriptionsOf('root').length, 0, 'no outgoing edges remain');
-
-  // Descendants are CANCELED (A5, human-confirmed 2026-06-06): an externally-
-  // reaped node — via reset/relaunch OR close — did not finish its OWN work, so
-  // it unifies on `canceled`; `done` is reserved for finalize. Daemon skips them.
-  assert.equal(getNode('child')?.status, 'canceled');
-  assert.equal(getNode('grand')?.status, 'canceled');
-  // Regression: a reset-reaped descendant ends EXACTLY {canceled, null} — byte-
-  // for-byte identical to the close path (mirrors cascade-close.test.ts's tuple).
-  assert.deepEqual(
-    { status: getNode('grand')?.status, intent: getNode('grand')?.intent ?? null },
-    { status: 'canceled', intent: null },
-    'reset-reaped descendant: (status,intent) === (canceled, null), same as close',
-  );
-
-  // Working state wiped.
-  assert.equal(existsSync(roadmapPath('root')), false, 'roadmap wiped');
-  assert.equal(existsSync(inboxPath('root')), false, 'inbox wiped');
-
-  // Root reset to a pristine base resident, rebound to the new session id.
-  const root = getNode('root');
-  assert.equal(root?.mode, 'base');
-  assert.equal(root?.lifecycle, 'resident');
-  assert.equal(root?.status, 'active');
-  assert.equal(root?.intent, null);
-  assert.equal(root?.pi_session_id, 'new-sess');
-  assert.equal(root?.pi_session_file, '/abs/sessions/new.jsonl', 'session FILE rebound too');
-  assert.ok(root?.launch, 'a fresh base launch spec was written');
-});
-
-test('resetRoot on a non-root only refreshes the session id (no reap)', () => {
+test('resetRoot on a non-root child refreshes the session id (no reap, no reset)', () => {
   createNode(node('root', { parent: null }));
   createNode(node('child', { parent: 'root', pi_session_id: 'old' }));
   subscribe('root', 'child', true);
-  subscribe('child', 'root', false); // contrived: ensure child has an outgoing edge
 
   const res = resetRoot('child', 'fresh', '/abs/sessions/fresh.jsonl');
 
-  assert.equal(res.reset, false, 'a non-root is not a graph reset');
+  assert.equal(res.reset, false, 'a child `/new` is not a graph reset');
   assert.deepEqual(res.reaped, []);
   assert.deepEqual(res.detached, []);
-  assert.equal(getNode('child')?.pi_session_id, 'fresh', 'session id still refreshed');
+  assert.equal(getNode('child')?.pi_session_id, 'fresh', 'session id refreshed');
   assert.equal(getNode('child')?.pi_session_file, '/abs/sessions/fresh.jsonl', 'session FILE refreshed too');
   assert.equal(getNode('child')?.status, 'active', 'child not reaped');
-  // The root that subscribes to the child is untouched.
-  assert.equal(getNode('root')?.status, 'active');
+  assert.equal(getNode('root')?.status, 'active', 'the subscribing root is untouched');
 });
 
-// NOTE (broker-host cut): the former "Step 7: resetRoot reaps a FOCUSED
-// descendant through tearDownNode" test was DELETED. reapDescendants no longer
-// routes through the synchronous tearDownNode — it cancels each descendant
-// (transition 'cancel') and sends the broker `shutdown` frame
-// (headlessBrokerHost.teardown); the viewer pane/focus row close on their own
-// when the broker socket drops. The cancel-on-reap is already covered by
-// 'reaped descendants keep their meta on disk'; the async viewer teardown is
-// covered by the full-tier broker lifecycle suite (needs a real broker).
+test('resetRoot on a ROOT is a no-op (roots route to relaunchRoot, not here)', () => {
+  createNode(node('root', { parent: null, lifecycle: 'resident', pi_session_id: 'keep' }));
+  createNode(node('child', { parent: 'root' }));
+  subscribe('root', 'child', true);
+
+  const res = resetRoot('root', 'new-sess');
+
+  assert.equal(res.reset, false);
+  assert.deepEqual(res.reaped, [], 'a root `/new` reaps nothing here');
+  assert.equal(getNode('root')?.status, 'active', 'root left untouched');
+  assert.equal(getNode('root')?.pi_session_id, 'keep', 'a root session id is NOT refreshed here');
+  assert.equal(getNode('child')?.status, 'active', 'descendant left untouched');
+});
 
 test('resetRoot is a no-op for an unknown node', () => {
   const res = resetRoot('ghost', 'x');
   assert.equal(res.reset, false);
   assert.deepEqual(res.reaped, []);
   assert.deepEqual(res.detached, []);
-});
-
-test('reaped descendants keep their meta on disk (orphaned, not deleted)', () => {
-  createNode(node('root', { parent: null }));
-  createNode(node('child', { parent: 'root' }));
-  subscribe('root', 'child', true);
-  setStatus('child', 'idle');
-
-  resetRoot('root', 'new');
-
-  // The node record persists (we detach + mark canceled, we don't delete the node).
-  const child = getNode('child');
-  assert.ok(child, 'child meta still on disk');
-  assert.equal(child?.status, 'canceled');
-  // It is just unreachable from the root.
-  assert.equal(view('root').length, 0);
 });

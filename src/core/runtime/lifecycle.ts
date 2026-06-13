@@ -13,7 +13,7 @@
 // lifecycle.ts is the single source of which status/intent move is LEGAL. Two
 // parallel, legible state machines instead of scattered enactment.
 //
-// Crash-safety invariant (was a comment repeated in reset/close/reapDescendants):
+// Crash-safety invariant (was a comment repeated in close/reapDescendants):
 // "flip status to a non-supervised value + clear intent BEFORE killing the
 // host" (tmux pane or headless broker) — the daemon only ever revives
 // active|idle nodes, so a teardown must
@@ -22,12 +22,13 @@
 // and only THEN tear the host down.
 //
 // Unification (A5, human-confirmed 2026-06-06): an externally-reaped node — torn
-// down because the user moved on (close cascade) OR because a root reset/relaunch
-// superseded it — ends `canceled`, NOT `done`. `done` is reserved for a node that
-// finished its OWN work (finalize). The old `reap` event (→ done) was identical to
-// `cancel` in every field and side effect once unified on status, so it was
-// COLLAPSED into `cancel`; reset.ts's reapDescendants + relaunchRoot park-old now
-// route through `cancel`.
+// down because the user moved on (close cascade) OR because a root relaunch
+// superseded its workers — ends `canceled`, NOT `done`. `done` is reserved for a
+// node that finished its OWN work (finalize) — including a relaunched root, which
+// is parked `done` as history, not canceled. The old `reap` event (→ done) was
+// identical to `cancel` in every field and side effect once unified on status, so
+// it was COLLAPSED into `cancel`; reset.ts's reapDescendants routes through
+// `cancel`.
 //
 // Layering note: lifecycle.ts is runtime, but it is the canvas write surface's
 // `transition` verb (the only writer of status+intent), so it owns its atomic
@@ -42,12 +43,12 @@ import type { NodeMeta, NodeStatus, ExitIntent } from '../canvas/types.js';
  *  Each maps (in the table below) to a target status and/or intent plus the set
  *  of from-statuses it is legal from. */
 export type LifecycleEvent =
-  | 'finalize'  // → done, intent='done'       (push --final / job complete / clean quit)
-  | 'cancel'    // → canceled, intent cleared    (node close cascade · reapDescendants · relaunch park-old)
+  | 'finalize'  // → done, intent='done'       (push --final / job complete / clean quit / relaunchRoot park-old)
+  | 'cancel'    // → canceled, intent cleared    (node close cascade · reapDescendants)
   | 'crash'     // → dead, intent unchanged      (daemon: engine container gone, no yield/release)
-  | 'yield'     // intent='refresh', status unchanged (requestYield / relaunch new-node safety net)
+  | 'yield'     // intent='refresh', status unchanged (requestYield)
   | 'release'   // → idle, intent='idle-release'       (idle-release: free the host, wake on inbox)
-  | 'revive';   // → active, intent cleared      (reviveNode / resetRoot / boot-confirm clear)
+  | 'revive';   // → active, intent cleared      (reviveNode / boot-confirm clear)
 
 /** One row of the transition table. A PRESENT `status`/`intent` key (even an
  *  explicit `null`) means "write this field"; an ABSENT key means "leave this
@@ -67,11 +68,12 @@ const LIVE: readonly NodeStatus[] = ['active', 'idle'];
  *  the runtime actually wrote at its audited call sites, so behavior is preserved
  *  by construction. Each entry's comment names its writer(s). */
 const TRANSITIONS: Readonly<Record<LifecycleEvent, TransitionSpec>> = {
-  // feed.push(final) · queue.cancelJob · markCleanExitDone (clean quit).
+  // feed.push(final) · queue.cancelJob · markCleanExitDone (clean quit) ·
+  // relaunchRoot park-old (a relaunched root is parked `done` as history).
   finalize: { status: 'done', intent: 'done', from: LIVE },
-  // closeNode cascade · reapDescendants · relaunchRoot park-old. Forced teardown
-  // of a node that did NOT finish its own work → canceled, intent cleared. (A5:
-  // done is reserved for finalize; every external reap unifies on canceled.)
+  // closeNode cascade · reapDescendants. Forced teardown of a node that did NOT
+  // finish its own work → canceled, intent cleared. (A5: done is reserved for
+  // finalize; every external reap unifies on canceled.)
   cancel: { status: 'canceled', intent: null, from: ANY },
   // daemon superviseTick: engine container gone (tmux pane or broker process)
   // with no yield/release intent. Intent KEPT (the dead log line still reports it).
@@ -118,9 +120,8 @@ export function transition(nodeId: string, event: LifecycleEvent): NodeMeta {
   // Event-gated; exactly ONE delegated wakeups helper per event, never inline
   // wakeups SQL here (design §6.7 / D2 / D6, Q1/Q2):
   //   cancel   → cancelWakesFor: reap node-anchored AND owner-armed detached
-  //              wakes this node armed (ruling A) — covers all three cancel
-  //              sites uniformly (close cascade · reapDescendants · relaunch
-  //              park-old).
+  //              wakes this node armed (ruling A) — covers both cancel sites
+  //              uniformly (close cascade · reapDescendants).
   //   finalize → cancelSelfAlarms: clear this node's one-shot self-alarms only;
   //              node-anchored declarative crons SURVIVE a finishing instance (Q1).
   //   crash    → NOTHING. A fault is not a deliberate end-of-waiting; self-alarms

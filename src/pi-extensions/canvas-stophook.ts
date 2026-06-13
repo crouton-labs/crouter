@@ -35,7 +35,7 @@ import { transition } from '../core/runtime/lifecycle.js';
 import { markBusy, clearBusy } from '../core/runtime/busy.js';
 import { evaluateStop } from '../core/runtime/stop-guard.js';
 import { personaDrift, commitPersonaAck } from '../core/runtime/persona.js';
-import { handleNewSession, markCleanExitDone } from '../core/runtime/reset.js';
+import { handleNewSession, relaunchRoot, markCleanExitDone } from '../core/runtime/reset.js';
 import { focusOf, tearDownNode } from '../core/runtime/placement.js';
 
 // ---------------------------------------------------------------------------
@@ -302,13 +302,12 @@ export function registerCanvasStophook(pi: PiLike): void {
   // Why reason, not a closure flag: pi RE-ACTIVATES extensions on every session
   // swap, so any id we stash on boot is reset to its initial value before the
   // next session_start fires and can never observe the change — a `/new` then
-  // looks identical to a boot. (That is exactly the bug this replaced: `/new`
-  // silently fell back to an in-place reset instead of relaunching, so the node
-  // id + context dir never changed.) The event reason is delivered fresh on
-  // every fire and is immune to the re-activation.
+  // looks identical to a boot. The event reason is delivered fresh on every fire
+  // and is immune to the re-activation.
   //
-  // For a root, reason 'new' means a brand-new graph: relaunch (park the old
-  // root + boot a fresh node in this pane) or, with no pane, an in-place reset.
+  // `/new` splits by who ran it: a ROOT relaunches into a genuinely new node
+  // (relaunchRoot — park the old root `done`, boot a fresh node, re-point this
+  // pane), a non-root CHILD just refreshes its session id (handleNewSession).
   // ---------------------------------------------------------------------------
 
   pi.on('session_start', (event: any, ctx: any): void => {
@@ -324,12 +323,16 @@ export function registerCanvasStophook(pi: PiLike): void {
 
       // `/new` — a brand-new conversation in the same process. The broker already
       // drove the engine-side new_session (the viewer's /new → broker
-      // new_session frame), so this only resets the runtime GRAPH state in place
-      // on the SAME node id: a non-root child refreshes its session id; a root
-      // reaps its descendants + wipes working state (resetRoot). No pane respawn
-      // (the engine is a detached broker, not a pane).
+      // new_session frame); the runtime side then splits on root-ness: a ROOT
+      // relaunches into a freshly-minted node (park the old root `done`, boot a
+      // new broker, re-point the viewer pane), a non-root CHILD just refreshes
+      // its session id on the SAME node.
       if (event?.reason === 'new') {
-        try { handleNewSession(nodeId, id, sessionFile); } catch { /* best-effort */ }
+        try {
+          const m = getNode(nodeId);
+          if (m?.parent == null) relaunchRoot(nodeId);
+          else handleNewSession(nodeId, id, sessionFile);
+        } catch { /* best-effort */ }
         // Clear in-memory context-steering so the fresh conversation starts clean.
         totalIn = 0;
         totalOut = 0;

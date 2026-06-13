@@ -1,38 +1,47 @@
-// Root reset — the `/new` equivalent — plus clean-exit termination.
+// `/new` handling — root relaunch + child session-id refresh — plus clean-exit
+// termination.
 //
-// A node's engine is a detached broker process bound to one CRTR_NODE_ID. When
-// the user runs `/new` in the viewer, the broker drives the engine-side
-// new_session (the viewer's /new → broker new_session frame), keeping the SAME
-// node id with a fresh conversation. The runtime side then only resets the GRAPH
-// state in place — there is no pane to respawn and no new node id to mint:
+// A node's engine is a detached broker process bound to one CRTR_NODE_ID, and
+// its on-screen viewer is a SEPARATE `crtr attach` pane. `/new` splits by who
+// ran it:
 //
-//   • resetRoot — for a non-root child a `/new` refreshes its session id only;
-//     for a root it reaps descendants, drops subscriptions, and wipes working
-//     state (reports/inbox/roadmap), re-pointing the SAME id at a fresh base.
+//   • relaunchRoot — a `/new` on a ROOT starts a genuinely new node: the old
+//     root is parked `done` (kept as history), a fresh node id + broker is
+//     minted in the same pane/cwd, and the viewer pane is re-pointed at the new
+//     broker. The new broker is booted FIRST, so any failure before the commit
+//     point leaves the old root fully intact.
+//   • resetRoot — a `/new` on a non-root child refreshes its session id only, so
+//     a later `--session <id>` wakes the right conversation.
 //
 // Termination semantics: a pi that ends cleanly resolves its node to `done`
-// (markCleanExitDone); only a true crash leaves it `dead`. A force-kill
-// (closeWindow / respawn-pane -k) fires NO clean session_shutdown, so reaped
-// descendants are marked `canceled` explicitly here (A5: an externally-reaped
-// node did not finish its own work — done is reserved for finalize).
+// (markCleanExitDone); only a true crash leaves it `dead`. A force-kill fires NO
+// clean session_shutdown, so reaped descendants are marked `canceled` explicitly
+// here (A5: an externally-reaped node did not finish its own work — done is
+// reserved for finalize).
 //
-// Best-effort throughout: a tmux/fs failure on one node never aborts the reset.
+// Best-effort throughout: a tmux/fs failure on one node never aborts the reap.
 
-import { existsSync, rmSync } from 'node:fs';
 import {
   getNode,
   updateNode,
-  subscriptionsOf,
-  unsubscribe,
+  fullName,
+  closeFocusRow,
   view,
-  reportsDir,
-  inboxPath,
 } from '../canvas/index.js';
 import { transition } from './lifecycle.js';
 import { headlessBrokerHost } from './host.js';
-import { tearDownNode } from './placement.js';
-import { buildLaunchSpec } from './launch.js';
-import { roadmapPath } from './roadmap.js';
+import {
+  tearDownNode,
+  focusOf,
+  registerViewerFocus,
+  respawnPaneSync,
+  viewerSplitEnv,
+  windowOfPane,
+  renameWindow,
+  waitForBrokerViewSocket,
+} from './placement.js';
+import { buildLaunchSpec, buildPiArgv } from './launch.js';
+import { spawnNode, rootOfSpine } from './nodes.js';
 
 // ---------------------------------------------------------------------------
 // reapDescendants — tear down a root's descendant sub-DAG (shared helper)
@@ -72,101 +81,153 @@ export function reapDescendants(rootId: string): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// resetRoot — the legacy in-place reset (fallback + non-root refresh)
+// relaunchRoot — a `/new` on a ROOT mints a genuinely new node (Model B)
+// ---------------------------------------------------------------------------
+
+/** Injectable host/viewer seam, so the fast-tier test drives relaunchRoot's pure
+ *  DB transitions without a real broker or tmux. Each field defaults to its
+ *  production verb. */
+export interface RelaunchDeps {
+  /** Boot the new node's detached broker engine. Default: headlessBrokerHost.launch. */
+  launchBroker?: typeof headlessBrokerHost.launch;
+  /** Wait for the new broker's view.sock to accept. Default: waitForBrokerViewSocket. */
+  waitForViewSocket?: (nodeId: string) => boolean;
+  /** Re-exec the viewer pane onto the new node. Default: respawnPaneSync. */
+  respawnViewer?: typeof respawnPaneSync;
+  /** Tear the old broker down. Default: headlessBrokerHost.teardown. */
+  teardownBroker?: typeof headlessBrokerHost.teardown;
+}
+
+export interface RelaunchRootResult {
+  /** The freshly-minted node now driving this pane. */
+  newNodeId: string;
+}
+
+/** Relaunch a ROOT on `/new`: park the old root `done` (kept as history) and
+ *  mint a fresh node id + broker in the same pane/cwd, re-pointing the viewer at
+ *  it. The new broker is booted FIRST and its pid confirmed BEFORE the old root
+ *  is touched, so any pre-commit failure leaves the old root fully intact and
+ *  live. Returns null when `oldId` is not a relaunchable root (unknown, a child,
+ *  or already parked), or when the new broker failed to launch. */
+export function relaunchRoot(oldId: string, deps: RelaunchDeps = {}): RelaunchRootResult | null {
+  const launchBroker = deps.launchBroker ?? headlessBrokerHost.launch;
+  const waitForViewSocket = deps.waitForViewSocket ?? waitForBrokerViewSocket;
+  const respawnViewer = deps.respawnViewer ?? respawnPaneSync;
+  const teardownBroker = deps.teardownBroker ?? headlessBrokerHost.teardown;
+
+  const old = getNode(oldId);
+  if (old === null || old.parent != null) return null; // roots only
+  if (old.status === 'done') return null; // defensive: a double `/new`
+  const oldFocus = focusOf(oldId); // capture the viewer BEFORE any teardown
+
+  // --- mint + boot the NEW broker FIRST (a failure here leaves the old root
+  //     untouched) ---
+  // A relaunched root is a fresh resident base, exactly like the front door.
+  const { launch } = buildLaunchSpec(old.kind, 'base', {
+    lifecycle: 'resident',
+    hasManager: false,
+    model: old.model_override ?? undefined,
+  });
+  const newMeta = spawnNode({
+    kind: old.kind,
+    mode: 'base',
+    lifecycle: 'resident',
+    cwd: old.cwd,
+    name: old.kind,
+    parent: null,
+    launch,
+    modelOverride: old.model_override ?? undefined,
+  });
+  const inv = buildPiArgv(newMeta, {});
+  // Mirror bootRoot's subtree routing on inv.env (the broker host merges it; it
+  // sets CRTR_FRONT_DOOR itself).
+  inv.env = {
+    ...inv.env,
+    CRTR_SUBTREE: rootOfSpine(newMeta.node_id),
+  };
+  const placed = launchBroker(newMeta.node_id, inv, {
+    cwd: old.cwd,
+    name: fullName(newMeta),
+    resuming: false,
+  });
+  if (placed.pid == null) {
+    // The new broker never started — crash the half-born node and BAIL. The old
+    // root is still live and untouched (nothing below this point has run).
+    transition(newMeta.node_id, 'crash');
+    return null;
+  }
+  waitForViewSocket(newMeta.node_id); // best-effort; attach auto-redials on miss
+
+  // --- COMMIT: park + reap the old root, re-point the viewer, kill the old
+  //     broker. Past this point the new node is the live root. ---
+  reapDescendants(oldId); // old workers → canceled + torn down
+  // Park the old root DONE (kept as history; NOT canceled — a relaunched root
+  // finished cleanly, the user just started fresh). Its reports/inbox/roadmap
+  // are left on disk as the record of that session.
+  transition(oldId, 'finalize');
+  if (oldFocus?.pane != null) {
+    closeFocusRow(oldFocus.focus_id);
+    respawnViewer({
+      pane: oldFocus.pane,
+      cwd: old.cwd,
+      env: viewerSplitEnv(),
+      command: `crtr attach to ${newMeta.node_id}`,
+    });
+    const window = windowOfPane(oldFocus.pane);
+    if (window !== null) renameWindow(window, fullName(newMeta));
+    registerViewerFocus(newMeta.node_id, oldFocus.pane, oldFocus.session, window);
+  }
+  teardownBroker(oldId); // old broker exits cleanly (its /new work is discarded)
+  return { newNodeId: newMeta.node_id };
+}
+
+// ---------------------------------------------------------------------------
+// resetRoot — a `/new` on a non-root child refreshes its session id only
 // ---------------------------------------------------------------------------
 
 export interface ResetRootResult {
-  /** Descendant node ids torn down (window killed + marked canceled). */
+  /** Descendant node ids torn down. Always empty — a child `/new` reaps nothing. */
   reaped: string[];
-  /** Direct subscriptions dropped off the root. */
+  /** Direct subscriptions dropped. Always empty — a child `/new` detaches nothing. */
   detached: string[];
-  /** True when the node was a root and a full reset ran. */
+  /** Always false — a child `/new` is not a graph reset (roots route to relaunchRoot). */
   reset: boolean;
 }
 
-/** Reset a root node to a pristine, empty graph (the `/new` semantics).
- *
- *  For a non-root (spawned child), a `/new` is not a graph reset — we only
- *  refresh its session id so a later `--session <id>` wakes the right conversation. */
+/** Refresh a non-root child's pi session id on `/new`, so a later
+ *  `--session <id>` wakes the right conversation. A `/new` on a child is NOT a
+ *  graph reset — a root's `/new` is handled by relaunchRoot, never here; a root
+ *  that reaches this is a no-op. */
 export function resetRoot(
   nodeId: string,
   newSessionId?: string,
   newSessionFile?: string | null,
 ): ResetRootResult {
   const meta = getNode(nodeId);
-  if (meta === null) return { reaped: [], detached: [], reset: false };
-
-  // Only roots own a graph in the "ran crtr again" sense.
-  if (meta.parent != null) {
-    if (newSessionId !== undefined) {
-      updateNode(nodeId, {
-        pi_session_id: newSessionId,
-        ...(newSessionFile !== undefined ? { pi_session_file: newSessionFile } : {}),
-      });
-    }
-    return { reaped: [], detached: [], reset: false };
+  const empty: ResetRootResult = { reaped: [], detached: [], reset: false };
+  if (meta === null || meta.parent == null) return empty; // unknown or a root
+  if (newSessionId !== undefined) {
+    updateNode(nodeId, {
+      pi_session_id: newSessionId,
+      ...(newSessionFile !== undefined ? { pi_session_file: newSessionFile } : {}),
+    });
   }
-
-  // 1) Reap the descendant sub-DAG (mark canceled + kill windows; shared helper).
-  const reaped = reapDescendants(nodeId);
-
-  // 2) Detach the root's own subscriptions so its view is empty.
-  const detached: string[] = [];
-  for (const sub of subscriptionsOf(nodeId)) {
-    unsubscribe(nodeId, sub.node_id);
-    detached.push(sub.node_id);
-  }
-
-  // 3) Wipe the root's working state (reports / inbox / roadmap).
-  for (const p of [
-    reportsDir(nodeId),
-    inboxPath(nodeId),
-    `${inboxPath(nodeId)}.cursor`,
-    roadmapPath(nodeId),
-  ]) {
-    try {
-      if (existsSync(p)) rmSync(p, { recursive: true, force: true });
-    } catch {
-      /* */
-    }
-  }
-
-  // 4) Re-point the root at a fresh base persona + the new pi session id. A
-  //    root is resident by definition (this only runs on roots — see the early
-  //    return above), so resetting to base/resident is the model, not a bypass.
-  //    Re-seed persona_ack to the fresh persona so the pristine `/new`
-  //    conversation never gets a spurious mode/lifecycle transition steer (the
-  //    persona injector compares against this ack).
-  const { launch } = buildLaunchSpec(meta.kind, 'base', { lifecycle: 'resident', hasManager: false, model: meta.model_override ?? undefined });
-  updateNode(nodeId, {
-    mode: 'base',
-    lifecycle: 'resident',
-    persona_ack: { mode: 'base', lifecycle: 'resident' },
-    launch,
-    ...(newSessionId !== undefined ? { pi_session_id: newSessionId } : {}),
-    ...(newSessionFile !== undefined ? { pi_session_file: newSessionFile } : {}),
-  });
-  transition(nodeId, 'revive');
-
-  return { reaped, detached, reset: true };
+  return empty;
 }
 
 // ---------------------------------------------------------------------------
 // handleNewSession (the stophook's single entry)
 // ---------------------------------------------------------------------------
 
-export type HandleNewSessionPath = 'reset-root' | 'reset-child' | 'noop';
+export type HandleNewSessionPath = 'reset-child' | 'noop';
 
 export interface HandleNewSessionResult {
   path: HandleNewSessionPath;
 }
 
-/** The single entry the stophook calls on a detected `/new` (session id change).
- *  The broker already drove the engine-side new_session, so this only resets the
- *  runtime GRAPH state in place on the SAME node id — there is no pane to respawn
- *  and no new node id to mint:
- *    - non-root child → resetRoot(nodeId, newSessionId)  (session-id refresh only)
- *    - root          → resetRoot(nodeId, newSessionId)  (reap + wipe + re-point) */
+/** The child-side `/new` entry the stophook calls (the root side goes to
+ *  relaunchRoot directly). The broker already drove the engine-side new_session;
+ *  this only refreshes the child's session id on the SAME node id. */
 export function handleNewSession(
   nodeId: string,
   newSessionId: string,
@@ -174,16 +235,8 @@ export function handleNewSession(
 ): HandleNewSessionResult {
   const meta = getNode(nodeId);
   if (meta === null) return { path: 'noop' };
-
-  // Non-root child: a `/new` only refreshes its session id. resetRoot branches
-  // internally on parent, so it handles both root and child correctly.
-  if (meta.parent != null) {
-    resetRoot(nodeId, newSessionId, newSessionFile);
-    return { path: 'reset-child' };
-  }
-
   resetRoot(nodeId, newSessionId, newSessionFile);
-  return { path: 'reset-root' };
+  return { path: 'reset-child' };
 }
 
 // ---------------------------------------------------------------------------
