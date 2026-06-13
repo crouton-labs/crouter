@@ -50,7 +50,7 @@ import {
   selectWindow,
   getPaneOption,
 } from './tmux.js';
-import { nodeSession, newNodeId, rootOfSpine } from './nodes.js';
+import { newNodeId, rootOfSpine } from './nodes.js';
 import { nodeDir } from '../canvas/paths.js';
 import { isPidAlive } from '../canvas/pid.js';
 
@@ -87,11 +87,12 @@ export {
   respawnPaneSync,
   closePane,
   windowOfPane,
+  renameWindow,
   paneOfWindow,
   windowAlive,
   listLivePanes,
 } from './tmux.js';
-export { nodeSession } from './nodes.js';
+export type { RespawnPaneOpts } from './tmux.js';
 
 // ---------------------------------------------------------------------------
 // Viewer registry reads — COMPOSE over the canvas focuses table (§2.3/§4).
@@ -281,14 +282,14 @@ export function registerViewerFocus(
 }
 
 /** Open a `crtr attach` VIEWER for `nodeId` and register its viewer focus row —
- *  the shared opener used by BOTH spawn (a background viewer window in the shared
- *  backstage session) and focus (a split beside the caller). Wraps
- *  `ensureSession` + `openNodeWindow`/`splitWindow` + `registerViewerFocus`. The
- *  attach client connects to the node's `view.sock` and renders/drives the live
- *  broker engine — it NEVER launches the engine (the one-writer invariant; the
- *  caller ensures the broker is alive first). Returns the registered viewer row,
- *  or null if tmux refused.
- *    - default → a fresh WINDOW in `session` (the spawn background-viewer path).
+ *  the shared opener used by `focus` (a split beside the caller) and by a --root
+ *  spawn (a fresh window in the caller's current session). Wraps `ensureSession`
+ *  + `openNodeWindow`/`splitWindow` + `registerViewerFocus`. The attach client
+ *  connects to the node's `view.sock` and renders/drives the live broker engine
+ *  — it NEVER launches the engine (the one-writer invariant; the caller ensures
+ *  the broker is alive first). Returns the registered viewer row, or null if tmux
+ *  refused.
+ *    - default → a fresh WINDOW in `session` (the --root spawn-viewer path).
  *    - `besidePane` → a SPLIT beside that pane in its own session (the focus
  *      open-beside-the-caller path); `session` is then only a fallback. */
 export function openViewerWindow(
@@ -336,7 +337,7 @@ export function openViewerWindow(
  *    (c) the node already has a live viewer:
  *          - in the caller's session ⇒ navigate to it (switchClient+selectWindow),
  *            no new pane (inPlace).
- *          - elsewhere (e.g. the backstage spawn window) ⇒ MOVE it: close the old
+ *          - elsewhere (e.g. a --root's viewer in another session) ⇒ MOVE it: close the old
  *            viewer pane (the broker runs on; the fresh viewer replays full
  *            scrollback from the broker `welcome` snapshot), drop its row, reopen
  *            beside the caller.
@@ -365,8 +366,11 @@ export function focus(
     return { focused: false, session: null, inPlace: false, revived };
   }
 
+  // focus always opens BESIDE the caller pane, so `fallbackSession` is only the
+  // session name openViewerWindow falls back to if it cannot read the freshly
+  // split pane's location — the caller's own session.
   const callerSession = paneLocation(callerPane)?.session ?? null;
-  const fallbackSession = callerSession ?? nodeSession();
+  const fallbackSession = callerSession ?? '';
 
   // (b) --new-pane → always a fresh viewer beside the caller. Drop any prior
   //     viewer this node holds elsewhere (UNIQUE(node_id): one viewer per node).

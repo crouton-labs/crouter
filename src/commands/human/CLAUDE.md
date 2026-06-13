@@ -7,10 +7,11 @@ detached `crtr human _run` worker (queue.ts), which `pushFinal`s the answer into
 the asking node's inbox (parent auto-subscribed at spawn).
 
 ## Surfacing rule (load-bearing)
-A human prompt must LAND in the tmux session the user is WATCHING — never the
-backstage `crtr` node session (`nodeSession()`), which they don't look at. An
-untargeted `split-window` resolves against the caller's pane → backstage; that is
-the bug this routing prevents.
+A human prompt must LAND beside the viewer the user is WATCHING — the asking node
+runs headless (a detached broker), so the prompt must be routed to an on-screen
+viewer pane, not the asking process's own (paneless) location. An untargeted
+`split-window` resolves against the caller's pane, which for a headless node is
+wrong; that is the bug this routing prevents.
 - Open every TUI through `detachHumanTui` (shared.ts), not a bare
   `spawnAndDetach`. It targets the right pane and opens `detached: true`.
 - `resolveHumanTarget`: a node prompt routes to the **highest focused node of the

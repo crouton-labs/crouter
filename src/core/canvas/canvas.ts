@@ -47,7 +47,7 @@ import type {
 const IDENTITY_KEYS: ReadonlyArray<keyof NodeIdentity> = [
   'node_id', 'name', 'description', 'cycles', 'created', 'cwd', 'host_kind', 'kind', 'mode',
   'lifecycle', 'persona_ack', 'parent', 'spawned_by', 'fork_from', 'passive_default',
-  'home_session', 'pi_session_id', 'pi_session_file', 'model_override', 'launch',
+  'pi_session_id', 'pi_session_file', 'model_override', 'launch',
 ];
 
 /** Project any node object down to its durable-identity subset. */

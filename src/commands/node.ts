@@ -123,7 +123,7 @@ function callerSubPersonasBlock(): string {
 }
 
 // ---------------------------------------------------------------------------
-// node new — spawn a terminal worker as a background window under the root
+// node new — spawn a terminal worker as a detached headless broker under the root
 // ---------------------------------------------------------------------------
 
 const nodeNew = defineLeaf({
@@ -133,7 +133,7 @@ const nodeNew = defineLeaf({
   tier: 'important',
   help: {
     name: 'node new',
-    summary: 'spawn a terminal worker onto the canvas as a background window — returns its node id',
+    summary: 'spawn a terminal worker onto the canvas as a detached broker — returns its node id',
     params: [
       { kind: 'stdin', name: 'prompt', required: true, constraint: 'First user message for the spawned node. Deliver it on stdin from a quoted heredoc (`<<\'EOF\'`) or a file (`< prompt.md`).' },
       { kind: 'flag', name: 'kind', type: 'string', required: false, default: 'general', constraint: 'Persona kind — match the work to the kind. The <kinds> list below names every installable kind and when to use each; the <sub-personas> block (when present) names the specialist sub-personas available to YOU, each spawnable by its full kind string (e.g. plan/reviewers/security).' },
@@ -148,8 +148,8 @@ const nodeNew = defineLeaf({
     output: [
       { name: 'node_id', type: 'string', required: true, constraint: 'The new node id.' },
       { name: 'name', type: 'string', required: true, constraint: 'Display name.' },
-      { name: 'window', type: 'string', required: false, constraint: 'tmux window id of the background viewer window (a `crtr attach` view onto the node\'s broker).' },
-      { name: 'session', type: 'string', required: true, constraint: 'The tmux session the node was placed in — the shared crtr session for a child; your current session for an in-tmux --root.' },
+      { name: 'window', type: 'string', required: false, constraint: 'tmux window id of the viewer opened for an in-tmux --root (a `crtr attach` view onto the node\'s broker); absent for a managed child, which opens no viewer on spawn.' },
+      { name: 'session', type: 'string', required: false, constraint: 'The tmux session a --root\'s viewer opened into (your current session); absent for a managed child and for a --root spawned outside tmux.' },
       { name: 'status', type: 'string', required: true, constraint: 'Always "active" on spawn.' },
       { name: 'follow_up', type: 'string', required: true, constraint: 'Decision road sign for the caller: the child runs independently and its finish wakes you on its own, so never wait or poll on it — either pick up other work now or end your turn. If you are an orchestrator already deep in context (>100k), it instead steers you to `crtr node yield` now so your fresh revive absorbs the child\'s result. Read it, then act.' },
     ],
@@ -158,7 +158,7 @@ const nodeNew = defineLeaf({
     effects: [
       'Creates a node under ~/.crouter/canvas/nodes/<id>/ and indexes it in canvas.db.',
       'Default (managed child): parent auto-subscribes (active) and is woken on the child\'s pushes. With --root: no subscription — records a spawned_by edge for provenance only.',
-      'Launches the node\'s engine as a detached broker (the only host) and opens a tmux window running `crtr attach` as a viewer onto its socket: a background (non-focus-stealing) window in the shared crtr session for a child; with --root, a new viewer window in your current session (in-tmux) or the shared session (outside tmux), with the client switched to it.',
+      'Launches the node\'s engine as a detached broker (the only host). A managed child opens NO viewer — it runs headless and you open one on demand via `crtr node focus` / `crtr attach`. With --root inside tmux, opens one viewer window in your CURRENT session and switches the client to it so the root can be driven directly; outside tmux a --root opens no viewer.',
     ],
   },
   run: async (input) => {
@@ -180,10 +180,10 @@ const nodeNew = defineLeaf({
       node_id: res.node.node_id,
       name: res.node.name,
       window: res.window ?? undefined,
-      session: res.session,
+      session: res.session ?? undefined,
       status: res.node.status,
       follow_up: root
-        ? "Independent root spawned — it is NOT under you. You are not subscribed, so its finish will NOT wake you and it does not hold you alive; it carries spawned_by=you for lineage only. It opened in its own window and the client was switched to it so it can be driven directly. Hand it off and move on — you will not be notified of its progress."
+        ? "Independent root spawned — it is NOT under you. You are not subscribed, so its finish will NOT wake you and it does not hold you alive; it carries spawned_by=you for lineage only. Inside tmux it opened a viewer in your current session (the client switched to it) so it can be driven directly. Hand it off and move on — you will not be notified of its progress."
         : childFollowUp(parent ?? process.env['CRTR_NODE_ID']),
     };
   },
@@ -1421,7 +1421,7 @@ export function registerNode(): BranchDef {
       model:
         'Every agent is a node in one directed graph (the canvas); `subscribes_to` is the spine — spawn a child and you auto-subscribe (active) to it, so its finish wakes you.\n\n' +
         'WHEN TO DELEGATE: hand any self-contained unit of work to a child instead of doing it inline — it keeps your own context window (your scarce resource) free for steering. Spawn independent units in PARALLEL; a wake with idle workers is wasted. Serialize only true dependencies, and never let two live children edit the same files.\n\n' +
-        'HOW: `crtr node new "<task>" --kind <kind>` returns a node id immediately and runs the worker in a background window. Match the kind to the work (see `node new -h`). You are woken when a child finishes — the wake message ALREADY IS the coalesced digest (the watcher drains your inbox to wake you), so don\'t re-run `crtr feed read` to "open" it (it would read empty, the cursor already advanced); instead dereference the report paths in that digest that matter, don\'t act on a one-line label. (`crtr feed read` is for proactively polling before a wake, or inspecting a child\'s inbox via `--node`; `--all` re-reads history with full message bodies.) Integrate, then either delegate the next units or finish.\n\n' +
+        'HOW: `crtr node new "<task>" --kind <kind>` returns a node id immediately and runs the worker as a detached headless broker (no window opens; open a viewer on demand with `crtr node focus`). Match the kind to the work (see `node new -h`). You are woken when a child finishes — the wake message ALREADY IS the coalesced digest (the watcher drains your inbox to wake you), so don\'t re-run `crtr feed read` to "open" it (it would read empty, the cursor already advanced); instead dereference the report paths in that digest that matter, don\'t act on a one-line label. (`crtr feed read` is for proactively polling before a wake, or inspecting a child\'s inbox via `--node`; `--all` re-reads history with full message bodies.) Integrate, then either delegate the next units or finish.\n\n' +
         'FINISH: a worker ends its own work with `crtr push final "<result>"` (writes the canonical result, marks done, closes the window) — stopping without it is not finishing. For a job too big for one context window, `node promote` to an orchestrator (holds a roadmap, delegates phases); when context fills, `node yield` to refresh against that roadmap.',
     },
     children: [nodeNew, nodeInspect, nodeFocus, nodeCycle, nodeRecycle, nodeClose, nodeMsg, nodeSubscribe, nodeUnsubscribe, nodePromote, nodeDemote, nodeLifecycle, nodeYield, nodeWake],

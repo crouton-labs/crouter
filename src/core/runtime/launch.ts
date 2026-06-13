@@ -258,7 +258,7 @@ export interface BrokerSdkConfig {
  *  never drift. Safe because `buildPiArgv` is the SOLE producer of these flags
  *  (we own both ends). SIDE EFFECT: merges `inv.env` into `process.env` so the
  *  in-process engine + the bound canvas extensions see the same env a forked pi
- *  would (CRTR_NODE_ID, CRTR_ROOT_SESSION, CRTR_SUBTREE, …). */
+ *  would (CRTR_NODE_ID, CRTR_SUBTREE, …). */
 export function piInvocationToSdkConfig(inv: PiInvocation): BrokerSdkConfig {
   for (const [k, v] of Object.entries(inv.env)) process.env[k] = v;
 

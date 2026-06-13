@@ -106,16 +106,6 @@ export interface NodeIdentity {
   fork_from?: string | null;
   /** New subscriptions this node opens default to passive when true. */
   passive_default?: boolean;
-  /** REVIVE-HOME — the tmux session a node is (re)opened into when it must
-   *  generate but is NOT focused (the durable revive target, distinct from the
-   *  live LOCATION held by the runtime `tmux_session`). Set once at birth
-   *  (managed child → the shared backstage `nodeSession()`; inline root → the
-   *  adopted caller session; independent `--root` → the caller session), and
-   *  rewritten only by demote-recycle. Durable identity (like `cwd`), never
-   *  touched by a focus swap — this is what keeps a background revive off the
-   *  user's session. Legacy metas omit it; readers default to
-   *  `tmux_session ?? nodeSession()` (see `homeSessionOf`). */
-  home_session?: string;
   /** The pi session id for `--session <id>` revival. */
   pi_session_id?: string | null;
   /** Absolute path to pi's session `.jsonl` file, captured at session_start via

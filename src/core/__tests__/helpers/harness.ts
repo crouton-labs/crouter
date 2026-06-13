@@ -159,14 +159,11 @@ export interface HarnessOpts {
   /** HEADLESS mode: drive ONLY broker-hosted (paneless) nodes. When set the
    *  harness does NOT gate on tmux, does NOT eagerly create the isolated tmux
    *  session, and skips the per-pane `set-environment` seeding — nothing in a
-   *  headless run opens a window. CRTR_NODE_SESSION is still set to the isolated
-   *  name (and dispose still kill-sessions it) because `spawnChild` in spawn.ts
-   *  calls `ensureSession()` UNCONDITIONALLY to record each node's durable
-   *  `home_session` revive target — even a broker birth, which then ignores it.
-   *  So `node new --headless` may LAZILY create that one isolated session as a
-   *  side effect, but never a window/pane; the broker boots detached, supervised
-   *  by pid. Headless tests must use `spawnHeadlessChild`, never `spawnChild`
-   *  (which opens a real window). See createHeadlessHarness(). */
+   *  headless run opens a window. CRTR_NODE_SESSION/CRTR_ROOT_SESSION are still
+   *  scrubbed/restored for env hygiene, but no longer route placement: a managed
+   *  child opens NO viewer (it boots a detached broker, supervised by pid), and a
+   *  --root opens one viewer in the caller's current session. Headless tests must
+   *  use `spawnHeadlessChild`, never `spawnChild`. See createHeadlessHarness(). */
   headless?: boolean;
 }
 
@@ -325,7 +322,7 @@ export async function createHarness(opts: HarnessOpts = {}): Promise<Harness> {
   writeFileSync(join(home, 'crtrd.pid'), String(process.pid), 'utf8');
 
   // Pre-create the isolated session on the DEFAULT server so teardown always
-  // has a target and `node new`'s ensureSession no-ops.
+  // has a kill-sessions target.
   // ISOLATION ASSUMPTION (see header + MINOR-6): isolation is by SESSION NAME on
   // the DEFAULT tmux server only. The runtime CLI shells `tmux` with no `-L`, so
   // a custom-socket server (`tmux -L foo`) would be invisible to it; this harness
@@ -333,8 +330,7 @@ export async function createHarness(opts: HarnessOpts = {}): Promise<Harness> {
   // server.
   // HEADLESS: skip ALL eager tmux setup. No node in a headless run opens a
   // window, so there is no pane to pre-seed an env into and no session to pre-
-  // create. (`node new --headless` may still lazily ensureSession() the isolated
-  // name for home_session — dispose kill-sessions it regardless.)
+  // create.
   if (!headless) {
     spawnSync('tmux', ['new-session', '-d', '-s', session, '-c', CROUTER, 'sleep 100000'], {
       stdio: 'ignore',

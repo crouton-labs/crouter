@@ -39,14 +39,14 @@ export const reviveLeaf: LeafDef = defineLeaf({
       },
     ],
     output: [
-      { name: 'window', type: 'string', required: false, constraint: 'New tmux window id.' },
-      { name: 'session', type: 'string', required: true, constraint: 'Tmux session the node was placed in.' },
+      { name: 'window', type: 'string', required: false, constraint: 'Always null — the revived broker is headless and opens no tmux window. Kept for caller back-compat.' },
+      { name: 'session', type: 'string', required: false, constraint: 'The node\'s last live location session, or null — the headless broker has no tmux session of its own.' },
       { name: 'resumed', type: 'boolean', required: true, constraint: 'True when pi was told to --session the saved conversation.' },
       { name: 'ready', type: 'boolean', required: true, constraint: 'True when the revived broker\'s view.sock accepted a connection before return — the node is immediately attachable/drivable.' },
     ],
     outputKind: 'object',
     effects: [
-      'Opens a background (non-focus-stealing) tmux window running pi.',
+      'Launches the node\'s detached headless broker engine (no tmux window).',
       'Updates the node\'s canvas record: status=active, intent=null, window=<new>.',
       'Blocks until the broker\'s view.sock accepts a connection (up to ~30s), so a caller can attach/dial immediately on return.',
     ],

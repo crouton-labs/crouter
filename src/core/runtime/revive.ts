@@ -29,7 +29,6 @@ import { buildPiArgv } from './launch.js';
 import { buildReviveKickoff, drainBearings } from './kickoff.js';
 import type { WakeOrigin } from './bearings.js';
 import { headlessBrokerHost } from './host.js';
-import { nodeSession } from './nodes.js';
 import { isPidAlive } from '../canvas/pid.js';
 import { clearInjectedDocs } from '../substrate/injected-store.js';
 
@@ -62,9 +61,9 @@ export interface ReviveResult {
   /** Always null — the broker engine is never placed in a tmux window. Kept on
    *  the result for caller back-compat. */
   window: string | null;
-  /** The node's backstage session (always the shared backstage; the broker
-   *  engine has no tmux session of its own). Kept for caller back-compat. */
-  session: string;
+  /** The node's last live LOCATION session, or null — the broker engine has no
+   *  tmux session of its own (it opens no viewer). Kept for caller back-compat. */
+  session: string | null;
   /** True when pi was instructed to resume its saved conversation (`--session <id>`). */
   resumed: boolean;
 }
@@ -104,7 +103,7 @@ export function reviveNode(
   if (isPidAlive(live.pi_pid)) {
     return {
       window: null,
-      session: live.tmux_session ?? nodeSession(),
+      session: live.tmux_session ?? null,
       resumed: false,
     };
   }
@@ -161,5 +160,5 @@ export function reviveNode(
   // it never boots, the daemon's boot-grace + surfaceBootFailure own that case.
   clearPid(nodeId);
 
-  return { window: null, session: nodeSession(), resumed: resuming };
+  return { window: null, session: meta.tmux_session ?? null, resumed: resuming };
 }

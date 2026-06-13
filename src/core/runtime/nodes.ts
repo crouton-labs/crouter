@@ -50,82 +50,6 @@ export function rootOfSpine(nodeId: string): string {
   }
 }
 
-/** The single, shared tmux session that ALL canvas node windows live in.
- *  Overridable with CRTR_NODE_SESSION (default `crtr`). Every root and every
- *  child opens a window here rather than cluttering the user's own working
- *  session — switch to it to browse the whole live graph, ignore it otherwise.
- *  Pure policy (env only, no tmux call), so it lives in the node layer, not the
- *  driver; the tmux driver imports it from here for installMenuBinding's use. */
-export function nodeSession(): string {
-  const v = process.env['CRTR_NODE_SESSION'];
-  return v !== undefined && v !== '' ? v : 'crtr';
-}
-
-// ---------------------------------------------------------------------------
-// REVIVE-HOME (home_session) — the durable session a node is (re)opened into
-// ---------------------------------------------------------------------------
-
-/** Resolve the tmux session a freshly-born node's window/pane opens into — and
- *  thus its durable REVIVE-HOME (`home_session`). Pure so the birth decision is
- *  unit-testable without a live tmux:
- *    - managed background child  (`adoptCaller=false`) → the shared backstage:
- *      the inherited `CRTR_ROOT_SESSION`, else `nodeSession()` (`crtr`).
- *    - independent `--root` / inline front door (`adoptCaller=true`) → the
- *      caller's CURRENT session when inside tmux (`here`), else the backstage.
- *  This is exactly the session each birth site already places the node into;
- *  centralizing it keeps `home_session` and the actual placement in lockstep. */
-export function resolveBirthSession(opts: {
-  /** True for an independent root or the inline front door (both adopt the
-   *  caller's session); false for a managed background child. */
-  adoptCaller: boolean;
-  /** The caller's current tmux location, or null when not inside tmux. */
-  here: { session: string } | null;
-  /** The inherited CRTR_ROOT_SESSION (the backstage the subtree flows into). */
-  rootSession?: string | null;
-}): string {
-  const backstage =
-    opts.rootSession !== undefined && opts.rootSession !== null && opts.rootSession !== ''
-      ? opts.rootSession
-      : nodeSession();
-  if (opts.adoptCaller && opts.here !== null) return opts.here.session;
-  return backstage;
-}
-
-/** A node's durable REVIVE-HOME, with the legacy back-compat default. Nodes born
- *  before `home_session` existed have no such field in meta — they fall back to
- *  their last live LOCATION (`tmux_session`), then to the shared backstage
- *  (`nodeSession()`). The defaulted read for the placement layer; a present
- *  `home_session` is always returned verbatim. */
-export function homeSessionOf(nodeId: string): string {
-  const meta = getNode(nodeId);
-  if (meta === null) return nodeSession();
-  return meta.home_session ?? meta.tmux_session ?? nodeSession();
-}
-
-/** The session a node's CHILDREN spawn into — the value its pi process exports
- *  as CRTR_ROOT_SESSION (the subtree's backstage). NOT the same as where the
- *  node's OWN pane lives.
- *
- *  For a managed CHILD this is its `home_session`: a child's home_session is
- *  ALWAYS the backstage it was born into (focus may move its live pane into a
- *  user session, but home_session stays the taint-immune backstage), so its
- *  descendants correctly inherit that backstage.
- *
- *  For a ROOT (`parent === null`) `home_session` may be a USER session it
- *  ADOPTED — the inline front door keeps the root's own pane where the user is
- *  working (`home_session = cli`). Sourcing children's CRTR_ROOT_SESSION from
- *  that would exile the root's entire subtree into the user's session. A root's
- *  children must instead flow to the shared backstage `nodeSession()`, NEVER the
- *  user's session — mirroring spawnRoot's birth-time split (root pane → user
- *  session; children → nodeSession() via CRTR_ROOT_SESSION). The revive paths
- *  MUST honor the same split, or a refreshed front-door root re-points its whole
- *  subtree into the user's session on every yield (the bug this fixes). */
-export function childBackstageOf(nodeId: string): string {
-  const meta = getNode(nodeId);
-  if (meta !== null && meta.parent === null) return nodeSession();
-  return homeSessionOf(nodeId);
-}
-
 // ---------------------------------------------------------------------------
 // The env contract — what a node's pi process inherits and its children read.
 // ---------------------------------------------------------------------------
@@ -163,13 +87,9 @@ export function nodeEnv(meta: NodeMeta): Record<string, string> {
   // Propagate an explicit canvas home so children share the same canvas.
   const home = process.env['CRTR_HOME'];
   if (home !== undefined && home !== '') env['CRTR_HOME'] = home;
-  // Propagate the root's tmux session so every descendant spawns its windows
-  // into the same root session.
-  const rootSession = process.env['CRTR_ROOT_SESSION'];
-  if (rootSession !== undefined && rootSession !== '') env['CRTR_ROOT_SESSION'] = rootSession;
-  // Propagate the subtree-root node id (additive in Phase 3; tmux still keys on
-  // CRTR_ROOT_SESSION). The broker uses it to group a subtree; each launch site
-  // also emits the authoritative rootOfSpine(nodeId) over this passthrough.
+  // Propagate the subtree-root node id. The broker uses it to group a subtree;
+  // each launch site also emits the authoritative rootOfSpine(nodeId) over this
+  // passthrough.
   const subtree = process.env['CRTR_SUBTREE'];
   if (subtree !== undefined && subtree !== '') env['CRTR_SUBTREE'] = subtree;
   // Merge any launch-spec env last (it may override / extend).

@@ -10,7 +10,6 @@
 
 import { spawnSync } from 'node:child_process';
 import { readConfig } from '../config.js';
-import { nodeSession } from './nodes.js';
 import { surfaceTmuxStyleArgs } from './surface-bg.js';
 
 // ---------------------------------------------------------------------------
@@ -184,6 +183,13 @@ export function focusWindow(session: string, window: string): boolean {
 /** Close a node's window (drop it from the UI). */
 export function closeWindow(window: string): boolean {
   return tmux(['kill-window', '-t', window]).ok;
+}
+
+/** Rename a window (`tmux rename-window -t <window> <name>`). Used by the
+ *  root relaunch to re-title the viewer window when its pane is re-pointed at
+ *  the freshly-minted node. Best-effort; false if tmux fails. */
+export function renameWindow(window: string, name: string): boolean {
+  return tmux(['rename-window', '-t', window, name]).ok;
 }
 
 /** Close a single PANE. Its window closes automatically once this was the last
@@ -404,7 +410,7 @@ export function sendKeysEnter(pane: string, text: string): boolean {
 
 /** Reserved mnemonic keys owned by the built-in menu items below — a custom
  *  `prefixBind` may not claim these (the built-in item wins). */
-const RESERVED_MENU_KEYS = new Set(['o', 'r', 'd', 'D', 'x', 'b']);
+const RESERVED_MENU_KEYS = new Set(['o', 'r', 'd', 'D', 'x']);
 
 /** Bind Alt+C to the crouter action menu. Best-effort; false if tmux fails.
  *  The built-in items (promote/demote/detach/close/browse) are static; the canvas-nav
@@ -413,7 +419,6 @@ const RESERVED_MENU_KEYS = new Set(['o', 'r', 'd', 'D', 'x', 'b']);
  *  the `__graph__` sentinel, a `send-keys '/graph'`) so the menu stays static
  *  while behaviour is config-driven. */
 export function installMenuBinding(): boolean {
-  const sess = nodeSession();
   const title = ' crtr ';
   const items: Array<{ name: string; key: string; cmd: string }> = [
     // Promote types `/promote` into the agent's pane rather than shelling out:
@@ -427,15 +432,13 @@ export function installMenuBinding(): boolean {
     // `d` runs `node demote`: flip the agent to TERMINAL in place — no finalize,
     // no kill — it keeps running where it is, and because it is now terminal it
     // is forced to push a final up the spine when it finishes. `D` runs `node
-    // demote --detach`, which ALSO detaches it to the background `crtr` session
-    // (frees the pane; the pi keeps generating). Neither ends it.
+    // demote --detach`, which ALSO closes the agent's viewer pane (frees the
+    // pane; the detached broker keeps generating). Neither ends it.
     { name: 'demote to terminal',          key: 'd', cmd: `run-shell "crtr node demote --pane '#{pane_id}' >/dev/null 2>&1"` },
     { name: 'detach to background',        key: 'D', cmd: `run-shell "crtr node demote --pane '#{pane_id}' --detach >/dev/null 2>&1"` },
     // Close cascades down the subscribes_to spine (kills the subtree's windows,
     // marks them canceled); revivable. Output discarded — the keypress just acts.
     { name: 'close agent + subtree',       key: 'x', cmd: `run-shell "crtr node close --pane '#{pane_id}' >/dev/null 2>&1"` },
-    // Re-keyed g→b so `g` is free for the canvas-nav GRAPH toggle (below).
-    { name: 'browse background agents',    key: 'b', cmd: `switch-client -t ${sess}` },
   ];
 
   // Canvas-nav chords from config (default: g→graph, m→manager, e→expand). The

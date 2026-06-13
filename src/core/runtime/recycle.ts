@@ -19,12 +19,12 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { getNode, setPresence, updateNode, setFocusOccupant, fullName, type NodeMeta } from '../canvas/index.js';
+import { getNode, setPresence, setFocusOccupant, fullName, type NodeMeta } from '../canvas/index.js';
 import { reportsDir } from '../canvas/paths.js';
 import { pushFinal } from '../feed/feed.js';
-import { spawnNode, nodeSession, rootOfSpine } from './nodes.js';
+import { spawnNode, rootOfSpine } from './nodes.js';
 import { buildLaunchSpec, buildPiArgv } from './launch.js';
-import { focusOf, paneLocation, respawnPaneSync, setPaneOption, waitForBrokerViewSocket, viewerSplitEnv } from './placement.js';
+import { focusOf, respawnPaneSync, setPaneOption, waitForBrokerViewSocket, viewerSplitEnv } from './placement.js';
 import { headlessBrokerHost } from './host.js';
 import { ensureDaemon } from '../../daemon/manage.js';
 
@@ -101,7 +101,6 @@ export async function recycleNode(nodeId: string, callerPane?: string): Promise<
   // viewer pane re-attaches to the fresh broker (broker-is-the-host — the viewer
   // pane stays a viewer, never becomes an engine pane).
   try { ensureDaemon(); } catch { /* daemon is best-effort */ }
-  const loc = paneLocation(pane);
   const { launch } = buildLaunchSpec('general', 'base', { lifecycle: 'resident', hasManager: false });
   const root = spawnNode({
     kind: 'general',
@@ -112,19 +111,14 @@ export async function recycleNode(nodeId: string, callerPane?: string): Promise<
     parent: null,
     launch,
   });
-  // REVIVE-HOME: a recycled root's durable revive target is the session
-  // of the pane it was recycled into (the one place home_session is rewritten
-  // after birth). Falls back to the backstage when the pane can't be located.
-  updateNode(root.node_id, { home_session: loc?.session ?? nodeSession() });
   // Hand the viewport to the fresh root: reuse M's focus row over the SAME pane
   // (respawn-pane -k below keeps the %id), so the user keeps watching this slot.
   if (f !== null) { try { setFocusOccupant(f.focus_id, root.node_id); } catch { /* best-effort */ } }
   const fresh = getNode(root.node_id) as NodeMeta;
   const inv = buildPiArgv(fresh);
-  // CRTR_ROOT_SESSION/CRTR_SUBTREE route the fresh root's children to the
-  // backstage. FRONT_DOOR is set by the broker host itself, so it is not added
-  // here.
-  inv.env = { ...inv.env, CRTR_ROOT_SESSION: nodeSession(), CRTR_SUBTREE: rootOfSpine(root.node_id) };
+  // CRTR_SUBTREE groups the fresh root's subtree; FRONT_DOOR is set by the broker
+  // host itself, so it is not added here.
+  inv.env = { ...inv.env, CRTR_SUBTREE: rootOfSpine(root.node_id) };
 
   const ok = recycleBrokerViewer(fresh, pane, inv);
 

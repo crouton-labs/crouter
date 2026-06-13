@@ -14,20 +14,19 @@ import { spawnSync } from 'node:child_process';
 import { readdirSync, existsSync } from 'node:fs';
 import { isAbsolute, resolve, join } from 'node:path';
 import { homedir } from 'node:os';
-import { spawnNode, currentNodeContext, resolveBirthSession, nodeSession, rootOfSpine } from './nodes.js';
+import { spawnNode, currentNodeContext, rootOfSpine } from './nodes.js';
 import { buildLaunchSpec, buildPiArgv } from './launch.js';
 import { writeGoal } from './kickoff.js';
 import { hasRoadmap, seedRoadmap } from './roadmap.js';
 import { buildIdentityAssertion, buildWakeBearings, type WakeOrigin } from './bearings.js';
 import { installMenuBinding, installNavBindings, installViewNavBindings } from './tmux-chrome.js';
-import { updateNode, getNode, fullName, type NodeMeta, type Mode, type Lifecycle } from '../canvas/index.js';
+import { getNode, fullName, type NodeMeta, type Mode, type Lifecycle } from '../canvas/index.js';
 import {
   registerViewerFocus,
   openViewerWindow,
   waitForBrokerViewSocket,
   viewerSplitEnv,
   windowOfPane,
-  ensureSession,
   currentTmux,
   inTmux,
   focusWindow,
@@ -35,8 +34,6 @@ import {
 import { transition } from './lifecycle.js';
 import { headlessBrokerHost } from './host.js';
 import { ensureDaemon } from '../../daemon/manage.js';
-
-// All node windows live in one shared session — see `nodeSession()` in nodes.js.
 
 // ---------------------------------------------------------------------------
 // bootRoot — the front door
@@ -55,6 +52,15 @@ export interface BootRootOpts {
  *  return — it process.exit()s when the inline attach exits (detach leaves the
  *  resident broker running, to be reconnected later). */
 export function bootRoot(opts: BootRootOpts): NodeMeta {
+  // crtr is tmux-only: the front door execs `crtr attach` inline in THIS pane to
+  // become the root's controller-viewer, so there must be a tmux pane to anchor
+  // on. Outside tmux there is no viewer surface — throw with a friendly message
+  // rather than boot a root nobody can see.
+  if (!inTmux()) {
+    throw new Error(
+      'crtr must be started from inside a tmux session — start tmux first (e.g. `tmux new -s work`), then run `crtr` there.',
+    );
+  }
   // The thin supervisor must be up before any node exists, so a refresh-yield
   // or crash can be reaped/revived. Idempotent.
   try { ensureDaemon(); } catch { /* daemon is best-effort */ }
@@ -80,46 +86,33 @@ export function bootRoot(opts: BootRootOpts): NodeMeta {
   // mandate (bare `crtr` has none — writeGoal no-ops on empty).
   if (opts.prompt !== undefined) writeGoal(meta.node_id, opts.prompt);
 
-  // Every node window — root or child — lives in the one shared session.
-  const session = nodeSession();
-  ensureSession(session, opts.cwd);
   // Make the Alt+C action menu + Alt+] / Alt+[ node-nav keys + Alt+V then ]/[
-  // view-nav chord live on this server (idempotent, in-tmux only).
-  if (inTmux()) {
-    try { installMenuBinding(); } catch { /* best-effort */ }
-    try { installNavBindings(); } catch { /* best-effort */ }
-    try { installViewNavBindings(); } catch { /* best-effort */ }
-  }
+  // view-nav chord live on this server (idempotent; guaranteed in tmux above).
+  try { installMenuBinding(); } catch { /* best-effort */ }
+  try { installNavBindings(); } catch { /* best-effort */ }
+  try { installViewNavBindings(); } catch { /* best-effort */ }
 
-  // This terminal becomes the root's attach VIEWER, so its window stays where the
-  // user is. The node row carries NO presence — a broker node's pane/window/
-  // tmux_session stay NULL; the viewer pane lives in the focuses table (below).
-  // The root's children still spawn into the shared global session via
-  // CRTR_ROOT_SESSION — they never clutter the user's working session.
+  // This terminal becomes the root's attach VIEWER in the user's CURRENT session,
+  // so its window stays where the user already is. The node row carries NO
+  // presence — a broker node's pane/window/tmux_session stay NULL; the viewer
+  // pane lives in the focuses table (below).
   const here = currentTmux();
-  const adopted = resolveBirthSession({ adoptCaller: true, here, rootSession: undefined });
-  // REVIVE-HOME: the root's durable home session (the caller's when inside tmux,
-  // else the shared backstage), set once at birth.
-  updateNode(meta.node_id, { home_session: adopted });
-  // The FOREGROUND front-door terminal is the root's one viewer (§A.3 step 6):
-  // record its pane as the node's viewer focus row so focus/nav can find it. The
-  // `crtr attach` exec below makes the terminal a controller-viewer of the
-  // broker; detaching leaves the resident broker running. Only inside tmux (a
-  // pane to anchor on).
-  if (here) {
-    try { registerViewerFocus(meta.node_id, here.pane, adopted, here.window); } catch { /* best-effort */ }
+  // The FOREGROUND front-door terminal is the root's one viewer: record its pane
+  // as the node's viewer focus row so focus/nav can find it. The `crtr attach`
+  // exec below makes the terminal a controller-viewer of the broker; detaching
+  // leaves the resident broker running.
+  if (here !== null) {
+    try { registerViewerFocus(meta.node_id, here.pane, here.session, here.window); } catch { /* best-effort */ }
   }
-  const withSession = getNode(meta.node_id) as NodeMeta;
-  const inv = buildPiArgv(withSession, { prompt: opts.prompt });
-  // Broker is the only host (§B.spawn): the root runs as a detached broker engine
-  // (so its first refresh/revive doesn't strand this terminal — the daemon revives
-  // the broker and the viewer reconnects), and THIS terminal execs `crtr attach`
-  // inline to become its controller-viewer. The broker host merges inv.env, so the
-  // subtree's shared-backstage routing rides on it; the host sets CRTR_FRONT_DOOR.
-  inv.env = { ...inv.env, CRTR_ROOT_SESSION: session, CRTR_SUBTREE: rootOfSpine(meta.node_id) };
+  const inv = buildPiArgv(meta, { prompt: opts.prompt });
+  // Broker is the only host: the root runs as a detached broker engine (so its
+  // first refresh/revive doesn't strand this terminal — the daemon revives the
+  // broker and the viewer reconnects), and THIS terminal execs `crtr attach`
+  // inline to become its controller-viewer. The host sets CRTR_FRONT_DOOR.
+  inv.env = { ...inv.env, CRTR_SUBTREE: rootOfSpine(meta.node_id) };
   const placed = headlessBrokerHost.launch(meta.node_id, inv, {
     cwd: opts.cwd,
-    name: fullName(withSession),
+    name: fullName(meta),
     resuming: false,
   });
   // No broker pid ⇒ the root has no engine. Crash it (so the daemon won't watch a
@@ -248,8 +241,12 @@ export function resolveForkSource(value: string): string {
 
 export interface SpawnChildResult {
   node: NodeMeta;
+  /** The viewer window opened for a --root in tmux; null otherwise (a managed
+   *  child opens no viewer, and a --root spawned outside tmux opens none). */
   window: string | null;
-  session: string;
+  /** The session the --root's viewer opened into (the caller's current session);
+   *  null when no viewer was opened. */
+  session: string | null;
 }
 
 /** Resolve who a spawn is attributed to. A managed child needs a spine parent
@@ -347,41 +344,20 @@ export function spawnChild(opts: SpawnChildOpts): SpawnChildResult {
   // (The three scoped long-term memory stores are seeded for EVERY node at birth
   // in spawnNode — no orchestrator-gated seeding needed here.)
 
-  // A managed CHILD lands in the shared global session: inherited from the
-  // parent's CRTR_ROOT_SESSION, else the default node session. A --root spawned
-  // from inside tmux instead opens its window in the CALLER'S CURRENT session,
-  // so it appears where the spawner is working rather than exiled to a separate
-  // crtr session. Either way the root's OWN descendants still flow to the shared
-  // session (childSession) via CRTR_ROOT_SESSION, to keep the subtree from
-  // cluttering the user's session.
-  const rootSessionEnv = process.env['CRTR_ROOT_SESSION'];
+  // A --root spawned from inside tmux opens its one viewer in the CALLER'S
+  // CURRENT session (below), so it appears where the spawner is working; a
+  // managed child is a headless broker with NO viewer at all.
   const here = root ? currentTmux() : null;
-  // The shared backstage the whole subtree flows into (this child's own
-  // CRTR_ROOT_SESSION): the inherited root session, else the default `crtr`.
-  const childSession = resolveBirthSession({ adoptCaller: false, here, rootSession: rootSessionEnv });
-  // Where THIS node's window opens — and its durable REVIVE-HOME. A managed
-  // child lands in the backstage; a --root adopts the caller's current session
-  // when inside tmux, so it appears where the spawner is working.
-  const session = resolveBirthSession({ adoptCaller: root, here, rootSession: rootSessionEnv });
-  ensureSession(session, opts.cwd);
-  // REVIVE-HOME set once at birth: a managed child's revive target is the
-  // backstage, never a user session — this is what keeps a background revive
-  // off the user's screen (the focus taint cannot reach it).
-  updateNode(meta.node_id, { home_session: session });
 
   const inv = buildPiArgv(meta, { prompt: kickoff, forkFrom });
-  // Authoritative backstage routing on inv.env (the broker host merges it into
-  // the detached broker process): CRTR_ROOT_SESSION (this subtree's shared
-  // backstage, where the node's descendants land) + CRTR_SUBTREE (its spine
-  // root). The host sets CRTR_FRONT_DOOR itself.
-  inv.env = { ...inv.env, CRTR_ROOT_SESSION: childSession, CRTR_SUBTREE: rootOfSpine(meta.node_id) };
+  // CRTR_SUBTREE (the spine root) rides the detached broker's env so it can group
+  // the subtree; the host sets CRTR_FRONT_DOOR itself.
+  inv.env = { ...inv.env, CRTR_SUBTREE: rootOfSpine(meta.node_id) };
 
-  // Broker is the only host (§A.3): launch the detached broker ENGINE, wait for
-  // its view.sock, then open a BACKGROUND viewer window — today's "spawn → a
-  // window appears" UX, except the window now runs a `crtr attach` VIEWER of the
-  // broker instead of the engine itself. The node row carries no presence; the
-  // viewer pane lives in the focuses table (registerViewerFocus, inside
-  // openViewerWindow).
+  // Broker is the only host: launch the detached broker ENGINE. A managed child
+  // gets NO viewer — spawning it returns once the engine is launched and a human
+  // opens a viewer on demand via `crtr node focus` / `crtr attach`. A --root gets
+  // one foreground viewer below.
   const placed = headlessBrokerHost.launch(meta.node_id, inv, {
     cwd: meta.cwd,
     name: fullName(meta),
@@ -398,24 +374,21 @@ export function spawnChild(opts: SpawnChildOpts): SpawnChildResult {
     );
   }
 
-  // Wait for the broker to bind view.sock (≤30s; by acceptance pi_pid is
-  // recorded). On timeout the broker is still booting or its boot failed — that
-  // is the daemon's boot-grace / surfaceBootFailure concern, NOT ours: a missing
-  // viewer is not a missing engine. Return the node active with no viewer; the
-  // user gets one on the next `focus`. Do NOT crash.
+  // A --root is spawned to be DRIVEN directly: when the caller is inside tmux,
+  // open ONE foreground viewer in the caller's CURRENT session and bring it
+  // forefront so whoever asked for it picks up the conversation. Outside tmux a
+  // --root opens no viewer (an agent handing a root off) — never a throw. A
+  // managed child opens nothing. Non-fatal if tmux refuses (openViewerWindow
+  // returns null) or the socket never binds — `focus` opens a viewer later.
   let window: string | null = null;
-  if (waitForBrokerViewSocket(meta.node_id)) {
-    // Open the node's one background viewer in its target session. A managed child
-    // lands in the shared backstage; a --root opens in the caller's current
-    // session (both resolved above as `session`). Non-fatal if tmux refuses
-    // (openViewerWindow returns null) — `focus` opens a viewer later.
-    const viewer = openViewerWindow(meta.node_id, session, { name: fullName(meta), cwd: opts.cwd });
+  let session: string | null = null;
+  if (root && here !== null && waitForBrokerViewSocket(meta.node_id)) {
+    const viewer = openViewerWindow(meta.node_id, here.session, { name: fullName(meta), cwd: opts.cwd });
     if (viewer !== null && viewer.pane !== null && viewer.pane !== '') {
+      session = here.session;
       window = windowOfPane(viewer.pane);
-      // A --root is spawned to be driven directly — bring its viewer forefront so
-      // whoever asked for it picks up the conversation. A child stays background.
-      if (root && window !== null) {
-        try { focusWindow(session, window); } catch { /* best-effort */ }
+      if (window !== null) {
+        try { focusWindow(here.session, window); } catch { /* best-effort */ }
       }
     }
   }
