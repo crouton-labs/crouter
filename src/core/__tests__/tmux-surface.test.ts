@@ -69,9 +69,13 @@ test('§2.2 driver invariant: every placement verb in tmux.ts passes an explicit
     found++;
     const verb = m[1];
     const arr = enclosingArray(src, m.index);
+    // The invariant is "name a specific tmux object, never fall back to the
+    // GLOBAL current one". `-t` targets a destination; `break-pane` (and the
+    // deleted swap/join/move-pane) instead name their SOURCE with `-s` — which
+    // satisfies the invariant identically. Accept either explicit target flag.
     assert.ok(
-      arr.includes(`'-t'`),
-      `tmux verb '${verb}' is invoked WITHOUT an explicit -t target — a latent ` +
+      arr.includes(`'-t'`) || arr.includes(`'-s'`),
+      `tmux verb '${verb}' is invoked WITHOUT an explicit -t/-s target — a latent ` +
         `instance of the unbidden-window bug (§2.2). Offending args array:\n${arr}`,
     );
   }
