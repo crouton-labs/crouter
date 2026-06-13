@@ -59,6 +59,7 @@ import {
   defaultAgentDir,
   mirrorKeybindingsToEditor,
   mirrorKittyProtocolToEditor,
+  resolveFdPath,
 } from './config-load.js';
 import { buildLoginPicker, buildLogoutPicker } from './auth-pickers.js';
 import { TitledEditor, thinkingBorderColor, thinkingTitleStyle, defaultTitleStyle } from './titled-editor.js';
@@ -172,6 +173,11 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
   // deduped install. Awaited before tui.start so the editor never handles a key
   // against stale defaults.
   await mirrorKeybindingsToEditor(km);
+  // Resolve `fd` once so the editor's @-mention picker can list files. pi-tui's
+  // CombinedAutocompleteProvider yields zero file suggestions without it (issue
+  // #6); `null` on a host with no fd (and no download) just leaves @-mention
+  // file-less, matching pi's own degraded behavior.
+  const fdPath = await resolveFdPath();
   // The front door installs the Alt+C menu binding before it ever loads a theme,
   // so it lands unstyled. Now that this viewer process HAS themed (applyTheme
   // above populated the live-theme global), re-install it so the menu picks up
@@ -204,7 +210,9 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
   // Slash-command autocomplete: builtins + native canvas commands now; enriched
   // with the broker's engine/extension/skill commands on the get_commands ack.
   const setCommands = (commands?: ReadonlyArray<{ name: string; description?: string }>): void => {
-    editor.setAutocompleteProvider(new CombinedAutocompleteProvider(slashCommandList(commands), meta.cwd));
+    editor.setAutocompleteProvider(
+      new CombinedAutocompleteProvider(slashCommandList(commands), meta.cwd, fdPath),
+    );
   };
   setCommands();
 

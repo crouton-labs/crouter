@@ -162,6 +162,40 @@ export async function mirrorKittyProtocolToEditor(active: boolean): Promise<void
 }
 
 /**
+ * Resolve the `fd` binary path the @-mention file picker needs. pi-tui's
+ * `CombinedAutocompleteProvider` only returns file suggestions when handed an
+ * `fdPath` (its third ctor arg) — without it, typing `@` triggers the picker but
+ * `getFuzzyFileSuggestions` returns `[]`, so the picker never appears (issue #6).
+ * pi's own interactive mode resolves this via `ensureTool('fd')` from its
+ * internal `utils/tools-manager` (checks pi's managed bin dir + system PATH,
+ * downloading the binary if missing). That module is NOT on pi-coding-agent's
+ * `.`-only export map, so we reach it the same way we reach the editor's pi-tui
+ * instance: resolve the package entry, then import the sibling file by URL
+ * (file URLs bypass the bare-specifier exports gate). Best-effort: any
+ * resolution/import failure (or no fd available) → `null`, and the picker stays
+ * file-less rather than crashing.
+ */
+let fdPathPromise: Promise<string | null> | undefined;
+
+export function resolveFdPath(): Promise<string | null> {
+  if (!fdPathPromise) {
+    fdPathPromise = (async () => {
+      try {
+        const pcaEntry = import.meta.resolve('@earendil-works/pi-coding-agent');
+        const toolsManagerUrl = new URL('./utils/tools-manager.js', pcaEntry).href;
+        const toolsManager = (await import(toolsManagerUrl)) as {
+          ensureTool(tool: 'fd' | 'rg', silent?: boolean): Promise<string | undefined>;
+        };
+        return (await toolsManager.ensureTool('fd', true)) ?? null;
+      } catch {
+        return null;
+      }
+    })();
+  }
+  return fdPathPromise;
+}
+
+/**
  * The user's theme name from pi settings — project (`<cwd>/.pi/settings.json`)
  * overrides global (`~/.pi/agent/settings.json`). `undefined` → pi's default.
  */
