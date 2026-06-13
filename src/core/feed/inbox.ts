@@ -16,8 +16,9 @@ import {
   renameSync,
   mkdirSync,
 } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { inboxPath, messagesDir } from '../canvas/index.js';
+import { dirname } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { inboxPath } from '../canvas/index.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -28,6 +29,10 @@ export type InboxKind = 'update' | 'urgent' | 'final' | 'message' | 'completed';
 
 /** A single inbox entry — a pointer, not a copy of the content. */
 export interface InboxEntry {
+  /** Short stable handle for addressing this entry from the CLI (`feed message
+   *  <id>`). Set when the entry carries an inline body too long to fully inline
+   *  in the digest, so the receiver can read the full text back by id. */
+  id?: string;
   /** ISO 8601 timestamp of delivery. */
   ts: string;
   /** Node id of the sender, or null for system-generated entries. */
@@ -62,6 +67,11 @@ function cursorPath(nodeId: string): string {
  */
 export function appendInbox(nodeId: string, entry: Omit<InboxEntry, 'ts'>): InboxEntry {
   const full: InboxEntry = { ts: new Date().toISOString(), ...entry };
+
+  // A message that carries an inline body the digest will clip needs a stable
+  // handle so the receiver can read the full text back (`feed message <id>`).
+  if (full.id === undefined && bodyExceedsPreview(full)) full.id = randomUUID().slice(0, 8);
+
   const line = JSON.stringify(full) + '\n';
 
   // Ensure the parent directory exists (inbox.jsonl lives directly under the
@@ -78,28 +88,14 @@ export function appendInbox(nodeId: string, entry: Omit<InboxEntry, 'ts'>): Inbo
   return full;
 }
 
-/**
- * Persist a direct-message body to the target's `messages/` dir (atomic
- * tmp+rename) and return its absolute path. Used when the body is too long to
- * inline in the coalesced digest — the path becomes the entry's `ref`, so the
- * receiver can dereference the full text the same way it dereferences a push.
- */
-export function writeMessageBody(nodeId: string, from: string | null, body: string): string {
-  const dir = messagesDir(nodeId);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-
-  const isoTs = new Date().toISOString();
-  const finalPath = join(dir, `${isoTs.replace(/[:.]/g, '-')}-msg.md`);
-  const tmpPath = `${finalPath}.tmp`;
-  const frontmatter = `---\nto: ${nodeId}\nfrom: ${from ?? 'system'}\nts: ${isoTs}\n---\n`;
-  writeFileSync(tmpPath, frontmatter + body, 'utf8');
-  renameSync(tmpPath, finalPath);
-  return finalPath;
-}
-
 // ---------------------------------------------------------------------------
 // Read
 // ---------------------------------------------------------------------------
+
+/** Find one inbox entry by its short `id` handle (see `feed message <id>`). */
+export function readInboxEntryById(nodeId: string, id: string): InboxEntry | undefined {
+  return readInboxSince(nodeId, undefined).find((e) => e.id === id);
+}
 
 /**
  * Return all inbox entries strictly after `cursorIso`.
@@ -157,6 +153,22 @@ export function writeCursor(nodeId: string, iso: string): void {
 const BODY_MAX_LINES = 12;
 const BODY_MAX_CHARS = 1000;
 
+/** The inline body an entry carries (a direct msg / system alert), trimmed.
+ *  Empty for a push pointer (whose body lives at `ref`) or a one-line entry
+ *  whose `label` already IS the whole message. */
+function inlineBody(e: Pick<InboxEntry, 'data' | 'label'>): string {
+  const body = typeof e.data?.['body'] === 'string' ? (e.data['body'] as string).trim() : '';
+  return body === '' || body === e.label ? '' : body;
+}
+
+/** True when an entry's inline body is long enough that the digest will clip it
+ *  — the trigger for minting an addressable `id` so the full text stays
+ *  recoverable via `feed message <id>`. */
+export function bodyExceedsPreview(e: Pick<InboxEntry, 'data' | 'label'>): boolean {
+  const body = inlineBody(e);
+  return body !== '' && clipBody(body).clipped;
+}
+
 /** Clip a body to a bounded preview, reporting whether anything was dropped. */
 export function clipBody(body: string): { text: string; clipped: boolean } {
   let text = body;
@@ -177,28 +189,25 @@ export function clipBody(body: string): { text: string; clipped: boolean } {
  * Render one entry's digest line(s).
  *
  * A push pointer (has a `ref`) stays a pointer — the body lives in the report
- * file, dereferenced on demand by reading that path. A ref-less entry (a direct
- * `node msg` or a system alert) has NO report to dereference; its full body
- * lives only in `data.body`, and `label` is just the first line truncated. So
- * for those we inline the body (bounded) — rendering only the truncated label
- * would strand the rest with nowhere to recover it.
+ * file, dereferenced on demand by reading that path. A direct `node msg` or
+ * system alert has NO report to dereference; its full body lives in the
+ * inbox.jsonl entry itself (`data.body`), so we inline a bounded preview. When
+ * that preview clips, the entry carries a short `id` and we point at the CLI
+ * command that reads the full body back from the jsonl (`feed message <id>`).
  */
 function renderEntry(e: InboxEntry): string {
-  const body = typeof e.data?.['body'] === 'string' ? (e.data['body'] as string).trim() : '';
-  // No inline body → a push pointer (body lives at `ref`) or a one-line entry
-  // whose label IS the whole message. Dereference the ref on demand.
-  if (body === '' || body === e.label) {
+  const body = inlineBody(e);
+  if (body === '') {
     return e.ref !== undefined
       ? `  [${e.kind}] ${e.label}  (ref: ${e.ref})`
       : `  [${e.kind}] ${e.label}`;
   }
-  // Inline body (direct msg / system alert): bounded preview. When clipped, the
-  // full text is recoverable only if the sender persisted it to `ref` — point
-  // there instead of stranding the rest with nowhere to read it.
   const { text, clipped } = clipBody(body);
   const indented = text.split('\n').map((l) => `    ${l}`).join('\n');
   const more = clipped
-    ? (e.ref !== undefined ? `\n    … (full message: ${e.ref})` : '\n    … (body clipped)')
+    ? (e.id !== undefined
+        ? `\n    … (clipped — full message: \`crtr feed message ${e.id}\`)`
+        : '\n    … (body clipped)')
     : '';
   return `  [${e.kind}]\n${indented}${more}`;
 }

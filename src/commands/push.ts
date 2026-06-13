@@ -18,6 +18,7 @@ import { push } from '../core/feed/feed.js';
 import { getNode, subscribersOf, subscriptionsOf, fullName } from '../core/canvas/index.js';
 import {
   readInboxSince,
+  readInboxEntryById,
   readCursor,
   writeCursor,
   coalesce,
@@ -201,6 +202,52 @@ const feedReadLeaf = defineLeaf({
 });
 
 // ---------------------------------------------------------------------------
+// feed message — read one inbox message's full body back from the jsonl
+// ---------------------------------------------------------------------------
+
+const feedMessageLeaf = defineLeaf({
+  name: 'message',
+  description: 'print one inbox entry\'s full body by id',
+  whenToUse: 'a digest line ended in `… (clipped — full message: crtr feed message <id>)` — run it to read the rest of that direct message. The full body lives in your inbox.jsonl; this prints it verbatim by the entry\'s short id. Read-only: it does NOT advance your inbox cursor.',
+  help: {
+    name: 'feed message',
+    summary: 'print the full body of one inbox entry, addressed by the short id shown in a clipped digest line',
+    params: [
+      { kind: 'positional', name: 'id', required: true, constraint: 'The short entry id from the digest\'s `… (full message: …)` pointer.' },
+      { kind: 'flag', name: 'node', type: 'string', required: false, constraint: 'Whose inbox to read. Defaults to CRTR_NODE_ID; pass to read another node\'s inbox as an orchestrator.' },
+    ],
+    output: [
+      { name: 'node_id', type: 'string', required: true, constraint: 'Node whose inbox was read.' },
+      { name: 'id', type: 'string', required: true, constraint: 'The requested entry id.' },
+      { name: 'found', type: 'boolean', required: true, constraint: 'True when an entry with that id exists.' },
+      { name: 'from', type: 'string', required: false, constraint: 'Sender of the message, when found.' },
+      { name: 'body', type: 'string', required: false, constraint: 'Full message body, when found.' },
+    ],
+    outputKind: 'object',
+    effects: ['Read-only: scans inbox.jsonl. Does NOT advance the cursor.'],
+  },
+  run: async (input) => {
+    const nodeId =
+      typeof input['node'] === 'string' && (input['node'] as string).trim() !== ''
+        ? (input['node'] as string).trim()
+        : requireCallerNode();
+    const id = (input['id'] as string).trim();
+    const entry = readInboxEntryById(nodeId, id);
+    if (entry === undefined) {
+      return { node_id: nodeId, id, found: false };
+    }
+    const body = typeof entry.data?.['body'] === 'string' ? (entry.data['body'] as string) : entry.label;
+    return { node_id: nodeId, id, found: true, from: entry.from ?? 'system', body };
+  },
+  render: (r) => {
+    if (r['found'] !== true) {
+      return `No inbox entry with id ${r['id']} in ${r['node_id']}'s inbox. Re-read the digest with \`crtr feed read --all\`, or list raw entries to find the right id.`;
+    }
+    return `Full message ${r['id']} (from ${r['from']}):\n\n${r['body']}`;
+  },
+});
+
+// ---------------------------------------------------------------------------
 // feed peek — live state of the nodes below you, without draining anything
 // ---------------------------------------------------------------------------
 
@@ -355,8 +402,8 @@ export function registerFeed(): BranchDef {
       name: 'feed',
       summary: 'read the per-node inbox feed',
       model:
-        'Each node has an inbox.jsonl that accumulates ~30-token pointers from publishers it subscribes to. The watcher drains this inbox to wake you, so the wake message you receive ALREADY IS the coalesced digest \u2014 dereference the reports that matter by reading their ref paths (a push carries a ref; a direct message inlines its full body). `feed read` is for PROACTIVELY polling before a wake (it advances the cursor); after a wake it reads empty because the cursor already moved \u2014 use `--all` to re-read history. An empty feed is normal while workers run \u2014 a worker that has not pushed leaves no pointer \u2014 so use `feed peek` to see the live state of the nodes below you (and whether to yield) without draining anything.',
+        'Each node has an inbox.jsonl that accumulates ~30-token pointers from publishers it subscribes to. The watcher drains this inbox to wake you, so the wake message you receive ALREADY IS the coalesced digest \u2014 dereference the reports that matter by reading their ref paths (a push carries a ref; a direct message inlines a bounded body preview, and when that clips it ends in `crtr feed message <id>` to read the full text back from the jsonl). `feed read` is for PROACTIVELY polling before a wake (it advances the cursor); after a wake it reads empty because the cursor already moved \u2014 use `--all` to re-read history. An empty feed is normal while workers run \u2014 a worker that has not pushed leaves no pointer \u2014 so use `feed peek` to see the live state of the nodes below you (and whether to yield) without draining anything.',
     },
-    children: [feedReadLeaf, feedPeekLeaf],
+    children: [feedReadLeaf, feedMessageLeaf, feedPeekLeaf],
   });
 }

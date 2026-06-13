@@ -29,7 +29,7 @@
   ],
   "scripts": {
     "build": "rm -rf dist && tsc && cp -R src/builtin-personas dist/builtin-personas && cp -R src/builtin-views dist/builtin-views && cp -R src/builtin-memory dist/builtin-memory && npm run build:attach && vite build --config src/clients/web/web-client/vite.config.ts",
-    "build:attach": "esbuild src/clients/attach/attach-cmd.ts --bundle --minify --format=esm --platform=node --target=node22 --outfile=dist/clients/attach/attach-cmd.js --log-level=warning --banner:js=\"import{createRequire as __cr}from'node:module';const require=__cr(import.meta.url);\"",
+    "build:attach": "esbuild src/clients/attach/attach-cmd.ts --bundle --minify --format=esm --platform=node --target=node22 --alias:@earendil-works/pi-tui=$PWD/node_modules/@earendil-works/pi-tui --outfile=dist/clients/attach/attach-cmd.js --log-level=warning --banner:js=\"import{createRequire as __cr}from'node:module';const require=__cr(import.meta.url);\"",
     "dev": "tsx src/cli.ts",
     "link": "npm link",
     "prepublishOnly": "npm run build",
