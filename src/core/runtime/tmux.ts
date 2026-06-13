@@ -61,11 +61,32 @@ export function sessionExists(name: string): boolean {
   return tmux(['has-session', '-t', name]).ok;
 }
 
+/** Force bracketed-paste capabilities on for every terminal on this tmux server.
+ *
+ *  Many terminfo entries lack the Enbp/Dsbp (enable/disable bracketed paste)
+ *  capabilities. Without them tmux never asks the outer terminal to wrap pastes,
+ *  so a multi-line paste arrives as raw `\r` and the inner app (pi, zsh, …)
+ *  submits on the first newline — i.e. one paste lands as several messages.
+ *  Declaring the caps for `*` restores bracketed paste so pastes stay atomic.
+ *
+ *  `terminal-overrides` is a server option, so this is set once per server and
+ *  is idempotent: we only append our entry when the Enbp marker isn't already
+ *  present (e.g. the user's own tmux.conf already declares it). Must run only
+ *  once a server exists — set-option errors out with no server running — so
+ *  callers invoke it AFTER ensuring a session. */
+function ensureBracketedPaste(): void {
+  const current = tmux(['show-options', '-s', 'terminal-overrides']).stdout;
+  if (current.includes('Enbp=')) return;
+  tmux(['set-option', '-sga', 'terminal-overrides', '*:Enbp=\E[?2004h:Dsbp=\E[?2004l']);
+}
+
 /** Create a detached session rooted at `cwd` if it doesn't exist. The session
  *  name is a root's tmux home; every node under that root is a window in it. */
 export function ensureSession(name: string, cwd: string): void {
-  if (sessionExists(name)) return;
-  tmux(['new-session', '-d', '-s', name, '-c', cwd]);
+  if (!sessionExists(name)) {
+    tmux(['new-session', '-d', '-s', name, '-c', cwd]);
+  }
+  ensureBracketedPaste();
 }
 
 function envFlags(env: Record<string, string>): string[] {
