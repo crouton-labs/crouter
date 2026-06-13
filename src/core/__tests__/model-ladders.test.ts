@@ -131,3 +131,17 @@ test('normalizeModel and buildLaunchSpec honor config overrides, and edits inval
   });
   assert.equal(edited.launch.model, 'anthropic/custom-strong-2', 'edited personaStrengths are picked up on the next launch');
 });
+
+test('malformed existing user config surfaces instead of falling back to defaults', () => {
+  mkdirSync(crtrRoot(), { recursive: true });
+  writeFileSync(configFile(), '{\n', 'utf8');
+
+  assert.throws(
+    () =>
+      buildLaunchSpec('developer', 'base', {
+        lifecycle: 'terminal',
+        hasManager: true,
+      }),
+    /JSON|Unexpected token|Unexpected end/,
+  );
+});

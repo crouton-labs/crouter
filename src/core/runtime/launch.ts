@@ -108,9 +108,12 @@ function readUserConfigCached(): ScopeConfig {
     const config = readConfig('user');
     cachedUserConfig = { path, mtimeMs: stat.mtimeMs, size: stat.size, config };
     return config;
-  } catch {
-    cachedUserConfig = null;
-    return defaultScopeConfig();
+  } catch (error) {
+    if ((error as { code?: unknown }).code === 'ENOENT') {
+      cachedUserConfig = null;
+      return defaultScopeConfig();
+    }
+    throw error;
   }
 }
 
