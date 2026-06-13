@@ -458,17 +458,16 @@ export function installMenuBinding(): boolean {
     items.push({ name, key, cmd });
   }
 
-  // Alt+C TOGGLE: re-pressing Alt+C while the menu is open should DISMISS it.
-  // display-menu is modal, so the root `M-c` binding is shadowed while the menu
-  // is up; tmux instead assembles the re-pressed Esc+c into the meta key `M-c`
-  // and delivers it to the menu's own key handler. An unhandled key is ignored
-  // (the menu just stays open) and the trailing `c` never leaks to the editor
-  // (verified empirically in tmux 3.6b: no native ESC-cancel + c-leak occurs for
-  // an atomic keypress). We catch that `M-c` with a menu item keyed to it whose
-  // command is empty — selecting it runs nothing and closes the menu. The row
-  // doubles as the menu's self-documenting dismiss hint. Placed last so it reads
-  // as chrome below the actions; `M-c` collides with no mnemonic above.
-  items.push({ name: 'close menu', key: 'M-c', cmd: '' });
+  // Dismiss hint. A tmux display-menu always closes on its native cancel keys
+  // (Escape / q / C-c), encoding-independent. We do NOT try to catch a re-pressed
+  // Alt+C: under `extended-keys on` (common, and what pi negotiates) the second
+  // Alt+C reaches the overlay as a CSI-u key (`\033[99;3u`) that tmux's menu does
+  // NOT match against an `M-c` mnemonic item, so a "close menu" row keyed M-c
+  // never fires and the menu just sits open (verified in tmux 3.6b: legacy Esc+c
+  // closes, CSI-u does not). Instead, a disabled (`-` prefix → dim, unselectable)
+  // last row tells the user the close keys that always work. Placed last so it
+  // reads as chrome below the actions.
+  items.push({ name: '-esc / q to close', key: '', cmd: '' });
 
   // tmux's -x sets the menu's LEFT edge. To sit the box INSIDE the pane's
   // top-right corner, shift x left by the box width (longest line + tmux chrome:
