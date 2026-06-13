@@ -29,6 +29,8 @@ import { join } from 'node:path';
 
 import {
   getNode,
+  deleteNode,
+  listNodes,
   openFocusRow,
   closeFocusRow,
   getFocusByNode,
@@ -38,6 +40,8 @@ import {
   view,
   type FocusRow,
 } from '../canvas/index.js';
+import { nodeHasAssistantMessage, isNodeStreaming } from '../canvas/render.js';
+import { headlessBrokerHost } from './host.js';
 import {
   paneExists,
   paneLocation,
@@ -464,5 +468,63 @@ export function detachToBackground(nodeId: string, pane?: string): boolean {
   if (viewer === null || !paneExists(viewer)) return false;
   const f = focusByPane(viewer);
   if (f !== null) closeFocusRow(f.focus_id);
-  return closePane(viewer);
+  const closed = closePane(viewer);
+  // A node the user detached from that never produced any AI output is a useless
+  // shell taking up graph + disk space — reap it (engine + row + dir) outright
+  // rather than leaving an empty broker running headless off-screen.
+  reapIfEmpty(nodeId);
+  return closed;
+}
+
+// ---------------------------------------------------------------------------
+// Reaping empty nodes (no AI output) on close / detach
+// ---------------------------------------------------------------------------
+
+/** Is this node an EMPTY SHELL right now — a node whose engine never produced an
+ *  assistant message? Such nodes are pure dead weight on the graph. A node
+ *  actively generating its FIRST turn is NOT empty (its output just hasn't landed
+ *  on disk yet), so streaming nodes are spared. */
+function isEmptyNode(nodeId: string): boolean {
+  const m = getNode(nodeId);
+  if (m === null) return false;
+  if (isNodeStreaming(nodeId)) return false;
+  return !nodeHasAssistantMessage(m.pi_session_file);
+}
+
+/** Reap `nodeId` IFF it is an empty shell (see {@link isEmptyNode}): tear down its
+ *  broker engine, close any viewer, and hard-delete its row (edges cascade) + dir.
+ *  The user closing or detaching from a node that never said anything wants it
+ *  GONE, not parked as a canceled husk. Returns true when it reaped. No-op (false)
+ *  on a node that produced output, is mid-first-turn, or no longer exists. */
+export function reapIfEmpty(nodeId: string): boolean {
+  if (!isEmptyNode(nodeId)) return false;
+  headlessBrokerHost.teardown(nodeId);
+  tearDownNode(nodeId);
+  deleteNode(nodeId);
+  return true;
+}
+
+/** Sweep the whole canvas for empty shells and reap them — the bulk cleanup
+ *  behind `crtr canvas prune --empty`, for the husks that accumulated before
+ *  close/detach learned to reap. Skips: the caller ($CRTR_NODE_ID), nodes
+ *  mid-first-turn, and any node with a LIVE broker (pi_pid alive) — a running
+ *  engine is the daemon's domain and may have output not yet persisted, so bulk
+ *  GC never kills one (the per-action {@link reapIfEmpty} does, since the user
+ *  explicitly closed/detached that node). `dryRun` reports candidates without
+ *  deleting. Returns the reaped (or, under dryRun, reapable) node ids. */
+export function reapEmptyNodes(opts: { dryRun?: boolean } = {}): string[] {
+  const dryRun = opts.dryRun ?? false;
+  const selfId = process.env['CRTR_NODE_ID'] ?? '';
+  const reaped: string[] = [];
+  for (const row of listNodes()) {
+    const id = row.node_id;
+    if (id === selfId || isPidAlive(row.pi_pid) || !isEmptyNode(id)) continue;
+    if (!dryRun) {
+      headlessBrokerHost.teardown(id);
+      tearDownNode(id);
+      deleteNode(id);
+    }
+    reaped.push(id);
+  }
+  return reaped;
 }

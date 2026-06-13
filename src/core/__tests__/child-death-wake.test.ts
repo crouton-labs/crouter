@@ -24,7 +24,7 @@
 
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -50,6 +50,16 @@ function node(id: string, over: Partial<NodeMeta> = {}): NodeMeta {
     status: 'active',
     ...over,
   };
+}
+
+/** Write a minimal pi session with one assistant message so the node reads as
+ *  NON-empty (produced AI output) — otherwise closeNode reaps it outright. */
+function withSession(id: string): string {
+  const dir = join(home, 'sessions');
+  mkdirSync(dir, { recursive: true });
+  const f = join(dir, `${id}.jsonl`);
+  writeFileSync(f, JSON.stringify({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } }) + '\n');
+  return f;
 }
 
 /** A pid that is guaranteed dead. */
@@ -134,7 +144,7 @@ test('pid-only liveness: a dead-engine booted child is revivable, NOT reaped, an
 test('node close of a child wakes its SURVIVING manager (the parent outside the closing set)', async () => {
   inboxWaitingParent('PARENT');
   // A booted child; closeNode tears its (paneless-for-the-test) engine down.
-  createNode(node('CHILD', { pane: GONE_PANE, tmux_session: 'crtr-cdw', window: '@1', pi_session_id: 'booted', status: 'active' }));
+  createNode(node('CHILD', { pane: GONE_PANE, tmux_session: 'crtr-cdw', window: '@1', pi_session_id: 'booted', pi_session_file: withSession('CHILD'), status: 'active' }));
   subscribe('PARENT', 'CHILD', true); // PARENT is a manager OUTSIDE the close set
 
   // Closing CHILD: closingSet({CHILD}) cannot pull in PARENT (PARENT is a

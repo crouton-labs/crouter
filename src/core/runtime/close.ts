@@ -38,7 +38,7 @@ import {
 } from '../canvas/index.js';
 import { transition } from './lifecycle.js';
 import { headlessBrokerHost } from './host.js';
-import { tearDownNode } from './placement.js';
+import { tearDownNode, reapIfEmpty } from './placement.js';
 import { appendInbox } from '../feed/inbox.js';
 import { appendPassive } from '../feed/passive.js';
 
@@ -166,32 +166,43 @@ export function closeNode(
         .map((s) => s.node_id)
         .filter((c) => closing.has(c));
 
-      // 1) Terminal status set BEFORE the window dies (daemon race). The root may
-      //    finalize to `done` (a deliberate "mark complete" close-out); every
-      //    descendant, and the root by default, `cancel`s. finalize is legal only
-      //    from a live status — an already-terminal root keeps its status.
-      if (id === rootId && rootEvent === 'finalize') {
-        if (m.status === 'active' || m.status === 'idle') transition(id, 'finalize');
-      } else {
-        transition(id, 'cancel');
+      // Surviving managers captured BEFORE any teardown — a reap (below) deletes
+      //    this node's edges, so the step-4 fan-out must read them up front.
+      const survivors = subscribersOf(id).filter((s) => !closing.has(s.node_id));
+
+      // 0) An EMPTY node (engine never produced an assistant message) is a useless
+      //    shell — don't park it as a canceled husk, reap it outright (engine +
+      //    viewer + row + dir). reapIfEmpty handles the teardown; when it fires we
+      //    skip the cancel transition + resume notice (the node is gone) but still
+      //    fan the "child gone" wake out to surviving managers below.
+      if (!reapIfEmpty(id)) {
+        // 1) Terminal status set BEFORE the window dies (daemon race). The root may
+        //    finalize to `done` (a deliberate "mark complete" close-out); every
+        //    descendant, and the root by default, `cancel`s. finalize is legal only
+        //    from a live status — an already-terminal root keeps its status.
+        if (id === rootId && rootEvent === 'finalize') {
+          if (m.status === 'active' || m.status === 'idle') transition(id, 'finalize');
+        } else {
+          transition(id, 'cancel');
+        }
+
+        // 2) Tear the node's ENGINE down: send the `shutdown` frame so the broker
+        //    PROCESS exits and releases the sole .jsonl writer. Then proactively
+        //    close the viewer pane + registry row — attach auto-reconnects, so on a
+        //    deliberate close the viewer must be torn down here or it lingers ~30s
+        //    showing a misleading "reconnecting…" instead of going away at once.
+        headlessBrokerHost.teardown(id);
+        tearDownNode(id);
+
+        // 3) Leave the resume notice AFTER the watcher is gone, so it survives.
+        appendInbox(id, {
+          from: null,
+          tier: 'normal',
+          kind: 'message',
+          label: cancellationLabel(id === rootId, deadChildren),
+          data: { reason: 'user-close', cascade_root: rootId, canceled_children: deadChildren },
+        });
       }
-
-      // 2) Tear the node's ENGINE down: send the `shutdown` frame so the broker
-      //    PROCESS exits and releases the sole .jsonl writer. Then proactively
-      //    close the viewer pane + registry row — attach auto-reconnects, so on a
-      //    deliberate close the viewer must be torn down here or it lingers ~30s
-      //    showing a misleading "reconnecting…" instead of going away at once.
-      headlessBrokerHost.teardown(id);
-      tearDownNode(id);
-
-      // 3) Leave the resume notice AFTER the watcher is gone, so it survives.
-      appendInbox(id, {
-        from: null,
-        tier: 'normal',
-        kind: 'message',
-        label: cancellationLabel(id === rootId, deadChildren),
-        data: { reason: 'user-close', cascade_root: rootId, canceled_children: deadChildren },
-      });
 
       // 4) Wake any SURVIVING manager subscribed to this node — the doctrine wake.
       //    A node going dormant trusts the runtime to wake it on a child's
@@ -204,8 +215,7 @@ export function closeNode(
       //    never fires inside a self-contained cascade. Active → inbox (wakes a
       //    dormant manager via its live watcher / the daemon's dormant-revive
       //    second pass); passive → passive accumulator (delivered, not woken).
-      for (const sub of subscribersOf(id)) {
-        if (closing.has(sub.node_id)) continue; // also being torn down — pointless
+      for (const sub of survivors) {
         const notice = {
           from: id,
           tier: 'normal' as const,

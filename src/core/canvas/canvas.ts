@@ -467,6 +467,17 @@ export interface PruneResult {
   dryRun: boolean;
 }
 
+/** Hard-delete ONE node: drop its row (the edges→nodes FK, ON DELETE CASCADE,
+ *  GCs its edges) and remove its on-disk `nodes/<id>/` dir. The single-node
+ *  analogue of {@link pruneNodes}, for IMMEDIATE reaping — e.g. an empty node the
+ *  user closed or detached from. Pure persisted-state removal: the caller MUST
+ *  have already torn down the broker engine + viewer (this does not signal any
+ *  process). Best-effort dir removal after the row delete, mirroring pruneNodes. */
+export function deleteNode(nodeId: string): void {
+  openDb().prepare('DELETE FROM nodes WHERE node_id = ?').run(nodeId);
+  rmSync(nodeDir(nodeId), { recursive: true, force: true });
+}
+
 /** Retention sweep: remove TERMINAL nodes (status dead | done | canceled) whose
  *  `created` is older than `ttlDays`, bounding the otherwise-unbounded growth of
  *  node rows + dirs. The edges→nodes FK (`ON DELETE CASCADE`, migration v4) GCs

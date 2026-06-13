@@ -41,7 +41,7 @@ import { InputError } from '../../core/io.js';
 import { getNode, getRow } from '../../core/canvas/index.js';
 // tmux driver verbs only through placement (the §5.1 model-over-driver seam) —
 // never `core/runtime/tmux.js` directly.
-import { setPaneOption, currentTmux, inTmux, installMenuBinding } from '../../core/runtime/placement.js';
+import { setPaneOption, currentTmux, inTmux, installMenuBinding, reapIfEmpty } from '../../core/runtime/placement.js';
 import type {
   BrokerSnapshot,
   BrokerToClient,
@@ -646,6 +646,14 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
     }
     socket.close();
     restore();
+    // A deliberate detach (ctrl+c/ctrl+d) from a node that never produced any AI
+    // output reaps it: an empty shell the user walked away from is dead weight on
+    // the graph, so delete it (engine + row + dir) rather than leave it running
+    // headless. broker-gone/signal teardowns are not the user saying "done with
+    // this", so they never reap.
+    if (reason === 'detach') {
+      try { reapIfEmpty(nodeId); } catch { /* best-effort */ }
+    }
     if (reason === 'broker-gone') {
       const msg =
         lastSocketError ??

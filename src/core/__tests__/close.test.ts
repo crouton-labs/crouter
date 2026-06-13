@@ -1,16 +1,32 @@
 import { test, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { createNode, getNode, subscribe } from '../canvas/canvas.js';
+import { nodeDir } from '../canvas/paths.js';
 import { closeDb } from '../canvas/db.js';
 import { closeNode } from '../runtime/close.js';
 import { readInboxSince } from '../feed/inbox.js';
 import type { NodeMeta } from '../canvas/types.js';
 
 let home: string;
+
+/** Write a minimal pi session containing one assistant message, so the node
+ *  reads as NON-empty (it produced AI output). Without this a node has no
+ *  session and closeNode reaps it outright instead of cancel+notice — see the
+ *  dedicated empty-reap test below. */
+function withSession(id: string): string {
+  const dir = join(home, 'sessions');
+  mkdirSync(dir, { recursive: true });
+  const f = join(dir, `${id}.jsonl`);
+  writeFileSync(
+    f,
+    JSON.stringify({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }] } }) + '\n',
+  );
+  return f;
+}
 
 function node(id: string, over: Partial<NodeMeta> = {}): NodeMeta {
   return {
@@ -22,6 +38,7 @@ function node(id: string, over: Partial<NodeMeta> = {}): NodeMeta {
     mode: 'base',
     lifecycle: 'terminal',
     status: 'active',
+    pi_session_file: withSession(id),
     ...over,
   };
 }
@@ -151,6 +168,37 @@ test('closing a leaf node closes only itself', () => {
 
 test('throws on an unknown node', () => {
   assert.throws(() => closeNode('ghost'), /unknown node/);
+});
+
+// Regression: empty nodes (engine never produced an assistant message) are
+// USELESS shells, so closing one must DELETE it from the graph + disk, not park
+// a canceled husk. (Reported: "many nodes on the canvas that haven't generated
+// anything yet, just taking up space" — close/detach now reap them.)
+test('closing an EMPTY node (no AI output) deletes it from the graph + disk', () => {
+  createNode(node('shell', { pi_session_file: null }));
+  const dir = nodeDir('shell');
+  assert.ok(existsSync(dir), 'dir exists before close');
+
+  const res = closeNode('shell');
+
+  assert.deepEqual(res.closed, ['shell']);
+  assert.equal(getNode('shell'), null, 'row deleted from the graph');
+  assert.equal(existsSync(dir), false, 'on-disk dir removed');
+});
+
+// A close that reaps an EMPTY child still wakes a SURVIVING manager — the child
+// is gone either way, so a parent that delegated must learn it vanished.
+test('reaping an empty child still notifies a surviving external manager', () => {
+  createNode(node('child', { pi_session_file: null })); // empty → reaped
+  createNode(node('mgr')); // external manager, NOT closed
+  spawnEdge('mgr', 'child');
+
+  closeNode('child');
+
+  assert.equal(getNode('child'), null, 'empty child reaped');
+  const note = readInboxSince('mgr').at(-1)!;
+  assert.match(note.label, /Child closed/);
+  assert.equal(note.data?.['child'], 'child');
 });
 
 // NOTE (broker-host cut): the former "Step 7: closing a FOCUSED node closes its

@@ -357,6 +357,59 @@ function readSessionParts(sessionFile: string | null | undefined): SessionParts 
   return { prompts, lastAssistant };
 }
 
+/** Did this node's engine ever PRODUCE something — an assistant message with real
+ *  text, a tool call, or non-empty reasoning? The signal that a node did work and
+ *  is not an empty shell. A never-revived node (no session file) is trivially
+ *  false; an assistant turn that is only an empty/aborted `thinking` stub does NOT
+ *  count (that's a node started and killed before it did anything). CONSERVATIVE
+ *  by design: ANY substance keeps the node, so the reap never deletes real work
+ *  — a tool-call-only turn (no final text) still counts. Drives reap-on-close/
+ *  detach. One file read with an early exit on the first substantive turn. */
+export function nodeHasAssistantMessage(sessionFile: string | null | undefined): boolean {
+  if (sessionFile === undefined || sessionFile === null || sessionFile === '') return false;
+  let lines: string[];
+  try {
+    if (!existsSync(sessionFile)) return false;
+    lines = readFileSync(sessionFile, 'utf8').split('\n');
+  } catch {
+    return false;
+  }
+  for (const line of lines) {
+    if (line === '' || (line.indexOf('"role":"assistant"') === -1 && line.indexOf('"role": "assistant"') === -1)) continue;
+    let rec: { type?: string; message?: { role?: string; content?: unknown } };
+    try { rec = JSON.parse(line) as typeof rec; } catch { continue; }
+    if (rec.type !== 'message' || rec.message?.role !== 'assistant') continue;
+    if (assistantContentIsSubstantive(rec.message.content)) return true;
+  }
+  return false;
+}
+
+/** True when an assistant message's content has at least one block that PRODUCED
+ *  something: non-empty text, non-empty thinking, a tool call (`toolCall`/
+ *  `tool_use`/…), or any other non-thinking/text block type. The lone non-case is
+ *  an empty thinking stub (`[{type:'thinking',thinking:''}]`) or empty content —
+ *  what an immediately-aborted first turn leaves behind. */
+function assistantContentIsSubstantive(content: unknown): boolean {
+  if (typeof content === 'string') return content.trim() !== '';
+  if (!Array.isArray(content)) return false;
+  for (const block of content) {
+    if (block === null || typeof block !== 'object') continue;
+    const b = block as { type?: string; text?: unknown; thinking?: unknown };
+    const t = (b.type ?? '').toLowerCase();
+    if (t === 'text') { if (typeof b.text === 'string' && b.text.trim() !== '') return true; }
+    else if (t === 'thinking') { if (typeof b.thinking === 'string' && b.thinking.trim() !== '') return true; }
+    else return true; // toolCall / tool_use / toolResult / any other block = real output
+  }
+  return false;
+}
+
+/** {@link isStreaming} keyed by node id alone — hydrates the broker pid off the
+ *  db row. The exported "is this node actively generating right now?" guard so a
+ *  reap never nukes a node mid-first-turn before its output lands on disk. */
+export function isNodeStreaming(nodeId: string): boolean {
+  return isStreaming(nodeId, getNode(nodeId)?.pi_pid ?? null);
+}
+
 /** Is the node GENUINELY mid-turn right now? The `busy` marker (touched on
  *  agent_start, removed on agent_end) AND-ed with broker-pid liveness, so a stale
  *  marker from a crashed pi reads false. This is the live "generating?" signal

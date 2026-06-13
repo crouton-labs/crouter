@@ -11,6 +11,7 @@
 import { defineLeaf } from '../core/command.js';
 import type { LeafDef } from '../core/command.js';
 import { pruneNodes } from '../core/canvas/index.js';
+import { reapEmptyNodes } from '../core/runtime/placement.js';
 
 const DEFAULT_TTL_DAYS = 14;
 
@@ -40,6 +41,14 @@ export const canvasPruneLeaf: LeafDef = defineLeaf({
       },
       {
         kind: 'flag',
+        name: 'empty',
+        type: 'bool',
+        required: false,
+        default: false,
+        constraint: 'Instead of the TTL sweep, reap EMPTY nodes — nodes (of any age or status) whose engine never produced an assistant message, the useless shells that just take up graph + disk space. A node mid-first-turn and the caller are spared. Combine with --dry-run to preview.',
+      },
+      {
+        kind: 'flag',
         name: 'dry-run',
         type: 'bool',
         required: false,
@@ -64,6 +73,17 @@ export const canvasPruneLeaf: LeafDef = defineLeaf({
     const ttlDays = (input['ttl'] as number | undefined) ?? DEFAULT_TTL_DAYS;
     const dryRun = (input['dryRun'] as boolean | undefined) ?? false;
     const includeStale = (input['includeStale'] as boolean | undefined) ?? false;
+    const empty = (input['empty'] as boolean | undefined) ?? false;
+
+    if (empty) {
+      const ids = reapEmptyNodes({ dryRun });
+      return {
+        pruned: dryRun ? 0 : ids.length,
+        dryRun,
+        ttlDays,
+        nodes: ids.map((node_id) => ({ node_id, status: 'empty', created: '' })),
+      };
+    }
 
     const result = pruneNodes({ ttlDays, dryRun, includeStale });
     return {
