@@ -29,12 +29,16 @@
 
 import { execFile } from 'node:child_process';
 import { surfaceTmuxStyleArgs } from '../core/runtime/surface-bg.js';
+import { readConfig } from '../core/config.js';
 
 // ---------------------------------------------------------------------------
 // Minimal Pi interface (avoids a hard dep on @earendil-works/*). Signatures
 // sourced from pi-coding-agent's dist/core/extensions/types.d.ts:
 //   registerCommand(name, { description?, handler })
+//   registerShortcut(spec, { description?, handler })
 //   ctx.mode: "tui" | "rpc" | "json" | "print"  (guard "tui" before the popup)
+// The shortcut handler's ctx is pi's ExtensionContext, a superset of the
+// command ctx — it carries the same { mode, ui }, so CommandCtx fits both.
 // ---------------------------------------------------------------------------
 
 interface CommandUI {
@@ -50,6 +54,10 @@ interface PiLike {
   registerCommand?(
     name: string,
     options: { description?: string; handler: (args: string, ctx: CommandCtx) => void | Promise<void> },
+  ): void;
+  registerShortcut?(
+    shortcut: string,
+    options: { description?: string; handler: (ctx: CommandCtx) => void | Promise<void> },
   ): void;
 }
 
@@ -69,41 +77,65 @@ function shellQuote(s: string): string {
 export function registerCanvasResume(pi: PiLike): void {
   const nodeId = process.env['CRTR_NODE_ID'];
   if (nodeId === undefined || nodeId.trim() === '') return; // not a canvas node
-  if (typeof pi.registerCommand !== 'function') return;
 
-  pi.registerCommand('resume-node', {
-    description: 'Open the canvas navigator (search/scope/sort/tree) and resume the chosen node',
-    handler: async (_args: string, ctx: CommandCtx): Promise<void> => {
-      // The popup is terminal-only — guard the run mode before opening it.
-      if (ctx.mode !== 'tui') {
-        try { ctx.ui.notify('/resume-node needs the interactive TUI', 'warning'); } catch { /* best-effort */ }
-        return;
-      }
+  /** Open the full-screen canvas navigator as a tmux popup. Shared by the
+   *  /resume-node command and the resumeKey shortcut so both behave identically.
+   *  The popup is terminal-only and crtr is tmux-only — both are guarded here. */
+  const openResumePicker = (ctx: CommandCtx): void => {
+    // The popup is terminal-only — guard the run mode before opening it.
+    if (ctx.mode !== 'tui') {
+      try { ctx.ui.notify('resume-node needs the interactive TUI', 'warning'); } catch { /* best-effort */ }
+      return;
+    }
 
-      const origPane = process.env['TMUX_PANE'];
+    const origPane = process.env['TMUX_PANE'];
 
-      // crtr only runs in tmux: open the full-screen canvas navigator as a popup.
-      // It owns the screen and, on Enter, focuses the chosen node back INTO this
-      // pane via `crtr node focus --pane`. Fire-and-forget: tmux runs the trailing
-      // string through sh -c, and the popup closes itself when browse exits.
-      if (process.env['TMUX'] !== undefined && origPane !== undefined && origPane !== '') {
-        // Scope the navigator to this node's cwd by default (the dir pi runs in).
-        const cwd = shellQuote(process.cwd());
-        const cmd = `crtr canvas browse --return-pane ${origPane} --cwd ${cwd}`;
-        try {
-          execFile(
-            'tmux',
-            ['display-popup', '-E', '-w', '90%', '-h', '85%', ...surfaceTmuxStyleArgs(), cmd],
-            (): void => { /* best-effort: popup is self-contained */ },
-          );
-        } catch { /* best-effort */ }
-        return;
-      }
+    // crtr only runs in tmux: open the full-screen canvas navigator as a popup.
+    // It owns the screen and, on Enter, focuses the chosen node back INTO this
+    // pane via `crtr node focus --pane`. Fire-and-forget: tmux runs the trailing
+    // string through sh -c, and the popup closes itself when browse exits.
+    if (process.env['TMUX'] !== undefined && origPane !== undefined && origPane !== '') {
+      // Scope the navigator to this node's cwd by default (the dir pi runs in).
+      const cwd = shellQuote(process.cwd());
+      const cmd = `crtr canvas browse --return-pane ${origPane} --cwd ${cwd}`;
+      try {
+        execFile(
+          'tmux',
+          ['display-popup', '-E', '-w', '90%', '-h', '85%', ...surfaceTmuxStyleArgs(), cmd],
+          (): void => { /* best-effort: popup is self-contained */ },
+        );
+      } catch { /* best-effort */ }
+      return;
+    }
 
-      // Not in tmux → crtr is tmux-only, so there is nothing to fall back to.
-      try { ctx.ui.notify('/resume-node needs tmux', 'warning'); } catch { /* best-effort */ }
-    },
-  });
+    // Not in tmux → crtr is tmux-only, so there is nothing to fall back to.
+    try { ctx.ui.notify('resume-node needs tmux', 'warning'); } catch { /* best-effort */ }
+  };
+
+  if (typeof pi.registerCommand === 'function') {
+    pi.registerCommand('resume-node', {
+      description: 'Open the canvas navigator (search/scope/sort/tree) and resume the chosen node',
+      handler: async (_args: string, ctx: CommandCtx): Promise<void> => { openResumePicker(ctx); },
+    });
+  }
+
+  // A pi shortcut that opens the picker DIRECTLY (no keystroke simulation),
+  // mirroring canvas-nav's prefixKey. Default 'alt+shift+g', configurable via
+  // canvasNav.resumeKey. Registered once per load (pi dedupes on /reload); wrap
+  // in try/catch since pi rejects some specs. A headless ('print') broker has no
+  // keyboard, so this only ever fires in the interactive TUI.
+  let resumeKey: string | undefined;
+  try { resumeKey = readConfig('user').canvasNav.resumeKey; } catch { resumeKey = 'alt+shift+g'; }
+  if (typeof pi.registerShortcut === 'function' && resumeKey !== undefined && resumeKey !== '') {
+    try {
+      pi.registerShortcut(resumeKey, {
+        description: 'Open the canvas navigator (resume a node)',
+        handler: async (ctx: CommandCtx): Promise<void> => { openResumePicker(ctx); },
+      });
+    } catch {
+      /* shortcut spec rejected by pi — /resume-node still works */
+    }
+  }
 }
 
 export default registerCanvasResume;
