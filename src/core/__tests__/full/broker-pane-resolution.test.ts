@@ -164,12 +164,13 @@ test('Gap 3 — a second `node focus` REUSES the one viewer (in place), never st
   assert.equal(h.node(broker)!.host_kind, 'broker', 'precondition: broker-hosted node');
 
   // A caller pane in the harness session to focus BESIDE (the user's pane the
-  // viewer splits next to). The viewer lands in this same session, so reuse takes
-  // the in-session NAVIGATE path (in_place), not the cross-session MOVE path.
+  // viewer splits next to). The viewer lands in this same session, so the SECOND
+  // focus's reuse takes the in-session NAVIGATE path (in_place), not the
+  // cross-session MOVE path.
   const caller = makePane();
 
-  // FOCUS #1 — brings the broker's one viewer on screen (the spawn already opened
-  // a backstage viewer in this session, so this navigates to it in place).
+  // FOCUS #1 — a managed child boots with NO viewer (spawn no longer auto-opens
+  // one), so this OPENS the broker's single viewer beside the caller.
   const f1 = h.cli(broker, ['node', 'focus', broker, '--pane', caller]);
   assert.equal(f1.code, 0, `first focus exit 0\n${f1.stderr}`);
   assert.equal(parseList(f1.stdout).focused, 'true', 'first focus brought the viewer on screen');
