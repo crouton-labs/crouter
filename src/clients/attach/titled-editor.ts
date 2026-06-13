@@ -7,7 +7,14 @@
 // Both are pure render-layer chrome; nothing here touches the socket or session.
 
 import { CustomEditor } from '@earendil-works/pi-coding-agent';
-import { truncateToWidth, visibleWidth } from '@earendil-works/pi-tui';
+import {
+  truncateToWidth,
+  visibleWidth,
+  type EditorOptions,
+  type EditorTheme,
+  type KeybindingsManager,
+  type TUI,
+} from '@earendil-works/pi-tui';
 
 /** Thinking levels pi cycles through (shift+tab), lowest → highest budget. */
 export type ThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
@@ -85,6 +92,43 @@ export function composeTopBorder(
 }
 
 export class TitledEditor extends CustomEditor {
+  /** crtr's OWN keybindings manager — the same one CustomEditor matches `app.*`
+   *  against. We keep a reference so `handleInput` can resolve the newline chord
+   *  here, independent of the editor's (possibly separate) pi-tui module global. */
+  private readonly km: KeybindingsManager;
+
+  // CustomEditor's ctor signature; captured so we own the newline chord (see
+  // handleInput). The keybindings param is typed as pi's app-subclass manager,
+  // but the attach viewer feeds it pi-tui's base manager — hence the cast.
+  constructor(
+    tui: TUI,
+    theme: EditorTheme,
+    keybindings: ConstructorParameters<typeof CustomEditor>[2],
+    options?: EditorOptions,
+  ) {
+    super(tui, theme, keybindings, options);
+    this.km = keybindings as unknown as KeybindingsManager;
+  }
+
+  /** Insert a newline on the newLine chord (Alt+Enter / Shift+Enter) using crtr's
+   *  OWN keybindings manager, then defer everything else to the stock editor.
+   *
+   *  The base `Editor` resolves newLine against `getKeybindings()` on ITS pi-tui
+   *  instance, which in a non-deduped install is a DIFFERENT module than the one
+   *  carrying crtr's `alt+enter` override — so the override can silently never
+   *  reach it and Alt+Enter falls through to submit (issue #11). crtr's `km` (the
+   *  same manager CustomEditor matches `app.*` against) always carries the
+   *  override, so matching the chord here makes the newline behavior independent
+   *  of cross-instance keybinding mirroring. Skipped while the autocomplete popup
+   *  is open so Enter-to-confirm keeps working. */
+  override handleInput(data: string): void {
+    if (!this.isShowingAutocomplete() && this.km.matches(data, 'tui.input.newLine')) {
+      this.insertTextAtCursor('\n');
+      return;
+    }
+    super.handleInput(data);
+  }
+
   /** Session-name chip painted into the LEFT of the top border. Empty → plain. */
   title = '';
   /** Pre-styled context string painted into the RIGHT of the top border (cwd /
