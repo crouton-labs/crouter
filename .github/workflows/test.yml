@@ -56,6 +56,22 @@ jobs:
       - name: Install tmux + neovim
         run: sudo apt-get update && sudo apt-get install -y tmux neovim
       - run: npm run build
+      # Put THIS package's `crtr` on PATH for the tmux viewer panes the broker-host
+      # full-tier tests spawn. After the broker-is-the-host cut, a node's on-screen
+      # presence is a `crtr attach to <id>` VIEWER pane (placement.ts
+      # openViewerWindow bakes that BARE command into the split pane); the attach
+      # client self-tags its pane `@crtr_node=<id>` on connect, and three tests
+      # (broker-pane-resolution, cascade-close, detach-focus) assert that tagged
+      # live pane. A pristine runner has no `crtr` on PATH (the package-under-test
+      # is never globally installed, and npm does not self-link its own bin into
+      # node_modules/.bin), so the bare command fails, the pane dies un-tagged, and
+      # those three time out. Exporting $PWD/bin (bin/crtr → dist/cli.js, built
+      # above) makes the tmux server started inside test:full — and every pane it
+      # forks — resolve `crtr`. A dev box already has `crtr` on PATH (global
+      # install / homebrew symlink), which is why this only bites CI — same shape
+      # as the managed-termrender PATH export above.
+      - name: Put this package's crtr on PATH
+        run: echo "$PWD/bin" >> "$GITHUB_PATH"
       - run: npm run test:full
 
 # Runner caveats (cannot be exercised from this dev box — verify on first CI run):
