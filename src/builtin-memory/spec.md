@@ -1,7 +1,7 @@
 ---
 kind: knowledge
 when-and-why-to-read: When running a specification effort, shaping a spec
-  roadmap, or deciding how to stage design and requirements work, this skill
+  roadmap, or deciding how to stage design and requirements work, this knowledge
   should be read.
 short-form: Use when running a specification effort, shaping a spec roadmap, or
   deciding how to stage design and requirements work. Covers the three-stage

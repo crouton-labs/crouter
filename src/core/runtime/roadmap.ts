@@ -28,7 +28,7 @@ export function readRoadmap(nodeId: string): string | null {
 /** Seed a fresh, EXTREMELY BAREBONES roadmap scaffold — just the section
  *  skeleton with one-line prompts. Promotion lays this down so the file exists
  *  for a refresh; the owner fleshes it out as its next act (guided by its
- *  kind's roadmap skill). `goal`/`exitCriteria` pre-fill those sections when
+ *  roadmap memory doc). `goal`/`exitCriteria` pre-fill those sections when
  *  known (e.g. from the node's goal doc). Idempotent only if you intend it —
  *  call sites guard on hasRoadmap to avoid clobbering an evolved map. */
 export function seedRoadmap(nodeId: string, opts: { goal?: string; exitCriteria?: string } = {}): string {

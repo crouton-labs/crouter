@@ -103,8 +103,8 @@ interface PiLike {
 
 /** The stable seam that closes pi's native "Available tools" list. We splice the
  *  substrate's boot sections right before it — the agent decides which capability
- *  to reach for while reading the tools, so skills/preferences must sit there,
- *  not far below. Mirrors crouter-help.ts. Falls back to appending if absent. */
+ *  to reach for while reading the tools, so memory docs/preferences must sit
+ *  there, not far below. Mirrors crouter-help.ts. Falls back to appending if absent. */
 const TOOLS_ANCHOR = '\n\nGuidelines:';
 
 /**
@@ -129,7 +129,7 @@ export function registerCanvasDocSubstrate(pi: PiLike): void {
   const injectedDocs = loadInjectedDocs(nodeId);
   pi.on('session_start', () => {
     // Only the per-session substrate PARSE cache resets each session (so the
-    // corpus is re-scanned, picking up skill/memory writes). injectedDocs is
+    // corpus is re-scanned, picking up memory writes). injectedDocs is
     // transcript-scoped, not session-scoped — deliberately NOT cleared here.
     clearSessionCache();
   });

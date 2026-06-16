@@ -30,7 +30,7 @@ A real bug is the **only** trigger for a new non-lifecycle test. "This function 
 
 Three tiers, each with a distinct durability and ownership contract:
 
-1. **Scope root** (`~/.crouter/` for user scope, or `<project>/.crouter/` for project scope) — durable, user-authored content resolved by the scope resolver (`src/core/scope.ts`): `skills/`, `plugins/`, `marketplaces/`, `config.json`. Persists across project changes; belongs to the user or the repo.
+1. **Scope root** (`~/.crouter/` for user scope, or `<project>/.crouter/` for project scope) — durable, user-authored content resolved by the scope resolver (`src/core/scope.ts`): `memory/`, `plugins/`, `marketplaces/`, `personas/`, `config.json`. Persists across project changes; belongs to the user or the repo.
 
 2. **Per-cwd crouter root** (`~/.crouter/<mangled-cwd>/`) — per-project working artifacts keyed by the originating cwd via `mangleCwd` (see `src/core/artifact.ts`): `interactions/` (humanloop decks for the `crtr human` bridge; `interactions/<id>/` holds `deck.json`/`run.json`/`response.json`).
 

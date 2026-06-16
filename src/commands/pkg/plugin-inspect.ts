@@ -107,7 +107,7 @@ const pluginShow = defineLeaf({
       { name: 'path', type: 'string', required: true, constraint: 'Absolute path to the plugin directory.' },
       { name: 'enabled', type: 'boolean', required: true, constraint: 'Whether the plugin is active.' },
       { name: 'manifest', type: 'object', required: true, constraint: 'Full plugin.json contents.' },
-      { name: 'skills', type: 'object[]', required: true, constraint: 'Each: {name, path}. Substrate docs provided by the plugin (its `<pluginName>/` memory subtree).' },
+      { name: 'docs', type: 'object[]', required: true, constraint: 'Each: {name, path}. Memory docs provided by the plugin (its `<pluginName>/` memory subtree).' },
     ],
     outputKind: 'object',
     effects: ['None. Read-only.'],
@@ -133,7 +133,7 @@ const pluginShow = defineLeaf({
     }
 
     const prefix = `${found.name}/`;
-    const skills = listAllMemoryDocs().filter((d) => d.name.startsWith(prefix));
+    const docs = listAllMemoryDocs().filter((d) => d.name.startsWith(prefix));
 
     return {
       name: found.name,
@@ -141,9 +141,9 @@ const pluginShow = defineLeaf({
       path: found.root,
       enabled: found.enabled,
       manifest: found.manifest as unknown as Record<string, unknown>,
-      skills: skills.map((s) => ({
-        name: s.name,
-        path: s.path,
+      docs: docs.map((d) => ({
+        name: d.name,
+        path: d.path,
       })),
     };
   },
@@ -152,7 +152,7 @@ const pluginShow = defineLeaf({
 export const pluginInspectBranch = defineBranch({
   name: 'inspect',
   description: 'list or show installed plugins',
-  whenToUse: 'reading installed plugin metadata to decide before you change anything — list what is installed, or show the manifest and skills of one plugin. Read-only; switch to `pkg plugin manage` to actually install, enable, disable, or remove',
+  whenToUse: 'reading installed plugin metadata to decide before you change anything — list what is installed, or show the manifest and memory docs of one plugin. Read-only; switch to `pkg plugin manage` to actually install, enable, disable, or remove',
   help: {
     name: 'pkg plugin inspect',
     summary: 'read plugin metadata without modifying state',

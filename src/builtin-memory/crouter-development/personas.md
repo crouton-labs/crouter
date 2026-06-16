@@ -1,7 +1,7 @@
 ---
 kind: knowledge
 when-and-why-to-read: When adding a new `--kind`, overriding a builtin agent, or
-  debugging persona resolution, this skill should be read.
+  debugging persona resolution, this knowledge should be read.
 short-form: How to define a custom node kind (persona) for crtr — the
   PERSONA.md/orchestrator files, the frontmatter contract (incl. whenToUse),
   nested sub-personas, scope resolution and overrides, and how to write the
@@ -72,8 +72,7 @@ YAML frontmatter on either file supplies launch knobs; the body is the system pr
 | `model` | string | pi model override (normalized). Omit to inherit the default. |
 | `tools` | string[] | pi tool allowlist. Omit for all tools. |
 | `extensions` | string[] | pi extensions, **added after** the always-on canvas extensions. |
-| `skills` | string[] | skills attached at launch. |
-| `roadmapSkill` | string | orchestrator only — a skill whose body is injected as roadmap-shaping guidance when the node runs as an orchestrator. |
+| `roadmapSkill` | string | orchestrator only — a memory doc whose body is injected as roadmap-shaping guidance when the node runs as an orchestrator. |
 | `whenToUse` | string | on a `<kind>/PERSONA.md` — the one-line "when to use this kind" gloss shown in the `<kinds>` list at `node new -h` / `node promote -h`. |
 | `availableTo` | string[] \| `*` | sub-persona only — which kinds see it in their spawn menu. Default: its top-level ancestor kind. `*` / `all` = every kind. |
 
@@ -110,4 +109,4 @@ No scaffold command — create the dir + files by hand. Copy a builtin (`explore
 
 ## Related
 
-`[[crouter-development/plugins]]` packages *skills* for distribution — personas are distributed differently (committed to a scope's `personas/`), so a kind is never part of a plugin.
+`[[crouter-development/plugins]]` packages memory docs for distribution — personas are distributed differently (committed to a scope's `personas/`), so a kind is never part of a plugin.

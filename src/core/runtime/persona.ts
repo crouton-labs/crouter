@@ -49,7 +49,7 @@ export interface PersonaDriftResult {
  *  hand-rolled parser. Strings pass through; number/boolean coerce via
  *  String(); null/undefined and non-scalars are dropped (→ null). Without this,
  *  the `yaml` package's native scalar types would let a numeric/boolean
- *  `roadmapSkill` be silently dropped by a `typeof === 'string'` guard. */
+ *  `roadmapSkill` memory-doc pointer be silently dropped by a `typeof === 'string'` guard. */
 function scalarToString(v: unknown): string | null {
   if (typeof v === 'string') return v;
   if (typeof v === 'number' || typeof v === 'boolean') return String(v);
@@ -57,9 +57,9 @@ function scalarToString(v: unknown): string | null {
 }
 
 /** Load a substrate doc's body text by name, or null if it can't be resolved.
- *  Used to inline a kind's roadmap-shaping skill into the orchestration
- *  guidance — the skill now lives as a substrate memory doc. */
-function loadSkillBody(name: string): string | null {
+ *  Used to inline a kind's roadmap-shaping memory doc into the orchestration
+ *  guidance. */
+function loadRoadmapMemoryBody(name: string): string | null {
   try {
     return resolveMemoryDoc(name).body.trim();
   } catch {
@@ -68,8 +68,8 @@ function loadSkillBody(name: string): string | null {
 }
 
 /** The base→orchestrator guidance dump, specialized to the node's kind: the
- *  shared kernel + that kind's roadmap-shaping skill + the roadmap scaffold the
- *  node must author + the orchestrator context-dir framing + a short pointer at
+ *  shared kernel + that kind's roadmap-shaping memory doc + the roadmap scaffold
+ *  the node must author + the orchestrator context-dir framing + a short pointer at
  *  the substrate memory flow (promotion re-informs of nothing about the stores,
  *  it only adds the across-cycles relevance). The node is now a delegator whose
  *  scarce resource is its own context window. (Lifecycle is left to its own
@@ -78,7 +78,7 @@ function orchestrationGuidance(nodeId: string, kind: string): string {
   const kernel = loadKernel();
   const orch = loadPersona(kind, 'orchestrator');
   const roadmapSkill = scalarToString(orch?.frontmatter?.['roadmapSkill']) ?? undefined;
-  const skillBody = roadmapSkill ? loadSkillBody(roadmapSkill) : null;
+  const roadmapMemoryBody = roadmapSkill ? loadRoadmapMemoryBody(roadmapSkill) : null;
   const roadmap = readRoadmap(nodeId) ?? '(no roadmap yet)';
   const rmPath = roadmapPath(nodeId);
 
@@ -88,8 +88,8 @@ function orchestrationGuidance(nodeId: string, kind: string): string {
     '',
     kernel,
   ];
-  if (skillBody) {
-    parts.push('', `--- How to shape a ${kind} roadmap (skill: ${roadmapSkill}) ---`, '', skillBody);
+  if (roadmapMemoryBody) {
+    parts.push('', `--- How to shape a ${kind} roadmap (memory: ${roadmapSkill}) ---`, '', roadmapMemoryBody);
   }
   parts.push(
     '',

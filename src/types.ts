@@ -114,20 +114,6 @@ export interface ScopeState {
   bootstrap_done?: boolean;
 }
 
-export const SKILL_TYPES = ['playbook', 'primer', 'reference', 'runbook', 'freeform'] as const;
-export type SkillType = (typeof SKILL_TYPES)[number];
-
-export function isSkillType(v: unknown): v is SkillType {
-  return typeof v === 'string' && (SKILL_TYPES as readonly string[]).includes(v);
-}
-
-export interface SkillFrontmatter {
-  name: string;
-  description?: string;
-  keywords?: string[];
-  type?: SkillType;
-}
-
 export interface SubagentFrontmatter {
   name: string;
   description?: string;
@@ -177,10 +163,8 @@ export const MARKETPLACE_MANIFEST_FILE = 'marketplace.json';
 export const CRTR_DIR_NAME = '.crouter';
 export const CONFIG_FILE = 'config.json';
 export const STATE_FILE = 'state.json';
-export const SKILL_ENTRY_FILE = 'SKILL.md';
-export const SKILLS_DIR = 'skills';
 // Subagent definitions live as flat `<name>.md` files under `<root>/agents/`,
-// for both scope roots and plugins. Mirrors SKILLS_DIR.
+// for both scope roots and plugins.
 export const AGENTS_DIR = 'agents';
 export const DEFAULT_MAX_PANES_PER_WINDOW = 3;
 

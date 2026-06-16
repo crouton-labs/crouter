@@ -2,11 +2,11 @@
 kind: knowledge
 when-and-why-to-read: When writing or revising an orchestrator persona prompt (a
   <kind>/orchestrator.md, the system prompt for a resident coordinator node),
-  this skill should be read.
+  this knowledge should be read.
 short-form: How to write an orchestrator persona prompt (orchestrator.md) — the
   system prompt for a resident coordinator node. Covers the kernel-vs-kind
   split, what belongs in the per-kind body, naming the child pipeline, the
-  roadmapSkill pointer, and the @include rule. Use when writing or revising a
+  roadmapSkill memory-doc pointer, and the @include rule. Use when writing or revising a
   <kind>/orchestrator.md.
 system-prompt-visibility: name
 file-read-visibility: none
@@ -15,7 +15,7 @@ needs-refinement: true
 
 # Writing an orchestrator persona prompt
 
-`orchestrator.md` is the system prompt for a **resident coordinator** — a long-lived node that owns a goal too large for one window and delivers it by decomposing, delegating, integrating, and surviving context refreshes. This skill is the philosophy of what belongs in an orchestrator persona; for file mechanics and frontmatter, see `[[crouter-development/personas]]`.
+`orchestrator.md` is the system prompt for a **resident coordinator** — a long-lived node that owns a goal too large for one window and delivers it by decomposing, delegating, integrating, and surviving context refreshes. This knowledge doc is the philosophy of what belongs in an orchestrator persona; for file mechanics and frontmatter, see `[[crouter-development/personas]]`.
 
 Audience: LLM agents writing a `<kind>/orchestrator.md`.
 
@@ -31,7 +31,7 @@ So your `orchestrator.md` body carries **only the delta** — what is specific t
 
 2. **The child kinds it drives, and the pipeline.** Name the specialists this orchestrator delegates to and the order it runs them: developer drives `explore → spec → plan → developer → review` as a "spec → plan → implement → review → fix → validate" pipeline; spec runs `SHAPE → DESIGN → REQUIREMENTS` stages; review fans `review` children across units. The flow is the kind's signature — make it explicit so delegation isn't ad hoc.
 
-3. **A pointer to the methodology skill — don't inline it.** Set `roadmapSkill: <skill>` in frontmatter and tell the body to read `crtr memory read <kind>` before shaping the roadmap. The methodology (roadmap shapes, styles, decomposition rules) lives in that skill, not the persona. The persona points; the skill teaches.
+3. **A pointer to the methodology memory doc — don't inline it.** Set `roadmapSkill: <memory-doc-name>` in frontmatter and tell the body to read `crtr memory read <kind>` before shaping the roadmap. The methodology (roadmap shapes, styles, decomposition rules) lives in that memory doc, not the persona. The persona points; the doc teaches.
 
 4. **The kind's quality bar.** State the domain-specific exit criteria the kernel can't: developer's "implementation is done when provably correct against the spec, review done when a non-implementer cleared all Major/Critical findings, validation done end-to-end in the real runtime." This is where you set the ceiling for *this* kind of work.
 
@@ -52,6 +52,6 @@ When a unit is itself too big for one window, the orchestrator creates that chil
 
 - **Re-teaching the kernel.** Re-explaining the wake loop, roadmap sections, yielding, or memory duplicates the kernel and drifts. If it's universal, delete it.
 - **Missing `@include`.** No kernel = no loop, no roadmap discipline, no finish checklist. Always include it, last.
-- **Inlining the methodology.** Roadmap shapes belong in the `roadmapSkill`, not the persona. Point at it.
+- **Inlining the methodology.** Roadmap shapes belong in the `roadmapSkill` memory doc, not the persona. Point at it.
 - **No named pipeline.** An orchestrator that doesn't name its child kinds and their order produces scattershot delegation. The flow is the value.
 - **Forgetting the no-self-execution rule.** Without an explicit boundary, the model drifts into doing the work itself and exhausts its context with the goal half-met — the exact failure orchestrators exist to avoid.

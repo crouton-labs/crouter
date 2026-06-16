@@ -1,7 +1,7 @@
 ---
 kind: knowledge
 when-and-why-to-read: When shaping a design roadmap or producing an
-  architecture/interface design, this skill should be read.
+  architecture/interface design, this knowledge should be read.
 short-form: Use when shaping a design roadmap or producing an
   architecture/interface design — covers what a design deliverable is, the
   design-artifact shape, when to go top-down vs bottom-up, and how to decompose

@@ -1,8 +1,8 @@
-// Shared constants + helpers for the `crtr memory` command family (task B2).
-// The leaf handlers (list/read/find/write) consume the resolver, substrate
-// schema, scope, and skill-resolver modules and build their documented output
-// objects on top of the small helpers here. Nothing in this file forks on kind
-// or re-implements the schema/gate/resolver — it only composes them.
+// Shared constants + helpers for the `crtr memory` command family. The leaf
+// handlers (list/read/find/write) consume the resolver, substrate schema, and
+// scope modules and build their documented output objects on top of the small
+// helpers here. Nothing in this file forks on kind or re-implements the
+// schema/gate/resolver — it only composes them.
 
 import { join } from 'node:path';
 import { stringify as yamlStringify, parse as yamlParse } from 'yaml';
@@ -137,10 +137,7 @@ const FRONTMATTER_ORDER = [
 /** Serialize a substrate frontmatter record + body into a complete `.md`
  *  document. Frontmatter is emitted as a `---` fenced YAML block (the `yaml`
  *  package — the same one the parser uses — so nested gate maps and applies-to
- *  arrays round-trip), in canonical field order with preserved extras last. The
- *  skill-shaped `serializeFrontmatter` in core can only represent
- *  name/description/type/keywords, so it cannot carry the substrate fields —
- *  hence this focused serializer. */
+ *  arrays round-trip), in canonical field order with preserved extras last. */
 export function serializeMemoryDoc(
   frontmatter: Record<string, unknown>,
   body: string,

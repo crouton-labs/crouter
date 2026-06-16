@@ -10,7 +10,7 @@ export const readLeaf = defineLeaf({
   name: 'read',
   description: 'load a memory document body by name',
   whenToUse:
-    'a task in front of you matches a stored document and you already know its name — read it before improvising. Resolves the path-derived name across scopes by precedence (project > user > builtin), with leaf-name fallback like skills. You name the document by its crtr identifier, never a file path — do not cat or find the markdown off disk. Reach for `crtr memory find` first when you do not yet know which document applies.',
+    'a task in front of you matches a stored document and you already know its name — read it before improvising. Resolves the path-derived name across scopes by precedence (project > user > builtin), with leaf-name fallback. You name the document by its crtr identifier, never a file path — do not cat or find the markdown off disk. Reach for `crtr memory find` first when you do not yet know which document applies.',
   help: {
     name: 'memory read',
     summary: 'resolve a path-derived name to its document body, frontmatter stripped unless --frontmatter',

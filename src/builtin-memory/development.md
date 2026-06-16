@@ -2,7 +2,7 @@
 kind: knowledge
 when-and-why-to-read: When shaping or reshaping a build roadmap — choosing a
   development style, selecting a phase skeleton, or setting exit criteria for a
-  software goal — this skill should be read.
+  software goal — this knowledge should be read.
 short-form: Use when shaping or reshaping a build roadmap — choosing a
   development style, selecting a phase skeleton, or setting exit criteria for a
   software goal.

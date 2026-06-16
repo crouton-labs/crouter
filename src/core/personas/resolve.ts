@@ -14,10 +14,10 @@
  *       If even the PERSONA.md is missing, fall back to general defaults + kernel.
  *
  * Frontmatter from whichever file is the primary source (orchestrator.md >
- * PERSONA.md) supplies model/skills/extensions/tools. Lifecycle and spine position
- * are INPUTS (the caller decides them — root/child, terminal/resident), not
- * derived here; they select the lifecycle/spine protocol fragments spliced
- * ahead of the persona body.
+ * PERSONA.md) supplies model/extensions/tools. Lifecycle and spine position are
+ * INPUTS (the caller decides them — root/child, terminal/resident), not derived
+ * here; they select the lifecycle/spine protocol fragments spliced ahead of the
+ * persona body.
  */
 
 import { loadPersona, loadKernel, loadRuntimeBase, loadSpineFragment, loadLifecycleFragment, loadWaitingFragment, subPersonasFor } from './loader.js';
@@ -29,7 +29,6 @@ import { loadPersona, loadKernel, loadRuntimeBase, loadSpineFragment, loadLifecy
 export interface ResolvedPersona {
   systemPrompt: string;
   extensions: string[];
-  skills: string[];
   model?: string;
   lifecycle: 'terminal' | 'resident';
   tools?: string[];
@@ -133,7 +132,6 @@ export function resolve(
       return {
         systemPrompt: composeProtocol(fallbackBasePrompt(kind), kind, opts.lifecycle, opts.hasManager),
         extensions: [],
-        skills: [],
         lifecycle: opts.lifecycle,
       };
     }
@@ -142,7 +140,6 @@ export function resolve(
     return {
       systemPrompt: composeProtocol(persona.body || fallbackBasePrompt(kind), kind, opts.lifecycle, opts.hasManager),
       extensions: toStringArray(fm['extensions']),
-      skills: toStringArray(fm['skills']),
       model: toOptionalString(fm['model']),
       lifecycle: opts.lifecycle,
       tools: fm['tools'] !== undefined ? toStringArray(fm['tools']) : undefined,
@@ -158,7 +155,6 @@ export function resolve(
     return {
       systemPrompt: composeProtocol(orchestratorPersona.body || fallbackBasePrompt(kind), kind, opts.lifecycle, opts.hasManager),
       extensions: toStringArray(fm['extensions']),
-      skills: toStringArray(fm['skills']),
       model: toOptionalString(fm['model']),
       lifecycle: opts.lifecycle,
       tools: fm['tools'] !== undefined ? toStringArray(fm['tools']) : undefined,
@@ -178,7 +174,6 @@ export function resolve(
   return {
     systemPrompt: composeProtocol(systemPrompt, kind, opts.lifecycle, opts.hasManager),
     extensions: toStringArray(fm['extensions']),
-    skills: toStringArray(fm['skills']),
     model: toOptionalString(fm['model']),
     lifecycle: opts.lifecycle,
     tools: fm['tools'] !== undefined ? toStringArray(fm['tools']) : undefined,

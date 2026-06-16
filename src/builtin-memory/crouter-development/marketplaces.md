@@ -1,7 +1,7 @@
 ---
 kind: knowledge
 when-and-why-to-read: When creating a crtr marketplace or contributing plugins
-  to one, this skill should be read.
+  to one, this knowledge should be read.
 short-form: How to author a crtr marketplace — marketplace.json index, plugin
   entries, symlink-based install, auto-bump CI, dual-publishing. Use when
   creating a marketplace or contributing plugins to one.
@@ -112,7 +112,7 @@ mkdir -p plugins/my-new-plugin/.crouter-plugin plugins/my-new-plugin/memory
 $EDITOR plugins/my-new-plugin/.crouter-plugin/plugin.json
 
 # Add at least one doc (`crtr memory write -h` is the authoring + routing guide)
-$EDITOR plugins/my-new-plugin/memory/first-skill.md
+$EDITOR plugins/my-new-plugin/memory/first-doc.md
 
 # Add the plugin to the marketplace index
 $EDITOR .crouter-marketplace/marketplace.json

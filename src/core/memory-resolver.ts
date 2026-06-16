@@ -9,12 +9,10 @@ import { warn } from './output.js';
 import { pluginMemoryDir, projectScopeRoot, scopeMemoryDir } from './scope.js';
 
 /**
- * Thin memory-document resolver for the document substrate. Mirrors the SHAPE
- * of the skill resolver (qualifier parse → scope precedence → direct path
- * lookup → leaf-name fallback) but drops ALL plugin machinery: memory
- * resolution is scope + leaf/path ONLY. The three memory scopes resolve in
- * precedence order project > user > builtin (the same precedence concept as
- * orderPluginsByResolution, minus plugins). It returns the raw parsed
+ * Thin memory-document resolver for the document substrate. Resolution is scope
+ * + leaf/path only: qualifier parse → scope precedence → direct path lookup →
+ * leaf-name fallback. The three memory scopes resolve in precedence order
+ * project > user > builtin. It returns the raw parsed
  * frontmatter + body; it does NOT interpret the schema, kind, gate, or rungs —
  * that is the schema/gate layer's job (callers filter by `frontmatter.kind`).
  */
@@ -60,15 +58,13 @@ function loadMemoryDoc(name: string, scope: Scope, path: string): MemoryDoc {
 }
 
 /** All memory docs in one scope's memory/ dir, scanned recursively for *.md
- *  (topical subdirs supported), sorted by path-derived name. */
+ *  (topical subdirs supported), sorted by path-derived name. SKILL.md bundles
+ *  are legacy Agent Skills and are ignored; crouter memory docs are plain .md
+ *  files under memory/. */
 export function listMemoryDocs(scope: Scope): MemoryDoc[] {
   const dir = scopeMemoryDir(scope);
   if (!dir || !pathExists(dir)) return [];
   const docs: MemoryDoc[] = [];
-  // Walk: a dir containing SKILL.md is a single substrate bundle — emit ONE doc
-  // named by the dir's relative path, sourced from its SKILL.md, and STOP
-  // descending (deeper files are bundle assets, not docs). Every other dir
-  // yields its flat *.md files (topical subdirs / INDEX.md) as before.
   const found: { path: string; name: string }[] = [];
   const stack: string[] = [dir];
   while (stack.length) {
@@ -79,15 +75,9 @@ export function listMemoryDocs(scope: Scope): MemoryDoc[] {
     } catch {
       continue;
     }
-    const hasSkill = entries.some((e) => e.isFile() && e.name === 'SKILL.md');
-    if (hasSkill) {
-      const name = relative(dir, d).split(sep).join('/');
-      if (name) found.push({ path: join(d, 'SKILL.md'), name });
-      continue; // stop descent — deeper dirs are assets
-    }
     for (const e of entries) {
       if (e.isDirectory()) stack.push(join(d, e.name));
-      else if (e.isFile() && e.name.endsWith('.md')) {
+      else if (e.isFile() && e.name.endsWith('.md') && e.name !== 'SKILL.md') {
         const file = join(d, e.name);
         const name = relative(dir, file).replace(/\.md$/i, '').split(sep).join('/');
         if (name) found.push({ path: file, name });
@@ -116,7 +106,7 @@ export function listPluginMemoryDocs(plugin: InstalledPlugin, scope: Scope): Mem
   const dir = pluginMemoryDir(plugin);
   if (!pathExists(dir)) return [];
   const docs: MemoryDoc[] = [];
-  for (const file of walkFiles(dir, (n) => n.endsWith('.md'))) {
+  for (const file of walkFiles(dir, (n) => n.endsWith('.md') && n !== 'SKILL.md')) {
     const derived = relative(dir, file).replace(/\.md$/i, '').split(sep).join('/');
     if (!derived) continue;
     const name = `${plugin.name}/${derived}`;
@@ -153,23 +143,18 @@ export function listAllMemoryDocs(scope?: Scope): MemoryDoc[] {
  *  resolves directly as the file path.) */
 function findMemoryMatches(name: string, scope: Scope | undefined): MemoryDoc[] {
   const matches: MemoryDoc[] = [];
+  const segments = name.split('/');
+  const isLegacySkillDoc = segments.at(-1) === 'SKILL';
   for (const s of scopesInPrecedence(scope)) {
     // Native scope memory dir first (native-before-plugin precedence).
     const dir = scopeMemoryDir(s);
     if (dir) {
-      const path = join(dir, ...name.split('/')) + '.md';
-      if (pathExists(path)) {
+      const path = join(dir, ...segments) + '.md';
+      if (!isLegacySkillDoc && pathExists(path)) {
         matches.push(loadMemoryDoc(name, s, path));
         continue;
       }
-      // Bundle marker is authoritative: a `<name>/SKILL.md` resolves the bare
-      // dir name to its bundle doc, and wins over INDEX.md if both exist.
-      const skillPath = join(dir, ...name.split('/'), 'SKILL.md');
-      if (pathExists(skillPath)) {
-        matches.push(loadMemoryDoc(name, s, skillPath));
-        continue;
-      }
-      const indexPath = join(dir, ...name.split('/'), 'INDEX.md');
+      const indexPath = join(dir, ...segments, 'INDEX.md');
       if (pathExists(indexPath)) {
         matches.push(loadMemoryDoc(name, s, indexPath));
         continue;
@@ -187,8 +172,9 @@ function findMemoryMatches(name: string, scope: Scope | undefined): MemoryDoc[] 
       if (!p.enabled || p.name !== pluginName) continue;
       const pdir = pluginMemoryDir(p);
       if (rest) {
-        const ppath = join(pdir, ...rest.split('/')) + '.md';
-        if (pathExists(ppath)) {
+        const restSegments = rest.split('/');
+        const ppath = join(pdir, ...restSegments) + '.md';
+        if (restSegments.at(-1) !== 'SKILL' && pathExists(ppath)) {
           matches.push(loadMemoryDoc(name, s, ppath));
           break;
         }
@@ -208,7 +194,7 @@ function findMemoryMatches(name: string, scope: Scope | undefined): MemoryDoc[] 
 
 /** Leaf-name fallback: match docs whose final path segment equals `leaf`.
  *  Only meaningful for a bare segment (a slashed query can never equal a single
- *  segment), mirroring findSkillsByLeaf. Returns matches precedence-ordered. */
+ *  segment). Returns matches precedence-ordered. */
 function findMemoryByLeaf(leaf: string, scope: Scope | undefined): MemoryDoc[] {
   if (leaf.includes('/')) return [];
   let all: MemoryDoc[];
@@ -228,7 +214,7 @@ function formatLeafAmbiguous(leaf: string, matches: MemoryDoc[]): string {
 /**
  * Resolve a path-derived name to a single memory document.
  *
- * Accepted identifier forms (mirroring parseSkillQualifier, no plugins):
+ * Accepted identifier forms:
  *   <name>            — bare name; resolved by scope precedence project>user>builtin
  *   <scope>/<name>    — pinned to one scope (user|project)
  * `<name>` may carry topical subdirs (`taste/foo`); a bare leaf (`foo`) falls

@@ -71,7 +71,7 @@ export function promote(nodeId: string, opts: { kind?: string; resident?: boolea
   // Seed a barebones roadmap scaffold if absent so the file exists for a
   // refresh. Pre-fill its Goal from the node's goal doc when present (set at
   // spawn, or captured from the first user message); the node fleshes out the
-  // body next, guided by the kind skill dumped below.
+  // body next, guided by the kind's roadmap memory doc dumped below.
   let roadmapWritten = false;
   if (!hasRoadmap(nodeId)) {
     const goal = readGoal(nodeId);

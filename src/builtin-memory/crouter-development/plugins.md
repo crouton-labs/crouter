@@ -1,10 +1,10 @@
 ---
 kind: knowledge
-when-and-why-to-read: When creating a crtr plugin, packaging skills for
-  distribution, or debugging install/resolution, this skill should be read.
+when-and-why-to-read: When creating a crtr plugin, packaging memory docs for
+  distribution, or debugging install/resolution, this knowledge should be read.
 short-form: How to author a crtr plugin — plugin.json manifest, directory
   layout, scopes, install mechanics, versioning. Use when creating a new plugin,
-  packaging skills for distribution, or debugging install/resolution.
+  packaging memory docs for distribution, or debugging install/resolution.
 system-prompt-visibility: name
 file-read-visibility: none
 ---
@@ -15,16 +15,16 @@ A **plugin** is a directory shipping substrate docs (knowledge and preferences) 
 
 Audience: LLM agents creating or maintaining a crtr plugin.
 
-## When you need a plugin (vs scope-owned skills)
+## When you need a plugin (vs scope-owned memory docs)
 
 Scope-owned docs live at `~/.crouter/memory/` (user) or `<project>/.crouter/memory/` (project). They're personal and per-machine/per-repo.
 
 Reach for a **plugin** when:
-- You want to share skills across multiple projects or with other people.
+- You want to share memory docs across multiple projects or with other people.
 - You want versioning + update mechanics (`crtr pkg plugin manage update --name <name>`).
 - You want a marketplace to index the work — see [[crouter-development/marketplaces]].
 
-If it's a one-off note for yourself, scope-owned skills are simpler. Promote to a plugin later.
+If it's a one-off note for yourself, scope-owned memory docs are simpler. Promote to a plugin later.
 
 ## Directory layout
 
@@ -61,7 +61,7 @@ The `<plugin-name>` directory IS the plugin. The manifest's `name` field must ma
 | Field | Required | Notes |
 |---|---|---|
 | `name` | yes | Must match the directory name. Lowercase kebab. |
-| `version` | yes | Semver. Marketplace CI may bump automatically — see marketplaces skill. |
+| `version` | yes | Semver. Marketplace CI may bump automatically — see marketplaces knowledge. |
 | `description` | yes | One sentence. |
 | `source` | recommended | Git URL where the plugin lives. Used by `crtr pkg plugin manage update --name <name>`. |
 | `owner` | optional | Author info. |
@@ -102,7 +102,7 @@ Three ways a plugin lands in a scope:
 mkdir -p my-plugin/.crouter-plugin my-plugin/memory
 $EDITOR my-plugin/.crouter-plugin/plugin.json      # write the manifest
 cd my-plugin
-$EDITOR my-plugin/memory/my-first-skill.md         # author the doc — `crtr memory write -h` is the frontmatter + routing guide
+$EDITOR my-plugin/memory/my-first-doc.md           # author the doc — `crtr memory write -h` is the frontmatter + routing guide
 
 # Symlink for fast iteration — no clone, edits land immediately
 ln -s $(pwd) ~/.crouter/plugins/my-plugin
@@ -110,7 +110,7 @@ ln -s $(pwd) ~/.crouter/plugins/my-plugin
 # Verify
 crtr pkg plugin inspect list                       # my-plugin appears
 crtr pkg plugin inspect show my-plugin             # lists its docs
-crtr memory read my-plugin/my-first-skill          # resolve it under the plugin namespace
+crtr memory read my-plugin/my-first-doc            # resolve it under the plugin namespace
 crtr sys doctor                                    # validates the manifest
 crtr memory lint                                    # validates doc frontmatter
 ```
@@ -124,8 +124,8 @@ Standard semver:
 | Change | Bump |
 |---|---|
 | Typo, wording polish | patch (0.1.0 → 0.1.1) |
-| New skill, new section, new example | minor (0.1.0 → 0.2.0) |
-| Removed skill, renamed skill, changed manifest schema | major (0.1.0 → 1.0.0) |
+| New doc, new section, new example | minor (0.1.0 → 0.2.0) |
+| Removed doc, renamed doc, changed manifest schema | major (0.1.0 → 1.0.0) |
 
 `crtr pkg plugin manage update --name <name>` reads the new version after pulling and updates the local config. Plugins published through a marketplace may have their `version` field bumped automatically by CI — see [[crouter-development/marketplaces]].
 
@@ -133,22 +133,22 @@ Standard semver:
 
 `crtr pkg plugin manage disable <name>` flips the per-scope config without removing files. Disabled plugins are hidden from `crtr memory list` and don't resolve via `crtr memory read <name>`. Re-enable with `crtr pkg plugin manage enable <name>`.
 
-Individual skills inside an enabled plugin are hidden by setting their frontmatter visibility rungs to `none` (or a gate that fails), not by a command — see `crtr memory write -h`.
+Individual memory docs inside an enabled plugin are hidden by setting their frontmatter visibility rungs to `none` (or a gate that fails), not by a command — see `crtr memory write -h`.
 
 ## What goes in a plugin
 
 Good plugin scope:
-- A coherent set of related skills (3–15 typical) sharing a theme.
-- All skills serve the same user persona or workflow.
+- A coherent set of related memory docs (3–15 typical) sharing a theme.
+- All docs serve the same user persona or workflow.
 - Versioned together — a bump means a bump for the whole set.
 
 Bad plugin scope:
-- One mega-plugin with every skill you've ever written. Hard to install selectively, hard to version.
-- A plugin per single skill. No value-add over scope-owned skills.
+- One mega-plugin with every doc you've ever written. Hard to install selectively, hard to version.
+- A plugin per single doc. No value-add over scope-owned memory docs.
 
 ## Cross-plugin etiquette
 
-If your skill conceptually depends on another plugin's skill, link via `## Related` with `` `<plugin>/<skill>` ``. Don't fork content; link it.
+If your memory doc conceptually depends on another plugin's doc, link via `## Related` with `` `<plugin>/<doc>` ``. Don't fork content; link it.
 
 ## Validation
 
@@ -160,4 +160,4 @@ If your skill conceptually depends on another plugin's skill, link via `## Relat
 
 ## Cross-publishing with Claude Code
 
-Some plugins also publish a `.claude-plugin/` manifest alongside `.crouter-plugin/` so they can be loaded directly into Claude Code without going through crtr. Optional. Only worth doing when your skills/commands meaningfully stand alone in the Claude Code surface. Keep manifests in sync if you do.
+Some plugins also publish a `.claude-plugin/` manifest alongside `.crouter-plugin/` so they can be loaded directly into Claude Code without going through crtr. Optional. Only worth doing when your memory docs or commands meaningfully stand alone in the Claude Code surface. Keep manifests in sync if you do.

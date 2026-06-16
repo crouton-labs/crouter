@@ -3,7 +3,7 @@
 //
 // The `next` road sign must name a command that actually exists: the FULL path
 // to the deepest matched node, not just its local name. A prior bug emitted
-// `crtr find -h` (dropping the `skill` parent) when `crtr skill find bogus` was
+// `crtr inspect -h` (dropping the `pkg` parent) when `crtr pkg inspect bogus` was
 // invoked, sending the caller to a nonexistent top-level command.
 
 import { test, describe } from 'node:test';
@@ -18,27 +18,27 @@ const leaf = defineLeaf({
   run: async () => ({}),
 });
 
-const findBranch = defineBranch({
-  name: 'find',
-  description: 'find',
+const inspectBranch = defineBranch({
+  name: 'inspect',
+  description: 'inspect',
   whenToUse: 'x',
-  help: { name: 'find', summary: 'find' },
+  help: { name: 'inspect', summary: 'inspect' },
   children: [leaf],
 });
 
-const skillBranch = defineBranch({
-  name: 'skill',
-  description: 'skill',
+const pkgBranch = defineBranch({
+  name: 'pkg',
+  description: 'pkg',
   whenToUse: 'x',
-  help: { name: 'skill', summary: 'skill' },
-  rootEntry: { concept: 'skill', desc: 'skill', useWhen: 'x' },
-  children: [findBranch],
+  help: { name: 'pkg', summary: 'pkg' },
+  rootEntry: { concept: 'pkg', desc: 'pkg', useWhen: 'x' },
+  children: [inspectBranch],
 });
 
 const root = defineRoot({
   tagline: 'test runtime',
   globals: [],
-  subtrees: [skillBranch],
+  subtrees: [pkgBranch],
 });
 
 function nextHint(...tokens: string[]): string {
@@ -52,17 +52,17 @@ describe('unknown-path error: recovery hint names the full valid path', () => {
     assert.match(nextHint('bogus'), /Run `crtr -h`/);
   });
 
-  test('one-level unknown points at `crtr skill -h`', () => {
-    assert.match(nextHint('skill', 'bogus'), /Run `crtr skill -h`/);
+  test('one-level unknown points at `crtr pkg -h`', () => {
+    assert.match(nextHint('pkg', 'bogus'), /Run `crtr pkg -h`/);
   });
 
-  test('two-level unknown points at `crtr skill find -h`, not `crtr find -h`', () => {
-    const hint = nextHint('skill', 'find', 'bogus');
-    assert.match(hint, /Run `crtr skill find -h`/);
-    assert.doesNotMatch(hint, /Run `crtr find -h`/);
+  test('two-level unknown points at `crtr pkg inspect -h`, not `crtr inspect -h`', () => {
+    const hint = nextHint('pkg', 'inspect', 'bogus');
+    assert.match(hint, /Run `crtr pkg inspect -h`/);
+    assert.doesNotMatch(hint, /Run `crtr inspect -h`/);
   });
 
   test('valid children of the matched node are listed', () => {
-    assert.match(nextHint('skill', 'find', 'bogus'), /Valid children: search\./);
+    assert.match(nextHint('pkg', 'inspect', 'bogus'), /Valid children: search\./);
   });
 });

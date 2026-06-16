@@ -177,7 +177,7 @@ const pluginRemove = defineLeaf({
 const pluginEnable = defineLeaf({
   name: 'enable',
   description: 'enable a plugin',
-  whenToUse: 'reactivating a plugin that was previously disabled so its skills resolve again',
+  whenToUse: 'reactivating a plugin that was previously disabled so its memory docs resolve again',
   help: {
     name: 'pkg plugin manage enable',
     summary: 'enable a plugin in the given scope',

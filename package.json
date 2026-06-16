@@ -1,7 +1,7 @@
 {
   "name": "@crouton-kit/crouter",
   "version": "0.3.32",
-  "description": "crtr — fast access to skills, plugins, and marketplaces",
+  "description": "crtr — agent runtime with memory, plugins, and marketplaces",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

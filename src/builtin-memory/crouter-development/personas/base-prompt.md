@@ -2,7 +2,7 @@
 kind: knowledge
 when-and-why-to-read: When writing or revising a base persona prompt (a
   <kind>/PERSONA.md, the system prompt for a single-window worker node), this
-  skill should be read.
+  knowledge should be read.
 short-form: How to write a base persona prompt (the mode=base PERSONA.md) — the
   system prompt for a single-window worker node. Covers what a base persona is
   for, what to put in it, the identity/deliverable/boundary/report shape, and
@@ -14,7 +14,7 @@ needs-refinement: true
 
 # Writing a base persona prompt
 
-`PERSONA.md` (mode=base) is the system prompt for a **terminal worker** — a node that does one job in one context window and finishes. Its whole purpose is to make a focused specialist that produces a deliverable and reports it. This skill is the philosophy of what belongs in a base persona; for file mechanics and frontmatter, see `[[crouter-development/personas]]`.
+`PERSONA.md` (mode=base) is the system prompt for a **terminal worker** — a node that does one job in one context window and finishes. Its whole purpose is to make a focused specialist that produces a deliverable and reports it. This knowledge doc is the philosophy of what belongs in a base persona; for file mechanics and frontmatter, see `[[crouter-development/personas]]`.
 
 Audience: LLM agents writing a `<kind>/PERSONA.md`.
 

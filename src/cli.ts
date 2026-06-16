@@ -6,7 +6,7 @@ import { resolveRoot } from './build-root.js';
 import { maybeBootRoot } from './core/runtime/front-door.js';
 import { maybeAutoUpdate } from './core/auto-update.js';
 import { ensureOfficialMarketplace, ensureProjectScope } from './core/bootstrap.js';
-import { provisionExports } from './core/skill-sync/export.js';
+import { provisionExports } from './core/host-exports/export.js';
 
 // V8 compile-cache (Node 22+): persist compiled bytecode across runs so a cold
 // `crtr` re-spawn skips recompiling its module graph. Biggest payoff is the
@@ -24,6 +24,10 @@ async function main(): Promise<void> {
   // heavy deps — the attach TUI, web/vite) off cold-start.
   const root = await resolveRoot(process.argv[2]);
 
+  // Prune legacy generated host artifacts before the front door can boot pi,
+  // otherwise stale Agent Skills can leak into the prompt for bare `crtr`.
+  provisionExports(root, process.argv);
+
   // The front door: bare `crtr` (or `crtr [dir] ["prompt"]`) boots a resident
   // root node and execs pi in this terminal. Recognized subcommands fall through
   // to the normal dispatcher. Must run before anything that assumes a subcommand.
@@ -32,7 +36,6 @@ async function main(): Promise<void> {
   }
 
   ensureOfficialMarketplace(process.argv);
-  provisionExports(root);
   ensureProjectScope(process.argv);
   maybeAutoUpdate(process.argv);
 

@@ -21,7 +21,7 @@ import { CRTR_DIR_NAME } from '../../types.js';
 /** Root of the global canvas home (`~/.crouter/canvas` unless `CRTR_HOME` is set).
  *  Nested under the `.crouter` scope root so the whole runtime lives in one
  *  visible top-level dir; `canvas/` keeps node-graph runtime state separate from
- *  durable user content (skills/plugins/marketplaces/config) at the scope root. */
+ *  durable user content (memory/plugins/marketplaces/config) at the scope root. */
 export function crtrHome(): string {
   const override = process.env['CRTR_HOME'];
   return override !== undefined && override !== ''

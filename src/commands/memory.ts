@@ -1,8 +1,5 @@
-// `crtr memory` subtree — the document substrate (knowledge and
-// preferences) accessed via the CLI. Four flat leaves: list, read, find, write.
-// SKELETON ONLY (task B1): the `-h` contracts here are final; the leaf handlers
-// are stubs that B2 fills in. Mirrors `skill.ts` minus the loaded-skills
-// catalog dynamicState.
+// `crtr memory` subtree — the document substrate (knowledge and preferences)
+// accessed via the CLI. Flat leaves: list, read, find, write, lint.
 
 import { defineBranch } from '../core/command.js';
 import type { BranchDef } from '../core/command.js';

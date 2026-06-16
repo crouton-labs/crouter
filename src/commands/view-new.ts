@@ -3,8 +3,8 @@
 // Writes the four contract files (core.mjs + tui.mjs + web.jsx + text.mjs) under
 // <viewsDir(scope)>/<name>/ from the stubs in prompts/view.ts (mkdir -p first).
 // Refuses if a view of that name already resolves. The scaffold runs as-is via
-// `crtr view run <name>` (TUI) and `crtr view serve <name>` (web). Mirrors how
-// skill authoring scaffolds (resolve scope → ensure dir → write → point at run).
+// `crtr view run <name>` (TUI) and `crtr view serve <name>` (web). Mirrors the
+// scope → ensure dir → write → point-at-run shape of other authoring commands.
 
 import { mkdirSync, existsSync } from 'node:fs';
 import { writeFileSync } from 'node:fs';

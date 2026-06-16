@@ -8,8 +8,8 @@ export const pluginBranch = defineBranch({
   whenToUse: 'working with individual plugins directly — installing one from a git URL, inspecting or showing what a plugin provides, or enabling, disabling, removing, and updating an installed plugin. Use `pkg market` instead when you want a curated collection: browsing a marketplace index and installing plugins by name from it rather than handling raw git URLs yourself',
   help: {
     name: 'pkg plugin',
-    summary: 'install and manage plugins that extend crtr with skills',
-    model: 'Plugins are git repos or local directories containing a .crouter-plugin/plugin.json manifest and a skills/ directory.',
+    summary: 'install and manage plugins that extend crtr with memory docs',
+    model: 'Plugins are git repos or local directories containing a .crouter-plugin/plugin.json manifest and a memory/ directory.',
   },
   children: [pluginManageBranch, pluginInspectBranch],
 });

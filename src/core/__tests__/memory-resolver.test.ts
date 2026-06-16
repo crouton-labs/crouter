@@ -28,7 +28,7 @@ import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { resolveMemoryDoc } from '../memory-resolver.js';
+import { listAllMemoryDocs, resolveMemoryDoc } from '../memory-resolver.js';
 import { resetScopeCache } from '../scope.js';
 
 // Fixture: a temp PROJECT scope (a `.crouter/` dir discovered by walking up from
@@ -66,6 +66,9 @@ before(() => {
   writeFileSync(join(pluginMem, 'widget.md'), doc('plugin-widget'));
   writeFileSync(join(pluginMem, 'area', 'zone.md'), doc('plugin-zone'));
   writeFileSync(join(pluginMem, 'shared.md'), doc('plugin-shared'));
+  writeFileSync(join(pluginMem, 'SKILL.md'), doc('legacy-plugin-skill'));
+  mkdirSync(join(memDir, 'legacy'), { recursive: true });
+  writeFileSync(join(memDir, 'legacy', 'SKILL.md'), doc('legacy-native-skill'));
   // Plugin-root INDEX.md: a BARE plugin name must resolve this (mirrors the
   // native bare-dir-name -> INDEX.md contract for the plugin mount root).
   writeFileSync(join(pluginMem, 'INDEX.md'), doc('plugin-root-index'));
@@ -127,4 +130,13 @@ test('native doc wins over a plugin doc of the same canonical name', () => {
   assert.equal(d.name, `${PLUGIN}/shared`);
   assert.ok(d.path.endsWith(join('memory', PLUGIN, 'shared.md')));
   assert.ok(!d.path.includes(join('plugins', PLUGIN)));
+});
+
+test('legacy SKILL.md bundles are not memory docs', () => {
+  const names = listAllMemoryDocs('project').map((d) => d.name);
+  assert.ok(!names.includes('legacy'));
+  assert.ok(!names.includes(`${PLUGIN}/SKILL`));
+  assert.throws(() => resolveMemoryDoc('legacy'), /memory document not found/);
+  assert.throws(() => resolveMemoryDoc('legacy/SKILL'), /memory document not found/);
+  assert.throws(() => resolveMemoryDoc(`${PLUGIN}/SKILL`), /memory document not found/);
 });

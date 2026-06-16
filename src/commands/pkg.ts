@@ -11,9 +11,9 @@ export function registerPkg(): BranchDef {
   return defineBranch({
     name: 'pkg',
     rootEntry: {
-      concept: 'plugins and marketplaces that supply skills',
+      concept: 'plugins and marketplaces that supply memory docs',
       desc: 'manage plugins and marketplaces',
-      useWhen: 'installing or browsing skill collections',
+      useWhen: 'installing or browsing memory-doc collections',
     },
     help: {
       name: 'pkg',

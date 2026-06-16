@@ -13,9 +13,9 @@ interface Unit {
   kind: string;
   scope: Scope;
   path: string;
-  /** Read-routing line (substrate `when-and-why-to-read`; skill description). */
+  /** Read-routing line (substrate `when-and-why-to-read`). */
   routing: string;
-  /** Hook shown in results (substrate short-form; skill description). */
+  /** Hook shown in results (substrate short-form). */
   shortForm: string;
   /** Frontmatter-stripped body, loaded lazily for --body / --grep. */
   loadBody: () => string;

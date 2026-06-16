@@ -204,7 +204,7 @@ export function buildLaunchSpec(
   kind: string,
   mode: Mode,
   opts: { lifecycle: Lifecycle; hasManager: boolean; extraEnv?: Record<string, string>; model?: string },
-): { launch: LaunchSpec; lifecycle: 'terminal' | 'resident'; skills: string[] } {
+): { launch: LaunchSpec; lifecycle: 'terminal' | 'resident' } {
   const p = resolvePersona(kind, mode, { lifecycle: opts.lifecycle, hasManager: opts.hasManager });
   const cfg = readUserConfigCached();
   // Precedence, from strongest to weakest:
@@ -221,7 +221,7 @@ export function buildLaunchSpec(
     systemPrompt: p.systemPrompt,
     env: { ...(opts.extraEnv ?? {}) },
   };
-  return { launch, lifecycle: p.lifecycle, skills: p.skills };
+  return { launch, lifecycle: p.lifecycle };
 }
 
 // ---------------------------------------------------------------------------

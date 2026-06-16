@@ -12,7 +12,7 @@ crtr state splits into three tiers, each with a distinct durability and ownershi
 
 ## 1. Scope root — durable, user/repo-authored content
 
-`~/.crouter/` (user scope) or `<project>/.crouter/` (project scope). Resolved by the scope resolver (`src/core/scope.ts`). Holds: `skills/`, `plugins/`, `marketplaces/`, `memory/`, `config.json`. Persists across project changes; belongs to the user or the repo.
+`~/.crouter/` (user scope) or `<project>/.crouter/` (project scope). Resolved by the scope resolver (`src/core/scope.ts`). Holds: `memory/`, `plugins/`, `marketplaces/`, `personas/`, `config.json`. Persists across project changes; belongs to the user or the repo.
 
 ## 2. Per-cwd crouter root — per-project working artifacts
 

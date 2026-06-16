@@ -2,7 +2,7 @@
 // agent-ready markdown/XML the caller acts on directly (the result rendered FOR
 // the model, not data it parses); structured errors; stderr is diagnostics only
 // and never carries the result. The raw JSON object is available behind the
-// `--json` global for tooling. See cli-design SKILL.md / reference.md.
+// `--json` global for tooling. See the cli-design reference.
 
 import { CrtrError } from './errors.js';
 import { ExitCode, type ExitCodeValue } from '../types.js';
