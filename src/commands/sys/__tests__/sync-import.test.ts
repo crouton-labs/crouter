@@ -88,7 +88,14 @@ test('permanently ignores selected SKILL.md bundles', async () => {
   assert.equal(dry?.wouldImport, 0);
   assert.equal((dry?.results as unknown[]).length, 0);
 
-  const shown = await sysSyncLeaf.run({ source: sourceRoot, scope: 'user', dryRun: true, showIgnored: true });
+  const shown = await sysSyncLeaf.run({ source: sourceRoot, scope: 'user', dryRun: true, includeIgnored: true });
   assert.equal(shown?.ignored, 1);
   assert.equal((shown?.results as Array<{ status: string }>)[0].status, 'ignored');
+
+  const wouldIgnore = await sysSyncLeaf.run({ source: sourceRoot, scope: 'user', dryRun: true, ignore: true });
+  assert.equal(wouldIgnore?.wouldIgnore, 1);
+  assert.equal((wouldIgnore?.results as Array<{ status: string }>)[0].status, 'would-ignore');
+  const rendered = sysSyncLeaf.render?.(wouldIgnore as Record<string, unknown>);
+  assert.notEqual(rendered, undefined);
+  assert.match(rendered as string, /would ignore/);
 });

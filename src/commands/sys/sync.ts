@@ -17,7 +17,7 @@ const HOST_SKILL_FILE = 'SKILL.md';
 const IGNORE_FILE = 'skill-import-ignore.json';
 
 type TargetScope = 'user' | 'project';
-type ImportStatus = 'imported' | 'skipped' | 'would-import' | 'ignored';
+type ImportStatus = 'imported' | 'skipped' | 'would-import' | 'ignored' | 'would-ignore';
 
 interface SkillSourceRoot {
   label: string;
@@ -289,13 +289,13 @@ function convertPrepared(prepared: PreparedCandidate, opts: { dryRun: boolean; o
   };
 }
 
-function ignoredResult(prepared: PreparedCandidate, reason: string): ImportResult {
+function ignoreResult(prepared: PreparedCandidate, reason: string, dryRun: boolean): ImportResult {
   return {
     source: prepared.candidate.path,
     target: prepared.target,
     name: prepared.name,
     scope: prepared.scope,
-    status: 'ignored',
+    status: dryRun ? 'would-ignore' : 'ignored',
     reason,
   };
 }
@@ -305,8 +305,9 @@ function renderSummary(results: ImportResult[], ignoreMode: boolean): string {
   const wouldImport = results.filter((r) => r.status === 'would-import').length;
   const skipped = results.filter((r) => r.status === 'skipped').length;
   const ignored = results.filter((r) => r.status === 'ignored').length;
+  const wouldIgnore = results.filter((r) => r.status === 'would-ignore').length;
   let header: string;
-  if (ignoreMode) header = `crtr sys sync — ${ignored} ignored, ${skipped} skipped`;
+  if (ignoreMode) header = `crtr sys sync — ${wouldIgnore > 0 ? `${wouldIgnore} would ignore` : `${ignored} ignored`}, ${skipped} skipped`;
   else if (wouldImport > 0) header = `crtr sys sync — dry run: ${wouldImport} would import, ${skipped} skipped, ${ignored} ignored`;
   else header = `crtr sys sync — ${imported} imported, ${skipped} skipped, ${ignored} ignored`;
   const rows = results.map((r) => {
@@ -334,13 +335,14 @@ export const sysSyncLeaf = defineLeaf({
       { kind: 'flag', name: 'dry-run', type: 'bool', required: false, constraint: 'Show what would be imported without writing memory docs.' },
       { kind: 'flag', name: 'overwrite', type: 'bool', required: false, constraint: 'Replace an existing target memory doc. Default: skip existing docs to avoid clobbering user-authored memory.' },
       { kind: 'flag', name: 'ignore', type: 'bool', required: false, constraint: `Permanently ignore every selected source by recording it in ~/.crouter/${IGNORE_FILE}. Honors --source/--scope; with no --source, ignores every currently discovered default host skill candidate.` },
-      { kind: 'flag', name: 'show-ignored', type: 'bool', required: false, constraint: 'Include ignored candidates in the report. Default: ignored candidates are hidden so a clean dry-run means nothing still needs migration.' },
+      { kind: 'flag', name: 'include-ignored', type: 'bool', required: false, constraint: 'Include ignored candidates in the report without making sync read-only. Pair with --dry-run to audit the full candidate set without importing non-ignored skills.' },
     ],
     output: [
       { name: 'imported', type: 'number', required: true, constraint: 'Count of memory docs written.' },
       { name: 'skipped', type: 'number', required: true, constraint: 'Count of SKILL.md files skipped.' },
       { name: 'ignored', type: 'number', required: true, constraint: 'Count of selected SKILL.md files that are permanently ignored.' },
-      { name: 'results', type: 'object[]', required: true, constraint: 'Each: {source,target,name,scope,status,reason?}.' },
+      { name: 'wouldIgnore', type: 'number', required: true, constraint: 'Count of selected SKILL.md files that would be ignored under --dry-run.' },
+      { name: 'results', type: 'object[]', required: true, constraint: 'Each: {source,target,name,scope,status,reason?}; status may be imported, skipped, would-import, ignored, or would-ignore.' },
     ],
     outputKind: 'object',
     effects: [
@@ -357,7 +359,7 @@ export const sysSyncLeaf = defineLeaf({
     const dryRun = (input['dryRun'] as boolean) ?? false;
     const overwrite = (input['overwrite'] as boolean) ?? false;
     const ignoreMode = (input['ignore'] as boolean) ?? false;
-    const showIgnored = (input['showIgnored'] as boolean) ?? false;
+    const includeIgnored = (input['includeIgnored'] as boolean) ?? false;
 
     const roots = sourceRootsFromArg(sourceArg, scopeArg);
     const seen = new Set<string>();
@@ -381,11 +383,11 @@ export const sysSyncLeaf = defineLeaf({
       }
       if (ignoreMode) {
         if (!dryRun) changedIgnoreState = rememberIgnored(prepared, ignoreState) || changedIgnoreState;
-        results.push(ignoredResult(prepared, dryRun ? 'would record permanent ignore' : `recorded in ~/.crouter/${IGNORE_FILE}`));
+        results.push(ignoreResult(prepared, dryRun ? 'would record permanent ignore' : `recorded in ~/.crouter/${IGNORE_FILE}`, dryRun));
         continue;
       }
       if (isIgnored(prepared, ignoreState)) {
-        if (showIgnored) results.push(ignoredResult(prepared, `matched ~/.crouter/${IGNORE_FILE}`));
+        if (includeIgnored) results.push(ignoreResult(prepared, `matched ~/.crouter/${IGNORE_FILE}`, false));
         continue;
       }
       results.push(convertPrepared(prepared, { dryRun, overwrite }));
@@ -396,8 +398,9 @@ export const sysSyncLeaf = defineLeaf({
     const wouldImport = results.filter((r) => r.status === 'would-import').length;
     const skipped = results.filter((r) => r.status === 'skipped').length;
     const ignored = results.filter((r) => r.status === 'ignored').length;
+    const wouldIgnore = results.filter((r) => r.status === 'would-ignore').length;
 
-    return { imported, wouldImport, skipped, ignored, results, ignoreFile: ignoreFilePath(), ignoreMode };
+    return { imported, wouldImport, skipped, ignored, wouldIgnore, results, ignoreFile: ignoreFilePath(), ignoreMode };
   },
   render: (result) => renderSummary(result.results as ImportResult[], result.ignoreMode === true),
 });
