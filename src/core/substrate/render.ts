@@ -340,8 +340,9 @@ const PREFERENCES_OUTRO =
 const KNOWLEDGE_INTRO =
   'Knowledge documents are what you consult — playbooks and techniques for how to do things, and ' +
   'references on the user, projects, and this node. To read one, run `crtr memory read <name>`. ' +
-  'Reach for a matching document before improvising, and read one when it seems relevant to the ' +
-  'task at hand. ' +
+  'Each doc exists to prevent a specific mistake you would make without it, so when your task ' +
+  'matches one — by its name or its `# read when:` line — read it before you act; consulting it ' +
+  'only after the work is done forfeits the entire reason it exists. ' +
   READ_LEGEND.replace('%s', 'document');
 const KNOWLEDGE_OUTRO =
   'If you learn a better way to do something a document covers, or gain information that ' +
@@ -404,6 +405,10 @@ export function renderKnowledgeBlock(nodeId: string): string {
 export function renderMemoryGuidance(): string {
   return (
     '<memory-guidance>\n' +
+    'When your task matches a knowledge doc or preference — by its name or its `# read when:` ' +
+    'line — read it before you act, not after: each doc exists only to shore up a mistake you ' +
+    "will make without it, so doing the relevant work without consulting it defeats the doc's " +
+    'whole purpose. ' +
     'Before saving any memory, check for an existing doc that already covers it — update that ' +
     'doc rather than creating a duplicate; delete memories that turn out to be wrong. ' +
     "Don't save what the repo already records (code structure, past fixes, git history, " +
