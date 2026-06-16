@@ -7,6 +7,9 @@ short-form: Use when shaping a planning roadmap, deciding plan structure, or
   fanning out plan-review specialists before declaring a plan ready.
 system-prompt-visibility: name
 file-read-visibility: none
+gate:
+  kind:
+    imatches: '^plan($|/)'
 needs-refinement: true
 ---
 

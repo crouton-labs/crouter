@@ -8,6 +8,9 @@ short-form: Use when shaping a design roadmap or producing an
   a large design into composable sub-designs.
 system-prompt-visibility: name
 file-read-visibility: none
+gate:
+  kind:
+    imatches: '^design($|/)'
 needs-refinement: true
 ---
 

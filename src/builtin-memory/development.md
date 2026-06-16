@@ -8,6 +8,9 @@ short-form: Use when shaping or reshaping a build roadmap — choosing a
   software goal.
 system-prompt-visibility: name
 file-read-visibility: none
+gate:
+  kind:
+    imatches: '^developer$'
 needs-refinement: true
 ---
 

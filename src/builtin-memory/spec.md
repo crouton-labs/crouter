@@ -10,6 +10,9 @@ short-form: Use when running a specification effort, shaping a spec roadmap, or
   finished spec contains.
 system-prompt-visibility: name
 file-read-visibility: none
+gate:
+  kind:
+    imatches: '^spec($|/)'
 needs-refinement: true
 ---
 
