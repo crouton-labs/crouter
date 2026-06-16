@@ -61,6 +61,8 @@ And the routing line only works if `when-and-why-to-read` is a **routing stateme
 
 crouter's current authoring model is memory docs: `.md` files under `memory/` with substrate frontmatter, read and written through `crtr memory`. Do not reintroduce pi/Claude Agent Skills as a front door for crouter guidance, do not generate `~/.pi/agent/skills/crtr-skills/SKILL.md`, and do not describe `SKILL.md` bundles as the active crouter model. If legacy generated skill bundles exist, crouter should prune its own marker-bearing copies and leave markerless user-owned files alone.
 
+The hard cut keeps a one-way migration door: `crtr sys sync` converts legacy `SKILL.md` bundles into plain memory docs. That command is not a bidirectional sync engine and not a runtime resolver path for `SKILL.md`; it exists so old guidance can move into the current model.
+
 ## Raw files are the full-fidelity surface
 
 `crtr memory read` is for loading a memory's body into agent context. The raw markdown file at `path` is the full-fidelity surface for seeing YAML frontmatter and making edits. Follow-up copy should point agents to read the raw file for frontmatter or edits, not present `--frontmatter` as the primary next step.

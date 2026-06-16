@@ -13,7 +13,7 @@ Open TODO: further crtr startup-latency reductions, and scoping a likely native-
 
 ## Already done (2026-06, committed)
 Cold `crtr` boot went ~8.5s → ~0.65s by killing per-boot subprocess spawns, not by any language change:
-- The one-way Claude→crtr bridge (`pi-personal-extensions/lib/crtr-bridge.ts` `buildCrtrBridge`, the `crtr pkg bridge sync` command) used to spawn once per Claude skill source, sequentially (~0.5s each, ~7s for ~13 sources) on EVERY pi `session_start` via `claude-plugin-commands` `resources_discover`. It was fingerprint-gated, then removed entirely; the later bidirectional `crtr sys sync`/SKILL.md bridge was also removed when crouter hard-cut to memory docs as the guidance surface. This spawn-storm source is gone, not merely gated.
+- The one-way Claude→crtr bridge (`pi-personal-extensions/lib/crtr-bridge.ts` `buildCrtrBridge`, the `crtr pkg bridge sync` command) used to spawn once per Claude skill source, sequentially (~0.5s each, ~7s for ~13 sources) on EVERY pi `session_start` via `claude-plugin-commands` `resources_discover`. It was fingerprint-gated, then removed entirely; the later bidirectional `SKILL.md` bridge was replaced with an explicit one-shot `crtr sys sync` converter that imports legacy bundles into memory docs on demand. The per-boot spawn-storm source is gone, not merely gated.
 - `crouter/src/core/runtime/broker-sdk.ts` `assertEngineVersion`: cached the `pi --version` probe (`~/.crouter/canvas/pi-version.json`, keyed on binary path+mtime+size). ~440ms → ~0ms.
 - `pi-personal-extensions/extensions/crouter-help.ts`: the 15s TTL `crtr -h` cache was in-memory only (useless across fresh broker processes); now disk-backed + cwd-keyed. ~540ms → ~0ms warm.
 
