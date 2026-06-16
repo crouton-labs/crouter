@@ -477,7 +477,10 @@ export function livenessVerdict(piPidAlive: boolean | null, deadFor: number | nu
  *      trailing-error turn whose session has been quiet past the grace, so the
  *      crash branch below grace-revives it RESUME.
  *    • pid null + pi_session_id set (a relaunch in flight — reviveNode clears
- *      pi_pid right after launch) → leave; the fresh engine re-records its pid.
+ *      pi_pid right after launch) → leave through a boot grace; a healthy engine
+ *      re-records its pid well within it. If the grace ELAPSES with still no pid,
+ *      the relaunch died after the pid-clear → grace-revive RESUME on the saved
+ *      session (else the node strands 'active' with no engine forever).
  *    • pid null + pi_session_id null (NEVER booted) → normally the sub-second SDK
  *      boot gap, but a broker that throws BEFORE session_start records no pid and
  *      no session ever — so after a boot grace with STILL nothing, crash +
@@ -508,32 +511,46 @@ async function handleNodeLiveness(
   }
 
   if (pid == null) {
-    // No supervised pid recorded. Two very different cases turn on pi_session_id:
-    //   • a relaunch in flight — reviveNode clears pi_pid right after launch, but
-    //     the node ALREADY booted once (pi_session_id captured), so the fresh
-    //     engine re-records its pid within a tick or two; leave it.
-    //   • a NEVER-BOOTED broker (pi_session_id null) — normally the sub-second SDK
-    //     boot gap, BUT a broker that THROWS before session_start (malformed
-    //     broker-launch.json, SessionManager.open on a missing .jsonl, a loader/
-    //     registry/createAgentSession failure, the fork / bare-id guards, or
-    //     broker-cli's own fatal catch) records NO pid and NO session — EVER.
-    //     With pid==null read unconditionally as "still booting" that strands the
-    //     node 'active' with no engine forever and its parent waits on a dead
-    //     child. After a boot grace with STILL no pid AND no session, crash +
+    // No supervised pid recorded. BOTH sub-cases run the SAME boot grace clock and
+    // differ only in how it ENDS, keyed on pi_session_id:
+    //   • session SET — either a relaunch in flight (reviveNode clears pi_pid right
+    //     after launch; the fresh engine re-records within a tick or two, well
+    //     inside the grace, and the pid-alive branch above clears the clock) OR a
+    //     relaunch whose broker DIED after the pid-clear and before it re-recorded.
+    //     The healthy case never reaches the grace; if the grace DOES elapse with
+    //     still no pid, the relaunch is dead → grace-revive RESUME on the saved
+    //     session. Returning unconditionally here (the old behavior) read null+
+    //     session as "in flight" FOREVER and stranded such a node 'active' with no
+    //     engine — its parent waiting on a dead child indefinitely.
+    //   • session NULL — normally the sub-second SDK boot gap, BUT a broker that
+    //     THROWS before session_start (malformed broker-launch.json, SessionManager
+    //     .open on a missing .jsonl, a loader/registry/createAgentSession failure,
+    //     the fork / bare-id guards, or broker-cli's own fatal catch) records NO
+    //     pid and NO session — EVER. After the grace with STILL nothing, crash +
     //     surfaceBootFailure up the spine (M-1).
+    // The 20s grace doubles as the double-spawn guard: a healthy relaunch always
+    // re-records its pid well within it, so neither branch can fire on one.
     const meta = getNode(id);
-    if (meta === null || meta.pi_session_id != null) {
-      unhealthySince.delete(id); // relaunch in flight (or identity already bound)
+    if (meta === null) {
+      unhealthySince.delete(id); // row gone from meta — nothing to supervise
       return;
     }
     const since = unhealthySince.get(id);
     if (since === undefined) {
-      unhealthySince.set(id, now); // start the boot-grace clock
+      unhealthySince.set(id, now); // start the boot grace clock
       return;
     }
     if (now - since < REVIVE_GRACE_MS) return; // still inside the boot grace
-    // Boot grace elapsed, still no pid and no session → the broker never booted.
     unhealthySince.delete(id);
+    if (meta.pi_session_id != null) {
+      // Grace elapsed with a session but still no pid → a relaunch that died after
+      // the pid-clear, before re-record. Resume it on the saved session.
+      process.stderr.write(`[crtrd] revive ${id} (stranded relaunch — pid never re-recorded)\n`);
+      reviveNode(id, { resume: true });
+      revivedThisTick.add(id); // third-pass bare double-spawn guard (Maj-4)
+      return;
+    }
+    // Grace elapsed with no pid AND no session → the broker never booted.
     process.stderr.write(`[crtrd] boot-failed ${id} (broker exited before session_start)\n`);
     transition(id, 'crash');
     try {
