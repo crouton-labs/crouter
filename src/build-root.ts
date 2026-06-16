@@ -15,6 +15,7 @@ const TAGLINE = 'crtr: agentic planning runtime.';
  *  it once yields both registers. */
 const SUBTREE_LOADERS: Record<string, () => Promise<BranchDef>> = {
   memory: async () => (await import('./commands/memory.js')).registerMemory(),
+  search: async () => (await import('./commands/search.js')).registerSearch(),
   pkg: async () => (await import('./commands/pkg.js')).registerPkg(),
   human: async () => (await import('./commands/human.js')).registerHuman(),
   sys: async () => (await import('./commands/sys.js')).registerSys(),
