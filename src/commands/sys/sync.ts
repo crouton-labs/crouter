@@ -6,16 +6,18 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { defineLeaf } from '../../core/command.js';
-import { parseFrontmatterGeneric } from '../../core/frontmatter.js';
-import { pathExists, readText, writeText, walkFiles } from '../../core/fs-utils.js';
+import { usage } from '../../core/errors.js';
+import { parseFrontmatterGeneric, type ParsedFrontmatterGeneric } from '../../core/frontmatter.js';
+import { pathExists, readJsonIfExists, readText, walkFiles, writeJson, writeText } from '../../core/fs-utils.js';
 import { findProjectScopeRoot, scopeMemoryDir } from '../../core/scope.js';
-import type { Scope } from '../../types.js';
 import { memoryFilePath, resolveWriteTarget, serializeMemoryDoc } from '../memory/shared.js';
 
 const LEGACY_BOOT_SKILL_MARKER_PREFIX = '<!-- crtr-boot-skill v';
 const HOST_SKILL_FILE = 'SKILL.md';
+const IGNORE_FILE = 'skill-import-ignore.json';
 
 type TargetScope = 'user' | 'project';
+type ImportStatus = 'imported' | 'skipped' | 'would-import' | 'ignored';
 
 interface SkillSourceRoot {
   label: string;
@@ -30,18 +32,45 @@ interface SkillCandidate {
   defaultScope: TargetScope;
 }
 
+interface PreparedCandidate {
+  candidate: SkillCandidate;
+  raw: string;
+  parsed: ParsedFrontmatterGeneric;
+  sourceFm: Record<string, unknown>;
+  kind: 'knowledge' | 'preference';
+  name: string;
+  scope: TargetScope;
+  target: string;
+}
+
 interface ImportResult {
   source: string;
   target: string;
   name: string;
   scope: TargetScope;
-  status: 'imported' | 'skipped' | 'would-import';
+  status: ImportStatus;
   reason?: string;
+}
+
+interface IgnoreEntry {
+  source: string;
+  name: string;
+  scope: TargetScope;
+  ignoredAt: string;
+}
+
+interface IgnoreState {
+  version: 1;
+  ignored: IgnoreEntry[];
 }
 
 function projectDir(): string | null {
   const root = findProjectScopeRoot();
   return root ? dirname(root) : null;
+}
+
+function ignoreFilePath(): string {
+  return join(homedir(), '.crouter', IGNORE_FILE);
 }
 
 function defaultSourceRoots(): SkillSourceRoot[] {
@@ -144,43 +173,105 @@ function targetMemoryDir(scope: TargetScope): string {
   return dir;
 }
 
-function convertCandidate(candidate: SkillCandidate, opts: { scope?: TargetScope; dryRun: boolean; overwrite: boolean }): ImportResult {
+function readIgnoreState(): IgnoreState {
+  let doc: unknown;
+  try {
+    doc = readJsonIfExists(ignoreFilePath());
+  } catch (e) {
+    throw usage(`invalid JSON in ${ignoreFilePath()}: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  if (doc === null) return { version: 1, ignored: [] };
+  if (
+    typeof doc !== 'object' ||
+    doc === null ||
+    (doc as { version?: unknown }).version !== 1 ||
+    !Array.isArray((doc as { ignored?: unknown }).ignored)
+  ) {
+    throw usage(`malformed ${ignoreFilePath()}: expected {"version":1,"ignored":[...]}`);
+  }
+  const ignored: IgnoreEntry[] = [];
+  for (const entry of (doc as { ignored: unknown[] }).ignored) {
+    if (typeof entry !== 'object' || entry === null) continue;
+    const e = entry as Record<string, unknown>;
+    if (
+      typeof e.source === 'string' &&
+      typeof e.name === 'string' &&
+      (e.scope === 'user' || e.scope === 'project') &&
+      typeof e.ignoredAt === 'string'
+    ) {
+      ignored.push({ source: resolve(e.source), name: e.name, scope: e.scope, ignoredAt: e.ignoredAt });
+    }
+  }
+  return { version: 1, ignored };
+}
+
+function writeIgnoreState(state: IgnoreState): void {
+  writeJson(ignoreFilePath(), state);
+}
+
+function isIgnored(prepared: PreparedCandidate, state: IgnoreState): boolean {
+  const source = resolve(prepared.candidate.path);
+  return state.ignored.some((entry) =>
+    entry.source === source ||
+    (entry.scope === prepared.scope && entry.name === prepared.name),
+  );
+}
+
+function rememberIgnored(prepared: PreparedCandidate, state: IgnoreState): boolean {
+  if (isIgnored(prepared, state)) return false;
+  state.ignored.push({
+    source: resolve(prepared.candidate.path),
+    name: prepared.name,
+    scope: prepared.scope,
+    ignoredAt: new Date().toISOString(),
+  });
+  state.ignored.sort((a, b) => `${a.scope}/${a.name}`.localeCompare(`${b.scope}/${b.name}`));
+  return true;
+}
+
+function skipResult(candidate: SkillCandidate, scope: TargetScope, reason: string): ImportResult {
+  return { source: candidate.path, target: '', name: '', scope, status: 'skipped', reason };
+}
+
+function prepareCandidate(candidate: SkillCandidate, scopeOverride?: TargetScope): PreparedCandidate | ImportResult {
   const raw = readText(candidate.path);
+  const scope = scopeOverride ?? candidate.defaultScope;
   if (raw.includes(LEGACY_BOOT_SKILL_MARKER_PREFIX)) {
-    return {
-      source: candidate.path,
-      target: '',
-      name: '',
-      scope: opts.scope ?? candidate.defaultScope,
-      status: 'skipped',
-      reason: 'legacy generated crtr boot skill is pruned by host exports, not imported',
-    };
+    return skipResult(candidate, scope, 'legacy generated crtr boot skill is pruned by host exports, not imported');
   }
 
   const parsed = parseFrontmatterGeneric(raw);
   const sourceFm = parsed.data ?? {};
   const kind = sourceFm.kind === 'preference' ? 'preference' : 'knowledge';
   const name = nameForCandidate(candidate, sourceFm);
-  const scope = opts.scope ?? candidate.defaultScope;
-  if (name === '') {
-    return { source: candidate.path, target: '', name, scope, status: 'skipped', reason: 'could not derive memory document name' };
-  }
+  if (name === '') return skipResult(candidate, scope, 'could not derive memory document name');
 
   const memoryDir = targetMemoryDir(scope);
   const target = memoryFilePath(memoryDir, name);
-  if (pathExists(target) && !opts.overwrite) {
-    return { source: candidate.path, target, name, scope, status: 'skipped', reason: 'target memory doc already exists; re-run with --overwrite to replace it' };
+  return { candidate, raw, parsed, sourceFm, kind, name, scope, target };
+}
+
+function convertPrepared(prepared: PreparedCandidate, opts: { dryRun: boolean; overwrite: boolean }): ImportResult {
+  if (pathExists(prepared.target) && !opts.overwrite) {
+    return {
+      source: prepared.candidate.path,
+      target: prepared.target,
+      name: prepared.name,
+      scope: prepared.scope,
+      status: 'skipped',
+      reason: 'target memory doc already exists; re-run with --overwrite to replace it',
+    };
   }
 
-  const description = scalarString(sourceFm.description) ?? '';
-  const frontmatter: Record<string, unknown> = { ...sourceFm };
+  const description = scalarString(prepared.sourceFm.description) ?? '';
+  const frontmatter: Record<string, unknown> = { ...prepared.sourceFm };
   delete frontmatter.name;
   delete frontmatter.description;
   delete frontmatter.type;
   delete frontmatter.keywords;
-  frontmatter.kind = kind;
+  frontmatter.kind = prepared.kind;
   if (typeof frontmatter['when-and-why-to-read'] !== 'string' || frontmatter['when-and-why-to-read'].trim() === '') {
-    frontmatter['when-and-why-to-read'] = routeFromDescription(description, kind);
+    frontmatter['when-and-why-to-read'] = routeFromDescription(description, prepared.kind);
   }
   if (typeof frontmatter['short-form'] !== 'string' || frontmatter['short-form'].trim() === '') {
     frontmatter['short-form'] = description.replace(/\s+/g, ' ').trim();
@@ -188,23 +279,45 @@ function convertCandidate(candidate: SkillCandidate, opts: { scope?: TargetScope
   if (typeof frontmatter['system-prompt-visibility'] !== 'string') frontmatter['system-prompt-visibility'] = 'preview';
   if (typeof frontmatter['file-read-visibility'] !== 'string') frontmatter['file-read-visibility'] = 'none';
 
-  if (!opts.dryRun) writeText(target, serializeMemoryDoc(frontmatter, parsed.body));
-  return { source: candidate.path, target, name, scope, status: opts.dryRun ? 'would-import' : 'imported' };
+  if (!opts.dryRun) writeText(prepared.target, serializeMemoryDoc(frontmatter, prepared.parsed.body));
+  return {
+    source: prepared.candidate.path,
+    target: prepared.target,
+    name: prepared.name,
+    scope: prepared.scope,
+    status: opts.dryRun ? 'would-import' : 'imported',
+  };
 }
 
-function renderSummary(results: ImportResult[]): string {
+function ignoredResult(prepared: PreparedCandidate, reason: string): ImportResult {
+  return {
+    source: prepared.candidate.path,
+    target: prepared.target,
+    name: prepared.name,
+    scope: prepared.scope,
+    status: 'ignored',
+    reason,
+  };
+}
+
+function renderSummary(results: ImportResult[], ignoreMode: boolean): string {
   const imported = results.filter((r) => r.status === 'imported').length;
   const wouldImport = results.filter((r) => r.status === 'would-import').length;
   const skipped = results.filter((r) => r.status === 'skipped').length;
-  const header = wouldImport > 0
-    ? `crtr sys sync — dry run: ${wouldImport} would import, ${skipped} skipped`
-    : `crtr sys sync — ${imported} imported, ${skipped} skipped`;
+  const ignored = results.filter((r) => r.status === 'ignored').length;
+  let header: string;
+  if (ignoreMode) header = `crtr sys sync — ${ignored} ignored, ${skipped} skipped`;
+  else if (wouldImport > 0) header = `crtr sys sync — dry run: ${wouldImport} would import, ${skipped} skipped, ${ignored} ignored`;
+  else header = `crtr sys sync — ${imported} imported, ${skipped} skipped, ${ignored} ignored`;
   const rows = results.map((r) => {
     const target = r.target || '—';
     const reason = r.reason ? ` (${r.reason})` : '';
     return `| ${r.status} | ${r.scope}/${r.name || '—'} | ${target} | ${r.source}${reason} |`;
   });
-  return [header, '', '| status | memory doc | target | source |', '| --- | --- | --- | --- |', ...rows].join('\n');
+  const body = rows.length === 0
+    ? ['No sync candidates.']
+    : ['| status | memory doc | target | source |', '| --- | --- | --- | --- |', ...rows];
+  return [header, '', ...body].join('\n');
 }
 
 export const sysSyncLeaf = defineLeaf({
@@ -220,10 +333,13 @@ export const sysSyncLeaf = defineLeaf({
       { kind: 'flag', name: 'scope', type: 'enum', choices: ['user', 'project'], required: false, constraint: 'Target memory scope. Default: user for user host roots and project for project host roots; explicit value applies to every imported source.' },
       { kind: 'flag', name: 'dry-run', type: 'bool', required: false, constraint: 'Show what would be imported without writing memory docs.' },
       { kind: 'flag', name: 'overwrite', type: 'bool', required: false, constraint: 'Replace an existing target memory doc. Default: skip existing docs to avoid clobbering user-authored memory.' },
+      { kind: 'flag', name: 'ignore', type: 'bool', required: false, constraint: `Permanently ignore every selected source by recording it in ~/.crouter/${IGNORE_FILE}. Honors --source/--scope; with no --source, ignores every currently discovered default host skill candidate.` },
+      { kind: 'flag', name: 'show-ignored', type: 'bool', required: false, constraint: 'Include ignored candidates in the report. Default: ignored candidates are hidden so a clean dry-run means nothing still needs migration.' },
     ],
     output: [
       { name: 'imported', type: 'number', required: true, constraint: 'Count of memory docs written.' },
       { name: 'skipped', type: 'number', required: true, constraint: 'Count of SKILL.md files skipped.' },
+      { name: 'ignored', type: 'number', required: true, constraint: 'Count of selected SKILL.md files that are permanently ignored.' },
       { name: 'results', type: 'object[]', required: true, constraint: 'Each: {source,target,name,scope,status,reason?}.' },
     ],
     outputKind: 'object',
@@ -231,6 +347,7 @@ export const sysSyncLeaf = defineLeaf({
       'Writes memory/<name>.md in the selected crouter scope with substrate frontmatter and the SKILL.md body.',
       'Skips existing memory docs unless --overwrite is present.',
       'Skips marker-bearing generated crtr boot skills; host exports prune those legacy artifacts instead.',
+      `With --ignore: writes ~/.crouter/${IGNORE_FILE} and does not import the selected sources.`,
       'With --dry-run: read-only; writes nothing.',
     ],
   },
@@ -239,6 +356,8 @@ export const sysSyncLeaf = defineLeaf({
     const scopeArg = input['scope'] as TargetScope | undefined;
     const dryRun = (input['dryRun'] as boolean) ?? false;
     const overwrite = (input['overwrite'] as boolean) ?? false;
+    const ignoreMode = (input['ignore'] as boolean) ?? false;
+    const showIgnored = (input['showIgnored'] as boolean) ?? false;
 
     const roots = sourceRootsFromArg(sourceArg, scopeArg);
     const seen = new Set<string>();
@@ -251,12 +370,34 @@ export const sysSyncLeaf = defineLeaf({
       }
     }
 
-    const results = candidates.map((candidate) => convertCandidate(candidate, { scope: scopeArg, dryRun, overwrite }));
+    const ignoreState = readIgnoreState();
+    const results: ImportResult[] = [];
+    let changedIgnoreState = false;
+    for (const candidate of candidates) {
+      const prepared = prepareCandidate(candidate, scopeArg);
+      if ('status' in prepared) {
+        results.push(prepared);
+        continue;
+      }
+      if (ignoreMode) {
+        if (!dryRun) changedIgnoreState = rememberIgnored(prepared, ignoreState) || changedIgnoreState;
+        results.push(ignoredResult(prepared, dryRun ? 'would record permanent ignore' : `recorded in ~/.crouter/${IGNORE_FILE}`));
+        continue;
+      }
+      if (isIgnored(prepared, ignoreState)) {
+        if (showIgnored) results.push(ignoredResult(prepared, `matched ~/.crouter/${IGNORE_FILE}`));
+        continue;
+      }
+      results.push(convertPrepared(prepared, { dryRun, overwrite }));
+    }
+    if (changedIgnoreState) writeIgnoreState(ignoreState);
+
     const imported = results.filter((r) => r.status === 'imported').length;
     const wouldImport = results.filter((r) => r.status === 'would-import').length;
     const skipped = results.filter((r) => r.status === 'skipped').length;
+    const ignored = results.filter((r) => r.status === 'ignored').length;
 
-    return { imported, wouldImport, skipped, results };
+    return { imported, wouldImport, skipped, ignored, results, ignoreFile: ignoreFilePath(), ignoreMode };
   },
-  render: (result) => renderSummary(result.results as ImportResult[]),
+  render: (result) => renderSummary(result.results as ImportResult[], result.ignoreMode === true),
 });

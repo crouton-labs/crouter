@@ -69,3 +69,26 @@ test('skips generated crtr boot skills instead of importing them', async () => {
   assert.equal(result?.skipped, 1);
   assert.equal(existsSync(join(home, '.crouter', 'memory', 'crtr-skills.md')), false);
 });
+
+test('permanently ignores selected SKILL.md bundles', async () => {
+  const sourceRoot = join(home, '.claude', 'skills');
+  const bundle = join(sourceRoot, 'ignored-skill');
+  mkdirSync(bundle, { recursive: true });
+  writeFileSync(
+    join(bundle, 'SKILL.md'),
+    '---\nname: Ignored Skill\ndescription: Ignore me. Use when testing ignores.\n---\n\n# Ignore\n',
+    'utf8',
+  );
+
+  const ignored = await sysSyncLeaf.run({ source: sourceRoot, scope: 'user', ignore: true });
+  assert.equal(ignored?.ignored, 1);
+  assert.equal(existsSync(join(home, '.crouter', 'skill-import-ignore.json')), true);
+
+  const dry = await sysSyncLeaf.run({ source: sourceRoot, scope: 'user', dryRun: true });
+  assert.equal(dry?.wouldImport, 0);
+  assert.equal((dry?.results as unknown[]).length, 0);
+
+  const shown = await sysSyncLeaf.run({ source: sourceRoot, scope: 'user', dryRun: true, showIgnored: true });
+  assert.equal(shown?.ignored, 1);
+  assert.equal((shown?.results as Array<{ status: string }>)[0].status, 'ignored');
+});
