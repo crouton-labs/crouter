@@ -86,6 +86,27 @@ test('C3 — services path registers an extension model provider; the broker ses
   }
 });
 
+test('C3b — broker splits model thinking suffix before SDK registry lookup', async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'crtr-c3b-'));
+  try {
+    const { session } = await buildBrokerSession(
+      realEngine,
+      cfg(cwd, { extensionPaths: [C3_EXT], model: 'c3prov/c3model:high' }),
+    );
+    try {
+      assert.equal(
+        session.model?.id,
+        'c3model',
+        'C3b: suffixed model specs resolve by model id instead of falling back to SDK default',
+      );
+    } finally {
+      session.dispose();
+    }
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 // ===========================================================================
 // C4 — project context (AGENTS.md) is injected into the system prompt. The
 // services path loads project context files; on the 0.78.1 pin there is no

@@ -60,6 +60,26 @@ import {
   type WireSettings,
 } from './broker-protocol.js';
 
+type BrokerThinkingLevel = NonNullable<
+  Parameters<BrokerEngine['createAgentSessionFromServices']>[0]['thinkingLevel']
+>;
+
+const THINKING_LEVELS = new Set<string>(['off', 'minimal', 'low', 'medium', 'high', 'xhigh']);
+
+function parseModelSpec(spec: string): { modelSpec: string; thinkingLevel?: BrokerThinkingLevel } {
+  const i = spec.lastIndexOf(':');
+  if (i <= 0) return { modelSpec: spec };
+  const suffix = spec.slice(i + 1);
+  if (!THINKING_LEVELS.has(suffix)) return { modelSpec: spec };
+  return { modelSpec: spec.slice(0, i), thinkingLevel: suffix as BrokerThinkingLevel };
+}
+
+function formatModelSpec(model: { provider: string; id: string } | null | undefined, thinkingLevel?: string): string | null {
+  if (model === null || model === undefined) return null;
+  const suffix = thinkingLevel !== undefined && thinkingLevel !== '' && thinkingLevel !== 'off' ? `:${thinkingLevel}` : '';
+  return `${model.provider}/${model.id}${suffix}`;
+}
+
 // ---------------------------------------------------------------------------
 // Tunables (T3 backpressure / T4 dialog anti-deadlock)
 // ---------------------------------------------------------------------------
@@ -411,9 +431,8 @@ export async function runBroker(nodeId: string): Promise<void> {
   // broker's own env (merged by piInvocationToSdkConfig at boot).
   const persistModelChoice = (): void => {
     const nodeId = process.env['CRTR_NODE_ID'];
-    const m = session.model;
-    if (nodeId === undefined || nodeId === '' || m === null || m === undefined) return;
-    const spec = `${m.provider}/${m.id}`;
+    const spec = formatModelSpec(session.model, session.thinkingLevel);
+    if (nodeId === undefined || nodeId === '' || spec === null) return;
     try {
       const meta = getNode(nodeId);
       if (meta === null) return;
@@ -679,9 +698,10 @@ export async function runBroker(nodeId: string): Promise<void> {
   const findModelSpec = (
     spec: string,
   ): ReturnType<AgentSessionServices['modelRegistry']['find']> => {
-    const slash = spec.indexOf('/');
+    const { modelSpec } = parseModelSpec(spec);
+    const slash = modelSpec.indexOf('/');
     if (slash <= 0) return undefined;
-    return services.modelRegistry.find(spec.slice(0, slash), spec.slice(slash + 1));
+    return services.modelRegistry.find(modelSpec.slice(0, slash), modelSpec.slice(slash + 1));
   };
 
   /** Resolve a model from a free-text query — `/model opus`, `/model fable`. Tries
@@ -988,11 +1008,12 @@ export async function runBroker(nodeId: string): Promise<void> {
       // --- extended engine-command ops (T3, §1.2 floor set) ------------------
       case 'set_model': {
         if (notController(client, 'set the model')) break;
+        const requested = parseModelSpec(frame.model);
         let model: ReturnType<typeof resolveModelQuery>;
         try {
           // Accept both an exact `provider/id` (from the picker) and a free-text
           // query (`/model opus`) — resolveModelQuery falls back to a search match.
-          model = resolveModelQuery(frame.model);
+          model = resolveModelQuery(requested.modelSpec);
         } catch (err) {
           // N2: registry.find should never throw on the real SDK, but a degenerate
           // engine must still get a reply rather than a silently-dropped frame.
@@ -1010,6 +1031,7 @@ export async function runBroker(nodeId: string): Promise<void> {
         void session
           .setModel(model)
           .then(() => {
+            if (requested.thinkingLevel !== undefined) session.setThinkingLevel(requested.thinkingLevel);
             ackTo(client, 'set_model');
             broadcastModelChanged();
           })
@@ -1456,10 +1478,16 @@ export async function buildBrokerSession(
     //    SERVICES registry — which has any extension-provided providers (C3).
     //    Undefined ⇒ the SDK picks the settings default.
     let model: ReturnType<AgentSessionServices['modelRegistry']['find']>;
+    let thinkingLevel: BrokerThinkingLevel | undefined;
     if (cfg.model !== undefined && cfg.model !== '') {
-      const slash = cfg.model.indexOf('/');
+      const parsedModel = parseModelSpec(cfg.model);
+      thinkingLevel = parsedModel.thinkingLevel;
+      const slash = parsedModel.modelSpec.indexOf('/');
       if (slash > 0) {
-        model = services.modelRegistry.find(cfg.model.slice(0, slash), cfg.model.slice(slash + 1));
+        model = services.modelRegistry.find(
+          parsedModel.modelSpec.slice(0, slash),
+          parsedModel.modelSpec.slice(slash + 1),
+        );
         if (model === undefined) {
           process.stderr.write(
             `[broker] WARNING: model '${cfg.model}' not found in registry — ` +
@@ -1478,6 +1506,7 @@ export async function buildBrokerSession(
       services,
       sessionManager: o.sessionManager,
       model,
+      thinkingLevel,
       tools: cfg.tools,
       sessionStartEvent: o.sessionStartEvent,
     });
