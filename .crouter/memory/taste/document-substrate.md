@@ -61,6 +61,10 @@ And the routing line only works if `when-and-why-to-read` is a **routing stateme
 
 crouter's current authoring model is memory docs: `.md` files under `memory/` with substrate frontmatter, read and written through `crtr memory`. Do not reintroduce pi/Claude Agent Skills as a front door for crouter guidance, do not generate `~/.pi/agent/skills/crtr-skills/SKILL.md`, and do not describe `SKILL.md` bundles as the active crouter model. If legacy generated skill bundles exist, crouter should prune its own marker-bearing copies and leave markerless user-owned files alone.
 
+## Raw files are the full-fidelity surface
+
+`crtr memory read` is for loading a memory's body into agent context. The raw markdown file at `path` is the full-fidelity surface for seeing YAML frontmatter and making edits. Follow-up copy should point agents to read the raw file for frontmatter or edits, not present `--frontmatter` as the primary next step.
+
 ## The payoff, and the stance
 
 The point of all of this is that an agent can write knowledge and preferences **freely** — as often as a thought is worth keeping — without fear of bloating its context, because it also declares when and how much each should surface. Context stays clean by construction, not by restraint. This is self-improving prompting and progressive disclosure made into storage: the agent keeps learning, and the cost of what it learns is paid only when it is relevant.

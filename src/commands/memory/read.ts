@@ -62,7 +62,7 @@ export const readLeaf = defineLeaf({
           scope: doc.scope,
           path: doc.path,
           content,
-          follow_up: 'Add --frontmatter to include the YAML header, or edit `path` directly to tweak the doc. Browse the inventory with `crtr memory list`.',
+          follow_up: 'Read the raw file at `path` to view the YAML frontmatter or edit this memory. Browse the inventory with `crtr memory list`.',
         };
       }
     }
