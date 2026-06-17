@@ -20,6 +20,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseFrontmatterGeneric } from '../frontmatter.js';
 import { userScopeRoot, findProjectScopeRoot } from '../scope.js';
+import type { Scope } from '../../types.js';
 
 // ---------------------------------------------------------------------------
 // Builtin root resolution
@@ -51,14 +52,19 @@ function builtinPersonasRoot(): string {
 // ---------------------------------------------------------------------------
 
 /** Returns the ordered list of roots to search, highest precedence first. */
-function personaSearchRoots(): string[] {
-  const roots: string[] = [];
+interface PersonaSearchRoot {
+  scope: Scope;
+  root: string;
+}
+
+function personaSearchRoots(): PersonaSearchRoot[] {
+  const roots: PersonaSearchRoot[] = [];
 
   const projectRoot = findProjectScopeRoot();
-  if (projectRoot) roots.push(join(projectRoot, 'personas'));
+  if (projectRoot) roots.push({ scope: 'project', root: join(projectRoot, 'personas') });
 
-  roots.push(join(userScopeRoot(), 'personas'));
-  roots.push(builtinPersonasRoot());
+  roots.push({ scope: 'user', root: join(userScopeRoot(), 'personas') });
+  roots.push({ scope: 'builtin', root: builtinPersonasRoot() });
 
   return roots;
 }
@@ -88,12 +94,21 @@ function scalarToString(v: unknown): string | null {
  * Find the first existing file across the scope roots.
  * `relativePath` is relative to each root (e.g. 'general/PERSONA.md').
  */
-function resolveFile(relativePath: string): string | null {
-  for (const root of personaSearchRoots()) {
+export interface ResolvedPersonaSource {
+  path: string;
+  scope: Scope;
+}
+
+function resolveFileMeta(relativePath: string): ResolvedPersonaSource | null {
+  for (const { scope, root } of personaSearchRoots()) {
     const candidate = join(root, relativePath);
-    if (existsSync(candidate)) return candidate;
+    if (existsSync(candidate)) return { path: candidate, scope };
   }
   return null;
+}
+
+function resolveFile(relativePath: string): string | null {
+  return resolveFileMeta(relativePath)?.path ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -121,6 +136,14 @@ function inlineIncludes(body: string): string {
   });
 }
 
+export function loadScopedText(relativePath: string): { text: string; sourcePath: string; scope: Scope } | null {
+  const meta = resolveFileMeta(relativePath);
+  if (!meta) return null;
+  const src = readFileSync(meta.path, 'utf8');
+  const { body } = parseFrontmatterGeneric(src);
+  return { text: body.trim(), sourcePath: meta.path, scope: meta.scope };
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -135,6 +158,17 @@ export interface LoadedPersona {
   body: string;
 }
 
+export interface LoadedPersonaSource extends LoadedPersona {
+  /** Raw body text before @include expansion. */
+  rawBody: string;
+  /** Absolute source path. */
+  sourcePath: string;
+  /** Scope the file was resolved from. */
+  scope: Scope;
+  /** Relative source path within the scope root, e.g. `personas/developer/PERSONA.md`. */
+  source: string;
+}
+
 /**
  * Load and parse a persona file for the given `kind` and `mode`.
  *
@@ -142,17 +176,26 @@ export interface LoadedPersona {
  * On success, `@include` directives in the body are resolved and inlined.
  */
 export function loadPersona(kind: string, mode: 'base' | 'orchestrator'): LoadedPersona | null {
-  // base → PERSONA.md (the role body); orchestrator → its sibling orchestrator.md.
+  const source = loadPersonaSource(kind, mode);
+  if (!source) return null;
+  return { frontmatter: source.frontmatter, body: source.body };
+}
+
+/** Load a persona file together with its provenance. */
+export function loadPersonaSource(kind: string, mode: 'base' | 'orchestrator'): LoadedPersonaSource | null {
   const relativePath = mode === 'orchestrator' ? `${kind}/orchestrator.md` : `${kind}/PERSONA.md`;
-  const filePath = resolveFile(relativePath);
-  if (!filePath) return null;
+  const file = resolveFileMeta(relativePath);
+  if (!file) return null;
 
-  const src = readFileSync(filePath, 'utf8');
+  const src = readFileSync(file.path, 'utf8');
   const { data, body } = parseFrontmatterGeneric(src);
-
   return {
     frontmatter: data,
+    rawBody: body.trim(),
     body: inlineIncludes(body).trim(),
+    sourcePath: file.path,
+    scope: file.scope,
+    source: `personas/${relativePath}`,
   };
 }
 
@@ -161,11 +204,12 @@ export function loadPersona(kind: string, mode: 'base' | 'orchestrator'): Loaded
  * Returns an empty string if the kernel file cannot be found.
  */
 export function loadKernel(): string {
-  const filePath = resolveFile('orchestration-kernel.md');
-  if (!filePath) return '';
-  const src = readFileSync(filePath, 'utf8');
-  const { body } = parseFrontmatterGeneric(src);
-  return body.trim();
+  const file = loadKernelSource();
+  return file?.text ?? '';
+}
+
+export function loadKernelSource(): { text: string; sourcePath: string; scope: Scope } | null {
+  return loadScopedText('orchestration-kernel.md');
 }
 
 /**
@@ -175,11 +219,11 @@ export function loadKernel(): string {
  * live in their own fragments, loaded below.
  */
 export function loadRuntimeBase(): string {
-  const filePath = resolveFile('runtime-base.md');
-  if (!filePath) return '';
-  const src = readFileSync(filePath, 'utf8');
-  const { body } = parseFrontmatterGeneric(src);
-  return body.trim();
+  return loadRuntimeBaseSource()?.text ?? '';
+}
+
+export function loadRuntimeBaseSource(): { text: string; sourcePath: string; scope: Scope } | null {
+  return loadScopedText('runtime-base.md');
 }
 
 /**
@@ -189,10 +233,11 @@ export function loadRuntimeBase(): string {
  * the lifecycle fragment (resolve.ts). Returns '' if the fragment is missing.
  */
 export function loadWaitingFragment(): string {
-  const filePath = resolveFile('waiting.md');
-  if (!filePath) return '';
-  const { body } = parseFrontmatterGeneric(readFileSync(filePath, 'utf8'));
-  return body.trim();
+  return loadWaitingFragmentSource()?.text ?? '';
+}
+
+export function loadWaitingFragmentSource(): { text: string; sourcePath: string; scope: Scope } | null {
+  return loadScopedText('waiting.md');
 }
 
 /**
@@ -203,10 +248,13 @@ export function loadWaitingFragment(): string {
  * Returns '' if the fragment file cannot be found.
  */
 export function loadLifecycleFragment(lifecycle: 'terminal' | 'resident'): string {
-  const filePath = resolveFile(`lifecycle/${lifecycle}.md`);
-  if (!filePath) return '';
-  const { body } = parseFrontmatterGeneric(readFileSync(filePath, 'utf8'));
-  return body.trim();
+  return loadLifecycleFragmentSource(lifecycle)?.text ?? '';
+}
+
+export function loadLifecycleFragmentSource(
+  lifecycle: 'terminal' | 'resident',
+): { text: string; sourcePath: string; scope: Scope } | null {
+  return loadScopedText(`lifecycle/${lifecycle}.md`);
 }
 
 /**
@@ -217,10 +265,13 @@ export function loadLifecycleFragment(lifecycle: 'terminal' | 'resident'): strin
  * Returns '' if the fragment file cannot be found.
  */
 export function loadSpineFragment(hasManager: boolean): string {
-  const filePath = resolveFile(`spine/${hasManager ? 'has-manager' : 'no-manager'}.md`);
-  if (!filePath) return '';
-  const { body } = parseFrontmatterGeneric(readFileSync(filePath, 'utf8'));
-  return body.trim();
+  return loadSpineFragmentSource(hasManager)?.text ?? '';
+}
+
+export function loadSpineFragmentSource(
+  hasManager: boolean,
+): { text: string; sourcePath: string; scope: Scope } | null {
+  return loadScopedText(`spine/${hasManager ? 'has-manager' : 'no-manager'}.md`);
 }
 
 /**
@@ -232,7 +283,7 @@ export function loadSpineFragment(hasManager: boolean): string {
  */
 export function availableKinds(): string[] {
   const kinds = new Set<string>();
-  for (const root of personaSearchRoots()) {
+  for (const { root } of personaSearchRoots()) {
     if (!existsSync(root)) continue;
     for (const entry of readdirSync(root, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
@@ -324,7 +375,7 @@ function parseAvailableTo(data: Record<string, unknown> | null, topKind: string)
 export function subPersonasFor(kind: string): SubPersona[] {
   const seen = new Set<string>(); // full kind strings already resolved (higher root won)
   const out: SubPersona[] = [];
-  for (const root of personaSearchRoots()) {
+  for (const { root } of personaSearchRoots()) {
     if (!existsSync(root)) continue;
     for (const top of readdirSync(root, { withFileTypes: true })) {
       if (!top.isDirectory()) continue;

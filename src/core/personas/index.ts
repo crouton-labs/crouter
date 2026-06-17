@@ -8,7 +8,24 @@
  *   - ResolvedPersona            (return type of resolve)
  */
 
-export { loadPersona, loadKernel, availableKinds, kindWhenToUse, subPersonasFor, loadLifecycleFragment, loadSpineFragment } from './loader.js';
-export type { LoadedPersona, SubPersona } from './loader.js';
-export { resolve } from './resolve.js';
-export type { ResolvedPersona } from './resolve.js';
+export {
+  loadPersona,
+  loadPersonaSource,
+  loadKernel,
+  loadKernelSource,
+  availableKinds,
+  kindWhenToUse,
+  subPersonasFor,
+  loadLifecycleFragment,
+  loadLifecycleFragmentSource,
+  loadSpineFragment,
+  loadSpineFragmentSource,
+  loadRuntimeBase,
+  loadRuntimeBaseSource,
+  loadWaitingFragment,
+  loadWaitingFragmentSource,
+  loadScopedText,
+} from './loader.js';
+export type { LoadedPersona, LoadedPersonaSource, SubPersona } from './loader.js';
+export { resolve, resolveLayers, resolvePromptReview } from './resolve.js';
+export type { ResolvedPersona, PromptReviewData, PromptReviewConfig, PromptLayer, PromptSource } from './resolve.js';
