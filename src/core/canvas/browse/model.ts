@@ -133,6 +133,38 @@ export function buildTree(
   return { roots: orderedRoots, nodes };
 }
 
+/** Splice a node out of an already-built tree in place (mutates `tree`). Used when
+ *  a close REAPED an empty node (row + dir hard-deleted) rather than parking it:
+ *  the node is gone from the db, so it must vanish from the in-memory tree too or
+ *  its stale row lingers on screen (the "press x, nothing happens" bug — an empty
+ *  active husk reaped by closeNode but never dropped from `tree.nodes`, so the
+ *  attention/flat view kept painting it). Surviving children are re-homed to the
+ *  reaped node's parent so a non-leaf reap never orphans them out of view. No-op
+ *  if the id is absent. */
+export function pruneNode(tree: Tree, id: string): void {
+  const node = tree.nodes.get(id);
+  if (node === undefined) return;
+  const parentId = node.parentId;
+  // Children still present (their own reap, if any, already removed them) lift up
+  // to this node's parent, taking its slot in the child order.
+  const survivingKids = node.childIds.filter((c) => tree.nodes.has(c));
+  for (const c of survivingKids) {
+    const kid = tree.nodes.get(c);
+    if (kid !== undefined) kid.parentId = parentId;
+  }
+  if (parentId !== null) {
+    const p = tree.nodes.get(parentId);
+    if (p !== undefined) {
+      const i = p.childIds.indexOf(id);
+      if (i >= 0) p.childIds.splice(i, 1, ...survivingKids);
+    }
+  } else {
+    const i = tree.roots.indexOf(id);
+    if (i >= 0) tree.roots.splice(i, 1, ...survivingKids);
+  }
+  tree.nodes.delete(id);
+}
+
 // ---------------------------------------------------------------------------
 // Fuzzy match
 // ---------------------------------------------------------------------------

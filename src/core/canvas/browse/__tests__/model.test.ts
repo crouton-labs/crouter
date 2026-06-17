@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import type { DashboardRow } from '../../render.js';
 import type { NodeStatus, Lifecycle } from '../../types.js';
-import { buildTree, flatten, fuzzyMatch, tabPredicate, TABS, attentionTier, attentionMtime } from '../model.js';
+import { buildTree, flatten, fuzzyMatch, pruneNode, tabPredicate, TABS, attentionTier, attentionMtime } from '../model.js';
 
 // ── Fixture canvas ───────────────────────────────────────────────────────────
 //   root1 (active)            ← rank 0
@@ -90,6 +90,45 @@ test('buildTree: unknown child ids are dropped (missing meta safe)', () => {
   const t = buildTree(ROWS, ['root1'], (id) => (id === 'root1' ? ['child-a', 'ghost'] : childIdsOf(id)));
   assert.deepEqual(t.nodes.get('root1')!.childIds, ['child-a']);
   assert.equal(t.nodes.has('ghost'), false);
+});
+
+// ── pruneNode ────────────────────────────────────────────────────────────────
+// Regression: pressing `x` in canvas browse on an EMPTY active node looked like a
+// no-op — closeNode hard-deletes (reaps) an empty node, but doClose never removed
+// it from the in-memory tree, so the stale active row kept painting. pruneNode is
+// the splice doClose now applies for a reaped (getNode===null) close.
+
+test('pruneNode: reaping a leaf removes it from its parent and the node map', () => {
+  const t = tree();
+  pruneNode(t, 'grand-x'); // leaf under child-a
+  assert.equal(t.nodes.has('grand-x'), false);
+  assert.deepEqual(t.nodes.get('child-a')!.childIds, []);
+});
+
+test('pruneNode: reaping a mid-tree node re-homes its children to its parent', () => {
+  const t = tree();
+  pruneNode(t, 'child-a'); // child-a (under root1) owns grand-x
+  assert.equal(t.nodes.has('child-a'), false);
+  // grand-x lifts into child-a's slot in root1's child order (before child-b).
+  assert.deepEqual(t.nodes.get('root1')!.childIds, ['grand-x', 'child-b']);
+  assert.equal(t.nodes.get('grand-x')!.parentId, 'root1');
+});
+
+test('pruneNode: reaping a root lifts its children into the root list', () => {
+  const t = tree();
+  const rootIdx = t.roots.indexOf('root2');
+  pruneNode(t, 'root2'); // root2 owns child-c
+  assert.equal(t.nodes.has('root2'), false);
+  assert.equal(t.roots.includes('root2'), false);
+  assert.equal(t.roots[rootIdx], 'child-c'); // child-c took root2's slot
+  assert.equal(t.nodes.get('child-c')!.parentId, null);
+});
+
+test('pruneNode: absent id is a no-op', () => {
+  const t = tree();
+  const before = t.nodes.size;
+  pruneNode(t, 'ghost');
+  assert.equal(t.nodes.size, before);
 });
 
 // ── tab predicates ───────────────────────────────────────────────────────────

@@ -21,7 +21,7 @@ import {
   parseKeypress,
   type Key,
 } from '../../tui/terminal.js';
-import { buildTree, flatten, TABS, type Tab, type Tree, type VisibleRow, type SortMode } from './model.js';
+import { buildTree, flatten, pruneNode, TABS, type Tab, type Tree, type VisibleRow, type SortMode } from './model.js';
 
 // Sort cycle for the `s` key. Starts on the default `attention` ordering; one `s`
 // press restores the structural `tree` view, then relevance/recency, then back.
@@ -236,10 +236,18 @@ export async function runBrowse(opts: { returnPane?: string; cwd?: string } = {}
       return; // unknown/already-gone node — nothing to reflect
     }
     for (const cid of closed) {
+      const m = getNode(cid);
+      if (m === null) {
+        // Reaped, not parked: an EMPTY node (0k ctx, no assistant message) is
+        // hard-deleted by closeNode (row + dir gone). Splice it out of the tree so
+        // its row disappears — otherwise the stale active husk lingers on screen and
+        // `x` looks like a no-op (the row was the only thing that ever changed).
+        pruneNode(tree, cid);
+        continue;
+      }
       const n = tree.nodes.get(cid);
       if (n === undefined) continue;
-      const m = getNode(cid);
-      if (m !== null) n.row.status = m.status; // real post-close status (done / canceled)
+      n.row.status = m.status; // real post-close status (done / canceled)
       n.row.streaming = false;
       n.row.viewed = false;
     }
