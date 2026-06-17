@@ -200,6 +200,59 @@ function setBanner(ctx, msg, level = 'error') {
   else ctx.signal.setBanner(msg, level);
 }
 
+/** @typedef {{ kind:'defaultProvider'|'matrixCell'|'personaStrength'|'personaNew', value:string, strength?:ModelStrength, provider?:ModelProvider, persona?:string }} PersistTarget */
+
+/** Validate a target, write it via `crtr sys config set`, fold the result into
+ *  local state, and re-pull. Shared by submitEdit (text fields) and applyValue
+ *  (one-click enum chips on web). Returns false on validation/transport failure
+ *  (a banner is already set). @param {Ctx} ctx @param {PersistTarget} target */
+async function persist(ctx, target) {
+  const value = String(target.value ?? '').trim();
+  if (target.kind === 'defaultProvider') {
+    if (value !== 'anthropic' && value !== 'openai') { setBanner(ctx, 'default provider must be anthropic or openai', 'action'); return false; }
+  } else if (target.kind === 'matrixCell') {
+    if (!value) { setBanner(ctx, 'model id cannot be empty', 'action'); return false; }
+  } else if (target.kind === 'personaStrength') {
+    if (!parseStrength(value)) { setBanner(ctx, 'persona strength must be ultra, strong, medium, or light', 'action'); return false; }
+  } else if (target.kind === 'personaNew') {
+    if (!parsePersonaPair(value)) { setBanner(ctx, 'use "kind strength" or "kind=strength"', 'action'); return false; }
+  }
+
+  ctx.signal.setStatus('Saving…');
+  let key = '';
+  let writeValue = '';
+  if (target.kind === 'defaultProvider') { key = 'modelLadders.defaultProvider'; writeValue = value; }
+  else if (target.kind === 'matrixCell') { key = `modelLadders.${target.provider}.${target.strength}`; writeValue = value; }
+  else if (target.kind === 'personaStrength') { key = `personaStrengths.${target.persona}`; writeValue = value; }
+  else {
+    const pair = parsePersonaPair(value);
+    if (!pair) return false;
+    key = `personaStrengths.${pair.persona}`;
+    writeValue = pair.strength;
+  }
+
+  const r = await ctx.execute(makeConfigSetCommand(key, writeValue));
+  if (!r.ok) {
+    setBanner(ctx, r.error.display.explanation || r.error.display.headline, r.error.display.level);
+    ctx.signal.setStatus(null);
+    return false;
+  }
+  ctx.set((s) => {
+    const next = { ...s, edit: null };
+    if (target.kind === 'defaultProvider' && next.modelLadders) next.modelLadders = { ...next.modelLadders, defaultProvider: value };
+    if (target.kind === 'matrixCell' && next.modelLadders) next.modelLadders = { ...next.modelLadders, [target.provider]: { ...next.modelLadders[target.provider], [target.strength]: value } };
+    if (target.kind === 'personaStrength') next.personaStrengths = { ...next.personaStrengths, [target.persona]: /** @type {ModelStrength} */ (value) };
+    if (target.kind === 'personaNew') {
+      const pair = parsePersonaPair(value);
+      if (pair) next.personaStrengths = { ...next.personaStrengths, [pair.persona]: pair.strength };
+    }
+    return next;
+  });
+  ctx.signal.setStatus('Saved');
+  await ctx.dispatch('refresh');
+  return true;
+}
+
 /** @type {import('../../core/view/contract.js').ViewCore<SettingsState>} */
 const core = {
   manifest: {
@@ -275,6 +328,28 @@ const core = {
       return { ...s, edit: { ...target } };
     }),
 
+    // Open the editor for a SPECIFIC target named by the click (web mouse path),
+    // prefilling the draft with the current value so it edits in place. Unlike
+    // beginEdit it does not depend on cursor / matrixSelection.
+    beginEditFor: (ctx, payload) => ctx.set((s) => {
+      if (s.modelLadders === null) return s;
+      const p = payload && typeof payload === 'object' ? /** @type {Record<string, unknown>} */ (payload) : {};
+      if (p.kind === 'matrix' && typeof p.strength === 'string') {
+        const provider = p.provider === 'openai' ? 'openai' : 'anthropic';
+        const cur = s.modelLadders?.[provider]?.[/** @type {ModelStrength} */ (p.strength)] ?? '';
+        return { ...s, edit: { kind: 'matrixCell', strength: /** @type {ModelStrength} */ (p.strength), provider, draft: cur, value: cur, label: `${provider} / ${p.strength}` } };
+      }
+      if (p.kind === 'defaultProvider') {
+        const cur = s.modelLadders.defaultProvider ?? 'anthropic';
+        return { ...s, edit: { kind: 'defaultProvider', draft: cur, value: cur, label: 'default provider' } };
+      }
+      if (p.kind === 'persona' && typeof p.persona === 'string') {
+        const cur = s.personaStrengths[p.persona] ?? 'strong';
+        return { ...s, edit: { kind: 'personaStrength', persona: p.persona, draft: cur, value: cur, label: p.persona } };
+      }
+      return { ...s, edit: { kind: 'personaNew', draft: '', value: '', label: 'new persona strength' } };
+    }),
+
     setDraft: (ctx, draft) => ctx.set((s) => (s.edit ? { ...s, edit: { ...s.edit, draft: typeof draft === 'string' ? draft : '' } } : s)),
 
     cancelEdit: (ctx) => ctx.set((s) => (s.edit ? { ...s, edit: null } : s)),
@@ -282,68 +357,15 @@ const core = {
     async submitEdit(ctx) {
       const edit = ctx.state.edit;
       if (!edit) return;
-      const draft = edit.draft.trim();
-      if (edit.kind === 'defaultProvider') {
-        if (draft !== 'anthropic' && draft !== 'openai') {
-          setBanner(ctx, 'default provider must be anthropic or openai', 'action');
-          return;
-        }
-      } else if (edit.kind === 'matrixCell') {
-        if (!draft) {
-          setBanner(ctx, 'model id cannot be empty', 'action');
-          return;
-        }
-      } else if (edit.kind === 'personaStrength') {
-        if (!parseStrength(draft)) {
-          setBanner(ctx, 'persona strength must be ultra, strong, medium, or light', 'action');
-          return;
-        }
-      } else if (edit.kind === 'personaNew') {
-        const pair = parsePersonaPair(draft);
-        if (!pair) {
-          setBanner(ctx, 'use "kind strength" or "kind=strength"', 'action');
-          return;
-        }
-      }
+      await persist(ctx, { kind: edit.kind, value: edit.draft, strength: edit.strength, provider: edit.provider, persona: edit.persona });
+    },
 
-      ctx.signal.setStatus('Saving…');
-      let key = '';
-      let value = '';
-      if (edit.kind === 'defaultProvider') {
-        key = 'modelLadders.defaultProvider';
-        value = draft;
-      } else if (edit.kind === 'matrixCell') {
-        key = `modelLadders.${edit.provider}.${edit.strength}`;
-        value = draft;
-      } else if (edit.kind === 'personaStrength') {
-        key = `personaStrengths.${edit.persona}`;
-        value = draft;
-      } else {
-        const pair = parsePersonaPair(draft);
-        if (!pair) return;
-        key = `personaStrengths.${pair.persona}`;
-        value = pair.strength;
-      }
-
-      const r = await ctx.execute(makeConfigSetCommand(key, value));
-      if (!r.ok) {
-        setBanner(ctx, r.error.display.explanation || r.error.display.headline, r.error.display.level);
-        ctx.signal.setStatus(null);
-        return;
-      }
-      ctx.set((s) => {
-        const next = { ...s, edit: null };
-        if (edit.kind === 'defaultProvider' && next.modelLadders) next.modelLadders = { ...next.modelLadders, defaultProvider: draft };
-        if (edit.kind === 'matrixCell' && next.modelLadders) next.modelLadders = { ...next.modelLadders, [edit.provider]: { ...next.modelLadders[edit.provider], [edit.strength]: draft } };
-        if (edit.kind === 'personaStrength') next.personaStrengths = { ...next.personaStrengths, [edit.persona]: /** @type {ModelStrength} */ (draft) };
-        if (edit.kind === 'personaNew') {
-          const pair = parsePersonaPair(draft);
-          if (pair) next.personaStrengths = { ...next.personaStrengths, [pair.persona]: pair.strength };
-        }
-        return next;
-      });
-      ctx.signal.setStatus('Saved');
-      await ctx.dispatch('refresh');
+    // One-click save for enum fields (web chips): no editor round-trip. Payload
+    // is a fully-specified PersistTarget.
+    async applyValue(ctx, payload) {
+      const p = payload && typeof payload === 'object' ? /** @type {PersistTarget} */ (payload) : null;
+      if (!p || ctx.state.modelLadders === null) return;
+      await persist(ctx, p);
     },
 
     jumpAddPersona: (ctx) => ctx.set((s) => ({ ...s, cursor: Math.max(0, buildRows(s).length - 1) })),
