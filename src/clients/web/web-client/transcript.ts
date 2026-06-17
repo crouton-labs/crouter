@@ -8,6 +8,7 @@
 // No React, no DOM — just `applySnapshot` + `reduce`, unit-testable in isolation.
 
 import type { AgentSessionEvent, AnyMessage, BrokerSnapshot } from './protocol.js';
+import { isInboxDigest } from './shared/inbox-detect.js';
 
 export interface ConvState {
   /** The full ordered transcript (snapshot history + streamed messages). */
@@ -32,10 +33,36 @@ export function initialConvState(): ConvState {
   };
 }
 
+/** Plain text of a user message (string content or concatenated text blocks),
+ *  for inbox-digest detection. */
+function userMessageText(m: AnyMessage): string {
+  const content = (m as { content?: unknown }).content;
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((b): b is { type: string; text?: string } => !!b && (b as { type?: string }).type === 'text')
+      .map((b) => (typeof b.text === 'string' ? b.text : ''))
+      .join('');
+  }
+  return '';
+}
+
+/** Tag a `role:'user'` message as inbox-origin when its text matches the
+ *  canvas-inbox-watcher coalesce digest; other messages pass through unchanged.
+ *  The broker relays pi AgentMessages verbatim and never carries `origin` on the
+ *  wire, so this is the sole writer of `origin:'inbox'` — recognized from the
+ *  digest text. (Idempotent: a message already tagged is left as-is.) */
+function tagInboxOrigin(m: AnyMessage): AnyMessage {
+  if (roleOf(m) !== 'user') return m;
+  if ((m as { origin?: string }).origin) return m;
+  if (!isInboxDigest(userMessageText(m))) return m;
+  return { ...m, origin: 'inbox' } as AnyMessage;
+}
+
 /** Seed state from the broker's catch-up snapshot. */
 export function applySnapshot(snapshot: BrokerSnapshot): ConvState {
   return {
-    messages: [...(snapshot.messages as AnyMessage[])],
+    messages: (snapshot.messages as AnyMessage[]).map(tagInboxOrigin),
     streamingIndex: null,
     executingToolIds: new Set(),
     isStreaming: snapshot.state?.isStreaming === true,
@@ -123,8 +150,11 @@ export function reduce(state: ConvState, event: AgentSessionEvent): ConvState {
       };
 
     case 'message_start': {
-      const messages = [...state.messages, event.message as AnyMessage];
-      const isAssistant = roleOf(event.message as AnyMessage) === 'assistant';
+      // User messages arrive complete on message_start (no streaming deltas), so
+      // tagging here is sufficient — update/end only mutate the assistant message.
+      const tagged = tagInboxOrigin(event.message as AnyMessage);
+      const messages = [...state.messages, tagged];
+      const isAssistant = roleOf(tagged) === 'assistant';
       return { ...state, messages, streamingIndex: isAssistant ? messages.length - 1 : state.streamingIndex };
     }
 
