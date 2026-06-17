@@ -578,6 +578,15 @@ export async function runBroker(nodeId: string): Promise<void> {
   // a subscriber otherwise propagates as a run failure that would crash the broker.
   // -------------------------------------------------------------------------
   let unsubscribe: (() => void) | undefined;
+  const captureSystemPrompt = (): void => {
+    try {
+      const dir = jobDir(nodeId);
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'system-prompt.md'), session.systemPrompt, 'utf8');
+    } catch {
+      /* non-fatal: diagnostic only */
+    }
+  };
   const rebindSession = async (): Promise<void> => {
     if (runtime !== undefined) {
       session = runtime.session; // the runtime replaced it; follow the new one
@@ -612,6 +621,7 @@ export async function runBroker(nodeId: string): Promise<void> {
         logBroker(`event relay threw: ${String(err)}`);
       }
     });
+    captureSystemPrompt();
   };
   // Register the rebind BEFORE the first bind so a replacement triggered during
   // startup is honored; then do the initial bind + subscribe.
@@ -619,6 +629,7 @@ export async function runBroker(nodeId: string): Promise<void> {
     await rebindSession();
   });
   await rebindSession();
+  captureSystemPrompt();
 
   // -------------------------------------------------------------------------
   // Drive the engine on behalf of the single controller.
