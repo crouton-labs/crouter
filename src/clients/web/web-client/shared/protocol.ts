@@ -22,15 +22,15 @@ import type { AgentMessage } from '@earendil-works/pi-agent-core';
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
 
 // ===========================================================================
-// FoldedMessage — AgentMessage annotated with server-side provenance tags.
-// FROZEN-contract override: `origin` is additive (optional) and never carried
-// on the upstream broker wire — the server stamps it at fold time using the
-// coalesce() digest format that canvas-inbox-watcher injects (two crouton-kit
-// packages sharing an internal contract; see src/server/session/inbox-detect.ts).
+// FoldedMessage — AgentMessage annotated with a client-side provenance tag.
+// `origin` is additive (optional) and never carried on the broker wire, which
+// relays pi's AgentMessages verbatim — it is recognized from the message text
+// using the coalesce() digest format that canvas-inbox-watcher injects (two
+// crouton-kit packages sharing an internal contract; see shared/inbox-detect.ts).
 // ===========================================================================
 
 /**
- * An `AgentMessage` enriched with server-side origin metadata.
+ * An `AgentMessage` enriched with a client-side origin tag.
  * Only `role:'user'` messages can carry `origin:'inbox'`; all others leave
  * `origin` undefined. `'human'` is reserved for future explicit human-origin
  * tagging (currently unset — absence means human by default).
@@ -39,8 +39,8 @@ import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
  * is a union type and TypeScript does not allow extending unions.
  */
 export type FoldedMessage = AgentMessage & {
-  /** Set to `'inbox'` when the server detects this user message was injected
-   *  by the canvas-inbox-watcher extension (a coalesced inbox digest). */
+  /** Set to `'inbox'` when this user message is recognized as injected by the
+   *  canvas-inbox-watcher extension (a coalesced inbox digest). */
   origin?: 'inbox' | 'human';
 };
 
@@ -223,8 +223,8 @@ export interface ReviveRequest {
 
 /**
  * The five resolution flows (design §5.2). humanloop's `InteractionKind` also
- * has `review`; the server normalizes it (and any unknown/absent kind) onto one
- * of these five so a deck always renders through a known flow.
+ * has `review`; the deck loader normalizes it (and any unknown/absent kind)
+ * onto one of these five so a deck always renders through a known flow.
  */
 export type DeckKind = 'notify' | 'validation' | 'decision' | 'context' | 'error';
 
@@ -241,7 +241,7 @@ export interface DeckInteraction {
   id: string;
   title: string;
   subtitle?: string;
-  /** Markdown body (bodyPath already inlined by the server). */
+  /** Markdown body (bodyPath already inlined by `crtr human deck`). */
   body?: string;
   kind: DeckKind;
   options: DeckOption[];

@@ -21,8 +21,8 @@ interface PresenceStore {
 export function Presence(props: { store: PresenceStore }): ReactNode {
   const presence = props.store.presence;
   const isController = props.store.role === 'controller';
-  // The server reports its own client id as `controller` when a web tab holds
-  // it; when this tab is the controller we say "you", otherwise "another client".
+  // The broker reports the controller's client id when a web tab holds it; when
+  // this tab is the controller we say "you", otherwise "another client".
   const controllerLabel = (): string => {
     if (isController) return 'you';
     return presence.controller ? 'another client' : 'no one';

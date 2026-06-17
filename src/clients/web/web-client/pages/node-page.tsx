@@ -125,11 +125,10 @@ export function NodePage(props: { id: string }) {
 
   // Cold-start re-snapshot (consumer first-impression fix). A node spawned via
   // "+ New chat" and entered before its broker finishes booting is served a
-  // static snapshot the hub never upgrades on its own. While the node is
-  // actually live (status 'active') but our stream is stuck on that static
-  // snapshot, reconnect with backoff: a fresh server-side hub re-runs its
-  // live-vs-static check and lands the live snapshot once the broker's socket
-  // is up — the same effect as a manual page reload, no protocol change. A
+  // read-only static snapshot. While the node is actually live (status
+  // 'active') but our stream is still stuck on that static snapshot, reconnect
+  // with backoff: re-dialing the broker relay reaches the now-up broker socket
+  // and streams its live snapshot — the same effect as a manual page reload. A
   // genuinely-dormant node (idle/done/…) never qualifies, so the explicit
   // Revive path and AC-21 auto-resume are untouched.
   const resnapshotRef = useRef(0);
@@ -157,8 +156,9 @@ export function NodePage(props: { id: string }) {
   // the explicit request/release affordance, so this is skipped there.
   const autoControlRef = useRef<string | null>(null);
   // Re-arm the auto-grab whenever the socket drops/reconnects: a reconnect (the
-  // cold-start re-snapshot above, or a server-restart) lands a FRESH hub whose
-  // arbiter has no controller for this tab, so we must request control again.
+  // cold-start re-snapshot above, or a server restart) re-dials the verbatim
+  // broker relay, and the broker arbitrates control with no controller held for
+  // this tab, so we must request control again.
   useEffect(() => {
     if (!store.socketReady) autoControlRef.current = null;
   }, [store.socketReady]);
