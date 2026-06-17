@@ -64,7 +64,12 @@ export const sysSyspromptLeaf = defineLeaf({
       }
       const tmpPath = join(tmpdir(), `crtr-sysprompt-${nodeId}.md`);
       writeFileSync(tmpPath, prompt, 'utf8');
-      const command = `less -R ${shellQuote(tmpPath)}`;
+      const q = shellQuote(tmpPath);
+      // Syntax-highlight the prompt (markdown + its structural XML tags both stay visible).
+      // bat pages by default; markdown RENDERERS (termrender, glow) are wrong here — they
+      // silently swallow block-level XML tags, dropping most of the assembled prompt.
+      // Fall back to `less -R` when bat is not installed.
+      const command = `if command -v bat >/dev/null 2>&1; then bat --language=markdown --color=always --paging=always --style=plain ${q}; else less -R ${q}; fi`;
       const opened = openNodeWindow({ session: focus.session, name: `sysprompt:${nodeId}`, cwd: process.cwd(), env: {}, command });
       if (opened === null) {
         throw new InputError({
