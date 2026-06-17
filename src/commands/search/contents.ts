@@ -8,6 +8,7 @@ import {
   type ExaResult,
   type ExaStatus,
 } from './exa.js';
+import { puremdFetch } from './puremd.js';
 
 export const contentsLeaf = defineLeaf({
   name: 'contents',
@@ -24,11 +25,11 @@ export const contentsLeaf = defineLeaf({
     ],
     output: [
       { name: 'results', type: 'object[]', required: true, constraint: 'One per successfully extracted URL, each: title, url, and either highlight excerpts (default) or capped full text (--text).' },
-      { name: 'failures', type: 'object[]', required: true, constraint: 'URLs that could not be fetched, each: url and reason.' },
+      { name: 'failures', type: 'object[]', required: true, constraint: 'URLs that could not be fetched by Exa or the pure.md fallback, each: url and reason.' },
       { name: 'follow_up', type: 'string', required: true, constraint: 'Concrete next command for retrying failures or refreshing stale content.' },
     ],
     outputKind: 'object',
-    effects: ['Sends one contents request to the Exa API (network). No local state changes.'],
+    effects: ['Sends one contents request to the Exa API (network). URLs Exa fails to fetch are retried through the pure.md markdown service. No local state changes.'],
   },
   run: async (input) => {
     const urls = parseUrls(input['urls'] as string);
@@ -46,7 +47,7 @@ export const contentsLeaf = defineLeaf({
     const results = res.results ?? [];
     const fetched = new Set(results.map((r) => r.url).filter((u): u is string => u !== undefined));
 
-    const failures: Array<{ url: string; reason: string }> = [];
+    const exaFailures: Array<{ url: string; reason: string }> = [];
     for (const s of res.statuses ?? []) {
       if (s.status === 'success') continue;
       const url = s.id ?? '(unknown url)';
@@ -55,7 +56,22 @@ export const contentsLeaf = defineLeaf({
         typeof s.error === 'string'
           ? s.error
           : s.error?.tag ?? s.status ?? 'unknown error';
-      failures.push({ url, reason });
+      exaFailures.push({ url, reason });
+    }
+
+    // Fall back to pure.md for every URL Exa could not fetch. A pure.md success
+    // becomes a normal text result (flagged so the renderer can show its source);
+    // only URLs both services miss remain genuine failures.
+    const failures: Array<{ url: string; reason: string }> = [];
+    const fallbacks = await Promise.all(
+      exaFailures.map(async (f) => ({ failure: f, pure: await puremdFetch(f.url, TEXT_MAX_CHARACTERS) })),
+    );
+    for (const { failure, pure } of fallbacks) {
+      if (pure.ok) {
+        results.push({ url: failure.url, title: failure.url, text: pure.text, source: 'pure.md' });
+      } else {
+        failures.push({ url: failure.url, reason: `${failure.reason} (pure.md fallback: ${pure.reason})` });
+      }
     }
 
     return {

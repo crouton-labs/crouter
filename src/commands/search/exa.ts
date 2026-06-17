@@ -38,6 +38,8 @@ export interface ExaResult {
   highlights?: string[];
   text?: string;
   score?: number;
+  /** Set when the row came from a fallback fetcher (e.g. 'pure.md') rather than Exa. */
+  source?: string;
 }
 
 export interface ExaSearchResponse {
@@ -144,6 +146,7 @@ export function renderResult(r: ExaResult, index: number): string {
   if (typeof r.url === 'string' && r.url !== '') meta.push(r.url);
   if (typeof r.publishedDate === 'string' && r.publishedDate !== '') meta.push(r.publishedDate.slice(0, 10));
   if (typeof r.author === 'string' && r.author !== '') meta.push(r.author);
+  if (typeof r.source === 'string' && r.source !== '') meta.push(`via ${r.source}`);
   if (meta.length > 0) lines.push(meta.join(' · '));
 
   if (r.highlights !== undefined && r.highlights.length > 0) {

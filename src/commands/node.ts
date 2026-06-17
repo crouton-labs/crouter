@@ -5,7 +5,7 @@
 // onto the canvas (`new`), inspects the graph (`inspect list|show`), and walks
 // the spine (`focus`/`msg`). The push/feed half lives under `crtr push`.
 
-import { defineLeaf, defineBranch, type BranchDef } from '../core/command.js';
+import { defineLeaf, defineBranch, type BranchDef, type SlashSpec } from '../core/command.js';
 import { InputError } from '../core/io.js';
 import { spawnChild, type SpawnChildOpts } from '../core/runtime/spawn.js';
 import { promote, requestYield } from '../core/runtime/promote.js';
@@ -1490,9 +1490,93 @@ const nodeWake = defineBranch({
   children: [nodeWakeAt, nodeWakeUntil, nodeWakeSpawn, nodeWakeList, nodeWakeCancel],
 });
 
+// ── /pyramid slash command ───────────────────────────────────────────────────
+// Rides on the `node` subtree, not because pyramid is a `node` verb, but because
+// (1) the workflow IS node orchestration — it fans out explore agents — and
+// (2) provisionExports lazy-loads only the invoked subtree (build-root.ts), so a
+// slash spec only gets (re)written to the host's command dirs when its host
+// subtree runs; `node` is the most-invoked subtree, so `/pyramid` provisions
+// reliably. The body is a self-contained agent workflow prompt (pi prompt
+// template / Claude Code command), exported one-way by host-exports.
+const pyramidSlash: SlashSpec = {
+  name: 'pyramid',
+  description: 'Explain a topic as a live-building Minto pyramid diagram, backed by parallel explore agents.',
+  argumentHint: '<topic to explain>',
+  body: [
+    '# Pyramid explanation',
+    '',
+    'Explain **$ARGUMENTS** as a *pyramid*: lead with the answer, support it with a few key pillars, ground each pillar in evidence. You build this as a LIVE termrender diagram that fills in as parallel research lands — the user watches the skeleton grow into a complete picture.',
+    '',
+    '## The pyramid (Minto principle)',
+    '- **Apex** — ONE crisp sentence: the single governing answer/claim, the thing worth remembering.',
+    '- **Pillars** — 2–4 MECE supporting arguments that together prove the apex.',
+    '- **Base** — concrete evidence under each pillar (mechanisms, `file:line` refs, numbers, sources).',
+    '',
+    'Top-down: the reader gets the conclusion first, then descends for as much support as they want.',
+    '',
+    '## Workflow',
+    '',
+    '1. **Frame it.** Restate the topic in one line and commit to a *working* apex hypothesis (you will sharpen it). Name the 2–4 pillars you expect to need.',
+    '',
+    '2. **Scaffold the live diagram FIRST.** Write the termrender skeleton below to `./pyramid-<slug>.md` (apex = your hypothesis, pillars = titles, every base entry marked `[?]` pending). Then open it live so the user watches it build:',
+    '   ```bash',
+    '   termrender pane open ./pyramid-<slug>.md --watch   # detached tmux side-pane; re-renders on every save',
+    '   ```',
+    '   Not in tmux? Tell the user to run `termrender doc watch ./pyramid-<slug>.md` in another terminal, then continue regardless.',
+    '',
+    '3. **Investigate in parallel — do not block.** Fan out ONE explore agent per pillar/unknown AND dig into what you can answer yourself, concurrently:',
+    '   ```bash',
+    '   crtr node new "Investigate: <focused question for this pillar>. Report findings with sources / file:line refs." --kind explore',
+    '   ```',
+    '   You auto-subscribe; each finish wakes you. Never poll or wait — kick them all off, then start filling in what you already know.',
+    '',
+    '4. **Live-update as findings land.** Every time you learn something — your own digging or an explore report — EDIT the diagram file: flip a `[?]` to `[x]` (or `[!]` for a caveat/risk), add evidence under the right pillar, sharpen or rewrite the apex, drop a pillar that did not hold. Each save re-renders the pane. The diagram visibly grows skeleton → complete.',
+    '',
+    '5. **Land it.** When the apex is one crisp sentence, the pillars are MECE, and the base is concrete, do a final pass for accuracy, then give the user a 3–4 sentence spoken summary that mirrors apex → pillars. Tell them the diagram file path.',
+    '',
+    '## termrender skeleton (write this, then keep editing it)',
+    '```markdown',
+    ':::panel{title="<TOPIC>" color="cyan"}',
+    '',
+    '**<one-line apex answer — your governing claim>**',
+    '',
+    ':::divider{label="why"}',
+    ':::',
+    '',
+    ':::columns',
+    ':::col{width="33%"}',
+    ':::panel{title="Pillar 1 — <claim>" color="green"}',
+    ':::tree',
+    'evidence A [x]',
+    'evidence B [?]',
+    ':::',
+    ':::',
+    ':::',
+    ':::col{width="33%"}',
+    ':::panel{title="Pillar 2 — <claim>" color="green"}',
+    ':::tree',
+    'evidence C [?]',
+    ':::',
+    ':::',
+    ':::',
+    ':::col{width="34%"}',
+    ':::panel{title="Pillar 3 — <claim>" color="green"}',
+    ':::tree',
+    'evidence D [?]',
+    ':::',
+    ':::',
+    ':::',
+    ':::',
+    ':::',
+    '```',
+    'Markers: `[x]` confirmed, `[!]` caveat/risk, `[?]` still pending. Write structure only — termrender draws every box, border, and guide line; never hand-draw ASCII. Keep the apex to one sentence; push all detail into the base.',
+  ].join('\n'),
+};
+
 export function registerNode(): BranchDef {
   return defineBranch({
     name: 'node',
+    slash: pyramidSlash,
     rootEntry: {
       concept: 'a unit of the agent runtime — an agent on the canvas with its own context dir and pi vehicle. Spawning nodes is how work gets done here, not an optimization you reach for late',
       desc: 'spawn, inspect, and navigate nodes on the canvas',
