@@ -122,6 +122,18 @@ export interface AbortFrame {
   type: 'abort';
 }
 
+/** Run a `!` bash command — controller only. Maps to `session.executeBash()`,
+ *  which runs the command, records a `bashExecution` message in context, and
+ *  starts NO agent turn (pi's interactive `!`/`!!` semantics). `command` is the
+ *  text AFTER the leading `!`/`!!`; `excludeFromContext` is the `!!` form (output
+ *  shown but withheld from the LLM). The broker streams the result back as
+ *  `bash_start`/`bash_output`/`bash_end` frames. */
+export interface BashFrame {
+  type: 'bash';
+  command: string;
+  excludeFromContext?: boolean;
+}
+
 /** Controller arbitration (§5.3). */
 export interface RequestControlFrame {
   type: 'request_control';
@@ -151,8 +163,8 @@ export interface ShutdownFrame {
 // implements the handlers and replies `ack`/`error`. Builtin slash commands are
 // NOT engine-interpreted (`prompt('/model')` ships `/model` to the LLM as literal
 // text), so the viewer parses builtins itself (BUILTIN_SLASH_COMMANDS, vendored in
-// pi-vendored.ts) and dispatches these frames. Speculative ops
-// (clear_queue/import_jsonl/bash/…) are deliberately EXCLUDED (§1.2).
+// pi-vendored.ts) and dispatches these frames. (`!` bash runs via the drive-frame
+// `BashFrame` above, alongside prompt/steer; clear_queue/import_jsonl remain out.)
 
 /** `setModel(model)` — `/model` (selector resolves → chosen id). */
 export interface SetModelFrame {
@@ -321,6 +333,7 @@ export type ClientToBroker =
   | SteerFrame
   | FollowUpFrame
   | AbortFrame
+  | BashFrame
   | RequestControlFrame
   | ReleaseControlFrame
   | ByeFrame
@@ -404,6 +417,36 @@ export interface AckFrame {
   for: string;
   ok: boolean;
   detail?: string;
+}
+
+// ---------------------------------------------------------------------------
+// `!` bash-execution frames (broadcast to EVERY viewer)
+// ---------------------------------------------------------------------------
+// A controller's `BashFrame` triggers `session.executeBash()` in the broker; the
+// three frames below relay its lifecycle to ALL viewers (controller + observers)
+// so each renders the live `BashExecutionComponent` exactly as pi's interactive
+// mode does. The persisted `bashExecution` context message also rides the next
+// catch-up snapshot, so a viewer attaching after the run still sees it.
+
+/** A `!` run has begun — viewers create the bash component. */
+export interface BashStartFrame {
+  type: 'bash_start';
+  command: string;
+  excludeFromContext?: boolean;
+}
+/** A streamed chunk of combined stdout+stderr for the in-flight `!` run. */
+export interface BashOutputFrame {
+  type: 'bash_output';
+  chunk: string;
+}
+/** The `!` run finished — viewers mark the bash component complete. Mirrors
+ *  `BashResult` minus the (already-streamed) `output`. */
+export interface BashEndFrame {
+  type: 'bash_end';
+  exitCode: number | undefined;
+  cancelled: boolean;
+  truncated: boolean;
+  fullOutputPath?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -590,6 +633,9 @@ export type BrokerToClient =
   | DisplayStatusFrame
   | DisplayWidgetFrame
   | DisplayTitleFrame
+  | BashStartFrame
+  | BashOutputFrame
+  | BashEndFrame
   | ExtensionUIRequestFrame
   | AgentSessionEvent;
 

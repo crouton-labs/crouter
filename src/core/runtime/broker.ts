@@ -664,8 +664,48 @@ export async function runBroker(nodeId: string): Promise<void> {
         void session.followUp(frame.text, frame.images).catch(relayError);
         break;
       case 'abort':
-        void session.abort().catch(relayError);
+        // esc/abort cancels whatever is live: a running `!` command (abortBash)
+        // takes precedence over the agent turn, mirroring pi interactive mode.
+        if (session.isBashRunning) session.abortBash();
+        else void session.abort().catch(relayError);
         break;
+      case 'bash': {
+        // `!`/`!!` bash: run via session.executeBash (records a bashExecution
+        // context message, starts NO agent turn) and relay its lifecycle to ALL
+        // viewers as bash_start/bash_output/bash_end so each renders the live
+        // component. Serialized like pi's interactive mode — reject a second `!`
+        // while one is already running rather than racing _bashAbortController.
+        const command = frame.command;
+        if (command.trim() === '') break;
+        if (session.isBashRunning) {
+          sendFrame(client, {
+            type: 'error',
+            code: 'bash_busy',
+            message: 'A bash command is already running',
+          });
+          break;
+        }
+        const exclude = frame.excludeFromContext === true;
+        // Order before any held assistant message_update, so a `!` run mid-stream
+        // never renders ahead of the update it follows.
+        flushPendingUpdate();
+        broadcast({ type: 'bash_start', command, excludeFromContext: exclude });
+        void session
+          .executeBash(command, (chunk) => broadcast({ type: 'bash_output', chunk }), {
+            excludeFromContext: exclude,
+          })
+          .then((result) => {
+            broadcast({
+              type: 'bash_end',
+              exitCode: result.exitCode,
+              cancelled: result.cancelled,
+              truncated: result.truncated,
+              fullOutputPath: result.fullOutputPath,
+            });
+          })
+          .catch(relayError);
+        break;
+      }
     }
   };
 
@@ -976,7 +1016,8 @@ export async function runBroker(nodeId: string): Promise<void> {
       case 'prompt':
       case 'steer':
       case 'follow_up':
-      case 'abort': {
+      case 'abort':
+      case 'bash': {
         if (notController(client, 'drive the engine')) break;
         driveEngine(client, frame);
         break;

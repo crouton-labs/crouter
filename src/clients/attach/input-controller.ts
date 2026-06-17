@@ -403,6 +403,19 @@ export class InputController {
       }
     }
 
+    // `!cmd` / `!!cmd` → run bash in the engine and inject output into context,
+    // WITHOUT starting an agent turn (pi-native `!` semantics). `!!` withholds
+    // the output from the LLM. The broker relays the run as bash_* frames.
+    if (trimmed.startsWith('!')) {
+      const excludeFromContext = trimmed.startsWith('!!');
+      const command = trimmed.slice(excludeFromContext ? 2 : 1).trim();
+      if (command === '') return; // bare `!`/`!!`: nothing to run
+      if (!this.emitDrive({ type: 'bash', command, excludeFromContext })) return;
+      this.editor.addToHistory(trimmed);
+      this.editor.setText('');
+      return;
+    }
+
     // Submit-while-streaming = steer (pi-native parity): interject into the
     // running turn instead of queueing a fresh prompt. `isStreaming` is the
     // broker snapshot's busy signal; the broker routes `steer` → session.steer()

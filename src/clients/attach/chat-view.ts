@@ -126,6 +126,8 @@ export class ChatView {
   private streamingComponent: AssistantMessageComponent | undefined;
   /** Tool-call id → its execution component, for the duration of the call. */
   private readonly pendingTools = new Map<string, ToolExecutionComponent>();
+  /** The `!` bash component currently streaming (between bash_start and bash_end). */
+  private bashComponent: BashExecutionComponent | undefined;
   /** The single active activity loader (working/compaction/retry), if any. */
   private activityLoader: Loader | undefined;
   /** While true, `append` skips re-pinning the status container (bulk rebuild). */
@@ -453,6 +455,41 @@ export class ChatView {
       default:
         break;
     }
+    this.tui.requestRender();
+  }
+
+  // -------------------------------------------------------------------------
+  // `!` bash live stream (broker bash_start/bash_output/bash_end frames). Mirrors
+  // pi interactive mode's `!` handling: create the component on start, stream
+  // chunks into it, mark complete on end. The persisted `bashExecution` message
+  // also rides the next snapshot, so this only drives the LIVE view.
+  // -------------------------------------------------------------------------
+
+  bashStart(command: string, excludeFromContext?: boolean): void {
+    const component = new BashExecutionComponent(command, this.tui, excludeFromContext);
+    this.bashComponent = component;
+    this.append(component);
+    this.tui.requestRender();
+  }
+
+  bashOutput(chunk: string): void {
+    this.bashComponent?.appendOutput(chunk);
+    this.tui.requestRender();
+  }
+
+  bashEnd(result: {
+    exitCode: number | undefined;
+    cancelled: boolean;
+    truncated: boolean;
+    fullOutputPath?: string;
+  }): void {
+    this.bashComponent?.setComplete(
+      result.exitCode,
+      result.cancelled,
+      result.truncated ? ({ truncated: true } as unknown as TruncationResultLike) : undefined,
+      result.fullOutputPath,
+    );
+    this.bashComponent = undefined;
     this.tui.requestRender();
   }
 

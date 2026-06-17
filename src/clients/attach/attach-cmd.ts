@@ -578,6 +578,15 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
         input.attachDialog(frame);
         break;
       }
+      case 'bash_start':
+        chatView.bashStart(frame.command, frame.excludeFromContext);
+        break;
+      case 'bash_output':
+        chatView.bashOutput(frame.chunk);
+        break;
+      case 'bash_end':
+        chatView.bashEnd(frame);
+        break;
       default: {
         // A relayed AgentSessionEvent — render it, and keep local state fresh.
         const event = frame as AgentSessionEvent;

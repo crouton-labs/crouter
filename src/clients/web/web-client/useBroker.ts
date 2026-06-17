@@ -5,7 +5,15 @@
 
 import { useCallback, useEffect, useReducer, useRef } from 'react';
 import { BrokerClient, type CloseKind } from './broker-client.js';
-import { applySnapshot, initialConvState, reduce, type ConvState } from './transcript.js';
+import {
+  applySnapshot,
+  bashEnd,
+  bashOutput,
+  bashStart,
+  initialConvState,
+  reduce,
+  type ConvState,
+} from './transcript.js';
 import type {
   AgentSessionEvent,
   BrokerToClient,
@@ -14,6 +22,7 @@ import type {
   RpcExtensionUIRequest,
   RpcExtensionUIResponse,
 } from './protocol.js';
+import type { Command, ThinkingLevel } from '@/shared/protocol.js';
 
 /** Coarse connection phase for the pane's overlays. `open` = welcome received. */
 export type ConnPhase = 'connecting' | 'open' | 'no-broker' | 'no-node' | 'invalid' | 'closed';
@@ -28,6 +37,7 @@ export interface PaneState {
   sessionName: string | undefined;
   contextTokens: number | undefined;
   dialog: RpcExtensionUIRequest | null;
+  commands: Command[];
   /** Keyed non-blocking display state (setStatus / setWidget / setTitle). */
   statuses: Record<string, string>;
   widgets: Record<string, { lines: string[]; placement: 'aboveEditor' | 'belowEditor' }>;
@@ -55,6 +65,7 @@ function makeInitial(clientId: string): PaneState {
     sessionName: undefined,
     contextTokens: undefined,
     dialog: null,
+    commands: [],
     statuses: {},
     widgets: {},
     title: undefined,
@@ -82,6 +93,9 @@ function isControlFrame(t: string): boolean {
     t === 'display_status' ||
     t === 'display_widget' ||
     t === 'display_title' ||
+    t === 'bash_start' ||
+    t === 'bash_output' ||
+    t === 'bash_end' ||
     t === 'extension_ui_request'
   );
 }
@@ -100,6 +114,25 @@ function reducer(state: PaneState, action: Action): PaneState {
       return { ...state, dialog: null };
     case 'frame':
       return applyFrame(state, action.frame);
+  }
+}
+
+function parseCommandAck(detail: string | undefined): Command[] {
+  if (detail === undefined || detail.trim() === '') return [];
+  try {
+    const parsed = JSON.parse(detail) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item): item is Command => {
+      if (typeof item !== 'object' || item === null) return false;
+      const rec = item as Record<string, unknown>;
+      return (
+        typeof rec.name === 'string' &&
+        typeof rec.description === 'string' &&
+        (rec.source === 'builtin' || rec.source === 'command' || rec.source === 'template')
+      );
+    });
+  } catch {
+    return [];
   }
 }
 
@@ -122,6 +155,7 @@ function applyFrame(state: PaneState, frame: BrokerToClient): PaneState {
         sessionName: frame.snapshot.state?.sessionName,
         contextTokens: frame.snapshot.stats?.tokens?.total,
         dialog: frame.pending_dialog ?? null,
+        commands: [],
       };
     }
     case 'control_changed':
@@ -158,9 +192,17 @@ function applyFrame(state: PaneState, frame: BrokerToClient): PaneState {
     case 'display_title':
       return { ...state, title: frame.title };
     case 'ack':
+      if (frame.for !== 'get_commands') return state;
+      return frame.ok ? { ...state, commands: parseCommandAck(frame.detail) } : { ...state, commands: [] };
+    case 'bash_start':
+      return { ...state, conv: bashStart(state.conv, frame.command, frame.excludeFromContext) };
+    case 'bash_output':
+      return { ...state, conv: bashOutput(state.conv, frame.chunk) };
+    case 'bash_end':
+      return { ...state, conv: bashEnd(state.conv, frame) };
     case 'data':
     default:
-      return state; // read-op replies / acks are unused in v1
+      return state;
   }
 }
 
@@ -171,6 +213,10 @@ export interface BrokerActions {
   abort: () => void;
   takeControl: () => void;
   releaseControl: () => void;
+  setModel: (model: string) => void;
+  cycleModel: () => void;
+  setThinkingLevel: (level: ThinkingLevel) => void;
+  compact: (instructions?: string) => void;
   answerDialog: (resp: RpcExtensionUIResponse) => void;
   /** Cancel the current dialog (sends `cancelled:true`). */
   cancelDialog: () => void;
@@ -211,6 +257,7 @@ export function useBroker(nodeId: string): { state: PaneState; actions: BrokerAc
       onFrame: (frame) => {
         if (gen !== genRef.current) return;
         dispatch({ kind: 'frame', frame });
+        if (frame.type === 'welcome') client.send({ type: 'get_commands' });
       },
       onClose: (closeKind) => {
         if (gen !== genRef.current) return;
@@ -253,6 +300,14 @@ export function useBroker(nodeId: string): { state: PaneState; actions: BrokerAc
           dispatch({ kind: 'notice', text: 'take control before sending' });
           return;
         }
+        // `!cmd`/`!!cmd` → run bash in the engine, no agent turn (pi `!` parity).
+        if (body.startsWith('!')) {
+          const excludeFromContext = body.startsWith('!!');
+          const command = body.slice(excludeFromContext ? 2 : 1).trim();
+          if (command === '') return;
+          send({ type: 'bash', command, excludeFromContext });
+          return;
+        }
         send(streamingRef.current ? { type: 'steer', text: body } : { type: 'prompt', text: body });
       },
       [send],
@@ -263,6 +318,10 @@ export function useBroker(nodeId: string): { state: PaneState; actions: BrokerAc
     }, [send]),
     takeControl: useCallback(() => send({ type: 'request_control' }), [send]),
     releaseControl: useCallback(() => send({ type: 'release_control' }), [send]),
+    setModel: useCallback((model: string) => send({ type: 'set_model', model }), [send]),
+    cycleModel: useCallback(() => send({ type: 'cycle_model' }), [send]),
+    setThinkingLevel: useCallback((level: ThinkingLevel) => send({ type: 'set_thinking_level', level }), [send]),
+    compact: useCallback((instructions?: string) => send({ type: 'compact', ...(instructions ? { instructions } : {}) }), [send]),
     answerDialog: useCallback(
       (resp: RpcExtensionUIResponse) => {
         send(resp);

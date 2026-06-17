@@ -47,6 +47,62 @@ function roleOf(m: AnyMessage): string {
   return (m as { role?: string }).role ?? '';
 }
 
+// ---------------------------------------------------------------------------
+// `!` bash execution (broker bash_start/bash_output/bash_end frames). These are
+// broker control frames, NOT AgentSessionEvents, so the hook routes them here
+// explicitly. They build a synthetic `bashExecution` message in the transcript
+// that mirrors the one pi persists to context — rendered by MessageView.
+// ---------------------------------------------------------------------------
+
+/** Index of the most recent bashExecution message (the active `!` run), or null. */
+function lastBashIndex(state: ConvState): number | null {
+  for (let i = state.messages.length - 1; i >= 0; i--) {
+    if (roleOf(state.messages[i]!) === 'bashExecution') return i;
+  }
+  return null;
+}
+
+export function bashStart(state: ConvState, command: string, excludeFromContext?: boolean): ConvState {
+  const msg = {
+    role: 'bashExecution',
+    command,
+    output: '',
+    exitCode: undefined,
+    cancelled: false,
+    truncated: false,
+    excludeFromContext,
+    timestamp: Date.now(),
+  } as unknown as AnyMessage;
+  return { ...state, messages: [...state.messages, msg] };
+}
+
+export function bashOutput(state: ConvState, chunk: string): ConvState {
+  const idx = lastBashIndex(state);
+  if (idx === null) return state;
+  const messages = [...state.messages];
+  const m = messages[idx] as Record<string, unknown>;
+  messages[idx] = { ...m, output: `${(m.output as string) ?? ''}${chunk}` } as unknown as AnyMessage;
+  return { ...state, messages };
+}
+
+export function bashEnd(
+  state: ConvState,
+  result: { exitCode: number | undefined; cancelled: boolean; truncated: boolean; fullOutputPath?: string },
+): ConvState {
+  const idx = lastBashIndex(state);
+  if (idx === null) return state;
+  const messages = [...state.messages];
+  const m = messages[idx] as Record<string, unknown>;
+  messages[idx] = {
+    ...m,
+    exitCode: result.exitCode,
+    cancelled: result.cancelled,
+    truncated: result.truncated,
+    fullOutputPath: result.fullOutputPath,
+  } as unknown as AnyMessage;
+  return { ...state, messages };
+}
+
 /** Apply one broker→client AGENT event (an `AgentSessionEvent`) to the transcript.
  *  Broker control frames (welcome/control_changed/error/…) are handled by the hook,
  *  NOT here — only pi agent events reach this function. Returns a NEW state object
