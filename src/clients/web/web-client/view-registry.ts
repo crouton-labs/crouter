@@ -20,6 +20,8 @@ import linkedinCore from '../../../builtin-views/linkedin/core.mjs';
 import LinkedinWeb from '../../../builtin-views/linkedin/web.jsx';
 import settingsCore from '../../../builtin-views/settings/core.mjs';
 import SettingsWeb from '../../../builtin-views/settings/web.jsx';
+import promptReviewCore from '../../../builtin-views/prompt-review/core.mjs';
+import PromptReviewWeb from '../../../builtin-views/prompt-review/web.jsx';
 import workspaceCore from '../../../builtin-views/workspace-sidebar/core.mjs';
 import WorkspaceWeb from '../../../builtin-views/workspace-sidebar/web.jsx';
 
@@ -40,6 +42,7 @@ export const VIEW_REGISTRY: Record<string, ViewEntry> = {
   'git-pr': { core: gitPrCore as ViewCore, View: GitPrWeb },
   linkedin: { core: linkedinCore as ViewCore, View: LinkedinWeb },
   settings: { core: settingsCore as ViewCore, View: SettingsWeb },
+  'prompt-review': { core: promptReviewCore as ViewCore, View: PromptReviewWeb },
   'workspace-sidebar': { core: workspaceCore as ViewCore, View: WorkspaceWeb },
 };
 
