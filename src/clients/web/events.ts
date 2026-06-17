@@ -1,11 +1,10 @@
-// events.ts — the `crtr web` realtime push lane (the §7 SSE seam, built for v1).
+// events.ts — the `crtr web` realtime push lane.
 //
-// ONE server-sent-events stream, `GET /__crtr/events`, that carries CHANGE
-// INVALIDATIONS — never data. The shell / its ViewPanes subscribe and, on an
-// event, re-pull through their existing Sources (the bridge) instead of waiting
-// on a fixed poll tick. SSE carries "something in this class changed"; the
-// consumer decides what to re-read. This keeps the event vocabulary tiny and
-// generic and the contract unchanged (a ViewPane still just runs `refresh`).
+// ONE server-sent-events stream, `GET /__crtr/events`, that carries change
+// invalidations — never data. The shell and built-in views subscribe and, on an
+// event, re-pull through their existing bridge reads instead of waiting on a
+// fixed poll tick. SSE carries "something in this class changed"; the consumer
+// decides what to re-read.
 //
 // Event vocabulary (deliberately minimal): { kind: 'nodes' | 'inbox', ts }.
 //   - 'nodes' — the node graph changed (topology, status/intent transitions,
@@ -15,10 +14,9 @@
 //   - 'inbox' — a node's inbox.jsonl gained a message. Source: a recursive watch
 //     on the nodes/ tree, filtered to `inbox.jsonl` writes.
 //
-// WHY these sources (the §7 seam left the event source open): they are the
-// cheapest things that detect node-graph + inbox changes without a daemon hook
-// or a db trigger — pure fs.watch on the two on-disk authorities (canvas.db for
-// the graph, inbox.jsonl appends for messages). No polling, no canvas.db reads.
+// WHY these sources: they are the cheapest things that detect node-graph +
+// inbox changes without a daemon hook or a db trigger — pure fs.watch on the
+// two on-disk authorities (canvas.db for the graph, inbox.jsonl for messages).
 
 import { watch, type FSWatcher } from 'node:fs';
 import type { ServerResponse } from 'node:http';

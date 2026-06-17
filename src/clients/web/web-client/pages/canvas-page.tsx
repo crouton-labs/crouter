@@ -3,8 +3,8 @@
  * with a distinct visual treatment per lifecycle status and a blocked-on-human
  * flag (attention_count > 0). Non-enterable nodes (host_kind !== 'broker') are
  * shown but marked with a reason and do not navigate; enterable nodes navigate
- * to /nodes/:id. A "Spawn a node" action (B.7/G.1) posts to rest.spawnNode —
- * the new node arrives via the canvas stream.
+ * to /nodes/:id. A "Spawn a node" action (B.7/G.1) calls `spawnNode()` through
+ * the bridge; the new node arrives via the canvas stream.
  *
  * Quiet Instrument restyle (Phase 1): Fraunces header, live clock, status spine,
  * tree connector lines, pulse animations, NeedsYouStrip triage above the forest.
@@ -29,7 +29,7 @@ import type {
   NodeSummary,
   SpawnRequest,
 } from '@/shared/protocol.js';
-import { RestError, spawnNode } from '../net/rest-compat.js';
+import { CommandError, spawnNode } from '../command-client.js';
 import { useCanvasStore } from '../lib/use-canvas-store.js';
 import { cn } from '@/lib/utils.js';
 import { Button } from '@/components/ui/button.js';
@@ -534,7 +534,7 @@ function SpawnDialog({
       onClose(); // the node surfaces via the canvas stream
     } catch (err) {
       console.error('[spawn] failed:', err);
-      setError(err instanceof RestError ? `${err.code}: ${err.message}` : String(err));
+      setError(err instanceof CommandError ? `${err.code}: ${err.message}` : String(err));
     } finally {
       setBusy(false);
     }

@@ -1,6 +1,6 @@
 /**
  * Slash command palette (spec §5.E). A `/`-triggered filter over the node's
- * command inventory (fetched by the page via rest.getCommands). The page drives
+ * command inventory (fetched by the page from the broker's command ack). The page drives
  * it: it passes the current input query and visible (input starts with `/`)
  * and an onSelect that inserts `/name ` into the input. Commands are filtered
  * by name/description/source against the text after the leading `/`; argument

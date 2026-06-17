@@ -14,7 +14,7 @@ import { useNavigate } from 'react-router-dom';
 import { ArrowRight, Check } from 'lucide-react';
 import type { DeckAnswer, DeckSummary } from '@/shared/protocol.js';
 import { useConversationDecks, useDecks } from '../lib/use-decks.js';
-import { resolveDeck, getDeck, RestError } from '../net/rest-compat.js';
+import { resolveDeck, getDeck, isDeckGone } from '../lib/decks.js';
 import { deckKindMeta } from '../lib/deck-presentation.js';
 import { toast } from '../lib/toast.js';
 import { Button } from '@/components/ui/button.js';
@@ -59,24 +59,18 @@ function InlineAsk({ deck }: { deck: DeckSummary }) {
           ? { id: it.id }
           : {
               id: it.id,
-              selectedOptionId:
+              selectedOptionIds: [
                 (choice === 'yes'
                   ? it.options.find((o) => o.id === 'yes')?.id ?? it.options[0]?.id
                   : it.options.find((o) => o.id === 'no')?.id ?? it.options[1]?.id) ?? choice,
+              ],
             };
-      const responses: DeckAnswer[] = [
-        answer.selectedOptionIds !== undefined
-          ? answer
-          : answer.selectedOptionId !== undefined
-            ? { ...answer, selectedOptionIds: [answer.selectedOptionId] }
-            : answer,
-      ];
-      await resolveDeck(deck.job_id, { responses });
+      await resolveDeck(deck.job_id, { responses: [answer] });
       toast('Done — thanks!', 'success');
       refetch();
     } catch (err) {
-      if (err instanceof RestError && (err.code === 'deck_already_resolved' || err.code === 'deck_not_found')) {
-        toast('That request was already handled.');
+      if (isDeckGone(err)) {
+        toast(err instanceof Error ? err.message : 'That request was already handled.');
         refetch();
         return;
       }

@@ -1,6 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { listViews } from '../net/rest-compat.js';
-import type { ViewSummary } from '../net/rest-compat.js';
+import { listViews, type ViewSummary } from '../command-client.js';
 import { VIEW_REGISTRY } from '../view-registry.js';
 
 const POLL_MS = 30_000;

@@ -13,14 +13,15 @@
  * Approvals are meaningful, not rubber-stampable: each shows enough context to
  * decide; there is no blanket "approve all". Provenance is capability-gated
  * (DeckProvenance) — never a profile-name branch. A deck handled elsewhere
- * (load null / resolve 409) self-clears with a soft "already handled" toast.
+ * self-clears with the command's message; other load failures show a retry.
  */
 
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, Check } from 'lucide-react';
 import type { DeckAnswer, DeckDetail, DeckInteraction } from '@/shared/protocol.js';
-import { getDeck, resolveDeck, RestError } from '../net/rest-compat.js';
+import { getDeck, resolveDeck, isDeckGone } from '../lib/decks.js';
+import { CommandError } from '../command-client.js';
 import { renderMarkdown } from '../render/markdown.js';
 import { sanitizeHtml } from '../render/sanitize.js';
 import { deckKindMeta } from '../lib/deck-presentation.js';
@@ -34,11 +35,17 @@ export function DeckPage({ deckId }: { deckId: string }) {
   const navigate = useNavigate();
   const [deck, setDeck] = useState<DeckDetail | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<Error | null>(null);
   const [answers, setAnswers] = useState<Record<string, DeckAnswer>>({});
   const [busy, setBusy] = useState(false);
+  const [reloadNonce, setReloadNonce] = useState(0);
 
   useEffect(() => {
     let disposed = false;
+    setDeck(null);
+    setAnswers({});
+    setLoadError(null);
+    setBusy(false);
     setLoading(true);
     getDeck(deckId)
       .then((d) => {
@@ -49,45 +56,49 @@ export function DeckPage({ deckId }: { deckId: string }) {
       })
       .catch((err: unknown) => {
         if (disposed) return;
-        // Stale ask/resolved elsewhere; self-clear back to the list.
-        if (err instanceof RestError && (err.code === 'deck_not_found' || err.code === 'deck_already_resolved')) {
-          toast('That request was already handled.');
+        if (isDeckGone(err)) {
+          toast(err instanceof CommandError ? err.message : 'That request was already handled.');
           navigate('/inbox', { replace: true });
           return;
         }
+        setLoadError(err instanceof Error ? err : new Error('Failed to load deck.'));
         setLoading(false);
       });
     return () => {
       disposed = true;
     };
-  }, [deckId, navigate]);
+  }, [deckId, navigate, reloadNonce]);
 
   const setAnswer = (id: string, patch: Partial<DeckAnswer>): void =>
     setAnswers((prev) => ({ ...prev, [id]: { ...prev[id], id, ...patch } }));
 
   if (loading) return <DeckSkeleton />;
-  if (!deck) return null;
+  if (loadError) {
+    return (
+      <DeckLoadError
+        error={loadError}
+        onRetry={() => setReloadNonce((n) => n + 1)}
+        onBack={() => navigate('/inbox')}
+      />
+    );
+  }
+  if (!deck) return <DeckSkeleton />;
 
   const submit = async (override?: Record<string, DeckAnswer>): Promise<void> => {
     if (busy) return;
     setBusy(true);
-    const responses: DeckAnswer[] = Object.values(override ?? answers).map((a) => {
-      if (a.selectedOptionIds !== undefined) return a;
-      if (a.selectedOptionId === undefined) return a;
-      const { selectedOptionId, ...rest } = a;
-      return { ...rest, selectedOptionIds: [selectedOptionId] };
-    });
+    const responses = Object.values(override ?? answers).map(({ selectedOptionId, ...rest }) => rest);
     try {
       await resolveDeck(deck.job_id, { responses });
       toast('Done — thanks!', 'success');
       navigate('/inbox', { replace: true });
     } catch (err) {
-      if (err instanceof RestError && (err.code === 'deck_already_resolved' || err.code === 'deck_not_found')) {
-        toast('That request was already handled.');
+      if (isDeckGone(err)) {
+        toast(err instanceof CommandError ? err.message : 'That request was already handled.');
         navigate('/inbox', { replace: true });
         return;
       }
-      toast(err instanceof RestError ? err.message : 'Something went wrong — try again.');
+      toast(err instanceof CommandError ? err.message : 'Something went wrong — try again.');
       setBusy(false);
     }
   };
@@ -152,6 +163,29 @@ export function DeckPage({ deckId }: { deckId: string }) {
   );
 }
 
+function DeckLoadError({
+  error,
+  onRetry,
+  onBack,
+}: {
+  error: Error;
+  onRetry: () => void;
+  onBack: () => void;
+}) {
+  return (
+    <div className="mx-auto flex h-full min-h-0 max-w-2xl flex-col justify-center px-6 py-8">
+      <section className="panel p-5">
+        <h1 className="text-lg font-semibold">Couldn’t load the deck</h1>
+        <p className="mt-2 text-sm text-muted-foreground">{error.message}</p>
+        <div className="mt-4 flex gap-2">
+          <Button onClick={onRetry}>Retry</Button>
+          <Button variant="ghost" onClick={onBack}>Back to inbox</Button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 /** A lone notify or validation deck resolves directly from its in-card CTA, so
  *  the shared footer Submit is suppressed. */
 function isDirectResolve(single: DeckInteraction | null): boolean {
@@ -164,8 +198,7 @@ function canSubmit(deck: DeckDetail, answers: Record<string, DeckAnswer>): boole
     const a = answers[it.id];
     if (!a) return false;
     if (it.kind === 'notify' || it.kind === 'error') return true;
-    const hasPick =
-      !!a.selectedOptionId || (a.selectedOptionIds?.length ?? 0) > 0 || !!a.freetext?.trim();
+    const hasPick = !!a.selectedOptionIds?.length || !!a.freetext?.trim();
     // A context/decision interaction with neither options nor freetext is a bare
     // acknowledgement — always submittable.
     if (it.options.length === 0 && !it.allowFreetext) return true;
@@ -285,9 +318,9 @@ function ValidationView({
   const yes = it.options.find((o) => o.id === 'yes') ?? it.options[0];
   const no = it.options.find((o) => o.id === 'no') ?? it.options[1];
   const choose = (optionId: string): void => {
-    const next: DeckAnswer = { ...answer, id: it.id, selectedOptionId: optionId };
+    const next: DeckAnswer = { ...answer, id: it.id, selectedOptionIds: [optionId] };
     if (onResolveWith) onResolveWith(next);
-    else onChange({ selectedOptionId: optionId });
+    else onChange({ selectedOptionIds: [optionId], selectedOptionId: undefined });
   };
   return (
     <Card>
@@ -320,9 +353,9 @@ function ValidationView({
             {no?.label ?? 'Reject'}
           </Button>
         </div>
-        {!onResolveWith && answer.selectedOptionId && (
+        {!onResolveWith && answer.selectedOptionIds?.[0] && (
           <p className="text-xs text-muted-foreground">
-            Selected: {it.options.find((o) => o.id === answer.selectedOptionId)?.label}
+            Selected: {it.options.find((o) => o.id === answer.selectedOptionIds?.[0])?.label}
           </p>
         )}
       </div>
@@ -341,16 +374,14 @@ function DecisionView({
   answer: DeckAnswer;
   onChange: (patch: Partial<DeckAnswer>) => void;
 }) {
-  const selectedIds = new Set(
-    it.multiSelect ? answer.selectedOptionIds ?? [] : answer.selectedOptionId ? [answer.selectedOptionId] : [],
-  );
+  const selectedIds = new Set(answer.selectedOptionIds ?? []);
   const toggle = (optionId: string): void => {
     if (it.multiSelect) {
       const next = new Set(selectedIds);
       next.has(optionId) ? next.delete(optionId) : next.add(optionId);
       onChange({ selectedOptionIds: [...next], selectedOptionId: undefined });
     } else {
-      onChange({ selectedOptionId: optionId, selectedOptionIds: undefined });
+      onChange({ selectedOptionIds: [optionId], selectedOptionId: undefined });
     }
   };
   return (
@@ -416,7 +447,7 @@ function ContextView({
   answer: DeckAnswer;
   onChange: (patch: Partial<DeckAnswer>) => void;
 }) {
-  const selected = answer.selectedOptionId;
+  const selected = answer.selectedOptionIds?.[0];
   return (
     <Card>
       <InteractionTitle it={it} />
@@ -435,7 +466,7 @@ function ContextView({
             <li key={o.id}>
               <button
                 type="button"
-                onClick={() => onChange({ selectedOptionId: o.id })}
+                onClick={() => onChange({ selectedOptionIds: [o.id], selectedOptionId: undefined })}
                 className={cn(
                   'flex w-full items-start gap-3 rounded-xl border px-4 py-3 text-left transition-colors',
                   selected === o.id
@@ -491,10 +522,10 @@ function ErrorView({
           <button
             key={o.id}
             type="button"
-            onClick={() => onChange({ selectedOptionId: o.id })}
+            onClick={() => onChange({ selectedOptionIds: [o.id], selectedOptionId: undefined })}
             className={cn(
               'flex w-full items-start gap-3 rounded-xl border px-4 py-3 text-left transition-colors',
-              answer.selectedOptionId === o.id
+              answer.selectedOptionIds?.[0] === o.id
                 ? 'border-primary bg-primary/5 ring-1 ring-primary'
                 : 'border-border hover:border-primary/40 hover:bg-accent/40',
             )}

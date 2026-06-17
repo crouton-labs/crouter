@@ -1,45 +1,25 @@
 /**
- * The FROZEN browser↔server wire contract (design D11, spec §6).
+ * Shared wire types for the crouter web client/server split.
  *
- * This is the single source of truth both halves of `@crouton-kit/crouter-web`
- * compile against: the bridge server (`src/server`) and the SPA (`src/client`).
- * NO field is invented beyond spec §6 (REST §6.1, session WS §6.2, canvas WS
- * §6.3). The SPA imports pi payload types ONLY from this module — never from
- * `@crouton-kit/crouter` or any broker-protocol internal. The server is the
- * sole translator between broker frames and this web envelope.
- *
- * pi payload types ride the wire by structural reference and are re-exported
- * here TYPE-ONLY (erased at build, zero runtime coupling): `AgentMessage[]` is
- * the snapshot history, `AgentSessionEvent` is the relayed engine event passed
- * through unchanged, the content-block types render those payloads.
+ * The SPA imports the pi payload types it needs from this module — never from
+ * broker-protocol internals. The type-only re-exports below keep the web
+ * package's shared payload shapes in one place.
  */
 
 // --- pi payload types carried on the wire (type-only re-exports, D11) ---
-export type { AgentSessionEvent } from '@earendil-works/pi-coding-agent';
-export type { AgentMessage } from '@earendil-works/pi-agent-core';
 export type {
-  Message,
   UserMessage,
   AssistantMessage,
   ToolResultMessage,
   TextContent,
-  ThinkingContent,
   ToolCall,
   ImageContent,
 } from '@earendil-works/pi-ai';
-// `stats` payload + thinking level + extension dialog requests are pi types too.
-export type { SessionStats } from '@earendil-works/pi-coding-agent';
 export type { ThinkingLevel } from '@earendil-works/pi-agent-core';
-export type {
-  RpcExtensionUIRequest,
-  RpcExtensionUIResponse,
-} from '@earendil-works/pi-coding-agent';
+export type { RpcExtensionUIRequest, RpcExtensionUIResponse } from '@earendil-works/pi-coding-agent';
 
 import type { AgentMessage } from '@earendil-works/pi-agent-core';
-import type { AgentSessionEvent } from '@earendil-works/pi-coding-agent';
-import type { SessionStats } from '@earendil-works/pi-coding-agent';
 import type { ThinkingLevel } from '@earendil-works/pi-agent-core';
-import type { RpcExtensionUIRequest } from '@earendil-works/pi-coding-agent';
 
 // ===========================================================================
 // FoldedMessage — AgentMessage annotated with server-side provenance tags.
@@ -78,10 +58,10 @@ export type NodeLifeStatus = 'active' | 'idle' | 'done' | 'dead' | 'canceled';
 export type HostKind = 'broker' | 'tmux';
 
 // ===========================================================================
-// REST DTOs (spec §6.1)
+// Bridge command shapes (spec §6.1)
 // ===========================================================================
 
-/** One row of `GET bridge/canvas` — node identity + runtime, no chrome. */
+/** One row from `crtr canvas snapshot --json` — node identity + runtime, no chrome. */
 export interface NodeSummary {
   node_id: string;
   name: string;
@@ -144,7 +124,7 @@ export interface GitStatus {
   untracked: number;
 }
 
-/** `GET bridge/nodes/:id` — `NodeSummary` plus the per-node chrome (spec §6.1). */
+/** `crtr node inspect show --json`'s node payload — `NodeSummary` plus the per-node chrome. */
 export interface NodeDetail extends NodeSummary {
   branch: string | null;
   model: string | null;
@@ -169,74 +149,52 @@ export interface Command {
   argument_hint?: string;
 }
 
-// --- REST error taxonomy (design Error taxonomy) ---
+// --- `crtr --json` response shapes (spec §6.1) ---
 
-/** REST error codes. */
-export type RestErrorCode =
-  | 'bad_request'
-  | 'node_not_found'
-  | 'not_enterable'
-  | 'no_command_source'
-  | 'spawn_failed'
-  | 'revive_failed'
-  | 'close_failed'
-  | 'message_failed'
-  | 'deck_not_found'
-  | 'deck_already_resolved'
-  | 'resolve_failed';
-
-/** Structured failure envelope for REST actions and reads. */
-export interface ErrorEnvelope {
-  ok: false;
-  error: { code: RestErrorCode; message: string };
-}
-
-// --- REST response shapes (spec §6.1) ---
-
-/** `GET bridge/canvas` body. */
+/** `crtr canvas snapshot --json` body. */
 export interface CanvasSnapshot {
   nodes: NodeSummary[];
   /** ISO-8601. */
   generated_at: string;
 }
 
-/** `GET bridge/nodes/:id` body. */
-export interface NodeDetailResponse {
-  node: NodeDetail;
-}
-
-/** `GET bridge/nodes/:id/commands` body. */
-export interface CommandsResponse {
-  commands: Command[];
-}
-
-/** `POST bridge/nodes` success. */
+/** `crtr node new --json` success. */
 export interface SpawnResponse {
-  ok: true;
   node_id: string;
+  name: string;
+  window?: string;
+  session?: string;
+  status: string;
+  follow_up: string;
 }
 
-/** `POST bridge/nodes/:id/message` success. */
+/** `crtr node msg --json` success. */
 export interface MessageResponse {
-  ok: true;
   delivered: boolean;
+  node_id: string;
   woke: boolean;
 }
 
-/** `POST bridge/nodes/:id/revive` success. */
+/** `crtr canvas revive --json` success. */
 export interface ReviveResponse {
-  ok: true;
+  window: null;
+  session: string | null;
   resumed: boolean;
+  ready: boolean;
 }
 
-/** `POST bridge/nodes/:id/close` success. */
+/** `crtr node close --json` success. */
 export interface CloseResponse {
-  ok: true;
+  closed: boolean;
+  node_id: string;
+  count: number;
+  closed_ids: string[];
+  spared: string[];
 }
 
-// --- REST request bodies (spec §6.1) ---
+// --- `crtr` request bodies (spec §6.1) ---
 
-/** `POST bridge/nodes` body. Always headless; `root` toggles a resident node. */
+/** `crtr node new` body. Always headless; `root` toggles a resident node. */
 export interface SpawnRequest {
   prompt: string;
   kind: string;
@@ -248,13 +206,13 @@ export interface SpawnRequest {
   parent?: string;
 }
 
-/** `POST bridge/nodes/:id/message` body. */
+/** `crtr node msg` body. */
 export interface MessageRequest {
   body: string;
   tier?: string;
 }
 
-/** `POST bridge/nodes/:id/revive` body. */
+/** `crtr canvas revive` body. */
 export interface ReviveRequest {
   fresh?: boolean;
 }
@@ -320,21 +278,9 @@ export interface DeckSummary {
   interaction_count: number;
 }
 
-/** The full deck for a resolution flow (`GET bridge/decks/:id`). */
+/** The full deck for a resolution flow (`crtr human deck <id> --json`). */
 export interface DeckDetail extends DeckSummary {
   interactions: DeckInteraction[];
-}
-
-/** `GET bridge/decks` body. */
-export interface DecksResponse {
-  decks: DeckSummary[];
-  /** ISO-8601. */
-  generated_at: string;
-}
-
-/** `GET bridge/decks/:id` body. */
-export interface DeckDetailResponse {
-  deck: DeckDetail;
 }
 
 /** One interaction's answer (humanloop InteractionResponse). */
@@ -346,21 +292,19 @@ export interface DeckAnswer {
   optionComments?: Record<string, string>;
 }
 
-/** `POST bridge/decks/:id/resolve` body. */
+/** `crtr human resolve <id> --json` body. */
 export interface ResolveDeckRequest {
   responses: DeckAnswer[];
 }
 
-/** `POST bridge/decks/:id/resolve` success. */
+/** `crtr human resolve <id> --json` success. */
 export interface ResolveDeckResponse {
   resolved: true;
   job_id: string;
   delivered: boolean;
 }
 
-// ===========================================================================
-// Session WebSocket — `socket/nodes/:id` (spec §6.2)
-// ===========================================================================
+// Session state for the web client.
 
 /**
  * Engine state carried in `snapshot.state` — the broker snapshot's `state`
@@ -384,151 +328,8 @@ export interface SessionState {
 /** Web role of one browser tab's session connection. */
 export type WebRole = 'observer' | 'controller';
 
-/** WS error codes (design Error taxonomy). */
-export type WsErrorCode =
-  | 'not_controller'
-  | 'control_denied'
-  | 'broker_unavailable'
-  | 'frame_overflow'
-  | 'dialog_expired';
-
 /** Upstream broker connectivity, surfaced to the tab (spec §6.2). */
 export type BrokerStatus = 'connected' | 'reconnecting' | 'down' | 'revived';
-
-/**
- * Catch-up payload sent before any `event` (spec C.1/§6.2). `source:'broker'`
- * is a live broker `WelcomeFrame`; `source:'static'` is a dormant node's JSONL
- * replay. `controller`/`viewers` are server-derived, not broker fields.
- */
-export interface SnapshotMsg {
-  type: 'snapshot';
-  history: FoldedMessage[];
-  stats: SessionStats;
-  state: SessionState;
-  role: WebRole;
-  controller: string | null;
-  viewers: number;
-  pending_dialog?: RpcExtensionUIRequest;
-  source: 'broker' | 'static';
-}
-
-/** A relayed pi engine event, passed through unchanged (spec §6.2). */
-export interface EventMsg {
-  type: 'event';
-  event: AgentSessionEvent;
-}
-
-/** Controller-slot change for this tab (spec §6.2). */
-export interface ControlChangedMsg {
-  type: 'control_changed';
-  controller: string | null;
-  you_are: WebRole;
-}
-
-/** A blocking extension UI request routed to the controller (spec §5.H/§6.2). */
-export interface DialogMsg {
-  type: 'dialog';
-  request: RpcExtensionUIRequest;
-}
-
-/** Server-coalesced incremental chrome update (spec §6.2; design D12). */
-export interface ChromeMsg {
-  type: 'chrome';
-  branch?: string | null;
-  model?: string | null;
-  tokens?: TokenBurn | null;
-  context?: ContextUsage | null;
-  tool_calls?: number | null;
-  stats?: SessionStatsSummary | null;
-  /** Working-tree change counts pushed alongside branch updates. */
-  git_status?: GitStatus | null;
-}
-
-/** Acknowledgement of a client command (spec §6.2). */
-export interface AckMsg {
-  type: 'ack';
-  for: string;
-  ok: boolean;
-  detail?: string;
-}
-
-/** Upstream broker status change (spec §6.2). */
-export interface BrokerStatusMsg {
-  type: 'broker_status';
-  state: BrokerStatus;
-}
-
-/** Error surfaced on the session socket (spec §6.2). */
-export interface WsErrorMsg {
-  type: 'error';
-  code: WsErrorCode;
-  message: string;
-}
-
-/** Server → client session messages (spec §6.2). */
-export type WsServerMsg =
-  | SnapshotMsg
-  | EventMsg
-  | ControlChangedMsg
-  | DialogMsg
-  | ChromeMsg
-  | AckMsg
-  | BrokerStatusMsg
-  | WsErrorMsg;
-
-// --- Client → server session messages (spec §6.2) ---
-
-/** Send a live prompt — controller-only, requires a live broker. */
-export interface PromptMsg {
-  type: 'prompt';
-  text: string;
-  images?: import('@earendil-works/pi-ai').ImageContent[];
-}
-
-/** Steer the current turn mid-flight — controller-only. */
-export interface SteerMsg {
-  type: 'steer';
-  text: string;
-  images?: import('@earendil-works/pi-ai').ImageContent[];
-}
-
-/** Abort the current turn — controller-only. */
-export interface AbortMsg {
-  type: 'abort';
-}
-
-/** Set the active model — controller-only. */
-export interface SetModelMsg {
-  type: 'set_model';
-  model: string;
-}
-
-/** Cycle to the next model — controller-only. */
-export interface CycleModelMsg {
-  type: 'cycle_model';
-}
-
-/** Set the thinking level — controller-only. */
-export interface SetThinkingLevelMsg {
-  type: 'set_thinking_level';
-  level: ThinkingLevel;
-}
-
-/** Request a compaction — controller-only. */
-export interface CompactMsg {
-  type: 'compact';
-  instructions?: string;
-}
-
-/** Ask to become the web-controller (always accepted; arbitrated server-side). */
-export interface RequestControlMsg {
-  type: 'request_control';
-}
-
-/** Release the web-controller slot (always accepted). */
-export interface ReleaseControlMsg {
-  type: 'release_control';
-}
 
 /** Response payload to an extension dialog (`RpcExtensionUIResponse` minus id/type). */
 export type DialogResponseValue =
@@ -536,41 +337,7 @@ export type DialogResponseValue =
   | { confirmed: boolean }
   | { cancelled: true };
 
-/** Answer a blocking extension dialog — controller-only. */
-export interface DialogResponseMsg {
-  type: 'dialog_response';
-  request_id: string;
-  response: DialogResponseValue;
-}
-
-/** Client → server session messages (spec §6.2). */
-export type WsClientMsg =
-  | PromptMsg
-  | SteerMsg
-  | AbortMsg
-  | SetModelMsg
-  | CycleModelMsg
-  | SetThinkingLevelMsg
-  | CompactMsg
-  | RequestControlMsg
-  | ReleaseControlMsg
-  | DialogResponseMsg;
-
-// ===========================================================================
-// Canvas WebSocket — `socket/canvas` (spec §6.3)
-// ===========================================================================
-
-/** Pushed canvas snapshot/delta; same shape as `GET bridge/canvas` plus a tag. */
-export interface CanvasMsg {
-  type: 'canvas';
-  nodes: NodeSummary[];
-  /** ISO-8601. */
-  generated_at: string;
-}
-
-// ===========================================================================
 // Views — structured agent-authored pages (design D11, §7)
-// ===========================================================================
 
 /**
  * A typed content block within a view tab. Discriminated union of three
@@ -580,30 +347,3 @@ export type ViewBlock =
   | { kind: 'markdown'; source: { node_id: string; path: string } | { inline: string } }
   | { kind: 'kpis'; items: { label: string; value: string; unit?: string; sub?: string }[] }
   | { kind: 'barlist'; title: string; rows: { label: string; value: number; max?: number; note?: string }[] };
-
-/** A named tab within a view, carrying one or more content blocks. */
-export interface ViewTab {
-  id: string;
-  label: string;
-  blocks: ViewBlock[];
-}
-
-/** Full view manifest — the root record for an agent-authored view. */
-export interface ViewManifest {
-  id: string;
-  title: string;
-  built_by: string | null;
-  updated_at: string;
-  status?: NodeLifeStatus;
-  tabs: ViewTab[];
-}
-
-/** `GET bridge/views` body. */
-export interface ViewsResponse {
-  views: ViewManifest[];
-}
-
-/** `GET bridge/views/:id` body. */
-export interface ViewDetailResponse {
-  view: ViewManifest;
-}

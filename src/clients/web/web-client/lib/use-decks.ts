@@ -1,14 +1,14 @@
 /**
- * Inbox deck hooks. The pending-deck list is served by `GET bridge/decks`; it
- * re-fetches on SSE inbox/node invalidations and on demand. The badge count is
- * derived straight from the canvas snapshot, so it updates instantly with zero
- * extra round-trips (design §4.1 badge, §5.2 list). Polling fallback is
- * inherited from the canvas store.
+ * Inbox deck hooks. The pending-deck list comes from `crtr human list --json`
+ * through the bridge-native deck adapter; it re-fetches on SSE inbox/node
+ * invalidations and on demand. The badge count is derived straight from the
+ * canvas snapshot, so it updates instantly with zero extra round-trips (design
+ * §4.1 badge, §5.2 list). Polling fallback is inherited from the canvas store.
  */
 
 import { useEffect, useState, useCallback } from 'react';
 import type { DeckSummary, NodeSummary } from '@/shared/protocol.js';
-import { getDecks } from '../net/rest-compat.js';
+import { getDecks } from './decks.js';
 import { useCanvasStore } from './use-canvas-store.js';
 import { useSseRefresh } from '../sse.js';
 

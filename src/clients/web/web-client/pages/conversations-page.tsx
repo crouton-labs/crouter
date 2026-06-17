@@ -20,7 +20,7 @@ import {
   type Conversation,
   type ConversationState,
 } from '../lib/conversations.js';
-import { spawnNode, RestError } from '../net/rest-compat.js';
+import { spawnNode, CommandError } from '../command-client.js';
 import { handleComposerKeyDown } from '../lib/composer-keys.js';
 import { Button } from '@/components/ui/button.js';
 import { Textarea } from '@/components/ui/textarea.js';
@@ -128,7 +128,7 @@ function NewChatComposer({
       const res = await spawnNode({ prompt, kind: 'general', mode: 'base', root: true });
       navigate(`/c/${encodeURIComponent(res.node_id)}`);
     } catch (err) {
-      setError(err instanceof RestError ? err.message : String(err));
+      setError(err instanceof CommandError ? err.message : String(err));
       setBusy(false);
     }
   };

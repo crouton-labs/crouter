@@ -11,7 +11,7 @@
 
 import { useState, useEffect } from 'react';
 import { cn } from '@/lib/utils.js';
-import { peekFile, type FilePeekResponse } from '../net/rest-compat.js';
+import { peekFile, type FilePeekResponse } from '../command-client.js';
 import { renderMarkdown } from '../render/markdown.js';
 
 export interface FilePeekProps {

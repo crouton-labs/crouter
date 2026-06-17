@@ -16,7 +16,7 @@ import { useNavigate } from 'react-router-dom';
 import { ChevronLeft, ChevronDown } from 'lucide-react';
 import type { Command, NodeDetail, ThinkingLevel } from '@/shared/protocol.js';
 import type { Capability } from '../profile/types.js';
-import { closeNode, getNode, messageNode, reviveNode, RestError } from '../net/rest-compat.js';
+import { closeNode, getNode, messageNode, reviveNode, CommandError } from '../command-client.js';
 import { useSessionStore, type SessionStore } from '../store/session-store.js';
 import type { CSSProperties } from 'react';
 import { TitleBar } from '../chrome/chrome-bar.js';
@@ -722,5 +722,5 @@ function InboxMessageDialog({
 // ---------------------------------------------------------------------------
 
 function asMessage(err: unknown): string {
-  return err instanceof RestError ? `${err.code}: ${err.message}` : String(err);
+  return err instanceof CommandError ? `${err.code}: ${err.message}` : String(err);
 }

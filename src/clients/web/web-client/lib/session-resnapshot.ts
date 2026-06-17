@@ -22,7 +22,7 @@ const MAX_MS = 4000;
 export interface ResnapshotInput {
   /** The stream is on a static (dormant) snapshot. */
   dormant: boolean;
-  /** Node lifecycle status from the REST detail (null/undefined while it loads). */
+  /** Node lifecycle status from `crtr node inspect show` (null/undefined while it loads). */
   status: string | null | undefined;
   /** The session socket is genuinely open (not mid-reconnect). */
   socketReady: boolean;

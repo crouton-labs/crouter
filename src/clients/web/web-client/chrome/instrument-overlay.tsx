@@ -1,12 +1,11 @@
 /**
- * Instrument HUD overlay — the telemetry that used to ride an always-on
- * `.cluster` band on the console (context-% + cost gauges, msgs/tokens/tools
- * dials). The mockup console has NO instrument band, so the readings move into
- * a dismissible HUD: default hidden, toggled by ⌥i, dismissed by Esc or a
- * click outside. The toggle is suppressed while the composer textarea is
- * focused so typing never summons it. Styled with the same `.cluster`/`.gauge`/
- * `.dial` atoms (the mockup's designed-but-unplaced instrument cluster), floated
- * in a `.panel` and entranced with the `rise` keyframe.
+ * Instrument HUD overlay — the telemetry panel for the console's `.cluster`
+ * readings (context-% + cost gauges, msgs/tokens/tools dials). The mockup
+ * console has no always-on instrument band, so the readings live in a
+ * dismissible HUD: default hidden, toggled by ⌥i, dismissed by Esc or a click
+ * outside. The toggle is suppressed while the composer textarea is focused so
+ * typing never summons it. Styled with the same `.cluster`/`.gauge`/`.dial`
+ * atoms, floated in a `.panel` and entranced with the `rise` keyframe.
  */
 
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';

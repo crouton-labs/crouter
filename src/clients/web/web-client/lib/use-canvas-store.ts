@@ -1,11 +1,11 @@
 /**
- * Canvas snapshot store. Reads the browser roster from the in-tree bridge and
- * refreshes on SSE invalidations (`nodes`/`inbox`) instead of a standalone WS.
+ * Canvas snapshot store. Reads the browser roster through the in-tree bridge
+ * and refreshes on SSE invalidations (`nodes`/`inbox`) from `GET /__crtr/events`.
  */
 
 import { useCallback, useEffect, useState } from 'react';
 import type { NodeSummary } from '@/shared/protocol.js';
-import { getCanvas } from '../net/rest-compat.js';
+import { getCanvas } from '../command-client.js';
 import { useSseRefresh } from '../sse.js';
 import { useServerStatus } from './server-status.js';
 

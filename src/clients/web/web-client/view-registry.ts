@@ -4,8 +4,8 @@
 // loading. Paths are src-relative; both the dev Vite root (web-client) and the
 // `vite build` resolve them against src/builtin-views/.
 //
-// SEAM (design §11): user/project views are not bundled in v1. The registry is a
-// plain map; a future `crtr view build` can dynamic-import additional entries.
+// User/project views are not bundled here; this registry only lists the shipped
+// builtins.
 
 import type { ViewCore, ChromeState } from '../../../core/view/contract.js';
 import type { FunctionComponent } from 'react';

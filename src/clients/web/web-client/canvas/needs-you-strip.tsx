@@ -12,7 +12,7 @@ import { useNavigate } from 'react-router-dom';
 import { Flag, ArrowRight } from 'lucide-react';
 import type { DeckAnswer, DeckSummary } from '@/shared/protocol.js';
 import { useDecks } from '../lib/use-decks.js';
-import { getDeck, resolveDeck, RestError } from '../net/rest-compat.js';
+import { getDeck, resolveDeck, isDeckGone } from '../lib/decks.js';
 import { deckKindMeta, waitedFor } from '../lib/deck-presentation.js';
 import { toast } from '../lib/toast.js';
 import { Button } from '@/components/ui/button.js';
@@ -34,20 +34,14 @@ async function resolveSimple(
       ? { id: it.id }
       : {
           id: it.id,
-          selectedOptionId:
+          selectedOptionIds: [
             (choice === 'yes'
               ? it.options.find((o) => o.id === 'yes')?.id ?? it.options[0]?.id
               : it.options.find((o) => o.id === 'no')?.id ??
                 it.options[1]?.id) ?? choice,
+          ],
         };
-  const responses: DeckAnswer[] = [
-    answer.selectedOptionIds !== undefined
-      ? answer
-      : answer.selectedOptionId !== undefined
-        ? { ...answer, selectedOptionIds: [answer.selectedOptionId] }
-        : answer,
-  ];
-  await resolveDeck(deckId, { responses });
+  await resolveDeck(deckId, { responses: [answer] });
 }
 
 // ─── strip ───────────────────────────────────────────────────────────────────
@@ -114,11 +108,9 @@ function DeckCard({ deck }: { deck: DeckSummary }): React.ReactElement {
       setDecisionOptions(opts.length <= 3 ? opts : []);
     } catch (err) {
       // Deck vanished before we could fetch options — treat as no inline buttons.
-      if (
-        err instanceof RestError &&
-        (err.code === 'deck_not_found' || err.code === 'deck_already_resolved')
-      ) {
+      if (isDeckGone(err)) {
         setDecisionOptions([]);
+        refetch();
       } else {
         // Unexpected — surface in console; fall back to no inline buttons so the
         // card still renders with the "open thread" link.
@@ -143,11 +135,8 @@ function DeckCard({ deck }: { deck: DeckSummary }): React.ReactElement {
       toast('Done — thanks!', 'success');
       refetch();
     } catch (err) {
-      if (
-        err instanceof RestError &&
-        (err.code === 'deck_already_resolved' || err.code === 'deck_not_found')
-      ) {
-        toast('That request was already handled.');
+      if (isDeckGone(err)) {
+        toast(err instanceof Error ? err.message : 'That request was already handled.');
         refetch();
         return;
       }
@@ -170,11 +159,8 @@ function DeckCard({ deck }: { deck: DeckSummary }): React.ReactElement {
       toast('Done — thanks!', 'success');
       refetch();
     } catch (err) {
-      if (
-        err instanceof RestError &&
-        (err.code === 'deck_already_resolved' || err.code === 'deck_not_found')
-      ) {
-        toast('That request was already handled.');
+      if (isDeckGone(err)) {
+        toast(err instanceof Error ? err.message : 'That request was already handled.');
         refetch();
         return;
       }

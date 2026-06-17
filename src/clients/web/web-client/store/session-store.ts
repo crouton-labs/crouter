@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useBroker } from '../useBroker.js';
 import { useServerStatus } from '../lib/server-status.js';
 import { applySnapshot } from '../transcript.js';
-import { getNodeSnapshot, type NodeSnapshotResponse } from '../net/rest-compat.js';
+import { getNodeSnapshot, type NodeSnapshotResponse } from '../command-client.js';
 import type {
   BrokerStatus,
   Command,
@@ -79,7 +79,7 @@ function toSessionState(nodeId: string, snapshot: NodeSnapshotResponse['snapshot
     followUpMode: snapshot.state?.followUpMode ?? 'all',
     sessionName: snapshot.state?.sessionName ?? null,
     autoCompactionEnabled: snapshot.state?.autoCompactionEnabled ?? false,
-    pendingMessageCount: 0,
+    pendingMessageCount: snapshot.state?.pendingMessageCount ?? 0,
   };
 }
 
@@ -108,33 +108,27 @@ export function useSessionStore(nodeId: string): SessionStore {
     };
   }, [nodeId, state.conn]);
 
-  // Only trust a dormant snapshot that belongs to the CURRENT node: switching
-  // between two dormant nodes keeps the prior snapshot in state until the new
-  // node's async fetch resolves, so guard on the response's node_id to avoid
-  // briefly rendering node A's messages/state/commands under node B.
-  const snapshot = dormantSnapshot?.node_id === nodeId ? dormantSnapshot : null;
+  // Only trust a dormant snapshot while the broker is actually absent:
+  // switching from `no-broker` to a live broker leaves the prior snapshot in
+  // state until the reconnect path clears it, so gate on conn first and then on
+  // the response's node_id to avoid briefly rendering stale node A data under B.
+  const snapshot = state.conn === 'no-broker' && dormantSnapshot?.node_id === nodeId ? dormantSnapshot : null;
 
   const staticConv = useMemo(() => {
     if (snapshot === null) return null;
     return applySnapshot(snapshot.snapshot);
   }, [snapshot]);
 
+  const liveSession = useMemo<SessionState | null>(() => {
+    if (state.session === null) return null;
+    return { ...state.session, isStreaming: state.conv.isStreaming };
+  }, [state.session, state.conv.isStreaming]);
+
   const sessionState = useMemo<SessionState | null>(() => {
     if (state.conn === 'connecting' || state.conn === 'closed') return null;
     if (snapshot !== null) return toSessionState(nodeId, snapshot.snapshot);
-    return {
-      sessionId: nodeId,
-      sessionFile: null,
-      model: state.model ?? null,
-      isStreaming: state.conv.isStreaming,
-      thinkingLevel: 'off',
-      steeringMode: 'all',
-      followUpMode: 'all',
-      sessionName: state.sessionName ?? null,
-      autoCompactionEnabled: false,
-      pendingMessageCount: 0,
-    };
-  }, [nodeId, dormantSnapshot, state.conn, state.conv.isStreaming, state.model, state.sessionName]);
+    return liveSession;
+  }, [nodeId, snapshot, state.conn, liveSession]);
 
   const chrome = useMemo<NodeChrome>(() => {
     if (snapshot !== null) {

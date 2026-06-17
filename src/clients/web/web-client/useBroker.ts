@@ -1,7 +1,7 @@
 // useBroker.ts — the React state layer over BrokerClient. Owns the connection
 // lifecycle (connect, hello handshake, reconnect on transient drops), folds every
 // broker→client frame into a single PaneState, and exposes the drive actions
-// (prompt/steer/abort, control arbitration, dialog answers) ConversationPane renders.
+// (prompt/steer/abort, control arbitration, dialog answers) the node page renders.
 
 import { useCallback, useEffect, useReducer, useRef } from 'react';
 import { BrokerClient, type CloseKind } from './broker-client.js';
@@ -16,13 +16,14 @@ import {
 } from './transcript.js';
 import type {
   AgentSessionEvent,
+  BrokerSnapshot,
   BrokerToClient,
   ClientRole,
   ClientToBroker,
   RpcExtensionUIRequest,
   RpcExtensionUIResponse,
 } from './protocol.js';
-import type { Command, ThinkingLevel } from '@/shared/protocol.js';
+import type { Command, SessionState, ThinkingLevel } from '@/shared/protocol.js';
 
 /** Coarse connection phase for the pane's overlays. `open` = welcome received. */
 export type ConnPhase = 'connecting' | 'open' | 'no-broker' | 'no-node' | 'invalid' | 'closed';
@@ -33,6 +34,7 @@ export interface PaneState {
   conv: ConvState;
   role: ClientRole;
   controllerId: string | null;
+  session: SessionState | null;
   model: string | undefined;
   sessionName: string | undefined;
   contextTokens: number | undefined;
@@ -61,6 +63,7 @@ function makeInitial(clientId: string): PaneState {
     conv: initialConvState(),
     role: 'observer',
     controllerId: null,
+    session: null,
     model: undefined,
     sessionName: undefined,
     contextTokens: undefined,
@@ -136,6 +139,21 @@ function parseCommandAck(detail: string | undefined): Command[] {
   }
 }
 
+function normalizeSessionState(state: BrokerSnapshot['state']): SessionState {
+  return {
+    sessionId: state.sessionId,
+    sessionFile: state.sessionFile ?? null,
+    model: state.model ?? null,
+    isStreaming: state.isStreaming,
+    thinkingLevel: state.thinkingLevel,
+    steeringMode: state.steeringMode,
+    followUpMode: state.followUpMode,
+    sessionName: state.sessionName ?? null,
+    autoCompactionEnabled: state.autoCompactionEnabled,
+    pendingMessageCount: state.pendingMessageCount,
+  };
+}
+
 function applyFrame(state: PaneState, frame: BrokerToClient): PaneState {
   if (!isControlFrame(frame.type)) {
     // A pi AgentSessionEvent — fold into the transcript.
@@ -145,14 +163,16 @@ function applyFrame(state: PaneState, frame: BrokerToClient): PaneState {
     case 'welcome': {
       const conv = applySnapshot(frame.snapshot);
       const controllerId = frame.controller_id;
+      const session = normalizeSessionState(frame.snapshot.state);
       return {
         ...state,
         conn: 'open',
         conv,
         controllerId,
         role: controllerId === state.clientId ? 'controller' : 'observer',
-        model: frame.snapshot.state?.model,
-        sessionName: frame.snapshot.state?.sessionName,
+        session,
+        model: session.model ?? undefined,
+        sessionName: session.sessionName ?? undefined,
         contextTokens: frame.snapshot.stats?.tokens?.total,
         dialog: frame.pending_dialog ?? null,
         commands: [],
@@ -165,7 +185,13 @@ function applyFrame(state: PaneState, frame: BrokerToClient): PaneState {
         role: frame.controller_id === state.clientId ? 'controller' : 'observer',
       };
     case 'model_changed':
-      return { ...state, model: frame.model };
+      return {
+        ...state,
+        model: frame.model,
+        session: state.session
+          ? { ...state.session, model: frame.model ?? null }
+          : state.session,
+      };
     case 'error':
       return {
         ...state,

@@ -1,4 +1,4 @@
-// protocol.ts — the one type surface the ConversationPane client imports.
+// protocol.ts — the one type surface the web client imports.
 //
 // Everything here is TYPE-ONLY: the broker wire frames come from the canonical
 // `broker-protocol.ts` (so they never drift from the broker), and the pi message
