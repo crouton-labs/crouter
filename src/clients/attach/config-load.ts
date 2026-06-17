@@ -255,17 +255,22 @@ export interface AttachPalette {
   error: (s: string) => string;
   /** Warning / transient notices. Same constraint as `error` → ANSI yellow. */
   warning: (s: string) => string;
-  /** Editor border when the input is in shell/bash mode (leading `!`). pi paints
-   *  this from its `bashMode` theme color (default `green`), which pi does NOT
-   *  re-export through its public surface — so, like `error`/`warning`, this is
-   *  the semantically-correct ANSI green, not an ad-hoc hardcode. */
+  /** Editor border for a SINGLE-`!` bash command (output IS added to the agent's
+   *  context). Dull/normal ANSI green — pi paints shell mode from its `bashMode`
+   *  theme color (default `green`), which pi does NOT re-export through its public
+   *  surface, so like `error`/`warning` this is the semantically-correct ANSI green. */
   bashMode: (s: string) => string;
+  /** Editor border for a `!!` bash command (output is HIDDEN from the agent).
+   *  BRIGHT ANSI green, so the more consequential "agent won't see this" form
+   *  reads as visually hotter than the plain `!`. */
+  bashModeAlt: (s: string) => string;
 }
 
 const FAINT = (s: string): string => `\x1b[2m${s}\x1b[22m`;
 const RED = (s: string): string => `\x1b[31m${s}\x1b[39m`;
 const YELLOW = (s: string): string => `\x1b[33m${s}\x1b[39m`;
 const GREEN = (s: string): string => `\x1b[32m${s}\x1b[39m`;
+const BRIGHT_GREEN = (s: string): string => `\x1b[92m${s}\x1b[39m`;
 
 /**
  * Build the attach chrome's color palette from the LIVE theme. Call AFTER
@@ -298,6 +303,7 @@ export function attachPalette(): AttachPalette {
     error: RED,
     warning: YELLOW,
     bashMode: GREEN,
+    bashModeAlt: BRIGHT_GREEN,
     surface: (line) => `${bgOn}${line.replace(/\x1b\[0m/g, `\x1b[0m${bgOn}`)}\x1b[49m`,
   };
 }

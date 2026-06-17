@@ -248,7 +248,10 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
   let liveState: BrokerSnapshot['state'] | undefined;
   // Shell/bash mode: the editor text leads with `!`. Tracks pi's interactive
   // `isBashMode`, which recolors the editor border green as a visual cue (#7).
-  let bashMode = false;
+  // Three levels: 0 = off, 1 = `!` (output goes to the agent's context), 2 = `!!`
+  // (output hidden from the agent). The level drives BOTH the border hue (dull vs
+  // bright green) and a status-bar segment explaining what will happen.
+  let bashMode: 0 | 1 | 2 = 0;
   let notice = '';
   // Live context occupancy for the footer: `contextTokens` is the prompt-token
   // count of the most recent assistant turn (input + cacheRead + cacheWrite =
@@ -265,6 +268,11 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
     const segs: string[] = [
       role === 'controller' ? pal.active('● drive') : pal.muted('○ read-only'),
     ];
+    // Bash mode leads the bar (most salient while typing a `!` command) and
+    // spells out the consequence: a single `!` feeds output to the agent; `!!`
+    // hides it. Hue matches the editor border (dull vs bright green).
+    if (bashMode === 2) segs.unshift(pal.bashModeAlt('● bash — output hidden from agent'));
+    else if (bashMode === 1) segs.unshift(pal.bashMode('● bash — output added to context'));
     if (liveState?.model) segs.push(pal.info(liveState.model));
     if (liveState?.isStreaming) segs.push(pal.active('streaming'));
     if (contextTokens !== undefined) {
@@ -454,7 +462,13 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
   // forces the whole frame green (#7); otherwise the hue tracks the thinking
   // level. One place so the onChange bash toggle and live-state updates agree.
   const paintEditorFrame = (): void => {
-    if (bashMode) {
+    if (bashMode === 2) {
+      // `!!` — bright green border + bright-green title chip (black text for
+      // contrast on the hot bg).
+      editor.borderColor = pal.bashModeAlt;
+      editor.titleStyle = (s) => `\x1b[102m\x1b[30m\x1b[1m ${s} \x1b[0m`;
+    } else if (bashMode === 1) {
+      // `!` — dull green border + green title chip.
       editor.borderColor = pal.bashMode;
       editor.titleStyle = (s) => `\x1b[42m\x1b[97m\x1b[1m ${s} \x1b[0m`;
     } else {
@@ -467,10 +481,13 @@ async function runAttach(nodeId: string, observer: boolean): Promise<void> {
   // Recolor the editor when `!` enters/leaves the front of the input (#7). pi's
   // interactive mode does the same off `editor.onChange`.
   editor.onChange = (text: string): void => {
-    const next = text.trimStart().startsWith('!');
+    const lead = text.trimStart();
+    // `!!` must be tested before `!` (both match startsWith('!')).
+    const next: 0 | 1 | 2 = lead.startsWith('!!') ? 2 : lead.startsWith('!') ? 1 : 0;
     if (next === bashMode) return;
     bashMode = next;
     paintEditorFrame();
+    renderFooter(); // the status segment tracks the bash level
     tui.requestRender();
   };
   const setLiveState = (state: BrokerSnapshot['state']): void => {
