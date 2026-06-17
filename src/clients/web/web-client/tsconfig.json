@@ -10,7 +10,12 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "types": []
+    "types": [],
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./*"],
+      "@crouton-kit/crouter/web": ["../../../web/index.ts"]
+    }
   },
   "include": ["."],
   "exclude": ["vite.config.ts"]

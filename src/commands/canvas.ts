@@ -10,6 +10,7 @@
 import { defineBranch } from '../core/command.js';
 import type { BranchDef } from '../core/command.js';
 import { dashboardLeaf } from './dashboard.js';
+import { canvasSnapshotLeaf } from './canvas-snapshot.js';
 import { browseLeaf } from './canvas-browse.js';
 import { reviveLeaf } from './revive.js';
 import { attentionBranch } from './attention.js';
@@ -33,6 +34,6 @@ export function registerCanvas(): BranchDef {
       model:
         'Canvas-wide operations, distinct from per-node work (`node`) and a node\'s own spine I/O (`push`/`feed`). `dashboard` renders the subscription forest as a tree; `browse` opens an interactive full-screen navigator (tabs/tree/search) over the whole canvas and resumes the chosen node; `attention` aggregates pending human asks across the graph; `revive` reopens a window for a done/idle/dead/canceled node; `history` searches and recalls the content record (reports + context docs) of past work in a cwd; `daemon` manages the thin crtrd supervisor that auto-revives nodes on window exit; `prune` bounds growth by deleting terminal nodes past a TTL.',
     },
-    children: [dashboardLeaf, browseLeaf, attentionBranch, reviveLeaf, historyBranch, daemonBranch, chordLeaf, tmuxSpreadLeaf, canvasPruneLeaf],
+    children: [dashboardLeaf, canvasSnapshotLeaf, browseLeaf, attentionBranch, reviveLeaf, historyBranch, daemonBranch, chordLeaf, tmuxSpreadLeaf, canvasPruneLeaf],
   });
 }

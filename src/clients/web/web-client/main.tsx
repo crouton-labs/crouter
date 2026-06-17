@@ -1,16 +1,20 @@
-// main.tsx — the shell SPA entry. Mounts <Shell> (design §3) and pulls in Tailwind
-// (styles.css). Served two ways by the unified `crtr web serve` (design §11):
-// the prebuilt dist/web-client/ bundle (shipped) or Vite middleware (--dev, HMR).
+// Browser entry point. Mounts <App/> into #root (see index.html) and pulls in
+// the Tailwind v4 + shadcn theme (index.css) so Vite bundles a real stylesheet.
 
-import './styles.css';
-import { StrictMode } from 'react';
-import { createRoot } from 'react-dom/client';
-import { Shell } from './Shell.js';
+import { StrictMode } from "react";
+import { createRoot } from "react-dom/client";
+import { App } from "./app.js";
+import "./index.css";
 
-const root = document.getElementById('root');
-if (root === null) throw new Error('shell: #root missing');
+// Theme is owned by the ProfileProvider (it toggles .dark/.light from the
+// active profile's defaultTheme). Operator (the default) → dark, identical to
+// the previous hardcoded force.
+
+const root = document.getElementById("root");
+if (!root) throw new Error("crouter-web: #root element not found in index.html");
+
 createRoot(root).render(
   <StrictMode>
-    <Shell />
+    <App />
   </StrictMode>,
 );

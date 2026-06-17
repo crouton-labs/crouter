@@ -24,7 +24,7 @@ import { readInboxSince } from '../feed/inbox.js';
 import { interactionDir, interactionsRoot } from '../artifact.js';
 import { atomicWriteJson, deckPath } from '@crouton-kit/humanloop';
 import type { NodeMeta } from '../canvas/types.js';
-import { finalizeResolvedInteraction } from '../../commands/human/queue.js';
+import { finalizeResolvedInteraction, acquireInteractionClaim } from '../../commands/human/queue.js';
 
 let home: string;
 // A unique cwd so interactionDir (keyed off the REAL homedir + mangled cwd, NOT
@@ -113,6 +113,46 @@ test('a canceled-on-disk response reaps the bridge without delivering a result',
   // The asker gets a quiet "no answer is coming" note, not a result.
   const blob = JSON.stringify(readInboxSince('A'));
   assert.match(blob, /no answer is coming/);
+});
+
+test('the _run held-claim path delivers, and finalize without the claim self-conflicts', async () => {
+  // BUG REGRESSION (_run ask self-claim): the detached `_run` ask worker holds
+  // the exclusive resolve.lock across the blocking ask(), then must deliver the
+  // answer. If it calls finalizeResolvedInteraction WITHOUT passing its held
+  // claim, finalize re-acquires the same lock, sees this very process's live
+  // lock (EEXIST, owner.pid == self, pidAlive true) -> 'claimed' -> returns
+  // false, and the human's answer never reaches the asker. Passing the held
+  // claim lets finalize run under the worker's own lock.
+  createNode(node('A', null));
+  createNode(node('B', 'A'));
+  subscribe('A', 'B');
+  // Set up the deck + run.json but NOT the answer yet, then hold the claim
+  // exactly as the _run worker does (no opts) BEFORE ask() resolves the deck.
+  const idir = interactionDir('B', workCwd);
+  mkdirSync(idir, { recursive: true });
+  atomicWriteJson(deckPath(idir), { interactions: [] });
+  atomicWriteJson(join(idir, 'run.json'), { mode: 'ask', job_id: 'B' });
+  const claim = acquireInteractionClaim(idir, 'B');
+  assert.equal(typeof claim === 'object', true, 'claim must be acquired');
+  if (typeof claim !== 'object') return;
+  // ask() then writes the human's answer to disk while the claim is held.
+  atomicWriteJson(join(idir, 'response.json'), {
+    responses: [{ id: 'q', selectedOptionId: 'resync', freetext: 'go ahead' }],
+    completedAt: '2026-06-10T22:27:07.000Z',
+  });
+
+  // Without the held claim, finalize from the SAME pid self-conflicts on the
+  // live lock and must NOT deliver (this is the stranding regression).
+  assert.equal(await finalizeResolvedInteraction('B'), false, 'self-held lock must block claimless finalize');
+  assert.equal(getNode('B')?.status, 'active', 'bridge must still be live after the self-conflicting call');
+
+  // Passing the held claim lets finalize run under the worker's own lock and
+  // deliver the answer back to the asker, then reap the bridge.
+  assert.equal(await finalizeResolvedInteraction('B', claim), true, 'held claim must deliver');
+  assert.equal(getNode('B')?.status, 'done', 'bridge reaped after held-claim deliver');
+  assert.match(JSON.stringify(readInboxSince('A')), /resync/, 'asker must receive the human selection');
+
+  claim.release();
 });
 
 test('an unresolved (no response.json) live bridge is left untouched', async () => {

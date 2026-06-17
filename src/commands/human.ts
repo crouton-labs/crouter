@@ -7,15 +7,15 @@
 // inbox — no polling surface. notify/show create no node. _run runs the blocking
 // humanloop call at the pane TTY and pushes the result itself.
 //
-// TTY safety: every leaf is argv-only — none declares a stdin parameter, so
-// the spawned pane's TTY stays free for humanloop's raw-mode input. Control
-// params travel via CRTR_HUMAN_DIR (set inline in the spawned command) +
-// run.json, never stdin.
+// TTY safety: kickoff/TUI leaves are argv-only, so the spawned pane's TTY stays
+// free for humanloop's raw-mode input. Control params travel via CRTR_HUMAN_DIR
+// (set inline in the spawned command) + run.json, never stdin. The noninteractive
+// resolve leaf is the only stdin-taking child and does not spawn a TUI pane.
 
 import { defineBranch } from '../core/command.js';
 import type { BranchDef } from '../core/command.js';
 import { humanAsk, humanReview, humanNotify, humanShow } from './human/prompts.js';
-import { humanInbox, humanList, humanCancel, humanRun } from './human/queue.js';
+import { humanInbox, humanList, humanDeck, humanResolve, humanCancel, humanRun } from './human/queue.js';
 
 export function registerHuman(): BranchDef {
   return defineBranch({
@@ -40,6 +40,8 @@ export function registerHuman(): BranchDef {
       humanCancel,
       humanInbox,
       humanList,
+      humanDeck,
+      humanResolve,
       humanRun,
     ],
   });

@@ -7,11 +7,7 @@
 
 import type { RawResponse, SourceRequest } from '../../../core/view/contract.js';
 
-/** Run `crtr <args>` through the bridge, optionally feeding `stdin`. Returns the
- *  RawResponse the bridge ran on our behalf (never throws — a transport failure
- *  comes back as ok:false). */
-export async function crtrCommand(args: string[], stdin?: string): Promise<RawResponse> {
-  const req: SourceRequest = { kind: 'exec', bin: 'crtr', args, ...(stdin !== undefined ? { stdin } : {}) };
+export async function sourceRequest(req: SourceRequest): Promise<RawResponse> {
   try {
     const res = await fetch('/__crtr/source', {
       method: 'POST',
@@ -22,6 +18,25 @@ export async function crtrCommand(args: string[], stdin?: string): Promise<RawRe
     return (await res.json()) as RawResponse;
   } catch (e) {
     return { ok: false, stdout: '', stderr: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/** Run `crtr <args>` through the bridge, optionally feeding `stdin`. Returns the
+ *  RawResponse the bridge ran on our behalf (never throws — a transport failure
+ *  comes back as ok:false). */
+export async function crtrCommand(args: string[], stdin?: string): Promise<RawResponse> {
+  const req: SourceRequest = { kind: 'exec', bin: 'crtr', args, ...(stdin !== undefined ? { stdin } : {}) };
+  return sourceRequest(req);
+}
+
+export async function crtrJson<T>(args: string[], stdin?: string): Promise<T> {
+  const res = await crtrCommand(args, stdin);
+  if (!res.ok) throw new Error(res.stderr || 'bridge request failed');
+  if (res.exitCode && res.exitCode !== 0) throw new Error(res.stderr || `crtr ${args.join(' ')} failed (${res.exitCode})`);
+  try {
+    return JSON.parse(res.stdout) as T;
+  } catch (e) {
+    throw new Error(e instanceof Error ? e.message : String(e));
   }
 }
 

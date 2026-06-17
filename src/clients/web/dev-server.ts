@@ -49,6 +49,7 @@ export async function createDevServer(httpServer: HttpServer): Promise<ViteDevSe
       alias: {
         react: join(nodeModules, 'react'),
         'react-dom': join(nodeModules, 'react-dom'),
+        '@': shellRoot,
         // The crtr web runtime is a self-subpath of crouter's own package;
         // pin it to the built barrel so the shell can import it from any root.
         '@crouton-kit/crouter/web': join(packageRoot, 'dist', 'web', 'index.js'),

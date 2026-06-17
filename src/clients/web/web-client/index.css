@@ -1,0 +1,1130 @@
+@import "tailwindcss";
+@source "../../../builtin-views";
+@source "../../../web";
+@import "tw-animate-css";
+
+/* ── Quiet Instrument font imports ─────────────────────────────────────── */
+@import "@fontsource-variable/instrument-sans";
+@import "@fontsource-variable/fraunces";
+@import "@fontsource-variable/martian-mono";
+@import "@fontsource/fragment-mono";
+
+@custom-variant dark (&:is(.dark *));
+
+/* crouter-web — Quiet Instrument
+   Warm graphite dark (default :root) + ivory dawn (.light).
+   Token NAMES are preserved; only VALUES are replaced. */
+:root {
+  --radius: 0.5rem;
+
+  /* backgrounds */
+  --background: oklch(0.113 0.008 75);
+  --foreground: oklch(0.912 0.01 80);
+  --card: oklch(0.138 0.009 75);
+  --card-foreground: oklch(0.912 0.01 80);
+  --popover: oklch(0.138 0.009 75);
+  --popover-foreground: oklch(0.912 0.01 80);
+
+  /* bone primary */
+  --primary: oklch(0.927 0.013 80);
+  --primary-foreground: oklch(0.098 0.008 75);
+
+  /* raised panel */
+  --secondary: oklch(0.165 0.01 75);
+  --secondary-foreground: oklch(0.912 0.01 80);
+
+  /* muted surfaces */
+  --muted: oklch(0.152 0.01 75);
+  --muted-foreground: oklch(0.538 0.016 75);
+
+  /* accent = secondary */
+  --accent: oklch(0.165 0.01 75);
+  --accent-foreground: oklch(0.912 0.01 80);
+
+  /* destructive = ember (blocked) */
+  --destructive: oklch(0.65 0.2 35);
+  --destructive-foreground: oklch(0.97 0.005 80);
+
+  /* hairlines + inputs */
+  --border: oklch(0.92 0.008 80 / 8%);
+  --input: oklch(0.92 0.008 80 / 12%);
+  --ring: oklch(0.927 0.013 80);
+
+  /* lifecycle / status hues — phosphor green, amber, steel, ash, ember, iris */
+  --status-active: oklch(0.84 0.14 148);
+  --status-idle: oklch(0.8 0.13 76);
+  --status-done: oklch(0.73 0.1 225);
+  --status-dead: oklch(0.49 0.014 75);
+  --status-canceled: oklch(0.49 0.014 75);
+  --status-blocked: oklch(0.66 0.21 33);
+
+  --success: oklch(0.84 0.14 148);
+  --warning: oklch(0.8 0.13 76);
+  --thinking: oklch(0.7 0.1 300);
+
+  /* ── Quiet Instrument semantic aliases — atoms read THESE, not raw hex.
+     Most alias the oklch theme tokens above so .light overrides cascade;
+     the few without a 1:1 theme token get explicit values + a .light override. */
+  --bone: var(--primary);
+  --bone-ink: var(--primary-foreground);
+  --ink: var(--foreground);
+  --ink2: oklch(0.738 0.012 80); /* #b8b2a2 */
+  --mut: var(--muted-foreground); /* #837d6e */
+  --dim: oklch(0.404 0.012 75); /* #5c574b */
+  --line: var(--border);
+  --line2: oklch(0.92 0.008 80 / 16%);
+  --raise: oklch(1 0 0 / 3.5%); /* inset top-edge highlight color */
+  --scrim: oklch(0.1 0.008 75 / 55%); /* modal/overlay backdrop dim */
+  --panel: var(--card);
+  --panel2: oklch(0.131 0.009 75); /* #211f19 */
+
+  --act: var(--status-active);
+  --act-dim: oklch(0.84 0.14 148 / 14%);
+  --idle: var(--status-idle);
+  --idle-dim: oklch(0.8 0.13 76 / 13%);
+  --done: var(--status-done);
+  --done-dim: oklch(0.73 0.1 225 / 13%);
+  --dead: var(--status-dead);
+  --dead-dim: oklch(0.49 0.014 75 / 14%);
+  --blk: var(--status-blocked);
+  --blk-dim: oklch(0.66 0.21 33 / 12%);
+  --think: var(--thinking);
+}
+
+.light {
+  --background: oklch(0.952 0.018 85);
+  --foreground: oklch(0.19 0.016 80);
+  --card: oklch(0.978 0.014 85);
+  --card-foreground: oklch(0.19 0.016 80);
+  --popover: oklch(0.998 0.006 85);
+  --popover-foreground: oklch(0.19 0.016 80);
+
+  /* dark ink primary for dawn */
+  --primary: oklch(0.19 0.016 80);
+  --primary-foreground: oklch(0.96 0.014 85);
+
+  --secondary: oklch(0.96 0.014 85);
+  --secondary-foreground: oklch(0.25 0.012 80);
+  --muted: oklch(0.96 0.014 85);
+  --muted-foreground: oklch(0.56 0.016 80);
+  --accent: oklch(0.96 0.014 85);
+  --accent-foreground: oklch(0.25 0.012 80);
+  --destructive: oklch(0.55 0.22 33);
+  --destructive-foreground: oklch(0.978 0.014 85);
+  --border: oklch(0.19 0.016 80 / 10%);
+  --input: oklch(0.19 0.016 80 / 14%);
+  --ring: oklch(0.19 0.016 80);
+
+  /* dawn status hues — darkened for contrast */
+  --status-active: oklch(0.47 0.12 148);
+  --status-idle: oklch(0.52 0.13 76);
+  --status-done: oklch(0.47 0.1 225);
+  --status-dead: oklch(0.67 0.016 75);
+  --status-canceled: oklch(0.67 0.016 75);
+  --status-blocked: oklch(0.5 0.2 33);
+
+  --success: oklch(0.47 0.12 148);
+  --warning: oklch(0.52 0.13 76);
+  --thinking: oklch(0.52 0.1 300);
+
+  /* dawn overrides for QI vars without a 1:1 theme token */
+  --ink2: oklch(0.42 0.01 80);
+  --dim: oklch(0.69 0.014 85); /* #aaa493 */
+  --line2: oklch(0.19 0.016 80 / 20%);
+  --raise: oklch(1 0 0 / 80%);
+  --scrim: oklch(0.25 0.01 75 / 32%); /* lighter dim for the ivory theme */
+  --panel2: oklch(0.99 0.008 85); /* #fffdf6 */
+  --act-dim: oklch(0.47 0.12 148 / 10%);
+  --idle-dim: oklch(0.52 0.13 76 / 12%);
+  --done-dim: oklch(0.47 0.1 225 / 10%);
+  --dead-dim: oklch(0.67 0.016 75 / 14%);
+  --blk-dim: oklch(0.5 0.2 33 / 9%);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-status-active: var(--status-active);
+  --color-status-idle: var(--status-idle);
+  --color-status-done: var(--status-done);
+  --color-status-dead: var(--status-dead);
+  --color-status-canceled: var(--status-canceled);
+  --color-status-blocked: var(--status-blocked);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-thinking: var(--thinking);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  /* ── Quiet Instrument font stack ───────────────────────────────────── */
+  --font-sans: "Instrument Sans Variable", ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-display: "Fraunces Variable", Georgia, serif;
+  --font-serif: "Fraunces Variable", Georgia, serif;
+  --font-mono: "Fragment Mono", ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, monospace;
+  --font-code: "Fragment Mono", ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, monospace;
+  --font-inst: "Martian Mono Variable", ui-monospace, monospace;
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ── Atmosphere: graph-paper grid (::before) + grain (::after) ─────── */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    background-image:
+      linear-gradient(oklch(0.92 0.008 80 / 2.2%) 1px, transparent 1px),
+      linear-gradient(90deg, oklch(0.92 0.008 80 / 2.2%) 1px, transparent 1px);
+    background-size: 56px 56px;
+    mask-image: radial-gradient(ellipse 120% 90% at 50% 0%, #000 30%, transparent 85%);
+  }
+  body::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    opacity: 0.05;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='1'/%3E%3C/svg%3E");
+  }
+}
+
+/* ══ Type / size / space system ══════════════════════════════════════════
+   Single source of truth for the QI atoms below. Use the Tailwind/shadcn
+   native scale — no arbitrary `text-[Npx]`, no inline fontSize, no `*-[Npx]`
+   spacing (enforced by `npm run lint`, see scripts/lint-px.mjs).
+     FONT RAMP (px floor = 12 — nothing below):
+       12  text-xs   instrument/mono micro-labels, meta, badges, kbd  (FLOOR)
+       13  mono code/args (dense monospace only)
+       14  text-sm   body + control text (shadcn default)
+       16  text-base primary reading / composer
+       18  text-lg   gauges, prominent values
+       20  text-xl / 24 text-2xl / Fraunces display via --font-display
+     CONTROL HEIGHTS (shadcn): 36px default (h-9), 32px sm (h-8).
+     SPACING: 4px grid (Tailwind p-2/p-3/p-4, gap-2/3); 6/10px only for sm controls.
+     ICONS: lucide-react at size-4 (16px) default, size-5 (20px) prominent.
+   ════════════════════════════════════════════════════════════════════════ */
+@layer components {
+  /* ── .instlabel — Martian Mono micro-label ─────────────────────────── */
+  .instlabel {
+    font-family: var(--font-inst);
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--muted-foreground);
+  }
+
+  /* ── .panel-raise — inset highlight + depth shadow ─────────────────── */
+  .panel-raise {
+    box-shadow:
+      inset 0 1px 0 var(--raise),
+      0 14px 40px -18px oklch(0 0 0 / 60%);
+  }
+
+  /* ══ Quiet Instrument atoms — ported verbatim from the mockup, mapped to tokens ══ */
+
+  /* ── .mono — inline code font ── */
+  .mono { font-family: var(--font-code); }
+
+  /* ── .panel — raised container ── */
+  .panel {
+    background: linear-gradient(180deg, var(--panel2), var(--panel));
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    box-shadow: inset 0 1px 0 var(--raise), 0 14px 40px -18px oklch(0 0 0 / 60%);
+  }
+
+  /* ── .btn — base + variants ── */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    font-family: var(--font-sans);
+    font-size: 14px;
+    font-weight: 600;
+    min-height: 36px;
+    padding: 8px 16px;
+    border-radius: 8px;
+    cursor: pointer;
+    white-space: nowrap;
+    border: 1px solid var(--line2);
+    background: transparent;
+    color: var(--ink2);
+    transition: all 0.15s ease;
+  }
+  .btn:hover {
+    color: var(--ink);
+    border-color: oklch(0.92 0.008 80 / 30%);
+    background: oklch(0.92 0.008 80 / 4%);
+  }
+  .btn[disabled],
+  .btn:disabled,
+  .btn.disabled {
+    opacity: 0.38;
+    cursor: not-allowed;
+    pointer-events: none;
+  }
+  .btn.primary {
+    background: var(--bone);
+    color: var(--bone-ink);
+    border-color: var(--bone);
+    box-shadow: 0 1px 0 oklch(1 0 0 / 25%) inset, 0 8px 20px -8px oklch(0.92 0.013 80 / 25%);
+  }
+  .btn.primary:hover { background: oklch(0.97 0.012 90); }
+  .btn.danger {
+    color: var(--blk);
+    border-color: oklch(0.66 0.21 33 / 35%);
+  }
+  .btn.danger:hover {
+    background: var(--blk-dim);
+    border-color: var(--blk);
+    color: oklch(0.72 0.18 35);
+  }
+  .btn.sm {
+    min-height: 32px;
+    padding: 6px 12px;
+    font-size: 14px;
+    border-radius: 6px;
+  }
+
+  /* ── .dot — status indicator ── */
+  .dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex: none;
+  }
+  .dot.active {
+    background: var(--act);
+    animation: pulse 2.4s ease-out infinite;
+  }
+  .dot.idle { background: var(--idle); }
+  .dot.done { background: var(--done); }
+  .dot.dead,
+  .dot.canceled { background: var(--dead); }
+  .dot.blocked {
+    background: var(--blk);
+    box-shadow: 0 0 10px oklch(0.66 0.21 33 / 55%);
+    animation: pulse-hot 1.6s ease-out infinite;
+  }
+
+  /* ── .badge — inline status pill ── */
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-family: var(--font-inst);
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    padding: 4px 10px;
+    border-radius: 99px;
+    border: 1px solid var(--line);
+  }
+  .badge.active {
+    color: var(--act);
+    background: var(--act-dim);
+    border-color: oklch(0.84 0.14 148 / 25%);
+  }
+  .badge.idle {
+    color: var(--idle);
+    background: var(--idle-dim);
+    border-color: oklch(0.8 0.13 76 / 25%);
+  }
+  .badge.done {
+    color: var(--done);
+    background: var(--done-dim);
+    border-color: oklch(0.73 0.1 225 / 25%);
+  }
+  .badge.blocked {
+    color: oklch(0.72 0.16 35);
+    background: var(--blk-dim);
+    border-color: oklch(0.66 0.21 33 / 40%);
+  }
+  .badge.dead,
+  .badge.canceled {
+    color: var(--dead);
+    background: var(--dead-dim);
+    border-color: var(--line);
+  }
+
+  /* ── .kbd — keyboard indicator ── */
+  .kbd {
+    font-family: var(--font-inst);
+    font-size: 12px;
+    color: var(--mut);
+    border: 1px solid var(--line2);
+    border-bottom-width: 2px;
+    padding: 2px 6px;
+    border-radius: 5px;
+    background: oklch(0.92 0.008 80 / 3%);
+  }
+
+  /* ── .rv — staggered reveal on scroll (rise keyframe in @layer base) ── */
+  .rv {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  .in .rv {
+    animation: rise 0.7s cubic-bezier(.2, .7, .2, 1) forwards;
+    animation-delay: calc(var(--i, 0) * 70ms);
+  }
+
+  /* ── form controls: .search / .selectish / .checkish / .seg ── */
+  .search {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    min-height: 36px;
+    padding: 8px 12px;
+    background: oklch(0 0 0 / 25%);
+    box-shadow: inset 0 1px 3px oklch(0 0 0 / 30%);
+    color: var(--dim);
+    font-size: 14px;
+  }
+  .search .kbd { margin-left: auto; }
+  .selectish {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    color: var(--ink2);
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    min-height: 36px;
+    padding: 8px 12px;
+    cursor: pointer;
+    background: oklch(0.92 0.008 80 / 2%);
+  }
+  .selectish .car { font-size: 12px; color: var(--mut); }
+  .checkish {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    color: var(--ink2);
+    padding: 8px 4px;
+    cursor: pointer;
+  }
+  .checkish .box {
+    width: 16px;
+    height: 16px;
+    border: 1px solid var(--line2);
+    border-radius: 4px;
+    background: oklch(0 0 0 / 20%);
+  }
+  .seg {
+    display: flex;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+    background: oklch(0 0 0 / 25%);
+  }
+  .seg button {
+    font-family: var(--font-inst);
+    font-size: 12px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--mut);
+    background: transparent;
+    border: none;
+    min-height: 32px;
+    padding: 6px 12px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .seg button.on {
+    color: var(--bone-ink);
+    background: var(--bone);
+    font-weight: 600;
+  }
+
+  /* ── .chip ── */
+  .chip {
+    font-family: var(--font-inst);
+    font-size: 12px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    padding: 3px 8px;
+    border-radius: 99px;
+    flex: none;
+  }
+  .chip.ok {
+    color: var(--act);
+    background: var(--act-dim);
+    border: 1px solid oklch(0.84 0.14 148 / 25%);
+  }
+
+  /* ── .waitflag ── */
+  .waitflag {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    color: oklch(0.72 0.16 35);
+    background: var(--blk-dim);
+    border: 1px solid oklch(0.66 0.21 33 / 35%);
+    padding: 4px 10px;
+    border-radius: 99px;
+  }
+
+  /* ── .tiny-sel ── */
+  .tiny-sel {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-family: var(--font-inst);
+    font-size: 12px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--mut);
+    border: 1px solid var(--line);
+    padding: 6px 12px;
+    border-radius: 7px;
+    cursor: pointer;
+  }
+  .tiny-sel:hover { color: var(--ink2); }
+  .tiny-sel b { color: var(--ink2); font-weight: 600; }
+
+  /* ── .filelink ── */
+  .filelink {
+    color: var(--ink2);
+    text-decoration: underline;
+    text-decoration-style: dotted;
+    text-decoration-color: var(--dim);
+    text-underline-offset: 3px;
+    cursor: pointer;
+  }
+  .filelink:hover {
+    color: var(--bone);
+    text-decoration-color: var(--bone);
+  }
+  .filelink.peeked {
+    color: var(--bone);
+    text-decoration-style: solid;
+    text-decoration-color: oklch(0.92 0.013 80 / 50%);
+  }
+
+  /* ── .fm-chip ── */
+  .fm-chips {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+  }
+  .fm-chip {
+    font-family: var(--font-code);
+    font-size: 12px;
+    color: var(--mut);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 3px 8px;
+    background: oklch(0 0 0 / 20%);
+  }
+  .fm-chip b { color: var(--ink2); font-weight: 400; }
+
+  /* ══ Tool card ══ */
+  .tool {
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    overflow: hidden;
+    background: var(--panel);
+    box-shadow: inset 0 1px 0 var(--raise);
+  }
+  .tool-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 16px;
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.15s;
+  }
+  .tool-head:hover { background: oklch(0.92 0.008 80 / 3%); }
+  .tool-glyph {
+    width: 20px;
+    height: 20px;
+    border-radius: 5px;
+    flex: none;
+    background: oklch(0.92 0.008 80 / 7%);
+    border: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    color: var(--ink2);
+  }
+  .tool-name {
+    font-family: var(--font-inst);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink);
+  }
+  .tool-arg {
+    font-family: var(--font-code);
+    font-size: 12px;
+    color: var(--mut);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+    flex: 1;
+  }
+  .tool-dur {
+    font-family: var(--font-inst);
+    font-size: 12px;
+    color: var(--dim);
+    letter-spacing: 0.08em;
+    flex: none;
+  }
+  .tool-head .chev {
+    font-size: 12px;
+    color: var(--dim);
+    transition: transform 0.2s ease;
+  }
+  .tool.open .tool-head .chev { transform: rotate(90deg); }
+  .tool-body {
+    display: none;
+    border-top: 1px solid var(--line);
+    background: oklch(0 0 0 / 28%);
+    padding: 13px 16px 15px;
+  }
+  .tool.open .tool-body { display: block; }
+  .tool-body pre {
+    font-family: var(--font-code);
+    font-size: 12px;
+    line-height: 1.7;
+    color: var(--ink2);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .tool-body .fm { color: var(--dim); }
+  .tool-body .hd { color: var(--ink); font-weight: 400; }
+  .tool-body .bullet { color: var(--ink2); }
+  .tool-body .bullet b { color: var(--ink); font-weight: 400; }
+
+  /* ══ Thinking collapsible ══ */
+  .thinking { border-left: 2px solid color-mix(in oklch, var(--think) 55%, transparent); }
+  .think-toggle {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    cursor: pointer;
+    user-select: none;
+    padding: 7px 14px;
+    color: var(--think);
+    font-size: 12px;
+    font-style: italic;
+    opacity: 0.75;
+    transition: opacity 0.15s;
+  }
+  .think-toggle:hover { opacity: 1; }
+  .think-toggle .chev {
+    font-size: 12px;
+    transition: transform 0.2s ease;
+    display: inline-block;
+    font-style: normal;
+  }
+  .thinking.open .chev { transform: rotate(90deg); }
+  .think-toggle .dur {
+    font-family: var(--font-inst);
+    font-size: 12px;
+    letter-spacing: 0.12em;
+    color: var(--dim);
+    font-style: normal;
+  }
+  .think-body {
+    display: none;
+    padding: 2px 14px 12px;
+    font-size: 13px;
+    line-height: 1.65;
+    color: var(--mut);
+    font-style: italic;
+    max-width: 680px;
+  }
+  .thinking.open .think-body { display: block; }
+
+  /* ══ Inbound block ══ */
+  .inbound {
+    display: flex;
+    gap: 12px;
+    padding: 12px 16px;
+    border-radius: 10px;
+    border: 1px solid var(--line);
+    background: oklch(0.73 0.1 225 / 4.5%);
+    border-left: 2px solid var(--done);
+  }
+  .inbound .ic {
+    color: var(--done);
+    font-size: 14px;
+    padding-top: 1px;
+  }
+  .inbound .body {
+    font-size: 14px;
+    color: var(--ink2);
+    min-width: 0;
+  }
+  .inbound .src {
+    font-family: var(--font-inst);
+    font-size: 12px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--done);
+    margin-bottom: 4px;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .inbound .src .when {
+    color: var(--dim);
+    letter-spacing: 0.08em;
+  }
+  .inbound .ref {
+    font-family: var(--font-code);
+    font-size: 12px;
+    color: var(--dim);
+  }
+
+  /* ══ User input block ══ */
+  /* The "input" voice: a warm, raised, filled block with a bone left rail and
+     rounded right corners. Carries the user role by surface alone — no word
+     label (the filled warm block + bone rail is unmistakable, and reads cooler
+     against the neutral tool-card panels). */
+  .user {
+    max-width: 700px;
+    background: color-mix(in oklch, var(--bone) 9%, var(--panel));
+    border-left: 2px solid var(--bone);
+    border-radius: 0 10px 10px 0;
+    padding: 10px 16px;
+    color: var(--ink);
+  }
+
+  /* ══ Assistant prose ══ */
+  /* The default "output" voice: flush on the page background, no card, full
+     reading width. The ABSENCE of a surface IS the assistant signal once the
+     user block is filled. No word label; at most a single phosphor role dot,
+     which the markup hides at the `focused` detail level. */
+  .prose {
+    max-width: 700px;
+    font-size: 14px;
+    line-height: 1.7;
+    color: var(--ink);
+  }
+  .prose .role {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  .prose .role .rdot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--act);
+  }
+  .prose p { margin-bottom: 10px; }
+  .prose ul { margin: 4px 0 10px 2px; list-style: none; }
+  .prose li {
+    padding-left: 18px;
+    position: relative;
+    margin-bottom: 7px;
+    color: var(--ink2);
+  }
+  .prose li::before {
+    content: "\2014";
+    position: absolute;
+    left: 0;
+    color: var(--dim);
+  }
+  .prose li b { color: var(--ink); font-weight: 600; }
+
+  /* ══ Instrument cluster (gauges + dials) ══ */
+  .cluster {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    border-bottom: 1px solid var(--line);
+    background: oklch(0 0 0 / 22%);
+    padding: 0 30px;
+  }
+  .gauge {
+    padding: 13px 22px 13px 0;
+    margin-right: 22px;
+    border-right: 1px solid var(--line);
+    min-width: 190px;
+  }
+  .gauge .glabel {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 7px;
+  }
+  .gauge .gval {
+    font-family: var(--font-inst);
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--ink);
+    letter-spacing: 0.02em;
+  }
+  .gauge .gval .u {
+    font-size: 12px;
+    color: var(--mut);
+    font-weight: 400;
+    margin-left: 4px;
+    letter-spacing: 0.1em;
+  }
+  .gbar {
+    height: 4px;
+    border-radius: 3px;
+    background: oklch(0.92 0.008 80 / 9%);
+    overflow: hidden;
+  }
+  .gbar i {
+    display: block;
+    height: 100%;
+    border-radius: 3px;
+    background: linear-gradient(90deg, var(--act), oklch(0.88 0.12 140));
+    min-width: 8px;
+  }
+  .gauge .gsub {
+    font-family: var(--font-code);
+    font-size: 12px;
+    color: var(--dim);
+    margin-top: 6px;
+  }
+  .dials {
+    display: flex;
+    align-items: center;
+    gap: 26px;
+    flex: 1;
+    padding: 13px 0;
+    flex-wrap: wrap;
+  }
+  .dial {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .dial .dval {
+    font-family: var(--font-inst);
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--ink2);
+    letter-spacing: 0.03em;
+  }
+  .dial .dval em { font-style: normal; color: var(--dim); }
+  .dial.path .dval {
+    font-family: var(--font-code);
+    font-weight: 400;
+    font-size: 12px;
+  }
+
+  /* ══ Graph rail node (.gnode) ══ */
+  .gr-sec {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 9px 8px;
+  }
+  .gr-sec .rule {
+    flex: 1;
+    height: 1px;
+    background: var(--line);
+  }
+  .gr-sec .hint {
+    font-family: var(--font-inst);
+    font-size: 12px;
+    color: var(--dim);
+    letter-spacing: 0.1em;
+  }
+  .gnode {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 12px;
+    border-radius: 7px;
+    font-size: 13px;
+    color: var(--ink2);
+    cursor: pointer;
+    border: 1px solid transparent;
+    white-space: nowrap;
+    overflow: hidden;
+    transition: all 0.12s ease;
+  }
+  .gnode:hover {
+    background: oklch(0.92 0.008 80 / 4%);
+    color: var(--ink);
+  }
+  .gnode.cur {
+    background: oklch(0.92 0.013 80 / 8%);
+    border-color: var(--line2);
+    color: var(--ink);
+    font-weight: 600;
+    box-shadow: inset 0 1px 0 var(--raise);
+  }
+  .gnode .gd {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    flex: none;
+  }
+  .gnode .gname { overflow: hidden; text-overflow: ellipsis; }
+  .gnode .gflag {
+    margin-left: auto;
+    font-family: var(--font-inst);
+    font-size: 12px;
+    color: oklch(0.72 0.16 35);
+    background: var(--blk-dim);
+    border: 1px solid oklch(0.66 0.21 33 / 30%);
+    padding: 1px 6px;
+    border-radius: 99px;
+    flex: none;
+  }
+  .gnode.dimmed { color: var(--dim); }
+  .gnode.dimmed .gd { opacity: 0.6; }
+  .g1 { margin-left: 14px; }
+  .g2 { margin-left: 28px; }
+  .gr-gap { height: 16px; }
+
+  /* ══ Needs-you triage strip (.deck) ══ */
+  .needs { margin-bottom: 26px; }
+  .needs-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+  .needs-head .flag { color: var(--blk); font-size: 12px; }
+  .needs-head .instlabel { color: oklch(0.72 0.16 35); }
+  .needs-head .rule {
+    flex: 1;
+    height: 1px;
+    background: linear-gradient(90deg, oklch(0.66 0.21 33 / 35%), transparent);
+  }
+  .needs-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  .deck {
+    border: 1px solid oklch(0.66 0.21 33 / 22%);
+    border-radius: 10px;
+    padding: 14px 16px;
+    background: linear-gradient(180deg, oklch(0.66 0.21 33 / 5%), oklch(0.66 0.21 33 / 1.5%)), var(--panel);
+    box-shadow: inset 0 1px 0 var(--raise);
+  }
+  .deck-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 7px;
+  }
+  .deck-kind {
+    font-family: var(--font-inst);
+    font-size: 12px;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: oklch(0.72 0.16 35);
+    border: 1px solid oklch(0.66 0.21 33 / 30%);
+    padding: 2px 7px;
+    border-radius: 4px;
+  }
+  .deck-meta .from {
+    font-family: var(--font-code);
+    font-size: 12px;
+    color: var(--mut);
+  }
+  .deck-meta .age {
+    margin-left: auto;
+    font-family: var(--font-inst);
+    font-size: 12px;
+    color: var(--mut);
+    letter-spacing: 0.08em;
+  }
+  .deck-q {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--ink);
+    margin-bottom: 11px;
+    line-height: 1.45;
+  }
+  .deck-actions { display: flex; gap: 8px; }
+
+  /* ══ Node forest row + status spine ══ */
+  .tree { padding: 8px 14px 10px; }
+  .node-row {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 9px 12px 9px 16px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+  .node-row:hover { background: oklch(0.92 0.008 80 / 3.5%); }
+  .node-row::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 7px;
+    bottom: 7px;
+    width: 2px;
+    border-radius: 2px;
+    background: var(--spine, var(--dead));
+  }
+  .node-row.s-active { --spine: var(--act); }
+  .node-row.s-idle { --spine: var(--idle); }
+  .node-row.s-done { --spine: var(--done); }
+  .node-row.s-dead,
+  .node-row.s-canceled { --spine: var(--dead); }
+  .node-row.s-blocked { --spine: var(--blk); }
+  .node-id { min-width: 0; flex: 1; }
+  .node-l1 {
+    display: flex;
+    align-items: baseline;
+    gap: 9px;
+  }
+  .node-name {
+    font-weight: 600;
+    font-size: 14px;
+    letter-spacing: 0.005em;
+    white-space: nowrap;
+  }
+  .node-kind {
+    font-size: 12px;
+    color: var(--mut);
+    white-space: nowrap;
+  }
+  .node-l2 {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 2px;
+    font-size: 12px;
+  }
+  .node-cwd {
+    font-family: var(--font-code);
+    font-size: 12px;
+    color: var(--dim);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .node-life {
+    font-family: var(--font-inst);
+    font-size: 12px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--dim);
+    flex: none;
+  }
+  .node-note {
+    font-style: italic;
+    color: var(--dim);
+    font-size: 12px;
+    flex: none;
+  }
+  .node-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: none;
+  }
+  .node-row.dimmed .node-name {
+    color: var(--mut);
+    font-weight: 500;
+  }
+  .node-row.dimmed:hover { background: oklch(0.92 0.008 80 / 2%); }
+  .kids {
+    margin-left: 30px;
+    position: relative;
+  }
+  .kids::before {
+    content: "";
+    position: absolute;
+    left: -15px;
+    top: 0;
+    bottom: 14px;
+    width: 1px;
+    background: var(--line2);
+  }
+  .kids .node-row::after {
+    content: "";
+    position: absolute;
+    left: -15px;
+    top: 50%;
+    width: 13px;
+    height: 1px;
+    background: var(--line2);
+  }
+}
+
+/* ── Motion keyframes (in @layer base so any layer can reference them).
+   Canonical names match the mockup/spec ground truth: `pulse` (2.4s active),
+   `pulse-hot` (1.6s blocked), `rise` (staggered reveal). The earlier
+   pulse-active/pulse-blocked duplicates were removed — atoms reference these. */
+@layer base {
+  @keyframes pulse {
+    0%   { box-shadow: 0 0 0 0 oklch(0.84 0.14 148 / 45%); }
+    70%  { box-shadow: 0 0 0 7px oklch(0.84 0.14 148 / 0%); }
+    100% { box-shadow: 0 0 0 0 oklch(0.84 0.14 148 / 0%); }
+  }
+  @keyframes pulse-hot {
+    0%   { box-shadow: 0 0 0 0 oklch(0.66 0.21 33 / 50%); }
+    70%  { box-shadow: 0 0 0 8px oklch(0.66 0.21 33 / 0%); }
+    100% { box-shadow: 0 0 0 0 oklch(0.66 0.21 33 / 0%); }
+  }
+  @keyframes rise {
+    to { opacity: 1; transform: none; }
+  }
+}

@@ -3,11 +3,11 @@ import { InputError } from '../../core/io.js';
 import { pushFinal } from '../../core/feed/feed.js';
 import { interactionsRoot, interactionDir } from '../../core/artifact.js';
 import { paginate } from '../../core/pagination.js';
-import { getNode, subscribersOf } from '../../core/canvas/index.js';
+import { getNode, listNodes, subscribersOf } from '../../core/canvas/index.js';
 import { transition } from '../../core/runtime/lifecycle.js';
 import { appendInbox } from '../../core/feed/inbox.js';
-import { existsSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { closeSync, existsSync, linkSync, openSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import {
   inbox,
@@ -15,6 +15,7 @@ import {
   parseDeck,
   deckPath,
   responsePath,
+  progressPath,
   isResolved,
   atomicWriteJson,
   ask,
@@ -39,12 +40,25 @@ import { killPane, type RunRecord } from './shared.js';
  *  `<id>: <option>[ — <freetext>]` shape. Used when reconstructing a
  *  ResolutionEnvelope from a bare on-disk response.json (which stores only
  *  `{responses, completedAt}`), so a healed deliver-back reads like the live one. */
-function summarizeResponses(responses: InteractionResponse[]): string {
+function summarizeResponses(responses: InteractionResponse[], deck?: Deck): string {
+  const interactions = new Map((deck?.interactions ?? []).map((it) => [it.id, it]));
   return responses
     .map((r) => {
-      const opt = r.selectedOptionId ?? '';
+      const it = interactions.get(r.id);
+      let picked = '';
+      if (r.selectedOptionIds !== undefined) {
+        picked = r.selectedOptionIds
+          .map((id) => {
+            const label = it?.options.find((o) => o.id === id)?.label ?? id;
+            const note = r.optionComments?.[id];
+            return typeof note === 'string' && note.trim() !== '' ? `${label} ("${note.trim()}")` : label;
+          })
+          .join(', ');
+      } else if (r.selectedOptionId !== undefined) {
+        picked = it?.options.find((o) => o.id === r.selectedOptionId)?.label ?? r.selectedOptionId;
+      }
       const ft = typeof r.freetext === 'string' && r.freetext.trim() !== '' ? ` — ${r.freetext.trim()}` : '';
-      return `${r.id}: ${opt}${ft}`;
+      return `${it?.title ?? r.id}: ${picked}${ft}`;
     })
     .join('\n');
 }
@@ -61,50 +75,60 @@ function summarizeResponses(responses: InteractionResponse[]): string {
  *  flips status=done). Reconstructs the same pushFinal body `_run` would have
  *  emitted, per mode; a canceled-on-disk response reaps the node without
  *  delivering a result (mirrors `human cancel`). Returns true iff it acted. */
-export async function finalizeResolvedInteraction(jobId: string): Promise<boolean> {
-  const node = getNode(jobId);
-  if (node === null) return false;
-  if (node.status !== 'active' && node.status !== 'idle') return false;
-  const idir = interactionDir(jobId, node.cwd);
-  if (!isResolved(idir)) return false;
-  const rc = readJson<RunRecord>(join(idir, 'run.json'));
-  if (rc === null) return false;
-  const resp = readJson<Record<string, unknown>>(responsePath(idir));
-  if (resp === null) return false;
+export async function finalizeResolvedInteraction(jobId: string, claim?: InteractionClaim): Promise<boolean> {
+  const firstNode = getNode(jobId);
+  if (firstNode === null) return false;
+  const idir = interactionDir(jobId, firstNode.cwd);
+  const ownedClaim = claim ?? acquireInteractionClaim(idir, jobId, { allowResolved: true });
+  if (ownedClaim === 'already_resolved' || ownedClaim === 'claimed') return false;
+  try {
+    const node = getNode(jobId);
+    if (node === null) return false;
+    if (node.status !== 'active' && node.status !== 'idle') return false;
+    if (!isResolved(idir)) return false;
+    const rc = readJson<RunRecord>(join(idir, 'run.json'));
+    if (rc === null) return false;
+    const resp = readJson<Record<string, unknown>>(responsePath(idir));
+    if (resp === null) return false;
 
-  // Canceled out-of-band (a raw canceled response.json, not via `human cancel`):
-  // there is no answer to deliver — just reap the node and tell waiting
-  // subscribers no answer is coming, the same quiet deferred note `human cancel`
-  // emits. (`finalize` is legal from active|idle; the status guard above holds.)
-  if (resp['canceled'] === true) {
-    transition(jobId, 'finalize');
-    const note = typeof resp['reason'] === 'string' && resp['reason'] !== '' ? ` — ${resp['reason']}` : '';
-    for (const sub of subscribersOf(jobId)) {
-      appendInbox(sub.node_id, {
-        from: jobId,
-        tier: 'deferred',
-        kind: 'message',
-        label: `human interaction ${jobId} canceled — no answer is coming${note}`,
-        data: { body: `The human interaction ${jobId} was canceled${note}. No response will arrive.` },
-      });
+    // Canceled out-of-band (a raw canceled response.json, not via `human cancel`):
+    // there is no answer to deliver — just reap the node and tell waiting
+    // subscribers no answer is coming, the same quiet deferred note `human cancel`
+    // emits. (`finalize` is legal from active|idle; the status guard above holds.)
+    if (resp['canceled'] === true) {
+      transition(jobId, 'finalize');
+      const note = typeof resp['reason'] === 'string' && resp['reason'] !== '' ? ` — ${resp['reason']}` : '';
+      for (const sub of subscribersOf(jobId)) {
+        appendInbox(sub.node_id, {
+          from: jobId,
+          tier: 'deferred',
+          kind: 'message',
+          label: `human interaction ${jobId} canceled — no answer is coming${note}`,
+          data: { body: `The human interaction ${jobId} was canceled${note}. No response will arrive.` },
+        });
+      }
+      return true;
     }
+
+    const responses = (resp['responses'] as InteractionResponse[] | undefined) ?? [];
+    const completedAt = (resp['completedAt'] as string | undefined) ?? new Date().toISOString();
+    let deck: Deck | undefined;
+    try { deck = parseDeck(deckPath(idir)); } catch { deck = undefined; }
+    const summary = summarizeResponses(responses, deck);
+
+    // ask (and any other answered deck): the full ResolutionEnvelope shape.
+    const env: ResolutionEnvelope = {
+      summary,
+      responsePath: responsePath(idir),
+      schema: 'humanloop.response/v2',
+      responses,
+      completedAt,
+    };
+    await pushFinal(jobId, JSON.stringify(env));
     return true;
+  } finally {
+    if (claim === undefined) ownedClaim.release();
   }
-
-  const responses = (resp['responses'] as InteractionResponse[] | undefined) ?? [];
-  const completedAt = (resp['completedAt'] as string | undefined) ?? new Date().toISOString();
-  const summary = summarizeResponses(responses);
-
-  // ask (and any other answered deck): the full ResolutionEnvelope shape.
-  const env: ResolutionEnvelope = {
-    summary,
-    responsePath: responsePath(idir),
-    schema: 'humanloop.response/v2',
-    responses,
-    completedAt,
-  };
-  await pushFinal(jobId, JSON.stringify(env));
-  return true;
 }
 
 /** Sweep every interaction under the cwd's interactions root and deliver-back +
@@ -155,6 +179,100 @@ export const humanInbox = defineLeaf({
 });
 
 // ---------------------------------------------------------------------------
+// deck provenance + read/resolve helpers
+// ---------------------------------------------------------------------------
+
+interface DeckNodeRef {
+  node_id: string;
+  name: string;
+  cwd: string;
+  parent: string | null;
+}
+
+interface DeckSummaryRow {
+  id: string;
+  dir: string;
+  title: string | null;
+  kind: string | null;
+  blocked_since: string;
+  asking_node_id?: string;
+  asking_node_name?: string;
+  conversation_id?: string;
+  conversation_title?: string;
+  interaction_count?: number;
+  job_id?: string;
+}
+
+function allInteractionRoots(): string[] {
+  const roots = new Set<string>();
+  roots.add(interactionsRoot(process.cwd()));
+  for (const node of listNodes()) roots.add(interactionsRoot(node.cwd));
+  return [...roots];
+}
+
+function nodeRefs(): DeckNodeRef[] {
+  return listNodes().map((n) => ({ node_id: n.node_id, name: n.name, cwd: n.cwd, parent: n.parent }));
+}
+
+function resolveConversation(asking: DeckNodeRef | undefined, nodes: DeckNodeRef[]): DeckNodeRef | undefined {
+  if (asking === undefined) return undefined;
+  const byId = new Map(nodes.map((n) => [n.node_id, n]));
+  let cur = asking;
+  const seen = new Set<string>();
+  while (cur.parent !== null && !seen.has(cur.node_id)) {
+    seen.add(cur.node_id);
+    const parent = byId.get(cur.parent);
+    if (parent === undefined) break;
+    cur = parent;
+  }
+  return cur;
+}
+
+function askingNodeFor(jobId: string, deck: Deck | null, dir: string, nodes: DeckNodeRef[]): DeckNodeRef | undefined {
+  const stamped = deck?.source?.nodeId;
+  if (stamped !== undefined && stamped !== '') {
+    const found = nodes.find((n) => n.node_id === stamped);
+    if (found !== undefined) return found;
+  }
+  const bridge = getNode(jobId);
+  if (bridge?.parent !== undefined && bridge.parent !== null) {
+    const parent = nodes.find((n) => n.node_id === bridge.parent);
+    if (parent !== undefined) return parent;
+  }
+  for (const n of nodes) {
+    const root = interactionsRoot(n.cwd);
+    if (dir === root || dir.startsWith(`${root}/`)) return n;
+  }
+  return bridge !== null ? { node_id: bridge.node_id, name: bridge.name, cwd: bridge.cwd, parent: bridge.parent ?? null } : undefined;
+}
+
+function summarizeDeckItem(item: InboxItem, deck: Deck | null, nodes: DeckNodeRef[]): DeckSummaryRow | null {
+  const jobId = basename(item.dir);
+  if (getNode(jobId) === null) return null;
+  const asking = askingNodeFor(jobId, deck, item.dir, nodes);
+  const conversation = resolveConversation(asking, nodes);
+  return {
+    id: item.id,
+    job_id: jobId,
+    dir: item.dir,
+    title: item.title !== undefined ? item.title : deck?.title ?? null,
+    kind: item.kind !== undefined ? item.kind : deck?.interactions[0]?.kind ?? null,
+    blocked_since: item.blockedSince,
+    ...(asking !== undefined ? { asking_node_id: asking.node_id, asking_node_name: asking.name } : {}),
+    ...(conversation !== undefined ? { conversation_id: conversation.node_id, conversation_title: conversation.name } : {}),
+    ...(deck !== null ? { interaction_count: deck.interactions.length } : {}),
+  };
+}
+
+function interactionDirForJob(jobId: string): { dir: string } {
+  const node = getNode(jobId);
+  if (node === null) {
+    throw new InputError({ error: 'not_found', message: `no interaction node: ${jobId}`, field: 'job_id', next: 'Pass a job_id from `crtr human list`.' });
+  }
+  return { dir: interactionDir(jobId, node.cwd) };
+}
+
+// ---------------------------------------------------------------------------
 // list (read-only, paginated)
 // ---------------------------------------------------------------------------
 
@@ -170,7 +288,7 @@ export const humanList = defineLeaf({
       { kind: 'flag', name: 'cursor', type: 'string', required: false, constraint: "Opaque token from a previous response's next_cursor. Omit on first call." },
     ],
     output: [
-      { name: 'items', type: 'object[]', required: true, constraint: 'Each: {id, dir, title, kind, blocked_since}. Oldest first.' },
+      { name: 'items', type: 'object[]', required: true, constraint: 'Each: {id, dir, title, kind, blocked_since}, enriched when derivable with asking_node_id/name, conversation_id/title, interaction_count. Oldest first.' },
       { name: 'next_cursor', type: 'string | null', required: true, constraint: 'Pass on the next call to continue. null means no more items.' },
       { name: 'total', type: 'integer | null', required: true, constraint: 'Total pending interactions.' },
     ],
@@ -182,15 +300,13 @@ export const humanList = defineLeaf({
     const limit = Math.min(Math.max(1, limitRaw), 100);
     const cursor = input['cursor'] as string | undefined;
 
-    const raw: InboxItem[] = scanInbox([interactionsRoot(process.cwd())]);
+    const nodes = nodeRefs();
+    const raw: InboxItem[] = scanInbox(allInteractionRoots());
     const items = raw
-      .map((i) => ({
-        id: i.id,
-        dir: i.dir,
-        title: i.title !== undefined ? i.title : null,
-        kind: i.kind !== undefined ? i.kind : null,
-        blocked_since: i.blockedSince,
-      }))
+      .flatMap((i) => {
+        const item = summarizeDeckItem(i, readJson<Deck>(deckPath(i.dir)), nodes);
+        return item === null ? [] : [item];
+      })
       .sort((a, b) => {
         const ka = `${a.blocked_since}|${a.id}`;
         const kb = `${b.blocked_since}|${b.id}`;
@@ -205,6 +321,300 @@ export const humanList = defineLeaf({
     });
 
     return { items: page.items, next_cursor: page.next_cursor, total: page.total };
+  },
+});
+
+// ---------------------------------------------------------------------------
+// deck detail (read-only)
+// ---------------------------------------------------------------------------
+
+export const humanDeck = defineLeaf({
+  name: 'deck',
+  description: 'read one pending humanloop deck',
+  whenToUse: 'you need the full questions/options for a pending human interaction',
+  help: {
+    name: 'human deck',
+    summary: 'read full pending deck detail for one human interaction job',
+    params: [{ kind: 'positional', name: 'job_id', type: 'string', required: true, constraint: 'job_id from human ask/review/list.' }],
+    output: [
+      { name: 'id', type: 'string', required: true, constraint: 'Interaction job id.' },
+      { name: 'interactions', type: 'object[]', required: true, constraint: 'Deck interactions with options and freetext policy.' },
+    ],
+    outputKind: 'object',
+    effects: ['Read-only: reads deck.json from the interaction dir resolved through the canvas node cwd.'],
+  },
+  run: async (input) => {
+    const jobId = input['job_id'] as string;
+    const { dir } = interactionDirForJob(jobId);
+    if (isResolved(dir)) {
+      throw new InputError({ error: 'already_resolved', message: `interaction already resolved: ${jobId}`, field: 'job_id', next: 'Use `crtr human list` for pending interactions.' });
+    }
+    let deck: Deck;
+    try {
+      deck = parseDeck(deckPath(dir));
+    } catch {
+      throw new InputError({ error: 'not_found', message: `no deck for interaction: ${jobId}`, field: 'job_id', next: 'Pass a pending job_id from `crtr human list`.' });
+    }
+    const nodes = nodeRefs();
+    const asking = askingNodeFor(jobId, deck, dir, nodes);
+    const conversation = resolveConversation(asking, nodes);
+    const first = deck.interactions[0];
+    return {
+      id: jobId,
+      title: deck.title ?? first?.title ?? null,
+      kind: first?.kind ?? null,
+      blocked_since: deck.source?.blockedSince ?? null,
+      ...(asking !== undefined ? { asking_node_id: asking.node_id, asking_node_name: asking.name } : {}),
+      ...(conversation !== undefined ? { conversation_id: conversation.node_id, conversation_title: conversation.name } : {}),
+      interaction_count: deck.interactions.length,
+      interactions: deck.interactions.map((it) => ({
+        id: it.id,
+        kind: it.kind ?? null,
+        prompt: it.body ?? it.title,
+        options: it.options.map((o) => ({ id: o.id, label: o.label, ...(o.description !== undefined ? { description: o.description } : {}) })),
+        allow_freetext: it.allowFreetext ?? false,
+        ...(it.preAnswered?.selectedOptionId !== undefined ? { default_option_id: it.preAnswered.selectedOptionId } : {}),
+      })),
+    };
+  },
+});
+
+// ---------------------------------------------------------------------------
+// resolve — non-interactive human answer write + deliver-back
+// ---------------------------------------------------------------------------
+
+interface ResolveInputResponse {
+  interaction_id?: string;
+  id?: string;
+  selected_option_ids?: string[];
+  selected_option_id?: string;
+  selectedOptionIds?: string[];
+  selectedOptionId?: string;
+  freetext?: string;
+  optionComments?: Record<string, string>;
+}
+
+interface InteractionClaim {
+  release: () => void;
+}
+
+function isErrno(e: unknown, code: string): boolean {
+  return typeof e === 'object' && e !== null && 'code' in e && (e as NodeJS.ErrnoException).code === code;
+}
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    if (isErrno(e, 'ESRCH')) return false;
+    return true;
+  }
+}
+
+function interactionLockPath(dir: string): string {
+  return join(dir, 'resolve.lock');
+}
+
+function releaseClaim(dir: string, token: string): void {
+  const lockFile = interactionLockPath(dir);
+  const cur = readJson<{ token?: string }>(lockFile);
+  if (cur?.token === token) {
+    try {
+      unlinkSync(lockFile);
+    } catch (e) {
+      if (!isErrno(e, 'ENOENT')) throw e;
+    }
+  }
+  const progressFile = progressPath(dir);
+  const progress = readJson<{ claimToken?: string }>(progressFile);
+  if (progress?.claimToken !== token) return;
+  try {
+    unlinkSync(progressFile);
+  } catch (e) {
+    if (!isErrno(e, 'ENOENT')) throw e;
+  }
+}
+
+export function acquireInteractionClaim(
+  dir: string,
+  jobId: string,
+  opts: { allowResolved?: boolean; markProgress?: boolean; respectProgress?: boolean } = {},
+): InteractionClaim | 'already_resolved' | 'claimed' {
+  const allowResolved = opts.allowResolved === true;
+  const markProgress = opts.markProgress === true;
+  const respectProgress = opts.respectProgress === true;
+  const lockFile = interactionLockPath(dir);
+  const progressFile = progressPath(dir);
+  const token = `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+  for (;;) {
+    if (!allowResolved && isResolved(dir)) return 'already_resolved';
+    if (!allowResolved && respectProgress && existsSync(progressFile) && !existsSync(lockFile)) {
+      const progress = readJson<{ claim?: string }>(progressFile);
+      if (progress?.claim === 'crtr human resolve') {
+        try {
+          unlinkSync(progressFile);
+        } catch (e) {
+          if (!isErrno(e, 'ENOENT')) return 'claimed';
+        }
+      } else {
+        return 'claimed';
+      }
+    }
+    let fd: number | null = null;
+    try {
+      fd = openSync(lockFile, 'wx');
+      writeFileSync(fd, JSON.stringify({ pid: process.pid, token, jobId, claimedAt: new Date().toISOString() }, null, 2));
+      closeSync(fd);
+      fd = null;
+      if (markProgress) {
+        atomicWriteJson(progressFile, { partial: true, claim: 'crtr human resolve', claimToken: token, jobId, claimedAt: new Date().toISOString() });
+      }
+      if (!allowResolved && isResolved(dir)) {
+        releaseClaim(dir, token);
+        return 'already_resolved';
+      }
+      return { release: () => releaseClaim(dir, token) };
+    } catch (e) {
+      if (fd !== null) closeSync(fd);
+      if (isErrno(e, 'EEXIST')) {
+        const owner = readJson<{ pid?: number }>(lockFile);
+        if (typeof owner?.pid === 'number' && !pidAlive(owner.pid)) {
+          try {
+            unlinkSync(lockFile);
+          } catch (unlinkErr) {
+            if (!isErrno(unlinkErr, 'ENOENT')) return 'claimed';
+          }
+          continue;
+        }
+        return 'claimed';
+      }
+      throw e;
+    }
+  }
+}
+
+function writeResponseOnce(dir: string, responses: InteractionResponse[], completedAt: string): 'written' | 'already_resolved' {
+  const finalPath = responsePath(dir);
+  const tmpPath = `${finalPath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
+  writeFileSync(tmpPath, JSON.stringify({ responses, completedAt }, null, 2), { flag: 'wx' });
+  try {
+    linkSync(tmpPath, finalPath);
+    return 'written';
+  } catch (e) {
+    if (isErrno(e, 'EEXIST')) return 'already_resolved';
+    throw e;
+  } finally {
+    try {
+      unlinkSync(tmpPath);
+    } catch (e) {
+      if (!isErrno(e, 'ENOENT')) throw e;
+    }
+  }
+}
+
+function validateResolveResponses(deck: Deck, responses: InteractionResponse[]): void {
+  const byId = new Map(deck.interactions.map((it) => [it.id, it]));
+  for (const response of responses) {
+    const interaction = byId.get(response.id);
+    if (interaction === undefined) {
+      throw new InputError({ error: 'invalid_field', message: `unknown interaction_id: ${response.id}`, field: 'responses', next: 'Use interaction ids from `crtr human deck <job_id> --json`.' });
+    }
+    if (interaction.multiSelect === true) {
+      if (response.selectedOptionId !== undefined) {
+        throw new InputError({ error: 'invalid_field', message: `interaction ${response.id} is multi-select; use selected_option_ids`, field: 'responses', next: 'Use selected_option_ids for multi-select interactions.' });
+      }
+    } else if (response.selectedOptionIds !== undefined && response.selectedOptionIds.length > 1) {
+      throw new InputError({ error: 'invalid_field', message: `interaction ${response.id} is single-select`, field: 'responses', next: 'Use selected_option_id or one selected_option_ids value for single-select interactions.' });
+    }
+    const selected = response.selectedOptionIds ?? (response.selectedOptionId !== undefined ? [response.selectedOptionId] : []);
+    const optionIds = new Set(interaction.options.map((o) => o.id));
+    for (const id of selected) {
+      if (!optionIds.has(id)) {
+        throw new InputError({ error: 'invalid_field', message: `unknown option id for ${response.id}: ${id}`, field: 'responses', next: 'Use option ids from `crtr human deck <job_id> --json`.' });
+      }
+    }
+  }
+}
+
+function parseResolveBody(raw: string): { responses: InteractionResponse[]; completedAt: string } {
+  let parsed: { responses?: ResolveInputResponse[]; completed_at?: string; completedAt?: string };
+  try {
+    parsed = JSON.parse(raw) as typeof parsed;
+  } catch (e) {
+    throw new InputError({ error: 'invalid_json', message: `stdin is not valid JSON: ${String(e)}`, field: 'stdin', next: 'Pass {"responses":[{"interaction_id":"..."}]} on stdin.' });
+  }
+  if (!Array.isArray(parsed.responses)) {
+    throw new InputError({ error: 'invalid_field', message: 'responses must be an array', field: 'responses', next: 'Pass {"responses":[{"interaction_id":"...","selected_option_ids":["..."]}]}.' });
+  }
+  return {
+    responses: parsed.responses.map((r) => {
+      const id = r.interaction_id ?? r.id;
+      if (id === undefined || id === '') {
+        throw new InputError({ error: 'invalid_field', message: 'each response needs interaction_id', field: 'responses', next: 'Include interaction_id for every response.' });
+      }
+      const selectedOptionIds = r.selected_option_ids ?? r.selectedOptionIds;
+      const selectedOptionId = r.selected_option_id ?? r.selectedOptionId;
+      return {
+        id,
+        ...(selectedOptionIds !== undefined ? { selectedOptionIds } : {}),
+        ...(selectedOptionId !== undefined ? { selectedOptionId } : {}),
+        ...(r.freetext !== undefined ? { freetext: r.freetext } : {}),
+        ...(r.optionComments !== undefined ? { optionComments: r.optionComments } : {}),
+      };
+    }),
+    completedAt: parsed.completed_at ?? parsed.completedAt ?? new Date().toISOString(),
+  };
+}
+
+export const humanResolve = defineLeaf({
+  name: 'resolve',
+  description: 'resolve one humanloop deck from stdin answers',
+  whenToUse: 'a browser or local tool is submitting answers for a pending human interaction; this writes through the crouter/humanloop finalize path',
+  help: {
+    name: 'human resolve',
+    summary: 'write deck answers atomically and deliver them back to the asking node',
+    params: [
+      { kind: 'positional', name: 'job_id', type: 'string', required: true, constraint: 'job_id from human ask/review/list.' },
+      { kind: 'stdin', name: 'body', required: true, constraint: 'JSON {responses:[{interaction_id, selected_option_ids?, freetext?}], completed_at?}.' },
+    ],
+    output: [
+      { name: 'resolved', type: 'boolean', required: true, constraint: 'True when this call wrote and delivered the answer.' },
+      { name: 'job_id', type: 'string', required: true, constraint: 'Interaction job id.' },
+      { name: 'delivered', type: 'boolean', required: false, constraint: 'True when delivered through crouter push/finalize.' },
+      { name: 'reason', type: 'string', required: false, constraint: 'already_resolved or claimed when resolved is false.' },
+    ],
+    outputKind: 'object',
+    effects: ['Claims the interaction with a local resolve.lock (and progress.json so other humanloop inbox scans skip it), writes response.json with an exclusive no-clobber create, then calls crouter finalize/deliver-back. Does not write response.json from browser/server code.'],
+  },
+  run: async (input) => {
+    const jobId = input['job_id'] as string;
+    const { dir } = interactionDirForJob(jobId);
+    const { responses, completedAt } = parseResolveBody(input['body'] as string);
+    try {
+      parseDeck(deckPath(dir));
+    } catch {
+      throw new InputError({ error: 'not_found', message: `no deck for interaction: ${jobId}`, field: 'job_id', next: 'Pass a pending job_id from `crtr human list`.' });
+    }
+    const claim = acquireInteractionClaim(dir, jobId, { markProgress: true, respectProgress: true });
+    if (claim === 'already_resolved') return { resolved: false, job_id: jobId, reason: 'already_resolved' };
+    if (claim === 'claimed') return { resolved: false, job_id: jobId, reason: 'claimed' };
+    try {
+      let deck: Deck;
+      try {
+        deck = parseDeck(deckPath(dir));
+      } catch {
+        throw new InputError({ error: 'not_found', message: `no deck for interaction: ${jobId}`, field: 'job_id', next: 'Pass a pending job_id from `crtr human list`.' });
+      }
+      validateResolveResponses(deck, responses);
+      const writeResult = writeResponseOnce(dir, responses, completedAt);
+      if (writeResult === 'already_resolved') return { resolved: false, job_id: jobId, reason: 'already_resolved' };
+      const delivered = await finalizeResolvedInteraction(jobId, claim);
+      if (!delivered) return { resolved: false, job_id: jobId, reason: 'already_resolved' };
+      return { resolved: true, job_id: jobId, delivered };
+    } finally {
+      claim.release();
+    }
   },
 });
 
@@ -346,9 +756,26 @@ export const humanRun = defineLeaf({
     try {
       if (rc.mode === 'ask' || rc.mode === 'notify') {
         const deck: Deck = parseDeck(deckPath(dir));
-        const env: ResolutionEnvelope = await ask(deck, { dir });
         if (rc.mode === 'ask') {
-          await pushFinal(rc.job_id as string, JSON.stringify(env));
+          const claim = acquireInteractionClaim(dir, rc.job_id as string);
+          if (claim === 'already_resolved') {
+            await finalizeResolvedInteraction(rc.job_id as string);
+            return;
+          }
+          if (claim === 'claimed') return;
+          try {
+            await ask(deck, { dir });
+            // Pass the held claim: finalize re-acquires the same exclusive
+            // resolve.lock, which THIS worker still holds — without the claim it
+            // would see its own live lock, return 'claimed', and never deliver
+            // the answer (stranding the asker). The held claim makes finalize
+            // run under our lock; _run's finally still owns the release.
+            await finalizeResolvedInteraction(rc.job_id as string, claim);
+          } finally {
+            claim.release();
+          }
+        } else {
+          await ask(deck, { dir });
         }
         // notify: no job — nothing to write
       } else if (rc.mode === 'review') {

@@ -39,6 +39,7 @@ export default defineConfig({
       // crouter's own web runtime, pinned to its built barrel so the shell + the
       // builtin web.jsx presenters resolve it from this root.
       '@crouton-kit/crouter/web': resolve(PACKAGE_ROOT, 'dist/web/index.js'),
+      '@': HERE,
     },
     dedupe: ['react', 'react-dom'],
   },

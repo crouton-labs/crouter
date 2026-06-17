@@ -14,6 +14,7 @@ import { reviveNode } from '../core/runtime/revive.js';
 import { newNodeId } from '../core/runtime/nodes.js';
 import { readRoadmap } from '../core/runtime/roadmap.js';
 import { parseWhen, parseCadence, cadenceDisplay, type WakeError } from '../core/wake.js';
+import { nodeSnapshotLeaf } from './node-snapshot.js';
 
 import { recycleNode } from '../core/runtime/recycle.js';
 import { readErrorStall } from '../core/runtime/error-stall.js';
@@ -1596,6 +1597,6 @@ export function registerNode(): BranchDef {
         'HOW: `crtr node new "<task>" --kind <kind>` returns a node id immediately and runs the worker as a detached headless broker (no window opens; open a viewer on demand with `crtr node focus`). Match the kind to the work (see `node new -h`). You are woken when a child finishes — the wake message ALREADY IS the coalesced digest (the watcher drains your inbox to wake you), so don\'t re-run `crtr feed read` to "open" it (it would read empty, the cursor already advanced); instead dereference the report paths in that digest that matter, don\'t act on a one-line label. (`crtr feed read` is for proactively polling before a wake, or inspecting a child\'s inbox via `--node`; `--all` re-reads history with full message bodies.) Integrate, then either delegate the next units or finish.\n\n' +
         'FINISH: a worker ends its own work with `crtr push final "<result>"` (writes the canonical result, marks done, closes the window) — stopping without it is not finishing. For a job too big for one context window, `node promote` to an orchestrator (holds a roadmap, delegates phases); when context fills, `node yield` to refresh against that roadmap.',
     },
-    children: [nodeNew, nodeInspect, nodeFocus, nodeCycle, nodeRecycle, nodeClose, nodeMsg, nodeModel, nodeSubscribe, nodeUnsubscribe, nodePromote, nodeDemote, nodeLifecycle, nodeYield, nodeWake],
+    children: [nodeNew, nodeInspect, nodeSnapshotLeaf, nodeFocus, nodeCycle, nodeRecycle, nodeClose, nodeMsg, nodeModel, nodeSubscribe, nodeUnsubscribe, nodePromote, nodeDemote, nodeLifecycle, nodeYield, nodeWake],
   });
 }
