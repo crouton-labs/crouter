@@ -12,7 +12,7 @@ export const sysSyspromptLeaf = defineLeaf({
     name: 'sys sysprompt',
     summary: 'print a node\'s assembled system prompt',
     params: [
-      { kind: 'positional', name: 'node', required: true, constraint: 'Node id.' },
+      { kind: 'positional', name: 'node', required: false, constraint: 'Node id. Defaults to the calling node (CRTR_NODE_ID).' },
     ],
     output: [
       { name: 'node_id', type: 'string', required: true, constraint: 'The node whose prompt was read.' },
@@ -24,9 +24,9 @@ export const sysSyspromptLeaf = defineLeaf({
     effects: ['Read-only: reads the node\'s job/system-prompt.md artifact.'],
   },
   run: async (input) => {
-    const nodeId = (input['node'] as string | undefined)?.trim();
+    const nodeId = (input['node'] as string | undefined)?.trim() || process.env['CRTR_NODE_ID'];
     if (nodeId === undefined || nodeId === '') {
-      throw new InputError({ error: 'empty_node', message: 'a node id is required', field: 'node', next: 'Pass a node id.' });
+      throw new InputError({ error: 'empty_node', message: 'a node id is required', field: 'node', next: 'Pass a node id or run from inside a node.' });
     }
     if (getNode(nodeId) === null) {
       throw new InputError({ error: 'not_found', message: `no node: ${nodeId}`, field: 'node', next: 'List nodes with `crtr node inspect list`.' });
