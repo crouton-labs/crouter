@@ -9,7 +9,7 @@ system-prompt-visibility: preview
 file-read-visibility: none
 ---
 
-First principles for where crtr TUI content belongs and why. The crtr attach viewer is the reference surface; these govern crouter-web and any future surface too. Layout today, top→bottom: scrolling **chat** (history) · divider · **badge** (node id) · **managers** panel (↑ who I report to) · queued · **editor** (the action) · **pickerPanel** (inline pickers/dialogs) · **reports** panel (↓ what I watch) · **status bar**.
+First principles for where crtr TUI content belongs and why. The crtr attach viewer is the reference surface; these govern the web UI and any future surface too. Layout today, top→bottom: scrolling **chat** (history) · divider · **badge** (node id) · **managers** panel (↑ who I report to) · queued · **editor** (the action) · **pickerPanel** (inline pickers/dialogs) · **reports** panel (↓ what I watch) · **status bar**.
 
 1. **The bottom is "now"; the top is history.** pi-tui anchors the viewport to the cursor at the bottom, so the scrolling region above is the document/log and the bottom-anchored stack is the live cockpit you act from. Durable controls and state live in the bottom stack; records scroll up. Never put interactive/persistent UI where it scrolls away, and never pollute the conversation log with chrome.
 

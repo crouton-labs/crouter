@@ -11,7 +11,7 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* crouter-web — Quiet Instrument
+/* crtr web — Quiet Instrument
    Warm graphite dark (default :root) + ivory dawn (.light).
    Token NAMES are preserved; only VALUES are replaced. */
 :root {

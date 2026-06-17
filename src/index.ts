@@ -1,8 +1,9 @@
 // @crouton-kit/crouter — the sanctioned library surface (design D1).
 //
 // This barrel is the ONLY supported way to import crouter as a library; the
-// `exports` map gates off deep subpath imports, so consumers (notably
-// @crouton-kit/crouter-web) depend on exactly the symbols re-exported here.
+// `exports` map gates off deep subpath imports, so consumers depend on exactly
+// the symbols re-exported here — notably the in-tree web client, which reaches
+// the runtime through the `@crouton-kit/crouter/web` seam.
 // Everything below is a stable, server-facing surface: runtime control that
 // keeps the canvas-row ⇄ pi-session lockstep guarantees, read-only canvas/
 // telemetry queries, and the broker socket client + wire protocol. Nothing

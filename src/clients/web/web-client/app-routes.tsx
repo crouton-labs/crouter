@@ -94,7 +94,7 @@ export function ReconnectingBanner() {
       role="status"
       className="fixed inset-x-0 top-0 z-50 bg-warning/90 px-4 py-1.5 text-center text-sm font-medium text-background"
     >
-      Reconnecting to the crouter-web server…
+      Reconnecting…
     </div>
   );
 }

@@ -3,7 +3,7 @@ kind: knowledge
 when-and-why-to-read: When you add, change, or remove anything a node renders
   into its live attached TUI — chrome, a widget, a picker, a status signal, a
   recap card — this reference should be read because the CTO expects that change
-  to also land in crouter-web's operator view, and for many to get a friendlier
+  to also land in the web UI's operator view, and for many to get a friendlier
   treatment in the studio view, so a TUI-only change is presumptively incomplete.
 system-prompt-visibility: none
 file-read-visibility: preview
@@ -11,7 +11,7 @@ file-read-visibility: preview
 
 # Surface parity — a TUI change owes the web views too
 
-CTO ruling (2026-06-11): almost any change that shows up in a node's attached TUI should **at least** show up in crouter-web's **operator view**, and for many changes should **also** appear in a more user-friendly form in the **studio view**. Treat a change that only touches the TUI as presumptively unfinished work, not a done feature.
+CTO ruling (2026-06-11): almost any change that shows up in a node's attached TUI should **at least** show up in the web UI's **operator view**, and for many changes should **also** appear in a more user-friendly form in the **studio view**. Treat a change that only touches the TUI as presumptively unfinished work, not a done feature.
 
 This follows directly from `taste/broker-is-the-host`: every node runs on the headless broker and every UI — tmux pane, web operator view, web studio view — is just an attached view of that one host. A feature that surfaces in one view but not the others isn't a per-surface choice; it's drift between views of the same model.
 

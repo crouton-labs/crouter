@@ -11,7 +11,7 @@ import "./index.css";
 // the previous hardcoded force.
 
 const root = document.getElementById("root");
-if (!root) throw new Error("crouter-web: #root element not found in index.html");
+if (!root) throw new Error("crtr web: #root element not found in index.html");
 
 createRoot(root).render(
   <StrictMode>

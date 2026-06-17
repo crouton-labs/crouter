@@ -12,7 +12,7 @@ file-read-visibility: preview
 
 # Broker is the host; every UI is a view
 
-CTO ruling (2026-06-10, crouter-web scoping), **shipped as a hard cut on 2026-06-11**: every node runs on the headless **broker** — one pi engine in-process via the pi SDK, the sole `.jsonl` writer, fanning out to multiple listeners. tmux panes and the web UI are interchangeable **attach-client views** of that broker (`view.sock`, protocol in `src/core/runtime/broker-protocol.ts`); they never host pi and never tail pane output. In his words: "aren't tmux panes supposed to just be 'views' of the headless nodes too? That's how I want our UI as well."
+CTO ruling (2026-06-10, web UI scoping), **shipped as a hard cut on 2026-06-11**: every node runs on the headless **broker** — one pi engine in-process via the pi SDK, the sole `.jsonl` writer, fanning out to multiple listeners. tmux panes and the web UI are interchangeable **attach-client views** of that broker (`view.sock`, protocol in `src/core/runtime/broker-protocol.ts`); they never host pi and never tail pane output. In his words: "aren't tmux panes supposed to just be 'views' of the headless nodes too? That's how I want our UI as well."
 
 **Status: the in-pane (pi-in-tmux-pane) host path is DELETED.** The `--headless` flag and `headless` config key are gone — broker is the only host, not a mode you opt into. tmux survives only as a viewer + placement substrate.
 
