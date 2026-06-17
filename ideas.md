@@ -2,7 +2,6 @@
 
 CLI builder skills — needs to build its own harness for projects (like figuring out alaria-codex cli):
 - Brainstorm use cases
-- Auto-improves on failure
 - Changes the pi harness as it goes?
 
 Something around the agent improving itself as it goes/fixing itself/taking feedback well.
@@ -41,6 +40,7 @@ Progressive disclosure: Diagram -> slightly more in depth -> biggest risks -> co
 
 ## Scheduled/OpenClaw
 - Resident nodes are "persistant personalities"? Need something that learns over time. An "open claw instance". Scheduled items that are persistent are a certain kind of persona—a "human" persona. They should have directives on their memory, receiving feedback, etc. these types of scheduled nodes should also probalby try to make their lives more efficient by writing scripts to do what they do. They should be focused on memory/context saving, optimization via scripts, etc. They should be interactible with user still via human probably
+- Need some persona that's all aobut "optimizing your run time—write scripts for yourself to help yourself out". 
 
 ## Northlight Directive
 
