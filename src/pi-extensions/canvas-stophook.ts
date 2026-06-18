@@ -43,7 +43,7 @@ import { focusOf, tearDownNode } from '../core/runtime/placement.js';
 // Minimal PiLike interface (avoids hard dep on @earendil-works/*)
 // ---------------------------------------------------------------------------
 
-type PiEvents = 'agent_start' | 'turn_end' | 'agent_end' | 'session_shutdown' | 'session_start' | 'tool_execution_start';
+type PiEvents = 'agent_start' | 'turn_end' | 'agent_end' | 'session_shutdown' | 'session_start' | 'tool_execution_start' | 'tool_execution_end';
 
 interface PiLike {
   on: (event: PiEvents, handler: (event: any, ctx: any) => void | Promise<void>) => void;
@@ -389,6 +389,27 @@ export function registerCanvasStophook(pi: PiLike): void {
   });
 
   // ---------------------------------------------------------------------------
+  // tool_execution_end — IMMEDIATE refresh-yield. When a tool this turn set
+  // intent='refresh' (the node ran `crtr node yield`), shut the broker down NOW
+  // instead of letting the model keep burning its bloated context to the turn's
+  // natural end (agent_end branch (b') would only catch it there). The yield
+  // command persists the yield-message + any roadmap checkpoint BEFORE it
+  // returns, so by the time this fires nothing is lost. ctx.shutdown() disposes
+  // the session (aborting the live turn) and exits 0; the daemon then sees the
+  // dead pid + intent='refresh' and revives the node FRESH against its roadmap.
+  // intent only flips to 'refresh' via `node yield`, so this can't false-fire.
+  // (A node that somehow boots already carrying intent='refresh' correctly
+  // refreshes on its first tool — the desired outcome.)
+  pi.on('tool_execution_end', (_event: any, ctx: any): void => {
+    try {
+      if (getNode(nodeId)?.intent === 'refresh') {
+        clearBusy(nodeId); // agent_end won't run to clear it; harmless if it lingers
+        try { ctx?.shutdown?.(); } catch { /* ignore */ }
+      }
+    } catch { /* best-effort */ }
+  });
+
+  // ---------------------------------------------------------------------------
   // session_shutdown — clean exit → done.
   //
   // pi hands us a reason as a session tears down. Only 'quit' is a node-ending
@@ -537,12 +558,16 @@ export function registerCanvasStophook(pi: PiLike): void {
           return;
         }
 
-        // (b') Refresh-yield: the node ran `crtr node yield` this turn, setting
-        //     intent='refresh'. Just shut the broker down — the daemon sees the
-        //     dead pid + intent='refresh' and reviveNode's relaunches the broker
-        //     FRESH (no resume) so the node re-reads its roadmap. (The daemon
-        //     also force-recycles a stuck refresh whose engine never exits, so a
-        //     stale in-process stophook can't strand the yield — see crtrd.)
+        // (b') Refresh-yield BACKSTOP: the node ran `crtr node yield` this turn,
+        //     setting intent='refresh'. The primary exit is the tool_execution_end
+        //     handler above, which shuts down the instant the yield tool returns
+        //     (so the model never burns more context finishing the turn); this
+        //     branch only fires if that shutdown was missed. Either way: shut the
+        //     broker down — the daemon sees the dead pid + intent='refresh' and
+        //     reviveNode relaunches the broker FRESH (no resume) so the node
+        //     re-reads its roadmap. (The daemon also force-recycles a stuck
+        //     refresh whose engine never exits, so a stale in-process stophook
+        //     can't strand the yield — see crtrd.)
         if (node?.intent === 'refresh') {
           // A yield is SILENT to subscribers: the node keeps its identity and
           // subscription edges across the revive and reports only through its own
