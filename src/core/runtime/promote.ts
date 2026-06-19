@@ -21,6 +21,7 @@
 
 import { getNode, updateNode, type NodeMeta } from '../canvas/index.js';
 import { transition } from './lifecycle.js';
+import { ensureDaemon } from '../../daemon/manage.js';
 import { buildLaunchSpec } from './launch.js';
 import { hasRoadmap, seedRoadmap, roadmapPath } from './roadmap.js';
 import { readGoal, goalPath } from './kickoff.js';
@@ -112,7 +113,12 @@ export interface YieldResult {
  *  so it comes back as an orchestrator, optionally specializing its kind. Sets
  *  intent='refresh'; the stophook shuts the process down on the next stop and
  *  the daemon revives it fresh. */
-export function requestYield(nodeId: string, opts: { kind?: string; model?: string } = {}): YieldResult {
+export function requestYield(
+  nodeId: string,
+  opts: { kind?: string; model?: string } = {},
+  deps: { ensure?: () => void } = {},
+): YieldResult {
+  const ensure = deps.ensure ?? ensureDaemon;
   const node = getNode(nodeId);
   if (node === null) throw new Error(`unknown node: ${nodeId}`);
 
@@ -135,6 +141,18 @@ export function requestYield(nodeId: string, opts: { kind?: string; model?: stri
     // of an already-orchestrator node.
     promoted = wasBase;
   }
+
+  // The refresh-revive is the DAEMON's job: the stophook shuts this broker down
+  // on its next stop, and crtrd then sees the dead pid + intent='refresh' and
+  // relaunches it fresh. That handoff is silent if the daemon isn't running — the
+  // broker exits and nothing ever revives it (the viewer redials its view.sock
+  // for ~30s and reports "broker gone"). So ensure the supervisor is alive HERE,
+  // before we arm the yield — the same best-effort ensure spawn/recycle do, on
+  // the one other path that hands a node off to the daemon. Runs in the fresh
+  // `crtr node yield` subprocess, so it always uses current dist (never a stale
+  // in-process hook). Injectable for the regression test that locks in this
+  // ensure (default = ensureDaemon).
+  ensure();
 
   // Mark the intent; the stophook enacts the shutdown, the daemon the revive.
   transition(nodeId, 'yield');
