@@ -7,7 +7,7 @@ npm run build && crtr canvas daemon stop && crtr canvas daemon start
 ```
 Why the restart matters: `crtrd` (and every running node's pi process) loads compiled `dist/` at process start and **never reloads it**. A long-lived daemon silently keeps running stale code after a rebuild — that's how auto-revive breaks invisibly (a dormant node's inbox gets a push but the old daemon never resumes it). `crtr canvas daemon status` shows the running pid; if its process start time predates your last `dist/` build, it's stale — restart it. Then commit (conventional commits; CI publishes on push to `main`).
 
-**Restarting the daemon is safe — it does not disturb running nodes or their state.** `crtrd` is a thin supervisor (`src/daemon/crtrd.ts`): it polls broker-pid liveness (signal-0 on each node's recorded `pi_pid`) every ~2s and revives dead nodes, nothing more. It does NOT host the agents — each node's engine runs in its own detached **broker** process (pi hosted in-process via the SDK); a tmux pane, when present, is only a *viewer* attached to that broker's `view.sock`, never the engine itself. `daemon stop` (SIGTERM) just removes the pidfile and exits; it never signals any node's broker, so running agents keep going untouched. Durable state (`cycles`, lifecycle, presence) lives in `canvas.db` / `meta.json`, not in the daemon; the only daemon in-memory state is the `unhealthySince` grace-timer map, whose reset costs at most one extra ~20s grace before reviving an already-dead broker. The sole cost of a restart is the ~1–2s supervision gap between stop and start: a node that yields or dies in that window just waits for the next tick after the daemon is back (its `intent` persists) — nothing is lost or corrupted.
+Daemon/runtime model: when you need the node/canvas/daemon architecture, read `crtr memory read internal/nodes-and-canvas` because it covers revive, broker ownership, and why daemon restarts are safe.
 
 ## Testing policy
 Only two kinds of tests belong in this codebase — nothing else:
@@ -28,14 +28,4 @@ A real bug is the **only** trigger for a new non-lifecycle test. "This function 
 
 ## Storage locations
 
-Three tiers, each with a distinct durability and ownership contract:
-
-1. **Scope root** (`~/.crouter/` for user scope, or `<project>/.crouter/` for project scope) — durable, user-authored content resolved by the scope resolver (`src/core/scope.ts`): `memory/`, `plugins/`, `marketplaces/`, `personas/`, `config.json`. Persists across project changes; belongs to the user or the repo.
-
-2. **Per-cwd crouter root** (`~/.crouter/<mangled-cwd>/`) — per-project working artifacts keyed by the originating cwd via `mangleCwd` (see `src/core/artifact.ts`): `interactions/` (humanloop decks for the `crtr human` bridge; `interactions/<id>/` holds `deck.json`/`run.json`/`response.json`).
-
-3. **Canvas home** (`~/.crouter/canvas/`, override with `CRTR_HOME`; see `src/core/canvas/paths.ts`) — the agent-runtime state for the node graph. `canvas.db` is the sqlite (WAL) topology store (nodes + edges only); `nodes/<node_id>/` holds each node's durable state: `meta.json` (source of truth for the row), `context/` (roadmap.md, prompts, artifacts), `job/` (`log.jsonl`, `telemetry.json`), `reports/` (append-only `<ts>-<kind>.md` push history), `inbox.jsonl` (messages + coalesced subscription feed), `transcript.jsonl`, and `session.ptr` (pi session id). On-screen focus is the `focuses` table in `canvas.db` (durable, plural viewports keyed on the tmux `%pane_id`) — there is no `focus.ptr` file.
-
-**Contributor rule:** durable user content → scope root; per-project working artifacts → per-cwd crouter root; node-graph runtime state (topology, context, reports, inbox, telemetry) → canvas home.
-
-> The legacy `sessions/` agent-session graph and the `$XDG_STATE_HOME/crtr/jobs/` job-records tier were removed when the node/canvas runtime replaced the session/job model; node telemetry now lives in each node's `job/telemetry.json` under the canvas home (`~/.crouter/canvas/`).
+When you need the crouter storage tiers, read `crtr memory read internal/storage-tiers` because it documents the scope root, per-cwd crouter root, and canvas home contracts.
