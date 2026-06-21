@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { readConfig } from '../config.js';
-import { buildLaunchSpec, normalizeModel } from '../runtime/launch.js';
+import { buildLaunchSpec, equivalentOtherProviderModel, normalizeModel } from '../runtime/launch.js';
 
 let home: string;
 const crtrRoot = () => join(home, '.crouter');
@@ -130,6 +130,41 @@ test('normalizeModel and buildLaunchSpec honor config overrides, and edits inval
     hasManager: true,
   });
   assert.equal(edited.launch.model, 'anthropic/custom-strong-2', 'edited personaStrengths are picked up on the next launch');
+});
+
+test('equivalentOtherProviderModel maps a failed ladder model to the other provider at the same strength', () => {
+  writeConfig({
+    modelLadders: {
+      defaultProvider: 'anthropic',
+      anthropic: {
+        ultra: 'anthropic/custom-ultra',
+        strong: 'anthropic/custom-strong:high',
+        medium: 'anthropic/custom-medium',
+        light: 'anthropic/custom-light',
+      },
+      openai: {
+        ultra: 'openai/custom-ultra',
+        strong: 'openai/custom-strong:xhigh',
+        medium: 'openai/custom-medium',
+        light: 'openai/custom-light',
+      },
+    },
+  });
+
+  assert.deepEqual(equivalentOtherProviderModel('anthropic/custom-strong:medium'), {
+    fromProvider: 'anthropic',
+    toProvider: 'openai',
+    strength: 'strong',
+    model: 'openai/custom-strong:xhigh',
+  });
+  assert.deepEqual(equivalentOtherProviderModel('openai/custom-light'), {
+    fromProvider: 'openai',
+    toProvider: 'anthropic',
+    strength: 'light',
+    model: 'anthropic/custom-light',
+  });
+  assert.equal(equivalentOtherProviderModel('anthropic/custom-strong:medium', new Set<'anthropic' | 'openai'>(['anthropic'])), null);
+  assert.equal(equivalentOtherProviderModel('some-provider/not-in-ladder'), null);
 });
 
 test('malformed existing user config surfaces instead of falling back to defaults', () => {

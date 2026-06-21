@@ -35,8 +35,15 @@ import {
 import { jobDir, nodeDir } from '../canvas/paths.js';
 import { getNode, updateNode } from '../canvas/index.js';
 import { FRONT_DOOR_ENV } from './front-door.js';
-import { piInvocationToSdkConfig, type BrokerSdkConfig, type PiInvocation } from './launch.js';
+import {
+  equivalentOtherProviderModel,
+  piInvocationToSdkConfig,
+  type BrokerSdkConfig,
+  type PiInvocation,
+} from './launch.js';
 import { assertEngineVersion, loadBrokerEngine, type BrokerEngine } from './broker-sdk.js';
+import { classifyEngineError } from './error-stall.js';
+import type { ModelProvider } from '../../types.js';
 import { BUILTIN_SLASH_COMMANDS } from './pi-vendored.js';
 import {
   encodeFrame,
@@ -400,7 +407,44 @@ export async function runBroker(nodeId: string): Promise<void> {
       broadcast(frame);
     }
   };
+  const failedRetryProviders = new Set<ModelProvider>();
+  let providerFallbackInFlight: Promise<void> | null = null;
+
+  const maybeSwitchProviderForRetry = (event: BrokerToClient): void => {
+    if ((event as { type?: string }).type !== 'auto_retry_start') return;
+    const retry = event as { type: 'auto_retry_start'; errorMessage?: string };
+    const kind = classifyEngineError(retry.errorMessage ?? '');
+    if (kind !== 'rate-limit' && kind !== 'connection') return;
+    if (providerFallbackInFlight !== null) return;
+
+    const currentSpec = formatModelSpec(session.model, session.thinkingLevel);
+    if (currentSpec === null) return;
+    const next = equivalentOtherProviderModel(currentSpec, failedRetryProviders);
+    if (next === null) return;
+
+    providerFallbackInFlight = (async () => {
+      const model = findModelSpec(next.model);
+      if (model === undefined) {
+        logBroker(`provider fallback skipped: ${next.model} is not registered`);
+        return;
+      }
+      const requested = parseModelSpec(next.model);
+      await session.setModel(model);
+      if (requested.thinkingLevel !== undefined) session.setThinkingLevel(requested.thinkingLevel);
+      failedRetryProviders.add(next.fromProvider);
+      broadcastModelChanged();
+      logBroker(`provider fallback after ${kind}: ${currentSpec} → ${formatModelSpec(session.model, session.thinkingLevel) ?? next.model}`);
+    })()
+      .catch((err: unknown) => {
+        logBroker(`provider fallback failed: ${err instanceof Error ? err.message : String(err)}`);
+      })
+      .finally(() => {
+        providerFallbackInFlight = null;
+      });
+  };
+
   const relayEvent = (event: BrokerToClient): void => {
+    maybeSwitchProviderForRetry(event);
     if ((event as { type?: string }).type === 'message_update') {
       pendingUpdate = event; // latest full-message update supersedes the held one
       if (pendingUpdateTimer === null) {

@@ -149,6 +149,47 @@ const STRENGTH_ALIASES: Record<string, ModelStrength> = {
   weak: 'light',
 };
 
+const MODEL_PROVIDER_KEYS: ModelProvider[] = ['anthropic', 'openai'];
+const MODEL_STRENGTHS: ModelStrength[] = ['ultra', 'strong', 'medium', 'light'];
+const THINKING_SUFFIXES = new Set(['off', 'minimal', 'low', 'medium', 'high', 'xhigh']);
+
+function stripThinkingSuffix(spec: string): string {
+  const i = spec.lastIndexOf(':');
+  if (i <= 0) return spec;
+  return THINKING_SUFFIXES.has(spec.slice(i + 1)) ? spec.slice(0, i) : spec;
+}
+
+export interface EquivalentProviderModel {
+  fromProvider: ModelProvider;
+  toProvider: ModelProvider;
+  strength: ModelStrength;
+  model: string;
+}
+
+/** Map a concrete ladder model back to its provider×strength cell, then return
+ *  the other configured provider's model at the same strength. `failedProviders`
+ *  is per-turn state: once a provider has produced a retryable outage error, do
+ *  not bounce back to it or keep reattempting the same failed provider. */
+export function equivalentOtherProviderModel(
+  currentModel: string,
+  failedProviders: ReadonlySet<ModelProvider> = new Set<ModelProvider>(),
+): EquivalentProviderModel | null {
+  const ladders = modelLadders();
+  const currentComparable = stripThinkingSuffix(normalizeModel(currentModel));
+
+  for (const fromProvider of MODEL_PROVIDER_KEYS) {
+    for (const strength of MODEL_STRENGTHS) {
+      if (stripThinkingSuffix(ladders[fromProvider][strength]) !== currentComparable) continue;
+      if (failedProviders.has(fromProvider)) return null;
+      const toProvider: ModelProvider = fromProvider === 'anthropic' ? 'openai' : 'anthropic';
+      if (failedProviders.has(toProvider)) return null;
+      return { fromProvider, toProvider, strength, model: ladders[toProvider][strength] };
+    }
+  }
+
+  return null;
+}
+
 /** Resolve a persona/caller `model:` token to the concrete `model:thinking`
  *  spec pi gets via `--model`, in order:
  *   1. `provider/rest` — apply strength aliases to `rest`; if `provider` is
