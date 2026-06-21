@@ -919,6 +919,10 @@ export async function runBroker(nodeId: string): Promise<void> {
       thinkingLevel: session.thinkingLevel,
       availableThinkingLevels: session.getAvailableThinkingLevels(),
       currentTheme: sm.getTheme() ?? '',
+      // Light/dark appearance is a property of the terminal the VIEWER is attached
+      // to; the headless broker has none, so emit a placeholder. The viewer owns
+      // the theme submenu and resolves real terminal appearance locally.
+      terminalTheme: 'dark',
       availableThemes,
       hideThinkingBlock: sm.getHideThinkingBlock(),
       collapseChangelog: sm.getCollapseChangelog(),

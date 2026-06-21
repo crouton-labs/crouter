@@ -1,0 +1,18 @@
+version: 2
+updates:
+  # Track the pi engine packages (SDK + TUI). crouter forks the `pi` binary and
+  # also imports the SDK in-process; keeping the pin current avoids the version-
+  # skew warning in broker-sdk.ts. Grouped into one PR so all four move together.
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      pi:
+        patterns:
+          - "@earendil-works/pi-*"
+    allow:
+      - dependency-name: "@earendil-works/pi-*"
+    commit-message:
+      prefix: "chore"
