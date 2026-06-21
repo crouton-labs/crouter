@@ -4,7 +4,9 @@
 //
 //   • the context-intro pi-extension injects buildContextBearings() as the
 //     node's first session message in every brand-new chat. It opens with a
-//     <crtr-identity> block (buildIdentityAssertion) that names the node and,
+//     <crtr-identity> block (buildIdentityAssertion) that names the node (id,
+//     kind, mode), draws a mini-map of its place in the graph (ancestry trunk
+//     up + immediate children with statuses, via buildGraphMap), and,
 //     ONLY for a fork, disowns the source's copied first-person narrative as
 //     inherited context — the fix for the `--fork-from` bug where a fork copies
 //     the source's whole conversation and then impersonates it. A non-fork
@@ -26,7 +28,16 @@
 // refresh cycles, so it is where a future cycle of the orchestrator resumes.
 // This across-cycles note is the ONE thing a terminal worker's bearings drop.
 
-import { contextDir, getNode, fullName, type WakeKind, type Wakeup } from '../canvas/index.js';
+import {
+  contextDir,
+  getNode,
+  fullName,
+  subscriptionsOf,
+  type NodeMeta,
+  type NodeStatus,
+  type WakeKind,
+  type Wakeup,
+} from '../canvas/index.js';
 import { cadenceDisplay } from '../wake.js';
 import { renderKnowledgeBlock } from '../substrate/index.js';
 
@@ -50,6 +61,84 @@ export function orchestratorContextNote(nodeId: string): string {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Graph mini-map — the node's place in the canvas, rendered into the identity
+// block so a node boots oriented: who is above it (its ancestry trunk, root
+// first) and who is directly below it (its immediate children + their statuses).
+// Not the full subtree — just the load-bearing spine up and one level down.
+// ---------------------------------------------------------------------------
+
+/** Live-first sibling ordering, so running children surface above finished ones. */
+function statusRank(status: NodeStatus | undefined): number {
+  switch (status) {
+    case 'active':   return 0;
+    case 'idle':     return 1;
+    case 'done':     return 2;
+    case 'canceled': return 3;
+    case 'dead':     return 4;
+    default:         return 5;
+  }
+}
+
+/** One relative's line in the map: `<id> — <kind> · <status>`, plus the node's
+ *  task description when it carries one (orientation: what that relative is for). */
+function relativeLabel(meta: NodeMeta): string {
+  const desc = fullName(meta);
+  const descPart = desc !== '' && desc !== meta.kind && desc !== meta.name ? ` — ${desc}` : '';
+  return `${meta.node_id} (${meta.kind} · ${meta.status})${descPart}`;
+}
+
+/** Ancestry trunk from the root DOWN to (but excluding) `nodeId`, climbing the
+ *  spine `parent` edge. Cycle-guarded. Root first. */
+function ancestorTrunk(nodeId: string): NodeMeta[] {
+  const trunk: NodeMeta[] = [];
+  const seen = new Set<string>([nodeId]);
+  let cur = getNode(nodeId)?.parent ?? null;
+  while (cur !== null && cur !== '' && !seen.has(cur)) {
+    seen.add(cur);
+    const m = getNode(cur);
+    if (m === null) break;
+    trunk.unshift(m);
+    cur = m.parent ?? null;
+  }
+  return trunk;
+}
+
+/** The node's immediate children — the nodes it subscribes to (its reports) —
+ *  with human-ask control-plane nodes dropped, sorted live-first. */
+function childNodes(nodeId: string): NodeMeta[] {
+  return subscriptionsOf(nodeId)
+    .map((s) => getNode(s.node_id))
+    .filter((m): m is NodeMeta => m !== null && m.kind !== 'human')
+    .sort((a, b) => statusRank(a.status) - statusRank(b.status));
+}
+
+/** The graph mini-map: the ancestry trunk (root first), then this node marked
+ *  `● you`, then its immediate children. Returns '' for a lone root with no
+ *  children (nothing to map). Exported for testing. */
+export function buildGraphMap(nodeId: string): string {
+  const meta = getNode(nodeId);
+  if (meta === null) return '';
+  const trunk = ancestorTrunk(nodeId);
+  const children = childNodes(nodeId);
+  if (trunk.length === 0 && children.length === 0) return '';
+
+  const indent = (depth: number): string => '  '.repeat(depth);
+  const lines: string[] = [
+    'Your place in the canvas graph (ancestry above you, your direct children below):',
+  ];
+  trunk.forEach((m, i) => {
+    lines.push(`${indent(i)}${i === 0 ? '' : '└ '}${relativeLabel(m)}`);
+  });
+  const selfDepth = trunk.length;
+  lines.push(`${indent(selfDepth)}${selfDepth === 0 ? '' : '└ '}● you: ${nodeId} (${meta.kind}, ${meta.mode})`);
+  children.forEach((m, i) => {
+    const conn = i === children.length - 1 ? '└ ' : '├ ';
+    lines.push(`${indent(selfDepth + 1)}${conn}${relativeLabel(m)}`);
+  });
+  return lines.join('\n');
+}
+
 /** The IDENTITY assertion that opens every boot intro — the load-bearing fix
  *  for the `--fork-from` impersonation bug. A fork copies the SOURCE node's
  *  entire first-person conversation into its own session, so without an explicit
@@ -63,12 +152,11 @@ export function orchestratorContextNote(nodeId: string): string {
  *  thing the node reads. Exported for testing. */
 export function buildIdentityAssertion(nodeId: string): string {
   const meta = getNode(nodeId);
-  const name = meta?.name ?? nodeId;
   const kind = meta?.kind ?? 'general';
   const mode = meta?.mode ?? 'base';
   const lines = [
     '<crtr-identity>',
-    `You are node ${nodeId} — name "${name}", kind ${kind}, mode ${mode}.`,
+    `You are node ${nodeId} — kind ${kind}, mode ${mode}.`,
   ];
   const forkFrom = meta?.fork_from;
   if (forkFrom !== undefined && forkFrom !== null && forkFrom !== '') {
@@ -84,6 +172,8 @@ export function buildIdentityAssertion(nodeId: string): string {
         'not "monitor yourself" as though you were a child they spawned.',
     );
   }
+  const map = buildGraphMap(nodeId);
+  if (map !== '') lines.push('', map);
   lines.push('</crtr-identity>');
   return lines.join('\n');
 }
