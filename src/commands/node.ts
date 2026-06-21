@@ -207,12 +207,18 @@ const nodeNew = defineLeaf({
 const nodeList = defineLeaf({
   name: 'list',
   description: 'list nodes on the canvas',
-  whenToUse: 'you want a flat roster of the nodes on the canvas, optionally sliced by status: a quick read of what exists and what is still running. Use `node inspect show` instead to drill into one node and its spine neighbors, `canvas dashboard` for the tree SHAPE, and `canvas attention` to find which nodes are blocked on a human',
+  whenToUse: 'you want a flat roster of the nodes on the canvas, sliced by any combination of attribute filters (status, kind, mode, lifecycle, cwd, hanging) and graph scope (--under a node, for that node plus its subscription descendants). The filters AND together, so "every human node in my subtree" is `--kind human --under <me>` and "every parked orchestrator" is `--mode orchestrator --hanging`. Use `node inspect show` instead to drill into one node and its spine neighbors, `canvas dashboard` for the tree SHAPE, and `canvas attention` to find which nodes are blocked on a human',
   help: {
     name: 'node inspect list',
-    summary: 'list nodes on the canvas, optionally by status',
+    summary: 'list nodes on the canvas, filtered by any combination of attribute slices and a graph-scope (--under) that AND together',
     params: [
       { kind: 'flag', name: 'status', type: 'string', required: false, constraint: 'Filter: active | idle | done | dead | canceled. Comma-separated for several. NOTE: `active` means the engine process is live (never closed), NOT that the node is generating right now — an active node is usually dormant between turns. To tell working-vs-idle, check the pi session-file mtime or CPU, not status.' },
+      { kind: 'flag', name: 'kind', type: 'string', required: false, constraint: 'Filter by persona kind (general, explore, developer, design, plan, review, spec, human, …). Comma-separated for several (OR within the flag).' },
+      { kind: 'flag', name: 'mode', type: 'string', required: false, constraint: 'Filter by mode: base | orchestrator. Comma-separated for several.' },
+      { kind: 'flag', name: 'lifecycle', type: 'string', required: false, constraint: 'Filter by lifecycle: terminal | resident. Comma-separated for several.' },
+      { kind: 'flag', name: 'cwd', type: 'string', required: false, constraint: 'Filter to nodes pinned to this exact cwd (absolute path). Roster is canvas-wide (all cwds) by default.' },
+      { kind: 'flag', name: 'under', type: 'string', required: false, constraint: 'Graph scope: restrict to this node and its subscription descendants (the sub-DAG reachable downward — its reports, theirs, …). This is "one initiative / my subtree". Combine with attribute filters, e.g. `--kind human --under <me>`.' },
+      { kind: 'flag', name: 'hanging', type: 'bool', required: false, constraint: 'Only nodes PARKED on an exhausted-retry engine error (live broker + error-stall marker). Use to find stuck/rate-limited nodes awaiting auto-revive.' },
     ],
     output: [
       { name: 'nodes', type: 'object[]', required: true, constraint: 'Rows: {node_id, name, kind, mode, lifecycle, status, cwd, parent, created, hanging}. `hanging` is null normally, or {kind, message, since} when the node is PARKED on an exhausted-retry engine error (rate-limit/overloaded/connection/other) — a live broker AND an error-stall marker; the canvas-graph views render it with ⚠ + a countdown to the daemon\'s auto-revive.' },
@@ -221,17 +227,47 @@ const nodeList = defineLeaf({
     effects: ['Read-only: queries canvas.db (+ a pid-gated error-stall marker read for live rows).'],
   },
   run: async (input) => {
-    const raw = input['status'] as string | undefined;
-    const status = raw !== undefined && raw !== '' ? (raw.split(',').map((s) => s.trim()) as NodeStatus[]) : undefined;
-    const rows = listNodes(status !== undefined ? { status } : undefined);
+    const csv = (k: string): string[] | undefined => {
+      const raw = input[k] as string | undefined;
+      return raw !== undefined && raw !== '' ? raw.split(',').map((s) => s.trim()).filter((s) => s !== '') : undefined;
+    };
+    const status = csv('status') as NodeStatus[] | undefined;
+    const kinds = csv('kind');
+    const modes = csv('mode');
+    const lifecycles = csv('lifecycle');
+    const cwd = input['cwd'] as string | undefined;
+    const under = input['under'] as string | undefined;
+    const hangingOnly = input['hanging'] === true;
+
+    // Graph scope (--under): self + subscription descendants. Validate the anchor
+    // so a typo'd id is a structured error, not a silently-empty roster.
+    let scope: Set<string> | undefined;
+    if (under !== undefined && under !== '') {
+      if (getNode(under) === null) {
+        throw new InputError({ error: 'not_found', message: `no node: ${under}`, next: 'List nodes with `crtr node inspect list`, then pass a real id to --under.' });
+      }
+      scope = new Set([under, ...view(under)]);
+    }
+
+    const rows = listNodes(status !== undefined ? { status } : undefined).filter((row) => {
+      if (scope !== undefined && !scope.has(row.node_id)) return false;
+      if (kinds !== undefined && !kinds.includes(row.kind)) return false;
+      if (modes !== undefined && !modes.includes(row.mode)) return false;
+      if (lifecycles !== undefined && !lifecycles.includes(row.lifecycle)) return false;
+      if (cwd !== undefined && cwd !== '' && row.cwd !== cwd) return false;
+      return true;
+    });
+
     // Enrich each LIVE row with its hanging state (error-stall marker, pid-gated
     // — a stale marker from a crashed broker reads as not-hanging). This is the
     // data source for the TUI/web `canvas` monitor view.
-    const nodes = rows.map((row) => {
-      const live = row.status === 'active' || row.status === 'idle';
-      const hanging = live && isPidAlive(row.pi_pid) ? readErrorStall(row.node_id) : null;
-      return { ...row, hanging };
-    });
+    const nodes = rows
+      .map((row) => {
+        const live = row.status === 'active' || row.status === 'idle';
+        const hanging = live && isPidAlive(row.pi_pid) ? readErrorStall(row.node_id) : null;
+        return { ...row, hanging };
+      })
+      .filter((n) => !hangingOnly || n.hanging !== null);
     return { nodes };
   },
 });
