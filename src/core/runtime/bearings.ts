@@ -104,6 +104,9 @@ function ancestorTrunk(nodeId: string): NodeMeta[] {
   return trunk;
 }
 
+/** Most children listed in the mini-map before the rest collapse to `+N more`. */
+const MAX_CHILDREN_SHOWN = 5;
+
 /** The node's immediate children — the nodes it subscribes to (its reports) —
  *  with human-ask control-plane nodes dropped, sorted live-first. */
 function childNodes(nodeId: string): NodeMeta[] {
@@ -132,10 +135,19 @@ export function buildGraphMap(nodeId: string): string {
   });
   const selfDepth = trunk.length;
   lines.push(`${indent(selfDepth)}${selfDepth === 0 ? '' : '└ '}● you: ${nodeId} (${meta.kind}, ${meta.mode})`);
-  children.forEach((m, i) => {
-    const conn = i === children.length - 1 ? '└ ' : '├ ';
-    lines.push(`${indent(selfDepth + 1)}${conn}${relativeLabel(m)}`);
+  // Cap the child list so a wide fan-out can't flood the boot context. Children
+  // are sorted live-first, so the shown slice favors active nodes; the rest
+  // collapse to a `+N more` tail (active-first ordering means anything elided is
+  // the most-finished work).
+  const shown = children.slice(0, MAX_CHILDREN_SHOWN);
+  const hidden = children.length - shown.length;
+  shown.forEach((m, i) => {
+    const last = i === shown.length - 1 && hidden === 0;
+    lines.push(`${indent(selfDepth + 1)}${last ? '└ ' : '├ '}${relativeLabel(m)}`);
   });
+  if (hidden > 0) {
+    lines.push(`${indent(selfDepth + 1)}└ +${hidden} more`);
+  }
   return lines.join('\n');
 }
 
