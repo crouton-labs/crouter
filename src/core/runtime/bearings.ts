@@ -11,7 +11,11 @@
 //     inherited context — the fix for the `--fork-from` bug where a fork copies
 //     the source's whole conversation and then impersonates it. A non-fork
 //     node's bearings are its FIRST entry, so there is nothing earlier to
-//     disown; it gets only the declarative identity line;
+//     disown; it gets only the declarative identity line. The message also
+//     carries the <project_context> block (buildProjectContextBlock) — the
+//     AGENTS.md/CLAUDE.md project instructions, moved OUT of the system prompt
+//     (pi's copy is suppressed via noContextFiles in broker.ts) so they ride
+//     this user message instead;
 //   • promote.ts folds orchestratorContextNote() into the promotion guidance
 //     dump, so a node that becomes an orchestrator MID-LIFE gets the
 //     orchestrator framing it never received at spawn — it spawned as a base
@@ -38,8 +42,98 @@ import {
   type WakeKind,
   type Wakeup,
 } from '../canvas/index.js';
+import { existsSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { cadenceDisplay } from '../wake.js';
 import { renderKnowledgeBlock } from '../substrate/index.js';
+
+// ---------------------------------------------------------------------------
+// Project context (<project_context>) — the AGENTS.md/CLAUDE.md files pi would
+// otherwise inject into its SYSTEM PROMPT, rendered here so they ride the
+// first-message bearings instead (pi's copy is suppressed via
+// resourceLoaderOptions.noContextFiles in broker.ts). We re-implement pi's
+// loadProjectContextFiles + getAgentDir (resource-loader.js / config.js) rather
+// than IMPORT pi: bearings.ts is statically imported by the thin daemon (crtrd,
+// for wakeOriginFrom), so a static @earendil-works import would pull the whole
+// pi engine into the supervisor. The discovery is a stable convention + pure fs.
+// ---------------------------------------------------------------------------
+
+/** pi's getAgentDir(): the global agent config dir holding a user-wide context
+ *  file. Honors PI_CODING_AGENT_DIR (tilde-expanded), else ~/.pi/agent (pi's
+ *  piConfig.configDir is ".pi"). */
+function piAgentDir(): string {
+  const env = process.env['PI_CODING_AGENT_DIR'];
+  if (env !== undefined && env !== '') {
+    return env.startsWith('~') ? join(homedir(), env.slice(1)) : env;
+  }
+  return join(homedir(), '.pi', 'agent');
+}
+
+/** Per-dir context-file candidates, in pi's precedence order (first match wins). */
+const CONTEXT_FILE_CANDIDATES = ['AGENTS.md', 'AGENTS.MD', 'CLAUDE.md', 'CLAUDE.MD'];
+
+interface ContextFile {
+  path: string;
+  content: string;
+}
+
+function loadContextFileFromDir(dir: string): ContextFile | null {
+  for (const name of CONTEXT_FILE_CANDIDATES) {
+    const p = join(dir, name);
+    if (existsSync(p)) {
+      try {
+        return { path: p, content: readFileSync(p, 'utf8') };
+      } catch {
+        // Unreadable candidate — skip, mirroring pi (best-effort).
+      }
+    }
+  }
+  return null;
+}
+
+/** Mirror of pi's loadProjectContextFiles: the global agent-dir file first, then
+ *  every AGENTS.md/CLAUDE.md up the cwd's ancestry, ordered root→cwd (so the
+ *  most-specific project file reads last). Deduped by absolute path. */
+function loadProjectContextFiles(cwd: string): ContextFile[] {
+  const files: ContextFile[] = [];
+  const seen = new Set<string>();
+  const global = loadContextFileFromDir(piAgentDir());
+  if (global !== null) {
+    files.push(global);
+    seen.add(global.path);
+  }
+  const ancestors: ContextFile[] = [];
+  let dir = resolve(cwd);
+  const root = resolve('/');
+  for (;;) {
+    const f = loadContextFileFromDir(dir);
+    if (f !== null && !seen.has(f.path)) {
+      ancestors.unshift(f);
+      seen.add(f.path);
+    }
+    if (dir === root) break;
+    const parent = resolve(dir, '..');
+    if (parent === dir) break;
+    dir = parent;
+  }
+  files.push(...ancestors);
+  return files;
+}
+
+/** The `<project_context>` block (format mirrors pi's system-prompt.js verbatim,
+ *  so the agent reads an identical block) for the files discovered from `cwd`.
+ *  Returns '' when no context files exist. Exported for testing. */
+export function buildProjectContextBlock(cwd: string): string {
+  const files = loadProjectContextFiles(cwd);
+  if (files.length === 0) return '';
+  let out = '<project_context>\n\nProject-specific instructions and guidelines:\n\n';
+  for (const { path, content } of files) {
+    out += `<project_instructions path="${path}">\n${content}\n</project_instructions>\n\n`;
+  }
+  out += '</project_context>';
+  return out;
+}
 
 /** Base framing — present for every node. No path baked in: the caller carries
  *  the dir in the `<crtr-context dir="…">` attribute. */
@@ -297,5 +391,9 @@ export function buildContextBearings(nodeId: string): string {
   // nothing is eligible.
   const knowledge = renderKnowledgeBlock(nodeId);
   if (knowledge !== '') parts.push(knowledge);
-  return `${identity}\n<crtr-context dir="${dir}">\n${parts.join('\n')}\n</crtr-context>`;
+  const ctxBlock = `${identity}\n<crtr-context dir="${dir}">\n${parts.join('\n')}\n</crtr-context>`;
+  // Project instructions (AGENTS.md/CLAUDE.md) ride the first-message bearings,
+  // not the system prompt (pi's copy is suppressed in broker.ts).
+  const projectCtx = node?.cwd !== undefined ? buildProjectContextBlock(node.cwd) : '';
+  return projectCtx !== '' ? `${ctxBlock}\n${projectCtx}` : ctxBlock;
 }

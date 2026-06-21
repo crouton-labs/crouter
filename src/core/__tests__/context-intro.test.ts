@@ -26,10 +26,15 @@ import registerCanvasContextIntro, {
 } from '../../pi-extensions/canvas-context-intro.js';
 
 let home: string;
+let prevAgentDir: string | undefined;
 
 before(() => {
   home = mkdtempSync(join(tmpdir(), 'crtr-ctxintro-'));
   process.env['CRTR_HOME'] = home;
+  // Isolate pi's global agent dir to an empty path so buildProjectContextBlock
+  // can't pick up the dev machine's real ~/.pi/agent/AGENTS.md (hermeticity).
+  prevAgentDir = process.env['PI_CODING_AGENT_DIR'];
+  process.env['PI_CODING_AGENT_DIR'] = join(home, 'no-agent-dir');
 });
 
 beforeEach(() => {
@@ -42,6 +47,8 @@ after(() => {
   rmSync(home, { recursive: true, force: true });
   delete process.env['CRTR_HOME'];
   delete process.env['CRTR_NODE_ID'];
+  if (prevAgentDir === undefined) delete process.env['PI_CODING_AGENT_DIR'];
+  else process.env['PI_CODING_AGENT_DIR'] = prevAgentDir;
 });
 
 test('worker bearings: base framing + <knowledge> block, NO across-cycles framing', () => {
@@ -78,6 +85,29 @@ test('worker bearings: base framing + <knowledge> block, NO across-cycles framin
   // A terminal worker must NOT carry the orchestrator across-cycles framing.
   assert.doesNotMatch(block, /refresh cycles/, 'no across-cycles framing for a terminal worker');
   assert.match(block, /<\/crtr-context>/);
+});
+
+test('project instructions (AGENTS.md/CLAUDE.md) ride the bearings, not the system prompt', () => {
+  // pi's <project_context> is suppressed in the system prompt (broker.ts
+  // noContextFiles) and re-rendered into the first-message bearings here. The
+  // discovery walks the node cwd ancestry, so a CLAUDE.md in the node's cwd must
+  // surface inside a <project_context> block AFTER the <crtr-context> block.
+  const proj = mkdtempSync(join(tmpdir(), 'crtr-proj-'));
+  writeFileSync(join(proj, 'CLAUDE.md'), 'PROJECT_MARKER: build then commit.\n');
+  const meta = spawnNode({ kind: 'general', cwd: proj, parent: null });
+  const block = buildContextIntro(meta.node_id);
+  assert.match(block, /<project_context>/, 'project_context block present in the bearings');
+  assert.match(
+    block,
+    new RegExp(`<project_instructions path="${join(proj, 'CLAUDE.md')}">`),
+    'the project CLAUDE.md is rendered with its path',
+  );
+  assert.match(block, /PROJECT_MARKER: build then commit\./, 'project file content rides the message');
+  assert.ok(
+    block.indexOf('</crtr-context>') < block.indexOf('<project_context>'),
+    'project_context follows the crtr-context block',
+  );
+  rmSync(proj, { recursive: true, force: true });
 });
 
 test('orchestrator bearings: across-cycles framing + node-local substrate docs ride into <knowledge>; a non-substrate .md file is never inlined', () => {

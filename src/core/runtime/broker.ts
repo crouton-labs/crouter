@@ -1523,6 +1523,11 @@ export async function buildBrokerSession(
         additionalExtensionPaths: cfg.extensionPaths,
         appendSystemPrompt:
           cfg.appendSystemPromptPath !== undefined ? [cfg.appendSystemPromptPath] : undefined,
+        // Suppress pi's <project_context> in the SYSTEM PROMPT — crouter
+        // re-renders the same AGENTS.md/CLAUDE.md files into the first-message
+        // <crtr-context> bearings instead (buildProjectContextBlock), so all
+        // project instructions ride the user message, not the system prompt.
+        noContextFiles: true,
       },
     });
 
