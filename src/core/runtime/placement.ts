@@ -52,6 +52,8 @@ import {
   currentTmux,
   switchClient,
   selectWindow,
+  selectLayout,
+  selectPane,
   getPaneOption,
 } from './tmux.js';
 import { newNodeId, rootOfSpine } from './nodes.js';
@@ -78,6 +80,7 @@ export {
   splitWindow,
   breakPane,
   selectLayout,
+  selectPane,
   focusWindow,
   selectWindow,
   switchClient,
@@ -362,6 +365,16 @@ export function openViewerWindow(
  *
  *  crtr is tmux-only: with no caller pane there is no viewport to open and no
  *  non-tmux fallback — report not-focused. */
+/** After a viewer pane is opened/moved beside the caller, make it the ACTIVE
+ *  pane and rebalance its window's panes to an even side-by-side layout — so
+ *  picking a node (e.g. from the alt+g graph) lands the keyboard on the fresh
+ *  viewer and the panes are evenly sized again, not halved. Best-effort. */
+function surfaceNewPane(pane: string): void {
+  const win = paneLocation(pane)?.window ?? null;
+  if (win !== null) selectLayout(win, 'even-horizontal');
+  selectPane(pane);
+}
+
 export function focus(
   nodeId: string,
   opts: { pane?: string; newPane?: boolean; revive: Reviver },
@@ -399,6 +412,7 @@ export function focus(
     }
     const opened = openViewerWindow(nodeId, fallbackSession, { cwd: meta.cwd, besidePane: callerPane });
     if (opened === null) return { focused: false, session: null, inPlace: false, revived };
+    if (opened.pane !== null) surfaceNewPane(opened.pane);
     return { focused: true, session: opened.session, inPlace: false, revived };
   }
 
@@ -419,6 +433,7 @@ export function focus(
         // Viewer is in the caller's session — just navigate to it.
         switchClient(loc.session);
         selectWindow(loc.session, loc.window);
+        if (existing.pane !== null) selectPane(existing.pane);
         return { focused: true, session: loc.session, inPlace: true, revived };
       }
       // Viewer lives elsewhere — MOVE it: close the old pane (broker runs on; the
@@ -437,6 +452,7 @@ export function focus(
   // (d) No live viewer → open one beside the caller and register the row.
   const opened = openViewerWindow(nodeId, fallbackSession, { cwd: meta.cwd, besidePane: callerPane });
   if (opened === null) return { focused: false, session: null, inPlace: false, revived };
+  if (opened.pane !== null) surfaceNewPane(opened.pane);
   return { focused: true, session: opened.session, inPlace: false, revived };
 }
 

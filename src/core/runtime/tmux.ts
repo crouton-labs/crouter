@@ -436,6 +436,15 @@ export function selectLayout(window: string, layout: string): boolean {
   return tmux(['select-layout', '-t', window, layout]).ok;
 }
 
+/** Make a pane the ACTIVE pane in its window (`tmux select-pane -t <pane>`). A
+ *  `split-window -d` keeps the CALLER active, so a freshly-opened viewer pane is
+ *  not focused until this runs — `focus` calls it so picking a node (e.g. from the
+ *  alt+g graph) lands the keyboard on the new viewer. Best-effort; false if tmux
+ *  fails. */
+export function selectPane(pane: string): boolean {
+  return tmux(['select-pane', '-t', pane]).ok;
+}
+
 /** Switch the tmux client to a different session (cross-session focus). Runs
  *  `tmux switch-client -t <session>`. Best-effort; never throws. The caller is
  *  responsible for following up with selectWindow to land on the right window. */
