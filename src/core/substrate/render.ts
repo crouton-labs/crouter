@@ -339,7 +339,9 @@ const PREFERENCES_OUTRO =
 
 const KNOWLEDGE_INTRO =
   'Knowledge documents are what you consult — playbooks and techniques for how to do things, and ' +
-  'references on the user, projects, and this node. To read one, run `crtr memory read <name>`. ' +
+  'references on the user, projects, and this node. They are aggregated from your three memory ' +
+  'scopes: user-global (`~/.crouter/memory/`), project (`<project-root>/.crouter/memory/`), and ' +
+  "node-local (this node's `context/memory/`). To read one, run `crtr memory read <name>`. " +
   'Each doc exists to prevent a specific mistake you would make without it, so when your task ' +
   'matches one — by its name or its `# read when:` line — read it before you act; consulting it ' +
   'only after the work is done forfeits the entire reason it exists. ' +
