@@ -82,6 +82,10 @@ test('worker bearings: base framing + <knowledge> block, NO across-cycles framin
     /test-ref {2}# read when: When testing, this reference should be read because it is a regression fixture\./,
     'node-local preview doc renders its routing line',
   );
+  assert.match(block, /<project_context>/, 'project_context now rides the bearings even without project files');
+  assert.match(block, /<environment cwd="\/tmp\/work">/, 'environment block is always present');
+  assert.match(block, /Directory listing: unavailable \(cwd missing or unreadable\)\./, 'missing cwd degrades the directory listing');
+  assert.match(block, /Git: not a git repository\./, 'missing cwd degrades git info');
   // A terminal worker must NOT carry the orchestrator across-cycles framing.
   assert.doesNotMatch(block, /refresh cycles/, 'no across-cycles framing for a terminal worker');
   assert.match(block, /<\/crtr-context>/);
@@ -103,6 +107,10 @@ test('project instructions (AGENTS.md/CLAUDE.md) ride the bearings, not the syst
     'the project CLAUDE.md is rendered with its path',
   );
   assert.match(block, /PROJECT_MARKER: build then commit\./, 'project file content rides the message');
+  assert.match(block, /<environment cwd=".*crtr-proj-.*">/, 'environment block is appended inside project_context');
+  assert.match(block, /Directory:\n  CLAUDE\.md\n/, 'environment block includes an ls-style listing');
+  assert.match(block, /Git: not a git repository\./, 'git snapshot degrades cleanly for a non-repo');
+  assert.match(block, /<environment[\s\S]*<\/environment>\n<\/project_context>$/, 'environment block closes project_context');
   assert.ok(
     block.indexOf('</crtr-context>') < block.indexOf('<project_context>'),
     'project_context follows the crtr-context block',

@@ -42,7 +42,8 @@ import {
   type WakeKind,
   type Wakeup,
 } from '../canvas/index.js';
-import { existsSync, readFileSync } from 'node:fs';
+import { execSync } from 'node:child_process';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { cadenceDisplay } from '../wake.js';
@@ -76,6 +77,10 @@ const CONTEXT_FILE_CANDIDATES = ['AGENTS.md', 'AGENTS.MD', 'CLAUDE.md', 'CLAUDE.
 interface ContextFile {
   path: string;
   content: string;
+}
+
+interface GitSnapshot {
+  lines: string[];
 }
 
 function loadContextFileFromDir(dir: string): ContextFile | null {
@@ -121,17 +126,90 @@ function loadProjectContextFiles(cwd: string): ContextFile[] {
   return files;
 }
 
+function escapeAttribute(value: string): string {
+  return value.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+}
+
+function directoryListingLines(cwd: string): string[] {
+  try {
+    const entries = readdirSync(cwd, { withFileTypes: true });
+    const sorted = entries.sort((a, b) => {
+      if (a.isDirectory() !== b.isDirectory()) return a.isDirectory() ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+    const shown = sorted.slice(0, 50).map((entry) => `${entry.name}${entry.isDirectory() ? '/' : ''}`);
+    const hidden = sorted.length - shown.length;
+    return hidden > 0 ? [...shown, `[+${hidden} more]`] : shown;
+  } catch {
+    return ['Directory listing: unavailable (cwd missing or unreadable).'];
+  }
+}
+
+function gitSnapshot(cwd: string): GitSnapshot {
+  try {
+    execSync('git rev-parse --is-inside-work-tree', { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch {
+    return { lines: ['Git: not a git repository.'] };
+  }
+
+  const branch = runGit(cwd, 'git branch --show-current') || runGit(cwd, 'git rev-parse --abbrev-ref HEAD') || 'HEAD';
+  const sha = runGit(cwd, 'git rev-parse --short HEAD') || 'unknown';
+  const statusCount = runGit(cwd, 'git status --porcelain')
+    .split('\n')
+    .filter((line) => line !== '').length;
+  const worktreeLines = runGit(cwd, 'git worktree list --porcelain').split('\n');
+  const worktrees = parseWorktrees(worktreeLines);
+  const dirty = statusCount === 0 ? 'clean' : `${statusCount} uncommitted change${statusCount === 1 ? '' : 's'}`;
+  const summary = `Git: ${branch} @ ${sha}; ${dirty}; ${worktrees.length} worktree${worktrees.length === 1 ? '' : 's'}.`;
+  const worktreeSummary = worktrees.length === 0
+    ? 'Worktrees: none.'
+    : `Worktrees: ${worktrees.map((w) => `${w.path} (${w.branch})`).join(', ')}`;
+  return { lines: [summary, worktreeSummary] };
+}
+
+function runGit(cwd: string, command: string): string {
+  try {
+    return execSync(command, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+  } catch {
+    return '';
+  }
+}
+
+function parseWorktrees(lines: string[]): Array<{ path: string; branch: string }> {
+  const worktrees: Array<{ path: string; branch: string }> = [];
+  let cur: { path?: string; branch?: string } = {};
+  for (const line of lines) {
+    if (line.startsWith('worktree ')) {
+      if (cur.path !== undefined) {
+        worktrees.push({ path: cur.path, branch: cur.branch ?? 'detached HEAD' });
+      }
+      cur = { path: line.slice('worktree '.length) };
+    } else if (line.startsWith('branch ')) {
+      cur.branch = line.slice('branch '.length).replace(/^refs\/heads\//, '');
+    }
+  }
+  if (cur.path !== undefined) {
+    worktrees.push({ path: cur.path, branch: cur.branch ?? 'detached HEAD' });
+  }
+  return worktrees;
+}
+
 /** The `<project_context>` block (format mirrors pi's system-prompt.js verbatim,
  *  so the agent reads an identical block) for the files discovered from `cwd`.
- *  Returns '' when no context files exist. Exported for testing. */
+ *  Always emits the wrapper because the environment snapshot now rides there
+ *  even when no project instructions exist. Exported for testing. */
 export function buildProjectContextBlock(cwd: string): string {
   const files = loadProjectContextFiles(cwd);
-  if (files.length === 0) return '';
+  const envLines = directoryListingLines(cwd);
+  const git = gitSnapshot(cwd);
   let out = '<project_context>\n\nProject-specific instructions and guidelines:\n\n';
   for (const { path, content } of files) {
     out += `<project_instructions path="${path}">\n${content}\n</project_instructions>\n\n`;
   }
-  out += '</project_context>';
+  out += `<environment cwd="${escapeAttribute(cwd)}">\n`;
+  out += `Directory:\n${envLines.map((line) => `  ${line}`).join('\n')}\n`;
+  out += `${git.lines.map((line) => `${line}`).join('\n')}\n`;
+  out += '</environment>\n</project_context>';
   return out;
 }
 
