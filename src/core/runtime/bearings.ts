@@ -194,9 +194,9 @@ function parseWorktrees(lines: string[]): Array<{ path: string; branch: string }
   return worktrees;
 }
 
-/** The `<project_context>` block (format mirrors pi's system-prompt.js verbatim,
- *  so the agent reads an identical block) for the files discovered from `cwd`.
- *  Always emits the wrapper because the environment snapshot now rides there
+/** The `<project_context>` block for the files discovered from `cwd`, plus the
+ *  cwd/git environment snapshot that now rides at the end of the wrapper.
+ *  Always emits the wrapper because the environment snapshot is always present
  *  even when no project instructions exist. Exported for testing. */
 export function buildProjectContextBlock(cwd: string): string {
   const files = loadProjectContextFiles(cwd);
