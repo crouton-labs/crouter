@@ -72,7 +72,7 @@ YAML frontmatter on either file supplies launch knobs; the body is the system pr
 | `model` | string | pi model override (normalized). Omit to inherit the default. |
 | `tools` | string[] | pi tool allowlist. Omit for all tools. |
 | `extensions` | string[] | pi extensions, **added after** the always-on canvas extensions. |
-| `roadmapSkill` | string | orchestrator only — a memory doc whose body is injected as roadmap-shaping guidance when the node runs as an orchestrator. |
+| `roadmapKnowledge` | string | orchestrator only — a knowledge doc whose body is injected as roadmap-shaping guidance when the node runs as an orchestrator. |
 | `whenToUse` | string | on a `<kind>/PERSONA.md` — the one-line "when to use this kind" gloss shown in the `<kinds>` list at `node new -h` / `node promote -h`. |
 | `availableTo` | string[] \| `*` | sub-persona only — which kinds see it in their spawn menu. Default: its top-level ancestor kind. `*` / `all` = every kind. |
 

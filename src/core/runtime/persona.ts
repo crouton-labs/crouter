@@ -45,21 +45,20 @@ export interface PersonaDriftResult {
 // promote.ts so the injector is the one place that builds it.
 // ---------------------------------------------------------------------------
 
-/** Coerce a frontmatter scalar to its string form, matching the legacy
- *  hand-rolled parser. Strings pass through; number/boolean coerce via
- *  String(); null/undefined and non-scalars are dropped (→ null). Without this,
- *  the `yaml` package's native scalar types would let a numeric/boolean
- *  `roadmapSkill` memory-doc pointer be silently dropped by a `typeof === 'string'` guard. */
+/** Coerce a frontmatter scalar to its string form. Strings pass through;
+ *  number/boolean coerce via String(); null/undefined and non-scalars are
+ *  dropped (→ null). This lets numeric/boolean `roadmapKnowledge` knowledge-doc
+ *  pointers resolve the same way string pointers do. */
 function scalarToString(v: unknown): string | null {
   if (typeof v === 'string') return v;
   if (typeof v === 'number' || typeof v === 'boolean') return String(v);
   return null;
 }
 
-/** Load a substrate doc's body text by name, or null if it can't be resolved.
- *  Used to inline a kind's roadmap-shaping memory doc into the orchestration
+/** Load a knowledge doc's body text by name, or null if it can't be resolved.
+ *  Used to inline a kind's roadmap-shaping knowledge doc into the orchestration
  *  guidance. */
-function loadRoadmapMemoryBody(name: string): string | null {
+function loadRoadmapKnowledgeBody(name: string): string | null {
   try {
     return resolveMemoryDoc(name).body.trim();
   } catch {
@@ -77,8 +76,8 @@ function loadRoadmapMemoryBody(name: string): string | null {
 function orchestrationGuidance(nodeId: string, kind: string): string {
   const kernel = loadKernel();
   const orch = loadPersona(kind, 'orchestrator');
-  const roadmapSkill = scalarToString(orch?.frontmatter?.['roadmapSkill']) ?? undefined;
-  const roadmapMemoryBody = roadmapSkill ? loadRoadmapMemoryBody(roadmapSkill) : null;
+  const roadmapKnowledge = scalarToString(orch?.frontmatter?.['roadmapKnowledge']) ?? undefined;
+  const roadmapKnowledgeBody = roadmapKnowledge ? loadRoadmapKnowledgeBody(roadmapKnowledge) : null;
   const roadmap = readRoadmap(nodeId) ?? '(no roadmap yet)';
   const rmPath = roadmapPath(nodeId);
 
@@ -88,8 +87,8 @@ function orchestrationGuidance(nodeId: string, kind: string): string {
     '',
     kernel,
   ];
-  if (roadmapMemoryBody) {
-    parts.push('', `--- How to shape a ${kind} roadmap (memory: ${roadmapSkill}) ---`, '', roadmapMemoryBody);
+  if (roadmapKnowledgeBody) {
+    parts.push('', `--- How to shape a ${kind} roadmap (knowledge: ${roadmapKnowledge}) ---`, '', roadmapKnowledgeBody);
   }
   parts.push(
     '',

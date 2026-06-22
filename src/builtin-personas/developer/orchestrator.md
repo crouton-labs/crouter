@@ -1,5 +1,5 @@
 ---
-roadmapSkill: development
+roadmapKnowledge: development
 model: anthropic/strong
 ---
 

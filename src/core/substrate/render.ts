@@ -381,9 +381,8 @@ export function renderPreferencesSection(nodeId: string): string {
  *  doc at its effective rung (most surface only as `[+N more]` counts unless
  *  author-promoted) PLUS the node-local memory docs (any kind), the latter
  *  floored to `name` so a `none`-rung node-local doc still shows its name rather
- *  than collapsing into a count. Procedural skills and factual references both
- *  live here now — they merged into the one `knowledge` kind. Returns '' when
- *  nothing is eligible. */
+ *  than collapsing into a count. Procedural guidance and factual references both
+ *  live here as `knowledge`. Returns '' when nothing is eligible. */
 export function renderKnowledgeBlock(nodeId: string): string {
   const subject = cachedNodeSubject(nodeId, assembleNodeSubject);
   if (subject === null) return '';

@@ -1,5 +1,5 @@
 ---
-roadmapSkill: design
+roadmapKnowledge: design
 model: anthropic/strong
 ---
 

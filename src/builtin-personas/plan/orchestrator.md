@@ -1,5 +1,5 @@
 ---
-roadmapSkill: planning
+roadmapKnowledge: planning
 model: openai/strong
 ---
 

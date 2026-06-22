@@ -1,5 +1,5 @@
 ---
-roadmapSkill: spec
+roadmapKnowledge: spec
 model: anthropic/strong
 ---
 
