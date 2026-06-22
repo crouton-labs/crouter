@@ -36,6 +36,7 @@ import {
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { CRTR_DIR_NAME } from '../../types.js';
 
 /** The filename the FDA / TCC entry is shown under. */
@@ -94,6 +95,40 @@ function readMarker(): SourceMarker | null {
   }
 }
 
+/** Sign the binary with the Apple Development identity to preserve TCC grants
+ *  across rebuilds. macOS keys FDA entries on the Mach-O cdhash, so ad-hoc
+ *  signing loses grants after each rebuild. Stable signing preserves them.
+ *  Non-fatal — if signing fails (no certificate, non-macOS, etc), return silently. */
+function signBrandedHost(binPath: string): void {
+  if (process.platform !== 'darwin') return;
+  try {
+    // Sign with the Apple Development identity. The identity string is stable
+    // across rebuilds, so the signature persists. Use --deep to cover all layers.
+    const res = spawnSync(
+      'codesign',
+      [
+        '-s',
+        'Apple Development: Silas Rhyneer (8W9CF7WS32)',
+        '--deep',
+        '--force',
+        binPath,
+      ],
+      { stdio: ['pipe', 'pipe', 'pipe'] }
+    );
+    if (res.status !== 0) {
+      // Signing failed, but this is not a blocker — the binary still runs.
+      // Log a diagnostic but do not throw; dev systems may lack the certificate.
+      const stderr = (res.stderr ?? '').toString().trim();
+      if (stderr && !stderr.includes('valid on disk')) {
+        // Only warn for real failures, not spurious codesign output.
+        console.debug(`[crouter] codesign failed (expected on some systems): ${stderr}`);
+      }
+    }
+  } catch {
+    // codesign not found or other spawn error — non-fatal, continue.
+  }
+}
+
 /** Ensure the branded host binary exists and matches the live node; return its
  *  absolute path. Idempotent and self-healing. Throws on a genuine build failure
  *  (disk full / permissions) — branding is load-bearing for FDA, so a failure is
@@ -133,6 +168,10 @@ export function ensureBrandedHost(): string {
     atomicCopy(libnodeSrc, join(brandedHostDir(), libnodeName));
   }
   atomicCopy(src, dst, 0o755);
+  // Sign with a stable Apple Development identity to preserve TCC/FDA grants
+  // across rebuilds. The cdhash would change on each copy (ad-hoc signature),
+  // invalidating FDA entries, so we code-sign with a persistent identity.
+  signBrandedHost(dst);
   writeFileSync(markerPath(), JSON.stringify({ source: src, libnode: libnodeName } satisfies SourceMarker));
   return dst;
 }
