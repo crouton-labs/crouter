@@ -17,7 +17,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 
 import { createHeadlessHarness, type Harness } from './helpers/harness.js';
-import { classifyEngineError, markErrorStall, clearErrorStall } from '../runtime/error-stall.js';
+import { classifyEngineError, isModelNotFoundError, markErrorStall, clearErrorStall } from '../runtime/error-stall.js';
 import { dashboardRowsAll } from '../canvas/render.js';
 
 // ---------------------------------------------------------------------------
@@ -49,6 +49,29 @@ test('M1 classifyEngineError: each kind + fallback, order-sensitive', () => {
   // fallback.
   assert.equal(classifyEngineError('some unrecognized engine failure'), 'other');
   assert.equal(classifyEngineError(''), 'other');
+});
+
+// ---------------------------------------------------------------------------
+// BUG-REGRESSION: a 404 not_found (configured model decommissioned/unavailable)
+// must be detected so the broker fails the node over to the strong-anthropic
+// ladder model instead of wedging on the same dead model forever. The verbatim
+// text below is the engine error a node hit when its `anthropic/ultra` ladder
+// cell pointed at a model the account could not reach.
+// ---------------------------------------------------------------------------
+test('isModelNotFoundError detects the provider 404 not_found that triggers strong-anthropic fallback', () => {
+  const verbatim =
+    'Error: 404 {"type":"error","error":{"type":"not_found_error","message":"Claude Fable 5 is not available. Please use Opus 4.8. Learn more: https://www.anthropic.com/news/fable-mythos-access"},"request_id":"req_011CcHgqfwD2Hjg193Ym1Sys"}';
+  assert.equal(isModelNotFoundError(verbatim), true);
+  assert.equal(isModelNotFoundError('Error: 404 model not found'), true);
+  assert.equal(isModelNotFoundError('the requested model does not exist'), true);
+
+  // Must NOT fire on the transient outage kinds the auto-retry path already owns,
+  // nor on an empty/unknown error — those are not "swap models" situations.
+  assert.equal(isModelNotFoundError('HTTP 429 Too Many Requests'), false);
+  assert.equal(isModelNotFoundError('503 Service Unavailable'), false);
+  assert.equal(isModelNotFoundError('Connection error.'), false);
+  assert.equal(isModelNotFoundError('Error: 404 unexpected endpoint /v1/foo'), false); // a 404 with no not-found/model signal
+  assert.equal(isModelNotFoundError(''), false);
 });
 
 // ---------------------------------------------------------------------------

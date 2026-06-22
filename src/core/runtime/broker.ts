@@ -37,12 +37,13 @@ import { getNode, updateNode } from '../canvas/index.js';
 import { FRONT_DOOR_ENV } from './front-door.js';
 import {
   equivalentOtherProviderModel,
+  normalizeModel,
   piInvocationToSdkConfig,
   type BrokerSdkConfig,
   type PiInvocation,
 } from './launch.js';
 import { assertEngineVersion, loadBrokerEngine, type BrokerEngine } from './broker-sdk.js';
-import { classifyEngineError } from './error-stall.js';
+import { classifyEngineError, isModelNotFoundError } from './error-stall.js';
 import type { ModelProvider } from '../../types.js';
 import { BUILTIN_SLASH_COMMANDS } from './pi-vendored.js';
 import {
@@ -410,6 +411,12 @@ export async function runBroker(nodeId: string): Promise<void> {
   const failedRetryProviders = new Set<ModelProvider>();
   let providerFallbackInFlight: Promise<void> | null = null;
 
+  // Models that have already produced a 404 not_found this session. Guards the
+  // not-found fallback below against an infinite swap→re-drive→404 loop when the
+  // fallback TARGET is itself unavailable (or equals the model that just failed).
+  const notFoundModels = new Set<string>();
+  let notFoundFallbackInFlight: Promise<void> | null = null;
+
   const maybeSwitchProviderForRetry = (event: BrokerToClient): void => {
     if ((event as { type?: string }).type !== 'auto_retry_start') return;
     const retry = event as { type: 'auto_retry_start'; errorMessage?: string };
@@ -443,8 +450,67 @@ export async function runBroker(nodeId: string): Promise<void> {
       });
   };
 
+  // A 404 not_found is NOT one of pi's auto-retried kinds (it retries 429/5xx
+  // only) and never resolves on its own — the configured model id is wrong or
+  // decommissioned (e.g. the default `anthropic/ultra` pointing at a model the
+  // account can't reach). Left alone the node errors out, the stophook parks it
+  // as a stall, and the daemon force-recycles it onto the SAME bad model in a
+  // loop. Instead: fail the node over to the strong-anthropic ladder model and
+  // re-drive the turn so the work continues. broadcastModelChanged persists the
+  // swap into the durable launch recipe, so a later revive uses the good model
+  // too. Fires on the terminal-error message (stopReason 'error'), the signal a
+  // non-retried request surfaces.
+  const maybeFallbackOnModelNotFound = (event: BrokerToClient): void => {
+    if ((event as { type?: string }).type !== 'message_end') return;
+    const msg = (event as { message?: { role?: string; stopReason?: string; errorMessage?: string } }).message;
+    if (msg === undefined || msg.role !== 'assistant' || msg.stopReason !== 'error') return;
+    if (!isModelNotFoundError(msg.errorMessage ?? '')) return;
+    if (notFoundFallbackInFlight !== null) return;
+
+    const currentSpec = formatModelSpec(session.model, session.thinkingLevel);
+    if (currentSpec === null) return;
+    notFoundModels.add(currentSpec);
+
+    // The strong-anthropic ladder cell — "whatever the current strong anthropic
+    // provider model is" (config modelLadders.anthropic.strong), not hardcoded.
+    const target = normalizeModel('anthropic/strong');
+    // Don't loop: the failed model already IS the target, or the target itself
+    // 404'd earlier this session. Leave it to the normal stall/recycle path.
+    if (target === currentSpec || notFoundModels.has(target)) {
+      logBroker(`not_found fallback skipped: ${currentSpec} has no healthy strong-anthropic target (${target})`);
+      return;
+    }
+
+    notFoundFallbackInFlight = (async () => {
+      const model = findModelSpec(target);
+      if (model === undefined) {
+        logBroker(`not_found fallback skipped: ${target} is not registered`);
+        return;
+      }
+      const requested = parseModelSpec(target);
+      await session.setModel(model);
+      if (requested.thinkingLevel !== undefined) session.setThinkingLevel(requested.thinkingLevel);
+      broadcastModelChanged();
+      const resolved = formatModelSpec(session.model, session.thinkingLevel) ?? target;
+      logBroker(`not_found fallback: ${currentSpec} unavailable → ${resolved}; re-driving turn`);
+      // Re-drive: a 404 left the turn errored and the engine idle, so the model
+      // swap alone changes nothing until the next prompt. Re-issue so the now-
+      // healthy model picks the task back up.
+      await session.prompt(
+        `The previous model (${currentSpec}) was unavailable (provider 404 not_found), so you were automatically switched to ${resolved}. Continue the task from where the failed turn left off.`,
+      );
+    })()
+      .catch((err: unknown) => {
+        logBroker(`not_found fallback failed: ${err instanceof Error ? err.message : String(err)}`);
+      })
+      .finally(() => {
+        notFoundFallbackInFlight = null;
+      });
+  };
+
   const relayEvent = (event: BrokerToClient): void => {
     maybeSwitchProviderForRetry(event);
+    maybeFallbackOnModelNotFound(event);
     if ((event as { type?: string }).type === 'message_update') {
       pendingUpdate = event; // latest full-message update supersedes the held one
       if (pendingUpdateTimer === null) {

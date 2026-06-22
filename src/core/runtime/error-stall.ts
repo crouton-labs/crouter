@@ -58,6 +58,25 @@ export function classifyEngineError(message: string): ErrorStallKind {
   return 'other';
 }
 
+/** True when a raw engine error is a provider 404 "this model does not exist /
+ *  is not available" — distinct from the transient outage kinds above, because a
+ *  404 is NOT retryable (pi auto-retries 429/5xx only) and NEVER resolves on its
+ *  own: the configured model id is simply wrong/decommissioned. The broker reacts
+ *  to this by failing the node over to the strong-anthropic ladder model and
+ *  re-driving the turn. Heuristic substring match — pi surfaces no structured
+ *  HTTP code, so we key off Anthropic's `not_found_error` body and the 404 line.
+ *  Observed text: `Error: 404 {"type":"error","error":{"type":"not_found_error",
+ *  "message":"Claude Fable 5 is not available. Please use Opus 4.8...`. */
+export function isModelNotFoundError(message: string): boolean {
+  const m = message ?? '';
+  // Primary: Anthropic's structured 404 body (the verbatim shape observed).
+  if (/not_found_error/i.test(m)) return true;
+  // Unambiguous model-scoped phrasing, with or without a code.
+  if (/model[^.]{0,40}(not\s*found|does not exist|is not available|unavailable)|(no such|unknown) model/i.test(m)) return true;
+  // Backstop: a bare 404 alongside a not-found phrase.
+  return /\b404\b/.test(m) && /not\s*found|not available|does not exist/i.test(m);
+}
+
 /** Mark a node parked on a trailing engine error. Best-effort. */
 export function markErrorStall(nodeId: string, message: string): void {
   try {
