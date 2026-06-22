@@ -16,7 +16,7 @@ crtr state splits into three tiers, each with a distinct durability and ownershi
 
 ## 2. Per-cwd crouter root — per-project working artifacts
 
-`~/.crouter/<mangled-cwd>/`, keyed on the originating cwd via `mangleCwd` (`src/core/artifact.ts`). Holds working artifacts like `interactions/` (humanloop decks for the `crtr human` bridge; `interactions/<id>/` holds `deck.json` / `run.json` / `response.json`).
+`~/.crouter/workspaces/<mangled-cwd>/`, keyed on the originating cwd via `mangleCwd` (`src/core/artifact.ts`). Holds working artifacts like `interactions/` (humanloop decks for the `crtr human` bridge; `interactions/<id>/` holds `deck.json` / `run.json` / `response.json`).
 
 ## 3. Canvas home — node-graph runtime state
 

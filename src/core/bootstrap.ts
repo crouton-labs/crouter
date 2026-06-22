@@ -4,6 +4,7 @@ import { findProjectScopeRoot, resetScopeCache, userScopeRoot } from './scope.js
 import { ensureDir, pathExists, removePath, nowIso } from './fs-utils.js';
 import { readConfig, readState, updateConfig, updateState, ensureScopeInitialized } from './config.js';
 import { clone } from './git.js';
+import { migrateLegacyWorkspaceDirs } from './artifact.js';
 import { readMarketplaceManifest } from './manifest.js';
 import { CRTR_DIR_NAME } from '../types.js';
 
@@ -84,6 +85,8 @@ export function ensureProjectScope(argv: string[]): void {
   try {
     if (process.env.CRTR_NO_AUTO_INIT === '1') return;
     if (shouldSkipForArgv(argv)) return;
+
+    migrateLegacyWorkspaceDirs();
 
     // Already inside a project scope (here or in an ancestor) — nothing to do.
     if (findProjectScopeRoot() !== null) return;

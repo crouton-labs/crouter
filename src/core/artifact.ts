@@ -1,12 +1,12 @@
-// Core artifact primitives for plan and spec subtrees.
+// Core per-cwd workspace primitives for plan/spec and related artifacts.
 // No commander, no spawn, no output helpers — pure data logic only.
 // Old registerArtifactCommand (commander-based) is removed; callers ported to JSON I/O.
 
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { writeFileSync, statSync } from 'node:fs';
+import { renameSync, writeFileSync, statSync } from 'node:fs';
 import { CRTR_DIR_NAME } from '../types.js';
-import { ensureDir, pathExists, readText, walkFiles } from './fs-utils.js';
+import { ensureDir, listDirs, pathExists, readText, removePath, walkFiles } from './fs-utils.js';
 import { notFound, usage } from './errors.js';
 
 export type ArtifactKind = 'plans' | 'specs';
@@ -15,14 +15,18 @@ export function mangleCwd(cwd: string = process.cwd()): string {
   return cwd.replace(/\//g, '-');
 }
 
+export function workspaceRoot(cwd?: string): string {
+  return join(homedir(), CRTR_DIR_NAME, 'workspaces', mangleCwd(cwd));
+}
+
 export function artifactsRoot(kind: ArtifactKind, cwd?: string): string {
-  return join(homedir(), CRTR_DIR_NAME, mangleCwd(cwd), kind);
+  return join(workspaceRoot(cwd), kind);
 }
 
 /** Per-cwd interactions root, mirroring artifactsRoot construction.
- *  `~/.crouter/<mangled-cwd>/interactions/`. */
+ *  `~/.crouter/workspaces/<mangled-cwd>/interactions/`. */
 export function interactionsRoot(cwd?: string): string {
-  return join(homedir(), CRTR_DIR_NAME, mangleCwd(cwd), 'interactions');
+  return join(workspaceRoot(cwd), 'interactions');
 }
 
 /** Directory for one interaction. `id` is sanitized like an artifact name. */
@@ -131,6 +135,30 @@ export interface ArtifactListItem {
   name: string;
   path: string;
   updated_at: string;
+}
+
+const LEGACY_WORKSPACE_DIR_RE = /^-[A-Za-z0-9].*/;
+
+export function migrateLegacyWorkspaceDirs(): void {
+  const dataHome = join(homedir(), CRTR_DIR_NAME);
+  const workspaceHome = join(dataHome, 'workspaces');
+  if (!pathExists(dataHome)) return;
+  ensureDir(workspaceHome);
+  for (const entry of listDirs(dataHome)) {
+    if (entry === 'workspaces' || !LEGACY_WORKSPACE_DIR_RE.test(entry)) continue;
+    const source = join(dataHome, entry);
+    const target = join(workspaceHome, entry);
+    if (pathExists(target)) {
+      removePath(source);
+      continue;
+    }
+    try {
+      renameSync(source, target);
+    } catch {
+      // Leave the source in place only if the rename truly failed.
+      // The next startup will retry the same hard-cut move.
+    }
+  }
 }
 
 export function listArtifacts(kind: ArtifactKind): ArtifactListItem[] {

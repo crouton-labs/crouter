@@ -1,9 +1,8 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { defineLeaf } from '../../core/command.js';
 import { InputError, readStdinRaw } from '../../core/io.js';
-import { mangleCwd } from '../../core/artifact.js';
+import { workspaceRoot } from '../../core/artifact.js';
 import { getNode } from '../../core/canvas/index.js';
 import { availableKinds, kindWhenToUse, subPersonasFor } from '../../core/personas/index.js';
 import { resolvePromptReview, type PromptReviewConfig, type PromptReviewData, type PromptSource } from '../../core/personas/resolve.js';
@@ -83,9 +82,10 @@ function reviewList(): PromptReviewList {
 }
 
 function promptReviewPath(): string {
-  const dir = join(homedir(), '.crouter', mangleCwd(), 'prompt-reviews');
-  mkdirSync(dir, { recursive: true });
-  return join(dir, `${new Date().toISOString()}.md`);
+  const dir = workspaceRoot();
+  const reviewsDir = join(dir, 'prompt-reviews');
+  mkdirSync(reviewsDir, { recursive: true });
+  return join(reviewsDir, `${new Date().toISOString()}.md`);
 }
 
 function renderExportDeck(deck: PromptReviewExportInput): string {
