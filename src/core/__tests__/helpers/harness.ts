@@ -44,7 +44,7 @@ import {
 } from '../../canvas/canvas.js';
 import { closeDb } from '../../canvas/db.js';
 import { isFocused } from '../../runtime/placement.js';
-import { superviseTick } from '../../../daemon/crtrd.js';
+import { superviseTick, type SuperviseDeps } from '../../../daemon/crtrd.js';
 import { readInboxSince } from '../../feed/inbox.js';
 import type { NodeMeta, NodeStatus, Mode, Lifecycle, ExitIntent } from '../../canvas/types.js';
 import type { InboxEntry } from '../../feed/inbox.js';
@@ -219,11 +219,16 @@ export interface Harness {
 
   // drive a fake-pi over its control channel — fires the REAL hooks.
   turn(nodeId: string, text?: string): Promise<void>;
-  stop(nodeId: string, reason?: 'stop' | 'length' | 'aborted' | 'error'): Promise<void>;
+  stop(
+    nodeId: string,
+    reason?: 'stop' | 'length' | 'aborted' | 'error',
+    errorMessage?: string,
+  ): Promise<void>;
   finish(nodeId: string, finalText: string): Promise<void>;
 
-  // the daemon decision pass, in-process, with an injectable clock.
-  tick(now?: number): Promise<void>;
+  // the daemon decision pass, in-process, with an injectable clock + deps (e.g.
+  // a fake connectivity probe so a test drives the "wifi state" deterministically).
+  tick(now?: number, deps?: SuperviseDeps): Promise<void>;
 
   // observers (each closeDb()s first to see cross-process WAL writes).
   awaitBoot(nodeId: string, o?: { minCount?: number; timeoutMs?: number }): Promise<BootProof>;
@@ -560,9 +565,9 @@ export async function createHarness(opts: HarnessOpts = {}): Promise<Harness> {
       await awaitAgentEnd(nodeId, base, `turn agent_end for ${nodeId}`);
     },
 
-    async stop(nodeId, reason = 'stop'): Promise<void> {
+    async stop(nodeId, reason = 'stop', errorMessage): Promise<void> {
       const base = eventCount(nodeId, 'agent_end');
-      sendCmd(nodeId, { cmd: 'stop', id: `stop-${Date.now()}`, reason });
+      sendCmd(nodeId, { cmd: 'stop', id: `stop-${Date.now()}`, reason, errorMessage });
       await awaitAgentEnd(nodeId, base, `stop agent_end for ${nodeId}`);
     },
 
@@ -579,9 +584,9 @@ export async function createHarness(opts: HarnessOpts = {}): Promise<Harness> {
       await harness.waitForPaneGone(nodeId);
     },
 
-    async tick(now?: number): Promise<void> {
+    async tick(now?: number, deps?: SuperviseDeps): Promise<void> {
       closeDb();
-      await superviseTick(now);
+      await superviseTick(now, deps);
       closeDb();
     },
 

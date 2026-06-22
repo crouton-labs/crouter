@@ -623,6 +623,7 @@ class FakeSession {
           id?: string;
           reason?: string;
           text?: string;
+          errorMessage?: string;
           timeout?: number;
           updates?: number;
           padBytes?: number;
@@ -646,6 +647,7 @@ class FakeSession {
     cmd?: string;
     reason?: string;
     text?: string;
+    errorMessage?: string;
     timeout?: number;
     updates?: number;
     padBytes?: number;
@@ -685,7 +687,15 @@ class FakeSession {
           'agent_end',
           {
             messages: [
-              { role: 'assistant', stopReason: cmd.reason ?? 'stop', content: [{ type: 'text', text: cmd.text ?? '' }] },
+              {
+                role: 'assistant',
+                stopReason: cmd.reason ?? 'stop',
+                // A real engine attaches errorMessage on a stopReason:'error'
+                // turn; the stophook classifies it for the error-stall marker.
+                // Forward it so a test can drive a CONNECTION stall faithfully.
+                ...(cmd.errorMessage === undefined ? {} : { errorMessage: cmd.errorMessage }),
+                content: [{ type: 'text', text: cmd.text ?? '' }],
+              },
             ],
           },
           ctx,

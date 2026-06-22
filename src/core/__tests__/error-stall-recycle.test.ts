@@ -1,7 +1,15 @@
 // Run with: node --import tsx/esm --test src/core/__tests__/error-stall-recycle.test.ts
 //
 // BUG-REGRESSION (§I error-stall; gh issue #4 — node mqaeqzdu-0746b3b7, a 9h
-// zombie). A provider outage exhausted the engine's SDK retry budget mid-task:
+// zombie). Scope note: §I now owns only the NON-connection error kinds
+// (rate-limit / overloaded / other — server-side faults the daemon can only
+// recover by waiting + retrying). CONNECTION-kind stalls are handled by §J
+// connectivity-recovery (held alive, then nudged to continue the moment the
+// network is reachable again — never the blind 5-min kill), proven in
+// connection-reconnect-resume.test.ts. So this test's wedged signature is an
+// OVERLOADED provider outage, the canonical §I case.
+//
+// A provider outage exhausted the engine's SDK retry budget mid-task:
 // pi appended trailing stopReason:'error' assistant messages to the session
 // .jsonl and PARKED (the stophook's agent_end returns early on 'error' — "stay
 // alive for re-steering"). A headless node has no human to re-steer it, so the
@@ -125,7 +133,10 @@ test(
     try {
       // The WEDGED node: session ends in an error turn, quiet for > the grace.
       const wedgedFile = join(dir, 'wedged.jsonl');
-      writeFileSync(wedgedFile, [assistant('toolUse'), toolResult(), assistant('error', 'Connection error.')].join('\n') + '\n');
+      // An OVERLOADED provider outage (a 529) — §I's domain. (A 'Connection
+      // error.' here would now be HELD by the §I connection carve-out and
+      // recovered by §J instead; see connection-reconnect-resume.test.ts.)
+      writeFileSync(wedgedFile, [assistant('toolUse'), toolResult(), assistant('error', 'Overloaded (529)')].join('\n') + '\n');
       const staleSec = (T0 - ERROR_STALL_QUIET_MS - 1) / 1000;
       utimesSync(wedgedFile, staleSec, staleSec);
       const wedgedId = h.fabricateBrokerNode({

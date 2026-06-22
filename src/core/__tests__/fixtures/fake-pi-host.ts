@@ -265,7 +265,13 @@ async function doShutdown(): Promise<never> {
   process.exit(0);
 }
 
-async function dispatch(cmd: { cmd?: string; id?: string; reason?: string; text?: string }): Promise<void> {
+async function dispatch(cmd: {
+  cmd?: string;
+  id?: string;
+  reason?: string;
+  text?: string;
+  errorMessage?: string;
+}): Promise<void> {
   const id = cmd.id ?? cmd.cmd ?? 'cmd';
   switch (cmd.cmd) {
     case 'shutdown':
@@ -277,7 +283,16 @@ async function dispatch(cmd: { cmd?: string; id?: string; reason?: string; text?
         'agent_end',
         {
           messages: [
-            { role: 'assistant', stopReason: cmd.reason ?? 'stop', content: [{ type: 'text', text: cmd.text ?? '' }] },
+            {
+              role: 'assistant',
+              stopReason: cmd.reason ?? 'stop',
+              // A real engine attaches errorMessage on a stopReason:'error' turn;
+              // the stophook classifies it (connection/rate-limit/…) for the
+              // error-stall marker. Forward it so a test can drive a CONNECTION
+              // stall faithfully.
+              ...(cmd.errorMessage === undefined ? {} : { errorMessage: cmd.errorMessage }),
+              content: [{ type: 'text', text: cmd.text ?? '' }],
+            },
           ],
         },
         ctx,

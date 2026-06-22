@@ -75,7 +75,12 @@ import {
 } from '../core/canvas/index.js';
 import { transition } from '../core/runtime/lifecycle.js';
 import { isBusy } from '../core/runtime/busy.js';
-import { ERROR_STALL_QUIET_MS } from '../core/runtime/error-stall.js';
+import {
+  ERROR_STALL_QUIET_MS,
+  classifyEngineError,
+  readErrorStall,
+} from '../core/runtime/error-stall.js';
+import { probeOnline as probeOnlineReal } from '../core/runtime/connectivity.js';
 export { ERROR_STALL_QUIET_MS };
 import { isPidAlive } from '../core/canvas/pid.js';
 import { listLivePanes, tearDownNode } from '../core/runtime/placement.js';
@@ -348,6 +353,16 @@ function handleErrorStall(row: NodeRow, pid: number, now: number): void {
     memo = { mtimeMs, error: trailingEngineError(readTail(file)) };
     errorTailMemo.set(id, memo);
   }
+  // §J owns connection-kind stalls — they are NOT recovered by this blind quiet
+  // timer (which would kill+RESUME-revive while the network is still down, just
+  // re-erroring, AND wipe the error-stall marker §J reads). The connectivity-
+  // recovery pass holds them alive until the network is back, then nudges them
+  // to continue. Everything else (rate-limit/overloaded/other — server-side, not
+  // a reachability fault) keeps the §I timer.
+  if (memo.error !== null && classifyEngineError(memo.error) === 'connection') {
+    errorTermAt.delete(id);
+    return;
+  }
   if (errorStallVerdict(true, row.intent, false, quietFor, memo.error !== null) !== 'kill') return;
   const termed = errorTermAt.get(id);
   if (termed === undefined) {
@@ -445,6 +460,117 @@ async function handleAuthReload(now: number): Promise<void> {
   process.stderr.write(
     `[crtrd] auth-reload: auth.json changed — fanned to ${live.length} live broker(s) (${ok} ok, ${live.length - ok} failed)\n`,
   );
+}
+
+// ---------------------------------------------------------------------------
+// §J connectivity-recovery: resume connection-stalled nodes when wifi is back
+// ---------------------------------------------------------------------------
+
+// Per-node error-stall `since` we've already sent a reconnect nudge for. In-
+// memory like unhealthySince (a daemon restart resets it — worst case one extra
+// nudge, harmless). Keyed by node_id, holding the stall episode's `since`: a NEW
+// park (different `since`) re-qualifies for a nudge, so a node that re-errors
+// after a nudge is nudged again once the network is confirmed up, while a single
+// park is never nudged twice.
+const reconnectNudgedSince = new Map<string, string>();
+
+/** The nudge body delivered to a connection-stalled node when the network is
+ *  confirmed back. Phrased as a continue/retry instruction — the live inbox-
+ *  watcher injects it as a user message, which on an idle (parked) engine starts
+ *  a fresh turn that retries the work that hit the connection error. */
+export const RECONNECT_NUDGE_BODY =
+  'The network connection is back online. Your previous turn stopped on a connection error ' +
+  '(the network was down). Continue from where you left off and retry the work that failed.';
+
+/** Decide, for ONE node, whether a reconnect nudge is owed (pure; the probe +
+ *  appendInbox side effects live in handleConnectivityRecovery). A nudge is owed
+ *  ONLY when the engine is live, not mid-turn, has no pending intent, is parked
+ *  on a CONNECTION-kind error-stall, and this exact park (node_id+since) has not
+ *  already been nudged. Connectivity is checked separately so the network probe
+ *  runs at most once per tick, and only when at least one node is eligible. */
+export function reconnectNudgeOwed(
+  piPidAlive: boolean,
+  intent: NodeRow['intent'],
+  busy: boolean,
+  stallKind: string | null,
+  alreadyNudged: boolean,
+): boolean {
+  if (!piPidAlive) return false; // a dead broker is the crash-revive path's job
+  if (intent !== null) return false; // refresh/idle-release own those
+  if (busy) return false; // mid-turn — not parked
+  if (stallKind !== 'connection') return false;
+  if (alreadyNudged) return false;
+  return true;
+}
+
+/** §J: nudge every connection-stalled, live-broker node to continue once the
+ *  network is back. Enumerate eligible nodes FIRST and bail before probing when
+ *  there are none — so a daemon with no connection-stalled node makes ZERO
+ *  network calls (the common case, and every non-connectivity test). When there
+ *  IS one, probe; if online, appendInbox a continue nudge to each (the live
+ *  inbox-watcher delivers it → a fresh turn retries the failed work) and record
+ *  the park as nudged. While offline: hold — no nudge, no wasted retries. */
+async function handleConnectivityRecovery(
+  probe: () => Promise<boolean>,
+): Promise<void> {
+  let rows: NodeRow[];
+  try {
+    rows = listNodes({ status: ['active', 'idle'] }).filter((r) => r.kind !== 'human');
+  } catch (err) {
+    process.stderr.write(`[crtrd] connectivity enumerate error: ${(err as Error).message}\n`);
+    return;
+  }
+
+  const eligible: { id: string; since: string }[] = [];
+  for (const row of rows) {
+    const id = row.node_id;
+    const piPidAlive = row.pi_pid != null && isPidAlive(row.pi_pid);
+    // A stale marker from a crashed broker is harmless: the dead pid fails the
+    // piPidAlive AND, so a connection marker on a dead broker is never eligible.
+    const stall = readErrorStall(id);
+    const since = stall?.since ?? null;
+    if (
+      !reconnectNudgeOwed(
+        piPidAlive,
+        row.intent,
+        isBusy(id),
+        stall?.kind ?? null,
+        since !== null && reconnectNudgedSince.get(id) === since,
+      )
+    ) {
+      // Drop the dedup record once a node is no longer connection-stalled (marker
+      // cleared on its first post-recovery agent_start), so a future park nudges.
+      if (stall === null || stall.kind !== 'connection') reconnectNudgedSince.delete(id);
+      continue;
+    }
+    eligible.push({ id, since: since! });
+  }
+
+  if (eligible.length === 0) return; // nothing parked on a connection error — don't probe
+
+  let online: boolean;
+  try {
+    online = await probe();
+  } catch {
+    online = false; // "can't tell" never claims the network is up
+  }
+  if (!online) return; // wifi still down — hold the parked nodes
+
+  for (const { id, since } of eligible) {
+    try {
+      appendInbox(id, {
+        from: null,
+        tier: 'urgent',
+        kind: 'message',
+        label: '⚡ connection restored — continue',
+        data: { body: RECONNECT_NUDGE_BODY },
+      });
+      reconnectNudgedSince.set(id, since);
+      process.stderr.write(`[crtrd] reconnect-nudge ${id} (connection-stall since ${since})\n`);
+    } catch (err) {
+      process.stderr.write(`[crtrd] reconnect-nudge ${id} failed: ${(err as Error).message}\n`);
+    }
+  }
 }
 
 export type LivenessVerdict = 'leave' | 'pending' | 'revive';
@@ -767,7 +893,21 @@ export function isDaemonRunning(): boolean {
 // Supervisor tick
 // ---------------------------------------------------------------------------
 
-export async function superviseTick(now: number = Date.now()): Promise<void> {
+/** Injectable side-channels for one supervision tick. Defaults are the real
+ *  implementations; tests override them to drive deterministic scenarios with no
+ *  real network call (and no real wifi toggled). */
+export interface SuperviseDeps {
+  /** "Is the box online right now?" — defaults to the real TCP-reachability probe
+   *  (connectivity.ts). §J calls it at most once per tick, and only when a node
+   *  is parked on a connection error. */
+  probeOnline?: () => Promise<boolean>;
+}
+
+export async function superviseTick(
+  now: number = Date.now(),
+  deps: SuperviseDeps = {},
+): Promise<void> {
+  const probeOnline = deps.probeOnline ?? probeOnlineReal;
   // Auth-reload fan FIRST, independent of node supervision: a change to the
   // shared auth.json propagates a live credential reload to every broker. Kept
   // ahead of the listNodes guard below so a transient list error in the
@@ -776,6 +916,16 @@ export async function superviseTick(now: number = Date.now()): Promise<void> {
     await handleAuthReload(now);
   } catch (err) {
     process.stderr.write(`[crtrd] handleAuthReload error: ${(err as Error).message}\n`);
+  }
+
+  // §J connectivity-recovery: resume connection-stalled nodes the moment the
+  // network is back. Self-gates (no eligible node → no probe), so this is a
+  // no-op — and makes zero network calls — unless something is parked on a
+  // connection error.
+  try {
+    await handleConnectivityRecovery(probeOnline);
+  } catch (err) {
+    process.stderr.write(`[crtrd] handleConnectivityRecovery error: ${(err as Error).message}\n`);
   }
 
   let rows: NodeRow[];
